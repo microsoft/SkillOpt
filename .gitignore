@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+data/
+outputs/
+logs/
+external/
+/BabyVision/
+/MMRB/
+/SpreadsheetBench/
+/dl4ir-searchQA/
+configs/local/
+configs/**/*.local.yaml
+*.local.md
+.secrets/
+.codex_azure*/

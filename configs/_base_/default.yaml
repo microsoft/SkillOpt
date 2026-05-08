@@ -1,0 +1,93 @@
+# ReflACT default configuration — base for all environments.
+# Environment configs should inherit via: _base_: default.yaml
+
+model:
+  backend: azure_openai
+  teacher: gpt-5.5
+  student: gpt-5.5
+  teacher_backend: openai_chat
+  student_backend: openai_chat
+  reasoning_effort: medium
+  rewrite_reasoning_effort: ""
+  rewrite_max_completion_tokens: 64000
+  codex_exec_path: codex
+  codex_exec_sandbox: workspace-write
+  codex_exec_profile: ""
+  codex_exec_full_auto: false
+  codex_exec_reasoning_effort: none
+  codex_exec_use_sdk: auto
+  codex_exec_network_access: false
+  codex_exec_web_search: false
+  codex_exec_approval_policy: never
+  claude_code_exec_path: claude
+  claude_code_exec_profile: ""
+  claude_code_exec_use_sdk: auto
+  claude_code_exec_effort: medium
+  claude_code_exec_max_thinking_tokens: 16384
+  codex_trace_to_teacher: true
+  azure_openai_endpoint: "https://t2vgoaigpt4o3.openai.azure.com/"
+  azure_openai_api_version: "2024-12-01-preview"
+  azure_openai_api_key: ""       # Fill locally if you do not export AZURE_OPENAI_API_KEY
+  azure_openai_auth_mode: azure_cli
+  azure_openai_ad_scope: "https://cognitiveservices.azure.com/.default"
+  azure_openai_managed_identity_client_id: ""
+  teacher_azure_openai_endpoint: "https://t2vgoaigpt4o3.openai.azure.com/"
+  teacher_azure_openai_api_version: "2024-12-01-preview"
+  teacher_azure_openai_api_key: ""
+  teacher_azure_openai_auth_mode: azure_cli
+  teacher_azure_openai_ad_scope: "https://cognitiveservices.azure.com/.default"
+  teacher_azure_openai_managed_identity_client_id: ""
+  student_azure_openai_endpoint: "https://t2vgoaigpt4o3.openai.azure.com/"
+  student_azure_openai_api_version: "2024-12-01-preview"
+  student_azure_openai_api_key: ""
+  student_azure_openai_auth_mode: azure_cli
+  student_azure_openai_ad_scope: "https://cognitiveservices.azure.com/.default"
+  student_azure_openai_managed_identity_client_id: ""
+
+train:
+  num_epochs: 4
+  train_size: 0          # 0 = derive from dataset split when available
+  batch_size: 40
+  accumulation: 1
+  seed: 42
+
+gradient:
+  minibatch_size: 8
+  merge_batch_size: 8
+  analyst_workers: 16
+  max_analyst_rounds: 3
+  failure_only: false
+  use_deep_reflect: false
+  deep_reflect_failures: 4
+  deep_reflect_successes: 2
+
+optimizer:
+  learning_rate: 4          # max edits per step (edit_budget)
+  min_learning_rate: 2      # min edits for decay schedulers
+  lr_scheduler: cosine      # constant / linear / cosine / autonomous
+  lr_control_mode: fixed    # fixed / autonomous / none
+  skill_update_mode: patch  # patch / rewrite_from_suggestions / full_rewrite_minibatch
+  use_meta_reflect: false
+  meta_learning_rate: 4     # max edits per epoch-level meta-reflect
+  use_slow_update: true
+  slow_update_samples: 20
+  longitudinal_pair_policy: mixed  # mixed / changed / unchanged
+  use_meta_skill: true
+
+evaluation:
+  use_gate: true
+  sel_env_num: 0
+  test_env_num: 0
+  eval_test: true
+
+env:
+  name: ""
+  skill_init: ""
+  split_mode: ratio       # ratio = build deterministic split from data_path; split_dir = use pre-split train/val/test
+  split_ratio: "2:1:7"    # explicit default for dataset-backed benchmarks: train:val:test
+  split_seed: 42
+  split_dir: ""
+  data_path: ""
+  split_output_dir: ""
+  exec_timeout: 120      # per student model/code-agent call timeout in seconds
+  out_root: ""

@@ -1,0 +1,257 @@
+version: 2026-05-04
+purpose: "Canonical paper ablation settings matching the valid current runs."
+
+launcher:
+  script: scripts/run_ablation_matrix.py
+  python: /home/azureuser/workspace-gzy/miniconda3/envs/skillopt/bin/python
+  skip_completed_by: summary.json
+  skip_active_by: "active scripts/train.py env.out_root"
+
+environment:
+  working_directory: /home/azureuser/workspace-gzy/SkillReflection
+  required_env:
+    ALFWORLD_DATA: /home/azureuser/.cache/alfworld
+  docvqa_images_symlink: "data/docvqa_images -> /home/azureuser/zisu/SkillReflection/data/docvqa_images"
+
+common_overrides:
+  model.teacher_backend: openai_chat
+  model.student_backend: openai_chat
+  model.teacher: gpt-5.5
+  model.student: gpt-5.5
+  model.teacher_azure_openai_endpoint: https://t2vgoaigpt4o3.openai.azure.com/
+  model.teacher_azure_openai_api_version: 2024-12-01-preview
+  model.teacher_azure_openai_auth_mode: azure_cli
+  model.student_azure_openai_endpoint: https://t2vgoaigpt4o3.openai.azure.com/
+  model.student_azure_openai_api_version: 2024-12-01-preview
+  model.student_azure_openai_auth_mode: azure_cli
+  model.reasoning_effort: medium
+  train.num_epochs: 4
+  train.train_size: 0
+  train.batch_size: 40
+  train.accumulation: 1
+  train.seed: 42
+  gradient.minibatch_size: 8
+  gradient.merge_batch_size: 8
+  gradient.analyst_workers: 16
+  gradient.use_deep_reflect: false
+  optimizer.learning_rate: 4
+  optimizer.min_learning_rate: 2
+  optimizer.lr_scheduler: cosine
+  optimizer.skill_update_mode: patch
+  optimizer.use_slow_update: true
+  optimizer.slow_update_samples: 20
+  optimizer.use_meta_skill: true
+  optimizer.use_meta_reflect: false
+  evaluation.use_gate: true
+  evaluation.eval_test: true
+  env.split_mode: split_dir
+
+benchmarks:
+  searchqa:
+    config: configs/searchqa/default.yaml
+    run_roots:
+      original_matrix: outputs/ablation_20260502_040604_unique48
+      batch_matrix: outputs/ablation_batch_searchqa_spreadsheet_20260503_153902_run
+    default_split: data/ablation_splits/searchqa/2-1-7_seed42
+    train: 400
+    val: 200
+    test: 1400
+    student_rollout:
+      function: skillopt/envs/searchqa/rollout.py::chat_student
+      max_completion_tokens:
+        first_turn: 512
+        refinement: 512
+      rationale: "Short-answer QA; sampled empties are low and not LiveMath-like."
+
+  spreadsheetbench:
+    config: configs/spreadsheetbench/default.yaml
+    run_roots:
+      original_matrix: outputs/ablation_20260502_040604_unique48
+      batch_matrix: outputs/ablation_batch_searchqa_spreadsheet_20260503_153902_run
+    default_split: data/ablation_splits/spreadsheetbench/2-1-7_seed42
+    train: 80
+    val: 40
+    test: 280
+    student_rollout:
+      function: skillopt/envs/spreadsheetbench/codegen_agent.py::run_multi
+      max_output_tokens: 16384
+      result_note: "results.jsonl stores execution fields, not a response field."
+
+  livemathematicianbench:
+    config: configs/livemathematicianbench/default.yaml
+    run_roots:
+      clean_matrix: outputs/ablation_livemath_alfworld_clean_20260503_155155_run
+    default_split: data/ablation_splits/livemathematicianbench/2-1-7_seed42
+    train: 35
+    val: 18
+    test: 124
+    student_rollout:
+      function: skillopt/envs/livemathematicianbench/rollout.py::chat_student
+      max_completion_tokens:
+        first_turn: 16384
+        refinement: 16384
+      timeout_seconds: 300
+      invalid_old_caps:
+        first_turn: 768
+        refinement: 512
+      invalid_archive: outputs/ablation_livemath_alfworld_clean_20260503_155155_run/archive_livemath_token768_20260504_022258
+      rationale: "GPT-5 reasoning consumed small budgets and produced many empty visible responses."
+
+  alfworld:
+    config: configs/alfworld/default.yaml
+    run_roots:
+      clean_matrix: outputs/ablation_livemath_alfworld_clean_20260503_155155_run
+    default_split: data/ablation_splits/alfworld/2-1-7_seed42
+    train: 39
+    val: 18
+    test: 134
+    student_rollout:
+      function: skillopt/envs/alfworld/rollout.py::chat_student
+      max_completion_tokens: 2048
+      timeout_seconds: 120
+      max_steps: 50
+      fallback_action: look
+      invalid_old_cap: 512
+      invalid_archives:
+        - outputs/ablation_livemath_alfworld_clean_20260503_155155_run/archive_alfworld_token512_20260504_021417
+        - outputs/ablation_livemath_alfworld_clean_20260503_155155_run/archive_alfworld_empty_action_20260504_025311
+        - outputs/ablation_livemath_alfworld_clean_20260503_155155_run/archive_alfworld_prefallback_20260504_025402
+        - outputs/ablation_livemath_alfworld_clean_20260503_155155_run/archive_alfworld_oom_partial_20260504_050517
+      concurrency_note: "Do not mix many ALFWorld runs into 24-way total concurrency; Ray OOM occurred. Prefer 1-2 ALFWorld runs at a time unless resources are clearly free."
+
+  docvqa:
+    config: configs/docvqa/default.yaml
+    run_roots:
+      matrix: outputs/ablation_docvqa_zisu10pct_20260505_run
+    default_split: /home/azureuser/zisu/SkillReflection/data/docvqa/splits
+    train: 1070
+    val: 535
+    test: 3744
+    data_note: "2026-05-05: use zisu-provided 5349-item DocVQA split directly; previous local 2-1-7_seed42 used the same item pool but a different train/val/test assignment and must not be used for final DocVQA reruns."
+    student_rollout:
+      function: skillopt/envs/docvqa/rollout.py::chat_student_messages
+      max_completion_tokens:
+        first_turn: 768
+        refinement: 512
+      rationale: "Short-answer VQA output; preserve current setting for alignment unless explicitly rerunning all affected DocVQA."
+
+splits:
+  tags:
+    1shot:
+      extra_overrides:
+        optimizer.slow_update_samples: 1
+    1-1-8: {}
+    2-1-7:
+      default: true
+    4-1-5: {}
+  paths:
+    searchqa:
+      1shot: data/ablation_splits/searchqa/1shot_seed42
+      1-1-8: data/ablation_splits/searchqa/1-1-8_seed42
+      2-1-7: data/ablation_splits/searchqa/2-1-7_seed42
+      4-1-5: data/ablation_splits/searchqa/4-1-5_seed42
+    spreadsheetbench:
+      1shot: data/ablation_splits/spreadsheetbench/1shot_seed42
+      1-1-8: data/ablation_splits/spreadsheetbench/1-1-8_seed42
+      2-1-7: data/ablation_splits/spreadsheetbench/2-1-7_seed42
+      4-1-5: data/ablation_splits/spreadsheetbench/4-1-5_seed42
+    livemathematicianbench:
+      1shot: data/ablation_splits/livemathematicianbench/1shot_seed42
+      1-1-8: data/ablation_splits/livemathematicianbench/1-1-8_seed42
+      2-1-7: data/ablation_splits/livemathematicianbench/2-1-7_seed42
+      4-1-5: data/ablation_splits/livemathematicianbench/4-1-5_seed42
+    alfworld:
+      1shot: data/ablation_splits/alfworld/1shot_seed42
+      1-1-8: data/ablation_splits/alfworld/1-1-8_seed42
+      2-1-7: data/ablation_splits/alfworld/2-1-7_seed42
+      4-1-5: data/ablation_splits/alfworld/4-1-5_seed42
+    docvqa:
+      1shot: data/ablation_splits/docvqa/1shot_seed42
+      1-1-8: data/ablation_splits/docvqa/1-1-8_seed42
+      2-1-7: /home/azureuser/zisu/SkillReflection/data/docvqa/splits
+      4-1-5: data/ablation_splits/docvqa/4-1-5_seed42
+
+groups:
+  default:
+    run_id: "DEFAULT-{benchmark}-5.5"
+    overrides: {}
+  split:
+    values: [1shot, 1-1-8, 4-1-5]
+    skip_default_2_1_7: true
+    override_template: "env.split_dir={split_path}"
+  batch:
+    values: [8, 24, 56, full]
+    default_value_reused: 40
+    full_values:
+      searchqa: 400
+      spreadsheetbench: 80
+      livemathematicianbench: 35
+      alfworld: 39
+      docvqa: 1070
+    fixed_overrides:
+      gradient.minibatch_size: 8
+  mbs:
+    values: [1, 2, 4, 16, 32]
+    default_value_reused: 8
+    override_template: "gradient.minibatch_size={value}"
+  lr:
+    values: [1, 2, 4, 8, 16]
+    fixed_overrides:
+      optimizer.lr_scheduler: constant
+      optimizer.min_learning_rate: 1
+    override_template: "optimizer.learning_rate={value}"
+  sched:
+    values: [constant, linear]
+    default_value_reused: cosine
+    override_template: "optimizer.lr_scheduler={value}"
+  slown:
+    values: [5, 10, 40]
+    default_value_reused: 20
+    override_template: "optimizer.slow_update_samples={value}"
+  mod:
+    values:
+      slow-only:
+        optimizer.use_slow_update: true
+        optimizer.use_meta_skill: false
+      meta-only:
+        optimizer.use_slow_update: false
+        optimizer.use_meta_skill: true
+      none:
+        optimizer.use_slow_update: false
+        optimizer.use_meta_skill: false
+    default_value_reused: slow-meta
+  longpair:
+    values: [changed, unchanged]
+    default_value_reused: mixed
+    override_template: "optimizer.longitudinal_pair_policy={value}"
+    note: "Only changes slow-update/meta-skill comparison examples; prompts and other settings remain unchanged."
+  lrctrl:
+    values:
+      autonomous:
+        optimizer.lr_control_mode: autonomous
+      full-rewrite:
+        optimizer.lr_control_mode: none
+        optimizer.skill_update_mode: full_rewrite_minibatch
+    default_value_reused: "fixed patch learning_rate=4"
+    note: "autonomous records lr_decision.json/lr_history.jsonl; full-rewrite removes LR/select/apply-edit and uses full skill candidates."
+  smodel:
+    values:
+      "5.4":
+        model.student: gpt-5.4-pro
+        model.student_azure_openai_endpoint: https://t2vgoaigpt4o3.openai.azure.com/
+        model.student_azure_openai_api_version: 2025-03-01-preview
+        model.student_azure_openai_auth_mode: azure_cli
+      "5.4-mini":
+        model.student: gpt-5.4-mini
+        model.student_azure_openai_endpoint: https://searchagent5.cognitiveservices.azure.com/
+        model.student_azure_openai_api_version: 2024-12-01-preview
+        model.student_azure_openai_auth_mode: azure_cli
+    default_value_reused: "5.5"
+
+validity_rules:
+  use_for_tables:
+    - "Only runs with summary.json in valid run roots."
+    - "Do not use archive, archived, MISALIGNED, SUPERSEDED, dryrun, smoke, or debug directories."
+    - "Do not use ALFWorld runs started before empty/missing-action fallback."
+    - "Do not use old LiveMath runs with 768/512 token caps."
+  rerun_rule: "Archive or remove invalid out_root before relaunch; never write a rerun into a polluted output directory."

@@ -1,0 +1,23 @@
+_base_: ../_base_/default.yaml
+
+model:
+  codex_exec_sandbox: danger-full-access
+
+train:
+  batch_size: 64
+  accumulation: 1
+
+env:
+  name: mathverse
+  skill_init: skillopt/envs/mathverse/skills/initial.md
+  split_dir: ""
+  data_root: data/MathVerse
+  problem_version: Text Lite
+  use_text_dominant_reference: false
+  max_turns: 1
+  workers: 16
+  limit: 0
+  image_detail: auto
+  judge_model: gpt-5.4
+  judge_max_completion_tokens: 256
+  judge_retries: 5

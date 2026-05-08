@@ -1,0 +1,36 @@
+_base_: ../_base_/default.yaml
+
+model:
+  reasoning_effort: medium
+
+train:
+  batch_size: 20
+  accumulation: 1
+
+gradient:
+  minibatch_size: 4
+  merge_batch_size: 8
+
+optimizer:
+  learning_rate: 4
+
+evaluation:
+  sel_env_num: 0
+  test_env_num: 0
+
+env:
+  name: swebench
+  skill_init: skillopt/envs/swebench/skills/initial.md
+  split_mode: ratio
+  split_ratio: "2:1:7"
+  split_dir: ""
+  data_path: ""
+  split_output_dir: ""
+  dataset_name: lite
+  hf_split: test
+  workers: 8
+  eval_workers: 8
+  step_limit: 50
+  cost_limit: 3.0
+  timeout_per_instance: 600
+  limit: 0

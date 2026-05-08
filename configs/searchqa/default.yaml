@@ -1,0 +1,32 @@
+_base_: ../_base_/default.yaml
+
+model:
+  reasoning_effort: medium
+
+train:
+  train_size: 400
+  batch_size: 40
+  accumulation: 1
+
+gradient:
+  minibatch_size: 8
+  merge_batch_size: 8
+
+optimizer:
+  learning_rate: 4
+
+evaluation:
+  sel_env_num: 0
+  test_env_num: 0
+
+env:
+  name: searchqa
+  skill_init: skillopt/envs/searchqa/skills/initial.md
+  split_mode: split_dir
+  split_ratio: "2:1:7"
+  split_dir: data/searchqa_split
+  data_path: ""
+  split_output_dir: ""
+  max_turns: 1
+  workers: 24
+  limit: 0
