@@ -24,7 +24,8 @@ from collections import defaultdict
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
-from skillopt.evaluation.gate import evaluate_gate
+from skillopt.evaluation.gate import GateResult, evaluate_gate
+from skillopt.evaluation.human_gate import HumanReviewProvider, HumanReviewRequest
 from skillopt.gradient.aggregate import merge_patches
 from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.clip import rank_and_select
@@ -45,6 +46,7 @@ from skillopt.optimizer.update_modes import (
     is_full_rewrite_minibatch_mode,
     normalize_update_mode,
     payload_label,
+    set_payload_items,
     short_item_summary,
 )
 from skillopt.model import (
@@ -492,6 +494,15 @@ def _format_step_buffer(buffer: list[dict]) -> str:
                     instruction = e.get("instruction", "")
                     parts.append(f'    {i}. [{kind}] "{title}" → "{instruction}"')
 
+        # Human reviewer feedback (when human-in-the-loop is enabled)
+        hf = entry.get("human_feedback") or {}
+        critique = str(hf.get("critique") or "").strip()
+        if critique:
+            hf_action = hf.get("action", "?")
+            parts.append(f"  Human reviewer ({hf_action}):")
+            for line in critique.splitlines():
+                parts.append(f"    {line}")
+
     return "\n".join(parts)
 
 
@@ -519,6 +530,22 @@ class ReflACTTrainer:
         adapter = self.adapter
         out_root = cfg["out_root"]
         os.makedirs(out_root, exist_ok=True)
+
+        # Human-in-the-loop provider (opt-in via human_feedback.enabled).
+        # Reviewer interacts via the WebUI "Human Review" tab or scripts/review.py.
+        human_provider: HumanReviewProvider | None = None
+        if cfg.get("human_feedback_enabled"):
+            human_provider = HumanReviewProvider(
+                run_dir=out_root,
+                timeout_seconds=int(cfg.get("human_feedback_timeout_seconds", 0) or 0),
+                on_timeout=cfg.get("human_feedback_on_timeout", "fallback_to_gate"),
+            )
+            print(
+                f"  [human_feedback] enabled "
+                f"timeout={human_provider.timeout_seconds}s "
+                f"on_timeout={human_provider.on_timeout} "
+                f"max_retries_per_step={int(cfg.get('human_feedback_max_retries_per_step', 3) or 0)}"
+            )
 
         # ── Adapter setup (one-time init) ────────────────────────────
         adapter.setup(cfg)
@@ -1257,37 +1284,260 @@ class ReflACTTrainer:
 
                 # ⑥ EVALUATE ───────────────────────────────────────────────
                 t_phase = time.time()
-                if cand_hash in sel_cache:
-                    cand_hard, cand_soft = sel_cache[cand_hash]
-                    print(
-                        f"    [6/6 EVALUATE] "
-                        f"cache hit {cand_hash}: hard={cand_hard:.4f}"
-                    )
-                else:
-                    sel_env, sel_n = _build_eval_env(
-                        split="valid_seen",
-                        env_num=cfg["sel_env_num"],
-                        seed=seed,
-                    )
-                    print(f"    [6/6 EVALUATE] selection items={sel_n}")
-                    sel_eval_dir = os.path.join(step_dir, "selection_eval")
-                    sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
-                    cand_hard, cand_soft = compute_score(sel_results)
-                    sel_cache[cand_hash] = (cand_hard, cand_soft)
-
-                step_rec["selection_hard"] = cand_hard
-                step_rec["selection_soft"] = cand_soft
-
-                gate = evaluate_gate(
-                    candidate_skill=candidate_skill,
-                    cand_hard=cand_hard,
-                    current_skill=current_skill,
-                    current_score=current_score,
-                    best_skill=best_skill,
-                    best_score=best_score,
-                    best_step=best_step,
-                    global_step=global_step,
+                max_human_retries = int(
+                    cfg.get("human_feedback_max_retries_per_step", 3) or 0
                 )
+                human_feedback_record: dict | None = None
+                retry_count = 0
+                final_gate: GateResult | None = None
+
+                while True:
+                    # Rollout candidate on selection split (cache-aware)
+                    if cand_hash in sel_cache:
+                        cand_hard, cand_soft = sel_cache[cand_hash]
+                        print(
+                            f"    [6/6 EVALUATE] "
+                            f"cache hit {cand_hash}: hard={cand_hard:.4f}"
+                        )
+                    else:
+                        sel_env, sel_n = _build_eval_env(
+                            split="valid_seen",
+                            env_num=cfg["sel_env_num"],
+                            seed=seed,
+                        )
+                        sel_eval_subdir = (
+                            "selection_eval"
+                            if retry_count == 0
+                            else f"selection_eval_retry_{retry_count}"
+                        )
+                        print(
+                            f"    [6/6 EVALUATE] selection items={sel_n} "
+                            f"({sel_eval_subdir})"
+                        )
+                        sel_eval_dir = os.path.join(step_dir, sel_eval_subdir)
+                        sel_results = adapter.rollout(
+                            sel_env, candidate_skill, sel_eval_dir
+                        )
+                        cand_hard, cand_soft = compute_score(sel_results)
+                        sel_cache[cand_hash] = (cand_hard, cand_soft)
+
+                    step_rec["selection_hard"] = cand_hard
+                    step_rec["selection_soft"] = cand_soft
+
+                    # Always compute the automated gate — used as fallback on
+                    # timeout and shown to the reviewer as a reference choice.
+                    auto_gate = evaluate_gate(
+                        candidate_skill=candidate_skill,
+                        cand_hard=cand_hard,
+                        current_skill=current_skill,
+                        current_score=current_score,
+                        best_skill=best_skill,
+                        best_score=best_score,
+                        best_step=best_step,
+                        global_step=global_step,
+                    )
+
+                    if human_provider is None:
+                        final_gate = auto_gate
+                        break
+
+                    # Build human review request
+                    ranked_edits_summary = [
+                        short_item_summary(item, update_mode)
+                        for item in ranked_items
+                        if isinstance(item, dict)
+                    ]
+                    req = HumanReviewRequest(
+                        step=global_step,
+                        current_skill=current_skill,
+                        candidate_skill=candidate_skill,
+                        current_score=current_score,
+                        candidate_score=cand_hard,
+                        best_score=best_score,
+                        best_step=best_step,
+                        ranked_edits=ranked_edits_summary,
+                        update_mode=update_mode,
+                        retry_attempt=retry_count,
+                        max_retries=max_human_retries,
+                    )
+                    print(
+                        f"    [human] awaiting review at "
+                        f"{out_root}/human_review/step_{global_step:04d}/"
+                    )
+                    response = human_provider.request_review(req)
+
+                    # Timeout — apply on_timeout policy
+                    if response is None:
+                        policy = human_provider.on_timeout
+                        if policy == "accept":
+                            is_new_best = cand_hard > best_score
+                            final_gate = GateResult(
+                                action="accept_new_best" if is_new_best else "accept",
+                                current_skill=candidate_skill,
+                                current_score=cand_hard,
+                                best_skill=(
+                                    candidate_skill if is_new_best else best_skill
+                                ),
+                                best_score=max(cand_hard, best_score),
+                                best_step=(
+                                    global_step if is_new_best else best_step
+                                ),
+                            )
+                            human_feedback_record = {"action": "timeout_accept"}
+                        elif policy == "reject":
+                            final_gate = GateResult(
+                                action="reject",
+                                current_skill=current_skill,
+                                current_score=current_score,
+                                best_skill=best_skill,
+                                best_score=best_score,
+                                best_step=best_step,
+                            )
+                            human_feedback_record = {"action": "timeout_reject"}
+                        else:
+                            final_gate = auto_gate
+                            human_feedback_record = {
+                                "action": "timeout_fallback_to_gate",
+                                "gate_action": auto_gate.action,
+                            }
+                        print(
+                            f"    [human] timeout after "
+                            f"{human_provider.timeout_seconds}s — policy={policy}"
+                        )
+                        break
+
+                    critique = response.critique
+
+                    # Retry — re-run the selection rollout (target model is
+                    # non-deterministic; gives the human a fresh sample).
+                    if response.action == "retry":
+                        if retry_count >= max_human_retries:
+                            print(
+                                f"    [human] retry budget ({max_human_retries}) "
+                                f"exhausted — treating as reject"
+                            )
+                            final_gate = GateResult(
+                                action="reject",
+                                current_skill=current_skill,
+                                current_score=current_score,
+                                best_skill=best_skill,
+                                best_score=best_score,
+                                best_step=best_step,
+                            )
+                            human_feedback_record = {
+                                "action": "reject_retry_budget_exhausted",
+                                "critique": critique,
+                                "retry_attempts": retry_count,
+                            }
+                            break
+                        sel_cache.pop(cand_hash, None)
+                        retry_count += 1
+                        print(
+                            f"    [human] retry #{retry_count}/"
+                            f"{max_human_retries} — re-running selection rollout"
+                        )
+                        continue
+
+                    # Cherry-pick — re-apply a subset of edits and re-evaluate
+                    if response.action == "apply_selected_edits":
+                        if update_mode != "patch":
+                            print(
+                                f"    [human] cherry-pick unsupported for "
+                                f"update_mode={update_mode!r} — re-prompting"
+                            )
+                            continue
+                        if retry_count >= max_human_retries:
+                            print(
+                                f"    [human] cherry-pick budget "
+                                f"({max_human_retries}) exhausted — treating as reject"
+                            )
+                            final_gate = GateResult(
+                                action="reject",
+                                current_skill=current_skill,
+                                current_score=current_score,
+                                best_skill=best_skill,
+                                best_score=best_score,
+                                best_step=best_step,
+                            )
+                            human_feedback_record = {
+                                "action": "reject_cherry_pick_budget_exhausted",
+                                "critique": critique,
+                                "retry_attempts": retry_count,
+                            }
+                            break
+                        indices = response.selected_edit_indices or []
+                        trimmed_items = [
+                            ranked_items[i]
+                            for i in indices
+                            if 0 <= i < len(ranked_items)
+                        ]
+                        if not trimmed_items:
+                            print(
+                                "    [human] no edits selected — re-prompting"
+                            )
+                            continue
+                        trimmed_patch = dict(ranked_patch)
+                        set_payload_items(trimmed_patch, trimmed_items, update_mode)
+                        candidate_skill, apply_report = apply_patch_with_report(
+                            current_skill, trimmed_patch
+                        )
+                        cand_hash = skill_hash(candidate_skill)
+                        sel_cache.pop(cand_hash, None)
+                        retry_count += 1
+                        cherry_path = os.path.join(
+                            step_dir,
+                            f"candidate_skill_cherry_pick_{retry_count}.md",
+                        )
+                        with open(cherry_path, "w") as f:
+                            f.write(candidate_skill)
+                        print(
+                            f"    [human] cherry-pick #{retry_count}: "
+                            f"applied {len(trimmed_items)}/{len(ranked_items)} "
+                            f"edits — re-evaluating"
+                        )
+                        continue
+
+                    # accept / accept_new_best / reject (with optional direct edit)
+                    final_skill_text = response.edited_skill or candidate_skill
+                    if response.action == "accept_new_best":
+                        final_gate = GateResult(
+                            action="accept_new_best",
+                            current_skill=final_skill_text,
+                            current_score=cand_hard,
+                            best_skill=final_skill_text,
+                            best_score=cand_hard,
+                            best_step=global_step,
+                        )
+                    elif response.action == "accept":
+                        final_gate = GateResult(
+                            action="accept",
+                            current_skill=final_skill_text,
+                            current_score=cand_hard,
+                            best_skill=best_skill,
+                            best_score=best_score,
+                            best_step=best_step,
+                        )
+                    else:  # reject
+                        final_gate = GateResult(
+                            action="reject",
+                            current_skill=current_skill,
+                            current_score=current_score,
+                            best_skill=best_skill,
+                            best_score=best_score,
+                            best_step=best_step,
+                        )
+                    human_feedback_record = {
+                        "action": response.action,
+                        "critique": critique,
+                        "edited_skill": bool(response.edited_skill),
+                        "retry_attempts": retry_count,
+                    }
+                    break
+
+                gate = final_gate  # type: ignore[assignment]
+                if human_feedback_record is not None:
+                    step_rec["human_feedback"] = human_feedback_record
+
                 step_rec["action"] = gate.action
                 prev_current = current_score
                 prev_best = best_score
@@ -1301,19 +1551,20 @@ class ReflACTTrainer:
                 if gate.action == "accept_new_best":
                     best_origin = current_origin
 
+                hf_tag = " [human]" if human_feedback_record else ""
                 if gate.action == "accept_new_best":
                     print(
-                        f"    [6/6 EVALUATE] ACCEPT (new best) "
+                        f"    [6/6 EVALUATE]{hf_tag} ACCEPT (new best) "
                         f"hard={cand_hard:.4f} > prev best {prev_best:.4f}"
                     )
                 elif gate.action == "accept":
                     print(
-                        f"    [6/6 EVALUATE] ACCEPT "
+                        f"    [6/6 EVALUATE]{hf_tag} ACCEPT "
                         f"hard={cand_hard:.4f} > current={prev_current:.4f}"
                     )
                 else:
                     print(
-                        f"    [6/6 EVALUATE] REJECT "
+                        f"    [6/6 EVALUATE]{hf_tag} REJECT "
                         f"hard={cand_hard:.4f} <= current={current_score:.4f}"
                     )
 
@@ -1345,6 +1596,9 @@ class ReflACTTrainer:
                     buf_entry["score_before"] = current_score
                     buf_entry["score_after"] = cand_hard
                     buf_entry["rejected_edits"] = rejected_edits
+
+                if human_feedback_record is not None:
+                    buf_entry["human_feedback"] = human_feedback_record
 
                 step_buffer.append(buf_entry)
 

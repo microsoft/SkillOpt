@@ -4,6 +4,8 @@ __pycache__/
 build/
 dist/
 site/
+.mypy_cache/
+.env.example
 
 data/
 outputs/

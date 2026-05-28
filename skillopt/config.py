@@ -24,6 +24,7 @@ import yaml
 
 _STRUCTURED_SECTIONS = frozenset({
     "model", "train", "gradient", "optimizer", "evaluation", "env",
+    "human_feedback",
 })
 
 # ── Structured → flat key mapping ────────────────────────────────────────
@@ -107,6 +108,10 @@ _FLATTEN_MAP: dict[str, str] = {
     "env.name": "env",
     "env.skill_init": "skill_init",
     "env.out_root": "out_root",
+    "human_feedback.enabled": "human_feedback_enabled",
+    "human_feedback.timeout_seconds": "human_feedback_timeout_seconds",
+    "human_feedback.on_timeout": "human_feedback_on_timeout",
+    "human_feedback.max_retries_per_step": "human_feedback_max_retries_per_step",
 }
 
 

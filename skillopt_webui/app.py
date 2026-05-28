@@ -322,6 +322,93 @@ class TrainingManager:
 manager = TrainingManager()
 
 
+# ─── Human Review helpers ───────────────────────────────────────────────────
+
+def _outputs_root() -> Path:
+    return PROJECT_ROOT / "outputs"
+
+
+def discover_runs() -> list[str]:
+    """Return run directories (relative to PROJECT_ROOT) that contain a
+    ``human_review/`` folder OR look like an active SkillOpt run."""
+    root = _outputs_root()
+    if not root.exists():
+        return []
+    runs: list[str] = []
+    for run_dir in sorted(root.iterdir(), reverse=True):
+        if not run_dir.is_dir():
+            continue
+        # Either has a human_review subdir, or has the standard run layout
+        if (run_dir / "human_review").exists() or (run_dir / "history.json").exists() or (run_dir / "skills").exists():
+            runs.append(str(run_dir.relative_to(PROJECT_ROOT)).replace("\\", "/"))
+    return runs
+
+
+def _find_pending_review(run_rel: str) -> tuple[Path | None, dict | None]:
+    """Find the oldest pending_review.json under ``{run}/human_review/`` that
+    does not yet have a paired response file. Returns (path, parsed_json)."""
+    if not run_rel:
+        return None, None
+    run_dir = PROJECT_ROOT / run_rel
+    review_root = run_dir / "human_review"
+    if not review_root.exists():
+        return None, None
+    candidates: list[tuple[float, Path]] = []
+    for step_dir in review_root.iterdir():
+        if not step_dir.is_dir():
+            continue
+        pending = step_dir / "pending_review.json"
+        response = step_dir / "pending_review_response.json"
+        if pending.exists() and not response.exists():
+            candidates.append((pending.stat().st_mtime, pending))
+    if not candidates:
+        return None, None
+    candidates.sort()
+    path = candidates[0][1]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return path, json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return path, {"_error": f"failed to read {path}: {exc}"}
+
+
+def _format_edit_choices(ranked_edits: list[dict]) -> list[tuple[str, int]]:
+    """Build (label, index) pairs for a CheckboxGroup over ranked edits."""
+    choices = []
+    for i, e in enumerate(ranked_edits):
+        if not isinstance(e, dict):
+            continue
+        if "op" in e:  # patch-mode edit
+            op = e.get("op", "?")
+            target = (e.get("target") or "")[:60]
+            content = (e.get("content") or "")[:80]
+            label = f"[{i}] {op}"
+            if target:
+                label += f' target="{target}"'
+            if content:
+                label += f' content="{content}"'
+        elif "title" in e and "instruction" in e:  # rewrite-mode suggestion
+            label = f'[{i}] {e.get("type", "?")}: {e.get("title", "")[:60]}'
+        else:  # full-rewrite candidate
+            label = f'[{i}] {e.get("title", "")[:60]} ({e.get("source_type", "")})'
+        choices.append((label, i))
+    return choices
+
+
+def _write_response(run_rel: str, step: int, payload: dict) -> str:
+    """Write the response file next to the matching pending_review.json."""
+    if not run_rel or step is None:
+        return "⚠️ No pending review selected."
+    resp_path = (
+        PROJECT_ROOT / run_rel / "human_review" / f"step_{int(step):04d}"
+        / "pending_review_response.json"
+    )
+    resp_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(resp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return f"✅ Submitted {payload.get('action', '?')} for step {step}."
+
+
 # ─── Pipeline Stage HTML ────────────────────────────────────────────────────
 
 STAGES = ["Rollout", "Reflect", "Aggregate", "Select", "Update", "Gate"]
@@ -351,6 +438,155 @@ def render_pipeline_html(active_stage: str = "") -> str:
     html += '</div>'
     html += '<style>@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}</style>'
     return html
+
+
+# ─── Human-review helpers ───────────────────────────────────────────────────
+
+def _discover_runs() -> list[str]:
+    """Find run directories under outputs/ that contain a human_review folder."""
+    candidates = sorted(
+        glob.glob(str(PROJECT_ROOT / "outputs" / "*")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    runs = []
+    for p in candidates:
+        if os.path.isdir(p):
+            runs.append(os.path.relpath(p, PROJECT_ROOT))
+    return runs
+
+
+def _find_pending_review(run_dir: str) -> tuple[str | None, dict | None]:
+    """Return (request_path, parsed_request) for the latest pending review."""
+    if not run_dir:
+        return None, None
+    abs_run = run_dir if os.path.isabs(run_dir) else str(PROJECT_ROOT / run_dir)
+    pattern = os.path.join(abs_run, "human_review", "step_*", "pending_review.json")
+    matches = sorted(glob.glob(pattern), key=os.path.getmtime)
+    if not matches:
+        return None, None
+    latest = matches[-1]
+    try:
+        with open(latest, encoding="utf-8") as f:
+            return latest, json.load(f)
+    except Exception:
+        return latest, None
+
+
+def _edit_label(idx: int, edit: dict) -> str:
+    op = edit.get("op") or edit.get("type") or "?"
+    target = (edit.get("target") or "")[:50]
+    content = (
+        edit.get("content") or edit.get("instruction") or edit.get("title") or ""
+    )[:80]
+    tgt_part = f' target="{target}"' if target else ""
+    return f"[{idx}] {op}{tgt_part} -> {content!r}"
+
+
+def _render_review_status(req_path: str | None, req: dict | None) -> str:
+    if not req_path:
+        return (
+            '<div style="padding:12px;background:#1e293b;border-radius:8px;'
+            'color:#94a3b8;border:1px solid #334155;">'
+            "No pending review. The panel polls every 2 seconds — when the "
+            "trainer reaches the gate at the next step, the request will "
+            "appear here.</div>"
+        )
+    if not req:
+        return (
+            f'<div style="padding:12px;background:#7f1d1d;border-radius:8px;'
+            f'color:#fecaca;border:1px solid #b91c1c;">'
+            f"Found request at {req_path} but failed to parse JSON.</div>"
+        )
+    step = req.get("step", "?")
+    cs = req.get("candidate_score", 0.0)
+    curs = req.get("current_score", 0.0)
+    bs = req.get("best_score", 0.0)
+    bstep = req.get("best_step", 0)
+    arrow = "↑" if cs > curs else ("=" if cs == curs else "↓")
+    arrow_color = "#22c55e" if cs > curs else ("#94a3b8" if cs == curs else "#ef4444")
+    retry = req.get("retry_attempt", 0)
+    max_r = req.get("max_retries", 0)
+    retry_str = (
+        f' &nbsp;|&nbsp; <span style="color:#fbbf24;">retry {retry}/{max_r}</span>'
+        if retry > 0
+        else ""
+    )
+    return (
+        f'<div style="padding:14px;background:#1e293b;border-radius:8px;'
+        f'color:#e2e8f0;border:1px solid #6366f1;font-size:1rem;">'
+        f"<b>Awaiting review — step {step}</b>{retry_str}<br>"
+        f"<span style='color:#94a3b8;'>current</span> {curs:.4f} "
+        f"<span style='color:{arrow_color};font-weight:700;'>{arrow}</span> "
+        f"<span style='color:#e2e8f0;'>candidate</span> "
+        f"<b style='color:{arrow_color};'>{cs:.4f}</b> &nbsp;|&nbsp; "
+        f"<span style='color:#94a3b8;'>best</span> {bs:.4f} (step {bstep})"
+        f"</div>"
+    )
+
+
+def _refresh_review(run_dir: str):
+    """Read pending review for the run and return tuple of component values."""
+    req_path, req = _find_pending_review(run_dir)
+    status_html = _render_review_status(req_path, req)
+    if not req:
+        return (
+            status_html, "", "", gr.update(choices=[], value=[]),
+            "", req_path or "",
+        )
+    current_skill = req.get("current_skill", "")
+    candidate_skill = req.get("candidate_skill", "")
+    edits = req.get("ranked_edits") or []
+    labels = [_edit_label(i, e) for i, e in enumerate(edits)]
+    return (
+        status_html,
+        current_skill,
+        candidate_skill,
+        gr.update(choices=labels, value=labels),  # all selected by default
+        "",  # clear critique
+        req_path or "",
+    )
+
+
+def _submit_review(
+    action: str,
+    run_dir: str,
+    req_path: str,
+    edited_skill: str,
+    selected_labels: list[str],
+    critique: str,
+) -> str:
+    """Write pending_review_response.json. Returns status message for the UI."""
+    if not req_path:
+        return "❌ No pending review to respond to."
+    if not os.path.exists(req_path):
+        return f"❌ Request file vanished: {req_path}"
+    try:
+        with open(req_path, encoding="utf-8") as f:
+            req = json.load(f)
+    except Exception as exc:
+        return f"❌ Could not re-read request: {exc}"
+
+    response: dict = {"action": action, "critique": critique or ""}
+
+    # Only attach edited_skill if user actually changed it
+    if edited_skill and edited_skill != req.get("candidate_skill", ""):
+        response["edited_skill"] = edited_skill
+
+    if action == "apply_selected_edits":
+        edits = req.get("ranked_edits") or []
+        all_labels = [_edit_label(i, e) for i, e in enumerate(edits)]
+        indices = [i for i, lbl in enumerate(all_labels) if lbl in (selected_labels or [])]
+        response["selected_edit_indices"] = indices
+
+    resp_path = req_path.replace("pending_review.json", "pending_review_response.json")
+    try:
+        with open(resp_path, "w", encoding="utf-8") as f:
+            json.dump(response, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return f"❌ Failed to write response: {exc}"
+
+    return f"✅ Sent {action!r} → trainer will resume in ~1s. ({resp_path})"
 
 
 # ─── Gradio UI ──────────────────────────────────────────────────────────────
@@ -401,6 +637,10 @@ def build_ui():
                                                       label="Meta Skill (cross-epoch optimizer memory)")
                         use_gate = gr.Checkbox(value=True,
                                                 label="Gate (validation-based accept/reject)")
+                        human_feedback_enabled = gr.Checkbox(
+                            value=False,
+                            label="Human Feedback (pause at each gate for review in the Human Review tab)",
+                        )
 
                         with gr.Row():
                             launch_btn = gr.Button("🚀 Launch Training",
@@ -420,7 +660,7 @@ def build_ui():
                 config_dropdown.change(on_config_change, config_dropdown, config_preview)
 
                 def on_launch(cfg_path, lr_val, sched, epochs, batch, workers,
-                              slow_update, meta_skill, gate):
+                              slow_update, meta_skill, gate, human_fb):
                     overrides = {
                         "optimizer.learning_rate": lr_val,
                         "optimizer.lr_scheduler": sched,
@@ -430,13 +670,15 @@ def build_ui():
                         "optimizer.use_slow_update": slow_update,
                         "optimizer.use_meta_skill": meta_skill,
                         "evaluation.use_gate": gate,
+                        "human_feedback.enabled": human_fb,
                     }
                     return manager.start(cfg_path, overrides)
 
                 launch_btn.click(
                     on_launch,
                     [config_dropdown, lr, scheduler, num_epochs, batch_size,
-                     analyst_workers, use_slow_update, use_meta_skill, use_gate],
+                     analyst_workers, use_slow_update, use_meta_skill, use_gate,
+                     human_feedback_enabled],
                     status_text,
                 )
                 stop_btn.click(lambda: manager.stop(), outputs=status_text)
@@ -525,6 +767,111 @@ def build_ui():
                     return rows
 
                 scan_btn.click(scan_outputs, output_dir, results_table)
+
+            # ── Tab 4: Human Review ──────────────────────────────────
+            with gr.Tab("🧑‍⚖️ Human Review"):
+                gr.Markdown(
+                    "### Review pending skill candidates from a paused training run\n"
+                    "When training runs with `human_feedback.enabled=true`, the "
+                    "trainer pauses at each gate and writes a request file here. "
+                    "Pick the run below, then choose an action. The panel "
+                    "auto-refreshes every 2 seconds."
+                )
+
+                with gr.Row():
+                    review_run_dir = gr.Dropdown(
+                        choices=_discover_runs(),
+                        label="Run directory (most recent first)",
+                        value=(_discover_runs() or [""])[0],
+                        allow_custom_value=True,
+                        scale=4,
+                    )
+                    review_rescan_btn = gr.Button("🔄 Rescan runs", scale=1)
+
+                review_status = gr.HTML(value=_render_review_status(None, None))
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        review_current = gr.Code(
+                            label="Current skill (read-only)",
+                            language="markdown",
+                            interactive=False,
+                            lines=25,
+                        )
+                    with gr.Column(scale=1):
+                        review_candidate = gr.Code(
+                            label="Candidate skill (editable — your edits will be applied if you Accept)",
+                            language="markdown",
+                            interactive=True,
+                            lines=25,
+                        )
+
+                review_edits = gr.CheckboxGroup(
+                    choices=[],
+                    label="Ranked edits — uncheck any you want to drop, then click 'Apply selected edits & re-evaluate'",
+                )
+
+                review_critique = gr.Textbox(
+                    label="Critique (free-form; flows into the next step's optimizer prompt)",
+                    placeholder="e.g. 'The replace target was too broad — narrow it to just the action-selection paragraph.'",
+                    lines=4,
+                )
+
+                with gr.Row():
+                    btn_accept = gr.Button("✅ Accept", variant="primary")
+                    btn_accept_new_best = gr.Button("🏆 Accept as new best", variant="primary")
+                    btn_reject = gr.Button("❌ Reject", variant="stop")
+                    btn_apply_selected = gr.Button("✂️ Apply selected edits & re-evaluate")
+                    btn_retry = gr.Button("🔁 Retry")
+
+                review_result = gr.Textbox(label="Last action", interactive=False)
+
+                # Hidden state holding the current pending request path
+                req_path_state = gr.Textbox(value="", visible=False)
+
+                review_outputs = [
+                    review_status, review_current, review_candidate,
+                    review_edits, review_critique, req_path_state,
+                ]
+
+                # Manual refresh on run change
+                review_run_dir.change(
+                    _refresh_review, review_run_dir, review_outputs,
+                )
+                review_rescan_btn.click(
+                    lambda: gr.update(choices=_discover_runs()),
+                    outputs=review_run_dir,
+                )
+
+                # Auto-poll every 2 seconds
+                review_timer = gr.Timer(2.0)
+                review_timer.tick(_refresh_review, review_run_dir, review_outputs)
+
+                # Wire buttons — each captures the action name and reuses the same handler
+                review_inputs = [
+                    review_run_dir, req_path_state, review_candidate,
+                    review_edits, review_critique,
+                ]
+                btn_accept.click(
+                    lambda *a: _submit_review("accept", *a),
+                    review_inputs, review_result,
+                )
+                btn_accept_new_best.click(
+                    lambda *a: _submit_review("accept_new_best", *a),
+                    review_inputs, review_result,
+                )
+                btn_reject.click(
+                    lambda *a: _submit_review("reject", *a),
+                    review_inputs, review_result,
+                )
+                btn_apply_selected.click(
+                    lambda *a: _submit_review("apply_selected_edits", *a),
+                    review_inputs, review_result,
+                )
+                btn_retry.click(
+                    lambda *a: _submit_review("retry", *a),
+                    review_inputs, review_result,
+                )
 
     return app
 

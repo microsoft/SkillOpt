@@ -86,3 +86,9 @@ env:
   split_output_dir: ""
   exec_timeout: 120      # per target model/code-agent call timeout in seconds
   out_root: ""
+
+human_feedback:
+  enabled: false                  # opt-in; when true, trainer pauses at each gate for human review
+  timeout_seconds: 0              # 0 = wait forever; otherwise fall through after this many seconds
+  on_timeout: fallback_to_gate    # fallback_to_gate | accept | reject — applied when timeout_seconds elapses
+  max_retries_per_step: 3         # cap on cherry-pick + retry rounds within a single step
