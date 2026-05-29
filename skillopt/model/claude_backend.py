@@ -23,6 +23,14 @@ OPTIMIZER_DEPLOYMENT = os.environ.get("OPTIMIZER_DEPLOYMENT", "claude-sonnet-4-6
 TARGET_DEPLOYMENT = os.environ.get("TARGET_DEPLOYMENT", "claude-sonnet-4-6")
 REASONING_EFFORT: str | None = None
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+_CLAUDE_CLI_THINKING_VALUES = {"enabled", "adaptive", "disabled"}
+_OPENAI_TO_CLAUDE_CLI_THINKING = {
+    "low": "disabled",
+    "medium": "adaptive",
+    "high": "enabled",
+    "xhigh": "enabled",
+    "max": "enabled",
+}
 
 
 def _parse_data_uri(url: str) -> tuple[bytes, str]:
@@ -209,9 +217,23 @@ def _normalize_reasoning_effort(effort: str | None) -> str | None:
     normalized = str(effort or "").strip().lower()
     if not normalized or normalized == "off":
         return None
-    if normalized in _VALID_EFFORTS:
+    if normalized in _VALID_EFFORTS or normalized in _CLAUDE_CLI_THINKING_VALUES:
         return normalized
     return None
+
+
+def _claude_cli_thinking_value(effort: str | None) -> str | None:
+    """Map a normalized effort to a value accepted by ``claude --thinking``.
+
+    The Claude CLI accepts only ``enabled``, ``adaptive``, or ``disabled`` for
+    its ``--thinking`` flag, so OpenAI-style effort levels are translated here.
+    Returns ``None`` when no thinking flag should be passed.
+    """
+    if not effort:
+        return None
+    if effort in _CLAUDE_CLI_THINKING_VALUES:
+        return effort
+    return _OPENAI_TO_CLAUDE_CLI_THINKING.get(effort)
 
 
 def _assistant_message_schema() -> dict[str, Any]:
@@ -243,6 +265,7 @@ def _assistant_message_schema_wrapper() -> str:
 
 def _run_claude_print(*, system: str, prompt: str, model: str, tools: list[dict[str, Any]] | None, tool_choice: str | dict[str, Any] | None, return_message: bool, timeout: int | None, attachments: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, Any], dict[str, int]]:
     effort = _normalize_reasoning_effort(REASONING_EFFORT)
+    thinking_value = _claude_cli_thinking_value(effort)
     with tempfile.TemporaryDirectory(prefix="skillopt_claude_") as temp_dir:
         copied_attachments = _copy_attachments_to_temp(attachments or [], temp_dir)
         prompt_for_cli = _append_attachment_instructions(prompt, copied_attachments)
@@ -253,8 +276,8 @@ def _run_claude_print(*, system: str, prompt: str, model: str, tools: list[dict[
             cmd.extend(["--setting-sources", CLAUDE_SETTING_SOURCES])
         if system:
             cmd.extend(["--append-system-prompt", system])
-        if effort:
-            cmd.extend(["--thinking", effort])
+        if thinking_value:
+            cmd.extend(["--thinking", thinking_value])
         structured_output = bool(return_message)
         if structured_output:
             cmd.extend(["--schema", _assistant_message_schema_wrapper()])
