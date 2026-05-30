@@ -44,6 +44,18 @@ model:
   target_azure_openai_ad_scope: "https://cognitiveservices.azure.com/.default"
   target_azure_openai_managed_identity_client_id: ""
 
+  # MiniMax backend settings (minimax_chat target)
+  minimax_base_url: ""          # https://api.minimax.io/v1 if blank
+  minimax_api_key: ""
+  minimax_model: "MiniMax-M2.7"
+  minimax_temperature: "0.7"
+  minimax_max_tokens: "8000"
+  minimax_enable_thinking: "false"
+  optimizer_minimax_base_url: ""    # per-role override
+  target_minimax_base_url: ""       # per-role override
+  optimizer_minimax_api_key: ""
+  target_minimax_api_key: ""
+
 train:
   num_epochs: 4
   train_size: 0          # 0 = derive from dataset split when available
