@@ -1,5 +1,44 @@
 # CLI Reference
 
+## Gitmoot Optimizer
+
+```bash
+gitmoot-skillopt optimize \
+  --training-package training.json \
+  --artifact-root ~/.gitmoot/evals/blobs \
+  --out-root outputs/run-1 \
+  --candidate-output outputs/run-1/candidate.json
+```
+
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `--training-package` | Gitmoot SkillOpt training package from `gitmoot skillopt export` |
+| `--artifact-root` | Gitmoot blob root, usually `~/.gitmoot/evals/blobs` |
+| `--out-root` | Optimizer output directory |
+| `--candidate-output` | Candidate package JSON path to import back into Gitmoot |
+| `--dry-run` | Emit deterministic fixture output without trainer/model calls |
+
+### Contract Smoke
+
+```bash
+gitmoot-skillopt optimize \
+  --training-package examples/gitmoot/mvp-fixture/training.json \
+  --artifact-root examples/gitmoot/mvp-fixture/blobs \
+  --out-root /tmp/gitmoot-skillopt-smoke \
+  --candidate-output /tmp/gitmoot-skillopt-smoke/candidate.json \
+  --dry-run
+```
+
+Import the generated candidate with:
+
+```bash
+gitmoot skillopt import \
+  --file /tmp/gitmoot-skillopt-smoke/candidate.json \
+  --artifact-dir /tmp/gitmoot-skillopt-smoke/artifacts
+```
+
 ## Training
 
 ```bash

@@ -27,9 +27,11 @@ gitmoot-skillopt optimize \
   --candidate-output outputs/run-1/candidate.json
 ```
 
-The `optimize` command shape is scaffolded first; Gitmoot package parsing,
-artifact resolution, adapter execution, and candidate emission are implemented
-task by task in `GOAL-GITMOOT-SKILLOPT-MVP.md`.
+For the full Gitmoot export, optimize, import, review, and promote/reject
+workflow, see
+[`docs/guide/gitmoot-mvp-workflow.md`](docs/guide/gitmoot-mvp-workflow.md).
+For a no-network contract smoke, run the fixture command in that guide with
+`--dry-run`.
 
 ## Upstream SkillOpt
 

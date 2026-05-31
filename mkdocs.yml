@@ -42,6 +42,7 @@ nav:
   - Getting Started:
     - Installation: guide/installation.md
     - First Experiment: guide/first-experiment.md
+    - Gitmoot MVP Workflow: guide/gitmoot-mvp-workflow.md
     - Configuration: guide/configuration.md
   - Core Concepts:
     - Training Loop: guide/training-loop.md

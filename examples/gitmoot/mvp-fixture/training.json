@@ -1,0 +1,117 @@
+{
+  "artifacts": [
+    {
+      "driver": "text",
+      "hash": "sha256:66d9267e4e2c9bca17821a5e8fe13f75fd2f69b22f6241efd0d95635b12036f7",
+      "id": "baseline",
+      "media_type": "text/markdown",
+      "size_bytes": 71
+    },
+    {
+      "driver": "text",
+      "hash": "sha256:bc31fe229466d0df6d23d314d4865dd232eea4ff9546137b6060be1235318287",
+      "id": "candidate",
+      "media_type": "text/markdown",
+      "size_bytes": 109
+    }
+  ],
+  "contract_version": 1,
+  "eval_run": {
+    "id": "fixture-run-1",
+    "metadata": {
+      "metric": "preference",
+      "source": "tracked-fixture"
+    },
+    "state": "completed",
+    "target_repo": "jerryfane/gitmoot-fixture",
+    "template_id": "planner",
+    "template_version_id": "planner@v1"
+  },
+  "evaluator_config": {
+    "mode": "fixture"
+  },
+  "feedback_events": [
+    {
+      "choice": "b",
+      "created_at": "2026-05-31T00:00:00Z",
+      "item_id": "train-1",
+      "reasoning": "The candidate explains ordered tasks and verification better.",
+      "reviewer": "fixture-reviewer",
+      "run_id": "fixture-run-1",
+      "source": "markdown",
+      "source_url": ""
+    }
+  ],
+  "items": [
+    {
+      "baseline_artifact_id": "baseline",
+      "candidate_artifact_id": "candidate",
+      "id": "train-1",
+      "metadata": {
+        "expected_hard": true,
+        "mock_response": "Candidate gives an ordered plan with checks.",
+        "split": "train"
+      },
+      "title": "Fixture train item"
+    },
+    {
+      "baseline_artifact_id": "baseline",
+      "candidate_artifact_id": "candidate",
+      "id": "val-1",
+      "metadata": {
+        "expected_hard": false,
+        "expected_soft": 0.25,
+        "mock_response": "Candidate is clearer but still needs tighter wording.",
+        "split": "val"
+      },
+      "title": "Fixture validation item"
+    },
+    {
+      "baseline_artifact_id": "baseline",
+      "candidate_artifact_id": "candidate",
+      "id": "test-1",
+      "metadata": {
+        "expected_hard": true,
+        "mock_response": "Candidate preserves the review gate.",
+        "split": "test"
+      },
+      "title": "Fixture test item"
+    }
+  ],
+  "kind": "gitmoot-skillopt-training-package",
+  "template": {
+    "content": "---\nid: planner\nname: Planner\ndescription: Plans implementation work.\nkind: agent-template\nversion: 1\ncapabilities:\n  - ask\nruntime_compatibility:\n  - codex\n  - claude\ntags:\n  - planning\ninputs:\n  - request\noutputs:\n  - plan\n---\n# Planner\n\nCreate concise task-by-task implementation plans with verification steps and human review gates.\n",
+    "content_hash": "sha256:01052aa735b47ec53434d812d0c97130fcae8386f2658e0c5aa64a43f396dedd",
+    "id": "planner",
+    "metadata": {
+      "capabilities": [
+        "ask"
+      ],
+      "description": "Plans implementation work.",
+      "id": "planner",
+      "inputs": [
+        "request"
+      ],
+      "kind": "agent-template",
+      "name": "Planner",
+      "outputs": [
+        "plan"
+      ],
+      "runtime_compatibility": [
+        "codex",
+        "claude"
+      ],
+      "tags": [
+        "planning"
+      ],
+      "version": 1
+    },
+    "resolved_commit": "fixture",
+    "source_path": "skills/gitmoot/agent-templates/planner.md",
+    "source_ref": "main",
+    "source_repo": "jerryfane/gitmoot",
+    "version_id": "planner@v1",
+    "version_number": 1,
+    "version_state": "current"
+  }
+}
