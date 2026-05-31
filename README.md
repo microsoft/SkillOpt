@@ -1,3 +1,38 @@
+# Gitmoot-SkillOpt
+
+Gitmoot-SkillOpt is the external optimizer layer for
+[Gitmoot](https://github.com/jerryfane/gitmoot). It consumes Gitmoot SkillOpt
+training packages, runs SkillOpt-style optimization over Gitmoot agent-template
+Markdown, and emits candidate packages that Gitmoot imports as pending template
+versions.
+
+Gitmoot remains the registry and review layer: it owns template versions,
+artifact storage, feedback collectors, and the explicit human
+promote/reject decision. Gitmoot-SkillOpt proposes candidates; Gitmoot imports,
+reviews, and promotes or rejects them.
+
+This repository is forked from
+[microsoft/SkillOpt](https://github.com/microsoft/SkillOpt) and preserves the
+upstream SkillOpt trainer, benchmark adapters, scripts, and MIT license while
+adding Gitmoot-specific package I/O and CLI glue.
+
+Initial command surface:
+
+```bash
+gitmoot-skillopt --help
+gitmoot-skillopt optimize \
+  --training-package training.json \
+  --artifact-root ~/.gitmoot/evals/blobs \
+  --out-root outputs/run-1 \
+  --candidate-output outputs/run-1/candidate.json
+```
+
+The `optimize` command shape is scaffolded first; Gitmoot package parsing,
+artifact resolution, adapter execution, and candidate emission are implemented
+task by task in `GOAL-GITMOOT-SKILLOPT-MVP.md`.
+
+## Upstream SkillOpt
+
 # SkillOpt: Executive Strategy for Self-Evolving Agent Skills
 
 *Train agent skills like you train neural networks — with epochs, (mini-)batchsize, learning rates, and validation gates — but without touching model weights.*

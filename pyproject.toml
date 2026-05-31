@@ -3,16 +3,17 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "skillopt"
+name = "gitmoot-skillopt"
 version = "0.1.0"
-description = "SkillOpt: Agentic Skill Optimization via Reflective Training Loops"
+description = "Gitmoot-SkillOpt: optimize Gitmoot agent templates with SkillOpt"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
     {name = "SkillOpt Team"},
+    {name = "Gitmoot Contributors"},
 ]
-keywords = ["agent", "prompt-optimization", "skill-learning", "LLM", "agentic"]
+keywords = ["agent", "prompt-optimization", "skill-learning", "LLM", "agentic", "gitmoot"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -54,17 +55,19 @@ all = [
 ]
 
 [project.scripts]
+gitmoot-skillopt = "gitmoot_skillopt.cli:main"
 skillopt-train = "scripts.train:main"
 skillopt-eval = "scripts.eval_only:main"
 
 [project.urls]
-Homepage = "https://github.com/microsoft/SkillOpt"
-Documentation = "https://microsoft.github.io/SkillOpt"
-Repository = "https://github.com/microsoft/SkillOpt"
-Issues = "https://github.com/microsoft/SkillOpt/issues"
+Homepage = "https://github.com/jerryfane/gitmoot-skillopt"
+Documentation = "https://github.com/jerryfane/gitmoot-skillopt"
+Repository = "https://github.com/jerryfane/gitmoot-skillopt"
+Issues = "https://github.com/jerryfane/gitmoot-skillopt/issues"
+Upstream = "https://github.com/microsoft/SkillOpt"
 
 [tool.setuptools.packages.find]
-include = ["skillopt*", "scripts*"]
+include = ["gitmoot_skillopt*", "skillopt*", "scripts*"]
 
 [tool.ruff]
 line-length = 120
