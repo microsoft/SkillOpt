@@ -39,6 +39,12 @@ gitmoot skillopt import \
   --artifact-dir /tmp/gitmoot-skillopt-smoke/artifacts
 ```
 
+Or run the full temp-home Gitmoot import smoke:
+
+```bash
+.venv/bin/python scripts/gitmoot_contract_smoke.py --gitmoot-bin /path/to/gitmoot
+```
+
 ## Training
 
 ```bash

@@ -6,7 +6,6 @@ from gitmoot_skillopt.artifacts import content_hash
 from gitmoot_skillopt.cli import main
 from gitmoot_skillopt.contracts import CandidatePackage, TrainingPackage
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPO_ROOT / "examples" / "gitmoot" / "mvp-fixture"
 
@@ -18,7 +17,7 @@ def test_gitmoot_mvp_fixture_dry_run_contract(tmp_path):
     candidate_output = out_root / "candidate.json"
 
     training = TrainingPackage.load(package_path)
-    assert training.template.id == "planner"
+    assert training.template.id == "planner-fixture"
     assert training.eval_run.id == "fixture-run-1"
 
     result = main(
@@ -38,7 +37,7 @@ def test_gitmoot_mvp_fixture_dry_run_contract(tmp_path):
 
     assert result == 0
     candidate = CandidatePackage.load(candidate_output)
-    assert candidate.template_id == "planner"
+    assert candidate.template_id == "planner-fixture"
     assert candidate.summary.diff_artifact_id == "candidate-diff"
     assert candidate.summary.metadata["artifact_ids"] == [
         "candidate-diff",

@@ -24,8 +24,8 @@
     },
     "state": "completed",
     "target_repo": "jerryfane/gitmoot-fixture",
-    "template_id": "planner",
-    "template_version_id": "planner@v1"
+    "template_id": "planner-fixture",
+    "template_version_id": "planner-fixture@v1"
   },
   "evaluator_config": {
     "mode": "fixture"
@@ -80,20 +80,20 @@
   ],
   "kind": "gitmoot-skillopt-training-package",
   "template": {
-    "content": "---\nid: planner\nname: Planner\ndescription: Plans implementation work.\nkind: agent-template\nversion: 1\ncapabilities:\n  - ask\nruntime_compatibility:\n  - codex\n  - claude\ntags:\n  - planning\ninputs:\n  - request\noutputs:\n  - plan\n---\n# Planner\n\nCreate concise task-by-task implementation plans with verification steps and human review gates.\n",
-    "content_hash": "sha256:01052aa735b47ec53434d812d0c97130fcae8386f2658e0c5aa64a43f396dedd",
-    "id": "planner",
+    "content": "---\nid: planner-fixture\nname: Planner Fixture\ndescription: Plans implementation work for the Gitmoot-SkillOpt fixture.\nkind: agent-template\nversion: 1\ncapabilities:\n  - ask\nruntime_compatibility:\n  - codex\n  - claude\ntags:\n  - planning\n  - fixture\ninputs:\n  - request\noutputs:\n  - plan\n---\n# Planner Fixture\n\nCreate concise task-by-task implementation plans with verification steps and human review gates.\n",
+    "content_hash": "sha256:7fc26e0618f0bfabc55f5516446a27278e25eeabb4f5574fe0e2537ffe95bea0",
+    "id": "planner-fixture",
     "metadata": {
       "capabilities": [
         "ask"
       ],
-      "description": "Plans implementation work.",
-      "id": "planner",
+      "description": "Plans implementation work for the Gitmoot-SkillOpt fixture.",
+      "id": "planner-fixture",
       "inputs": [
         "request"
       ],
       "kind": "agent-template",
-      "name": "Planner",
+      "name": "Planner Fixture",
       "outputs": [
         "plan"
       ],
@@ -102,15 +102,16 @@
         "claude"
       ],
       "tags": [
-        "planning"
+        "planning",
+        "fixture"
       ],
       "version": 1
     },
     "resolved_commit": "fixture",
-    "source_path": "skills/gitmoot/agent-templates/planner.md",
+    "source_path": "examples/gitmoot/mvp-fixture/template.md",
     "source_ref": "main",
     "source_repo": "jerryfane/gitmoot",
-    "version_id": "planner@v1",
+    "version_id": "planner-fixture@v1",
     "version_number": 1,
     "version_state": "current"
   }

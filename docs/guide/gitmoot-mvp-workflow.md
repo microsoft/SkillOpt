@@ -59,6 +59,18 @@ The dry run validates package loading, Gitmoot artifact resolution, candidate
 package emission, and generated artifact manifests without starting the trainer
 or calling external model APIs.
 
+To test the Gitmoot import boundary too, build or point to a current `gitmoot`
+binary and run:
+
+```bash
+.venv/bin/python scripts/gitmoot_contract_smoke.py --gitmoot-bin /path/to/gitmoot
+```
+
+The script uses a temporary Gitmoot home, installs
+`examples/gitmoot/mvp-fixture/template.md` as a local template, imports the
+generated candidate with `--artifact-dir`, verifies the pending candidate shows
+`candidate-diff`, and rejects it with a test reason.
+
 ## 3. Import The Candidate Into Gitmoot
 
 Import the optimizer output back into Gitmoot:
