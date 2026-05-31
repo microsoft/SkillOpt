@@ -129,6 +129,16 @@ def candidate_package_dict() -> dict[str, object]:
             "content": template_content(),
             "metadata": metadata(),
         },
+        "artifacts": [
+            {
+                "id": "diff",
+                "hash": "sha256:" + "4" * 64,
+                "media_type": "text/markdown",
+                "size_bytes": 7,
+                "driver": "gitmoot-skillopt",
+                "path": "candidate.diff.md",
+            }
+        ],
         "eval_report": {"score": 0.8},
         "summary": {
             "diff_artifact_id": "diff",
@@ -206,7 +216,55 @@ def test_candidate_package_validates_content_metadata_consistency():
     package = CandidatePackage.from_dict(candidate_package_dict())
 
     assert package.template_id == "planner"
+    assert package.artifacts[0].path == "candidate.diff.md"
     assert package.to_dict()["candidate"]["metadata"] == metadata()
+
+
+def test_candidate_package_rejects_duplicate_artifact_ids():
+    data = candidate_package_dict()
+    artifact = data["artifacts"][0]  # type: ignore[index]
+    data["artifacts"] = [artifact, {**artifact, "path": "other.diff.md"}]  # type: ignore[misc]
+
+    with pytest.raises(ContractError, match="duplicated"):
+        CandidatePackage.from_dict(data)
+
+
+def test_candidate_package_rejects_missing_diff_artifact_reference():
+    data = candidate_package_dict()
+    data["summary"] = {**data["summary"], "diff_artifact_id": "missing"}  # type: ignore[arg-type]
+
+    with pytest.raises(ContractError, match="diff_artifact_id"):
+        CandidatePackage.from_dict(data)
+
+
+def test_candidate_package_accepts_absent_artifacts_for_legacy_packages():
+    data = candidate_package_dict()
+    data.pop("artifacts")
+
+    package = CandidatePackage.from_dict(data)
+
+    assert package.artifacts == []
+
+
+def test_candidate_package_accepts_artifact_without_size_bytes():
+    data = candidate_package_dict()
+    artifact = dict(data["artifacts"][0])  # type: ignore[index]
+    artifact.pop("size_bytes")
+    data["artifacts"] = [artifact]
+
+    package = CandidatePackage.from_dict(data)
+
+    assert package.artifacts[0].size_bytes is None
+    assert "size_bytes" not in package.to_dict()["artifacts"][0]
+
+
+@pytest.mark.parametrize("artifacts", ["", 0, False, None])
+def test_candidate_package_rejects_malformed_artifacts_field(artifacts):
+    data = candidate_package_dict()
+    data["artifacts"] = artifacts
+
+    with pytest.raises(ContractError, match="artifacts must be a list"):
+        CandidatePackage.from_dict(data)
 
 
 def test_candidate_package_rejects_mismatched_template_id():

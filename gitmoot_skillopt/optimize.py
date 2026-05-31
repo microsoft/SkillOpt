@@ -1,0 +1,336 @@
+"""Gitmoot SkillOpt optimize command implementation."""
+
+from __future__ import annotations
+
+import difflib
+import json
+from pathlib import Path
+from typing import Any
+
+from gitmoot_skillopt.artifacts import OutputArtifactWriter
+from gitmoot_skillopt.contracts import (
+    CANDIDATE_PACKAGE_KIND,
+    CONTRACT_VERSION,
+    CandidatePackage,
+    CandidateSummary,
+    CandidateTemplate,
+    TrainingPackage,
+)
+from skillopt.engine.trainer import ReflACTTrainer
+from skillopt.envs.gitmoot.adapter import GitmootAdapter
+
+
+def run_optimize(
+    *,
+    training_package: str,
+    artifact_root: str,
+    out_root: str,
+    candidate_output: str,
+    dry_run: bool = False,
+    num_epochs: int = 1,
+    batch_size: int = 4,
+    seed: int = 42,
+    optimizer_model: str = "gpt-5.5",
+    target_model: str = "gpt-5.5",
+    optimizer_backend: str = "openai_chat",
+    target_backend: str = "openai_chat",
+    skill_update_mode: str = "patch",
+) -> CandidatePackage:
+    package_path = _require_file(training_package, "training package")
+    artifact_root_path = _require_dir(artifact_root, "artifact root")
+    out_root_path = Path(out_root).expanduser()
+    out_root_path.mkdir(parents=True, exist_ok=True)
+
+    package = TrainingPackage.load(package_path)
+    initial_skill_path = out_root_path / "initial_skill.md"
+    initial_skill_path.write_text(package.template.content, encoding="utf-8")
+
+    if dry_run:
+        return write_candidate_package(
+            package=package,
+            candidate_content=package.template.content,
+            summary=_dry_run_summary(package),
+            out_root=out_root_path,
+            candidate_output=Path(candidate_output).expanduser(),
+            dry_run=True,
+        )
+
+    cfg = build_trainer_config(
+        package_path=package_path,
+        artifact_root=artifact_root_path,
+        out_root=out_root_path,
+        initial_skill_path=initial_skill_path,
+        dry_run=dry_run,
+        num_epochs=num_epochs,
+        batch_size=batch_size,
+        seed=seed,
+        optimizer_model=optimizer_model,
+        target_model=target_model,
+        optimizer_backend=optimizer_backend,
+        target_backend=target_backend,
+        skill_update_mode=skill_update_mode,
+    )
+    adapter = GitmootAdapter(
+        training_package=str(package_path),
+        artifact_root=str(artifact_root_path),
+        seed=seed,
+        minibatch_size=cfg["minibatch_size"],
+        edit_budget=cfg["edit_budget"],
+        analyst_workers=cfg["analyst_workers"],
+    )
+    summary = ReflACTTrainer(cfg, adapter).train()
+    candidate_content = _read_best_skill(out_root_path, package.template.content)
+    candidate = write_candidate_package(
+        package=package,
+        candidate_content=candidate_content,
+        summary=summary,
+        out_root=out_root_path,
+        candidate_output=Path(candidate_output).expanduser(),
+        dry_run=dry_run,
+    )
+    return candidate
+
+
+def build_trainer_config(
+    *,
+    package_path: Path,
+    artifact_root: Path,
+    out_root: Path,
+    initial_skill_path: Path,
+    dry_run: bool,
+    num_epochs: int,
+    batch_size: int,
+    seed: int,
+    optimizer_model: str,
+    target_model: str,
+    optimizer_backend: str,
+    target_backend: str,
+    skill_update_mode: str,
+) -> dict[str, Any]:
+    actual_epochs = 0 if dry_run else max(1, int(num_epochs))
+    return {
+        "env": "gitmoot",
+        "training_package": str(package_path),
+        "artifact_root": str(artifact_root),
+        "out_root": str(out_root),
+        "skill_init": str(initial_skill_path),
+        "model_backend": target_backend,
+        "optimizer_model": optimizer_model,
+        "target_model": target_model,
+        "optimizer_backend": optimizer_backend,
+        "target_backend": target_backend,
+        "reasoning_effort": "medium",
+        "rewrite_reasoning_effort": "",
+        "rewrite_max_completion_tokens": 64000,
+        "azure_openai_endpoint": "",
+        "azure_openai_api_version": "2024-12-01-preview",
+        "azure_openai_api_key": "",
+        "azure_openai_auth_mode": "",
+        "azure_openai_ad_scope": "https://cognitiveservices.azure.com/.default",
+        "azure_openai_managed_identity_client_id": "",
+        "optimizer_azure_openai_endpoint": "",
+        "optimizer_azure_openai_api_version": "2024-12-01-preview",
+        "optimizer_azure_openai_api_key": "",
+        "optimizer_azure_openai_auth_mode": "",
+        "optimizer_azure_openai_ad_scope": "https://cognitiveservices.azure.com/.default",
+        "optimizer_azure_openai_managed_identity_client_id": "",
+        "target_azure_openai_endpoint": "",
+        "target_azure_openai_api_version": "2024-12-01-preview",
+        "target_azure_openai_api_key": "",
+        "target_azure_openai_auth_mode": "",
+        "target_azure_openai_ad_scope": "https://cognitiveservices.azure.com/.default",
+        "target_azure_openai_managed_identity_client_id": "",
+        "codex_exec_path": "codex",
+        "codex_exec_sandbox": "workspace-write",
+        "codex_exec_profile": "",
+        "codex_exec_full_auto": False,
+        "codex_exec_reasoning_effort": "none",
+        "codex_exec_use_sdk": "auto",
+        "codex_exec_network_access": False,
+        "codex_exec_web_search": False,
+        "codex_exec_approval_policy": "never",
+        "claude_code_exec_path": "claude",
+        "claude_code_exec_profile": "",
+        "claude_code_exec_use_sdk": "auto",
+        "claude_code_exec_effort": "medium",
+        "claude_code_exec_max_thinking_tokens": 16384,
+        "qwen_chat_base_url": "",
+        "qwen_chat_api_key": "",
+        "qwen_chat_temperature": None,
+        "qwen_chat_timeout_seconds": None,
+        "qwen_chat_max_tokens": None,
+        "qwen_chat_enable_thinking": None,
+        "minimax_base_url": "",
+        "minimax_api_key": "",
+        "minimax_model": "",
+        "minimax_temperature": None,
+        "minimax_max_tokens": None,
+        "minimax_enable_thinking": None,
+        "codex_trace_to_optimizer": False,
+        "num_epochs": actual_epochs,
+        "batch_size": max(1, int(batch_size)),
+        "accumulation": 1,
+        "seed": int(seed),
+        "minibatch_size": max(1, int(batch_size)),
+        "merge_batch_size": max(1, int(batch_size)),
+        "analyst_workers": 1,
+        "max_analyst_rounds": 1,
+        "failure_only": False,
+        "edit_budget": 4,
+        "min_edit_budget": 1,
+        "lr_scheduler": "constant",
+        "lr_control_mode": "fixed",
+        "skill_update_mode": skill_update_mode,
+        "use_slow_update": False,
+        "slow_update_samples": 0,
+        "slow_update_gate_with_selection": False,
+        "longitudinal_pair_policy": "mixed",
+        "use_meta_skill": False,
+        "use_gate": True,
+        "gate_metric": "hard",
+        "gate_mixed_weight": 0.5,
+        "sel_env_num": 0,
+        "test_env_num": 0,
+        "eval_test": False if dry_run else True,
+    }
+
+
+def write_candidate_package(
+    *,
+    package: TrainingPackage,
+    candidate_content: str,
+    summary: dict[str, Any],
+    out_root: Path,
+    candidate_output: Path,
+    dry_run: bool,
+) -> CandidatePackage:
+    writer = OutputArtifactWriter(out_root)
+    diff_text = _diff_text(package.template.content, candidate_content)
+    eval_report = _eval_report(summary, dry_run=dry_run)
+    preference_summary = _preference_summary(summary, dry_run=dry_run)
+    artifacts = [
+        writer.write_bytes(
+            "candidate.diff.md",
+            diff_text.encode(),
+            artifact_id="candidate-diff",
+            media_type="text/markdown",
+            driver="gitmoot-skillopt",
+        ),
+        writer.write_bytes(
+            "eval-report.json",
+            json.dumps(eval_report, indent=2, sort_keys=True).encode() + b"\n",
+            artifact_id="eval-report",
+            media_type="application/json",
+            driver="gitmoot-skillopt",
+        ),
+        writer.write_bytes(
+            "preference-summary.md",
+            preference_summary.encode(),
+            artifact_id="preference-summary",
+            media_type="text/markdown",
+            driver="gitmoot-skillopt",
+        ),
+    ]
+    candidate = CandidatePackage(
+        kind=CANDIDATE_PACKAGE_KIND,
+        contract_version=CONTRACT_VERSION,
+        template_id=package.template.id,
+        base_version_id=package.template.version_id,
+        candidate=CandidateTemplate(
+            content=candidate_content,
+            metadata=package.template.metadata,
+        ),
+        artifacts=artifacts,
+        eval_report=eval_report,
+        summary=CandidateSummary(
+            diff_artifact_id="candidate-diff",
+            score=_summary_score(summary),
+            preference_summary=preference_summary.strip(),
+            metadata={"artifact_ids": [artifact.id for artifact in artifacts]},
+        ),
+    )
+    candidate.validate()
+    candidate_output.parent.mkdir(parents=True, exist_ok=True)
+    candidate.dump(candidate_output)
+    return candidate
+
+
+def _require_file(path_text: str, label: str) -> Path:
+    path = Path(path_text).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} not found: {path}")
+    return path
+
+
+def _require_dir(path_text: str, label: str) -> Path:
+    path = Path(path_text).expanduser()
+    if not path.is_dir():
+        raise FileNotFoundError(f"{label} not found: {path}")
+    return path
+
+
+def _read_best_skill(out_root: Path, fallback: str) -> str:
+    best_skill = out_root / "best_skill.md"
+    if best_skill.is_file():
+        return best_skill.read_text(encoding="utf-8")
+    return fallback
+
+
+def _diff_text(base: str, candidate: str) -> str:
+    lines = difflib.unified_diff(
+        base.splitlines(keepends=True),
+        candidate.splitlines(keepends=True),
+        fromfile="base-template.md",
+        tofile="candidate-template.md",
+    )
+    diff = "".join(lines)
+    return diff or "No content changes.\n"
+
+
+def _eval_report(summary: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    return {
+        "dry_run": dry_run,
+        "best_selection_hard": summary.get("best_selection_hard"),
+        "baseline_selection_hard": summary.get("baseline_selection_hard"),
+        "best_step": summary.get("best_step"),
+        "total_steps": summary.get("total_steps"),
+        "total_accepts": summary.get("total_accepts"),
+        "total_rejects": summary.get("total_rejects"),
+        "total_skips": summary.get("total_skips"),
+        "token_summary": summary.get("token_summary", {}),
+    }
+
+
+def _dry_run_summary(package: TrainingPackage) -> dict[str, Any]:
+    return {
+        "best_selection_hard": None,
+        "baseline_selection_hard": None,
+        "best_step": 0,
+        "total_steps": 0,
+        "total_accepts": 0,
+        "total_rejects": 0,
+        "total_skips": 0,
+        "token_summary": {},
+        "training_package": {
+            "template_id": package.template.id,
+            "items": len(package.items),
+        },
+    }
+
+
+def _preference_summary(summary: dict[str, Any], *, dry_run: bool) -> str:
+    mode = "dry-run fixture" if dry_run else "optimizer"
+    return (
+        f"# Gitmoot SkillOpt Candidate\n\n"
+        f"Mode: {mode}\n\n"
+        f"Best selection hard: {summary.get('best_selection_hard')}\n"
+        f"Baseline selection hard: {summary.get('baseline_selection_hard')}\n"
+        f"Total steps: {summary.get('total_steps')}\n"
+    )
+
+
+def _summary_score(summary: dict[str, Any]) -> float | None:
+    score = summary.get("best_selection_hard")
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        return None
+    return float(score)

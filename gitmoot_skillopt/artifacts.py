@@ -74,19 +74,37 @@ class CandidateArtifactManifestEntry:
     id: str
     hash: str
     media_type: str
-    size_bytes: int
     driver: str
     path: str
+    size_bytes: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "CandidateArtifactManifestEntry":
+        if not isinstance(data, dict):
+            raise ArtifactError("candidate artifact manifest entry must be an object")
+        size_bytes = data.get("size_bytes")
+        if size_bytes is not None and (isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0):
+            raise ArtifactError("candidate artifact size_bytes must be a non-negative integer")
+        return cls(
+            id=_required_text(data.get("id"), "candidate artifact id"),
+            hash=normalize_hash(_required_text(data.get("hash"), "candidate artifact hash")),
+            media_type=_required_text(data.get("media_type"), "candidate artifact media_type"),
+            driver=_required_text(data.get("driver"), "candidate artifact driver"),
+            path=_required_relative_path(data.get("path")),
+            size_bytes=size_bytes,
+        )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        data: dict[str, object] = {
             "id": self.id,
             "hash": self.hash,
             "media_type": self.media_type,
-            "size_bytes": self.size_bytes,
             "driver": self.driver,
             "path": self.path,
         }
+        if self.size_bytes is not None:
+            data["size_bytes"] = self.size_bytes
+        return data
 
 
 class OutputArtifactWriter:
@@ -162,3 +180,17 @@ class OutputArtifactWriter:
                     raise ArtifactError("artifact output path parent must be a directory")
                 continue
             current.mkdir()
+
+
+def _required_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ArtifactError(f"{label} is required")
+    return value.strip()
+
+
+def _required_relative_path(value: object) -> str:
+    path_text = _required_text(value, "candidate artifact path")
+    path = Path(path_text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ArtifactError("candidate artifact path must be relative and cannot traverse directories")
+    return path.as_posix()

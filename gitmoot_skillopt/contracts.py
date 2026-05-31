@@ -525,6 +525,7 @@ class CandidatePackage:
     template_id: str
     candidate: CandidateTemplate
     base_version_id: str = ""
+    artifacts: list[Any] = field(default_factory=list)
     eval_report: Any = None
     summary: CandidateSummary = field(default_factory=CandidateSummary)
 
@@ -534,12 +535,21 @@ class CandidatePackage:
         kind = _require_string(data.get("kind"), "candidate package.kind")
         contract_version = _require_int(data.get("contract_version"), "candidate package.contract_version")
         _validate_kind_and_version(kind, contract_version, CANDIDATE_PACKAGE_KIND, "candidate package")
+        from .artifacts import CandidateArtifactManifestEntry
+
+        raw_artifacts = data["artifacts"] if "artifacts" in data else []
+        if not isinstance(raw_artifacts, list):
+            raise ContractError("candidate package.artifacts must be a list")
         package = cls(
             kind=kind,
             contract_version=contract_version,
             template_id=validate_template_id(str(data.get("template_id", "")), "candidate package.template_id"),
             base_version_id=_optional_string(data.get("base_version_id")),
             candidate=CandidateTemplate.from_dict(data.get("candidate")),
+            artifacts=[
+                CandidateArtifactManifestEntry.from_dict(artifact)
+                for artifact in raw_artifacts
+            ],
             eval_report=_raw_json(data.get("eval_report")),
             summary=CandidateSummary.from_dict(data.get("summary")),
         )
@@ -553,6 +563,16 @@ class CandidatePackage:
 
     def validate(self) -> None:
         validate_template_content_metadata(self.candidate.content, self.candidate.metadata, self.template_id)
+        artifact_ids: set[str] = set()
+        for artifact in self.artifacts:
+            artifact_id = getattr(artifact, "id", "")
+            if not isinstance(artifact_id, str) or not artifact_id.strip():
+                raise ContractError("candidate artifact id is required")
+            if artifact_id in artifact_ids:
+                raise ContractError(f"candidate artifact id is duplicated: {artifact_id}")
+            artifact_ids.add(artifact_id)
+        if artifact_ids and self.summary.diff_artifact_id not in artifact_ids:
+            raise ContractError("candidate summary.diff_artifact_id must reference a candidate artifact")
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -561,6 +581,7 @@ class CandidatePackage:
             "template_id": self.template_id,
             "base_version_id": self.base_version_id,
             "candidate": self.candidate.to_dict(),
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "summary": self.summary.to_dict(),
         }
         if self.eval_report is not None:
