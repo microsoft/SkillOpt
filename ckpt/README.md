@@ -1,9 +1,9 @@
-# Paper-aligned optimized SkillOpt skills (GPT-5.5)
+# Paper-aligned SkillOpt reference skills (GPT-5.5)
 
-This folder ships the GPT-5.5 best skills exported from SkillOpt training
-runs — one `gpt5.5_skill.md` per benchmark. You can plug them into
-`scripts/eval_only.py` to evaluate the paper-aligned optimized skills on a
-given split without re-running the training loop.
+This folder provides a subset of the paper's main Table 1 GPT-5.5 optimized
+skills as reference artifacts — one `gpt5.5_skill.md` per currently included
+benchmark. You can plug them into `scripts/eval_only.py` to evaluate the
+provided skills on a given split without re-running the training loop.
 
 > These are checkpoints associated with the paper, not a general-purpose
 > tool. They're here so you can verify the reported numbers and use the
@@ -29,7 +29,7 @@ Each file is a plain Markdown skill document (~2k–13k chars). It contains a
 protected `SLOW_UPDATE` section at the end that holds epoch-wise
 longitudinal guidance — that's expected, not a formatting issue.
 
-## How to evaluate a shipped skill
+## How to evaluate a provided skill
 
 `scripts/eval_only.py` runs a single skill against a data split without
 invoking the optimizer. Example for SearchQA against the test split:
@@ -62,7 +62,7 @@ for upload — see issues #14 and #21.
 
 ## Why force-accept vs. gated slow-update matters
 
-The shipped skills were produced with the gated slow-update semantics
+These `ckpt/` skills were produced with the gated slow-update semantics
 described in paper Section 3.6:
 
 ```yaml

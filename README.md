@@ -210,14 +210,13 @@ Re-running the same command auto-resumes from the last completed step.
 
 ### Pretrained Skill Artifacts
 
-The paper-aligned GPT-5.5 optimized skills are shipped in
-[`ckpt/<benchmark>/gpt5.5_skill.md`](ckpt/) (one per benchmark — SearchQA,
-ALFWorld, DocVQA, LiveMathematicianBench, OfficeQA, SpreadsheetBench). Use
-them with `scripts/eval_only.py` to evaluate the paper-aligned skills on a
-matching data split without re-running training. See [`ckpt/README.md`](ckpt/README.md)
-for the full per-benchmark command. This is the first artifact batch; we
-plan to continue uploading the remaining optimized skills and benchmark
-split manifests as they are cleaned and verified.
+We provide a subset of the paper's main Table 1 GPT-5.5 optimized skills in
+[`ckpt/`](ckpt/) as reference artifacts. Use them with `scripts/eval_only.py`
+to evaluate the provided skills on a matching data split without re-running
+training. See [`ckpt/README.md`](ckpt/README.md) for the full per-benchmark
+command. This is the first artifact batch; we plan to continue uploading
+the remaining optimized skills and benchmark split manifests as they are
+cleaned and verified.
 
 ---
 
@@ -249,7 +248,7 @@ Each JSON file is an array of task items. The required fields depend on the benc
 
 See `skillopt/envs/<benchmark>/dataloader.py` for the exact format each benchmark expects.
 
-> **Note:** Most benchmark datasets are not included in this repository. Prepare your own data following the format above. The exact SearchQA split used in the paper is shipped at [`data/searchqa_id_split/`](data/searchqa_id_split) (400 train / 200 val / 1400 test). We are preparing the remaining benchmark split manifests for upload.
+> **Note:** Most benchmark datasets are not included in this repository. Prepare your own data following the format above. The exact SearchQA split used in the paper is provided at [`data/searchqa_id_split/`](data/searchqa_id_split) (400 train / 200 val / 1400 test). We are preparing the remaining benchmark split manifests for upload.
 
 ### Supported Benchmarks
 
@@ -269,14 +268,14 @@ See `skillopt/envs/<benchmark>/dataloader.py` for the exact format each benchmar
 ### Default settings and paper-reproduction knobs
 
 `configs/_base_/default.yaml` is the single source of truth for SkillOpt's
-runtime knobs. Out of the box, every shipped benchmark config inherits
+runtime knobs. Out of the box, every included benchmark config inherits
 from it and keeps the paper protocol visible: 4 epochs, rollout batch 40,
 reflection minibatch 8, textual learning rate 4 with cosine decay, strict
-hard validation gating, and slow-update + meta-skill enabled. The slow-update
-acceptance policy is now explicit because `main` has moved forward from
-the paper snapshot: the shipped `ckpt/` skills were produced with the gated
-semantics described in paper Section 3.6, while the current `main` default
-uses the post-submission force-accept behavior.
+hard validation gating, and slow-update + meta-skill enabled. One detail to
+watch is slow-update acceptance: the current `main` default is the newer
+post-submission force-accept mode, while the paper protocol and the
+paper-aligned skills under `ckpt/` use the gated semantics described in
+paper Section 3.6.
 
 ### Slow-update acceptance mode
 
@@ -292,11 +291,11 @@ optimizer:
   slow-update guidance is injected into both `current_skill` and
   `best_skill` unconditionally at the epoch boundary. This is the newer
   post-submission behavior on `main`.
-- **`true`** *(paper / shipped-skill reproduction)*: gated, matching paper
+- **`true`** *(paper / ckpt-skill reproduction)*: gated, matching paper
   Section 3.6 verbatim. The slow-update candidate is evaluated on the
   selection split and accepted only if it passes the same validation gate
   as a step-level edit. Use this setting when re-running optimization to
-  match the paper protocol and the provenance of the shipped `ckpt/` skills.
+  match the paper protocol and the provenance of the provided `ckpt/` skills.
 
 The trainer prints which mode is active at startup
 (`[slow update] acceptance=...`). See issue #22 for the discussion that
@@ -315,15 +314,15 @@ split using `gate_metric`:
 - **`mixed`**: weighted average, `(1 - w) * hard + w * soft`, with `w`
   set by `gate_mixed_weight` (default `0.5`).
 
-Default is `hard`. Use the example config below to switch.
+Default is `hard`. Use the optional feature config below to switch.
 
-### Community-contributed examples
+### Optional feature configs
 
-These are **not** default SkillOpt settings — they are reference configs
+These are **not** default SkillOpt settings — they are optional feature configs
 contributed by users for specific scenarios. The paper-reported numbers
 were obtained with the default settings, not these.
 
-- **[`configs/examples/soft_gate.yaml`](configs/examples/soft_gate.yaml)**
+- **[`configs/features/soft_gate.yaml`](configs/features/soft_gate.yaml)**
   *(PR #25, contributed by [@lvbaocheng](https://github.com/lvbaocheng))* —
   switches `gate_metric` to `soft` (or `mixed`). See the comment at the
   top of the file for when to use and when not to.

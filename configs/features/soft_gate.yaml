@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Example: soft / mixed validation-gate metric (community-contributed, PR #25)
+# Feature: soft / mixed validation-gate metric (community-contributed, PR #25)
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # This is NOT a default SkillOpt setting and was NOT used to produce the
@@ -28,7 +28,7 @@
 #     and matches the design described in the paper.
 #
 # To use: inherit your env config from this file, e.g.
-#   _base_: ../examples/soft_gate.yaml
+#   _base_: ../features/soft_gate.yaml
 # or copy the `evaluation:` block below into your config.
 # ─────────────────────────────────────────────────────────────────────────────
 
