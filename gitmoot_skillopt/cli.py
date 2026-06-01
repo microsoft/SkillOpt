@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--optimizer-backend", default="openai_chat", help="optimizer backend")
     optimize.add_argument("--target-backend", default="openai_chat", help="target backend")
     optimize.add_argument(
+        "--gate-metric",
+        default="hard",
+        choices=["hard", "soft", "mixed"],
+        help="selection gate metric used by SkillOpt when accepting candidate updates",
+    )
+    optimize.add_argument(
         "--reasoning-effort",
         default="",
         help="optional reasoning effort for models that support it; omit for standard OpenAI chat models",
@@ -97,6 +103,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         target_model=args.target_model,
         optimizer_backend=args.optimizer_backend,
         target_backend=args.target_backend,
+        gate_metric=args.gate_metric,
         reasoning_effort=args.reasoning_effort,
         skill_update_mode=args.skill_update_mode,
     )

@@ -34,6 +34,7 @@ def run_optimize(
     target_model: str = "gpt-5.5",
     optimizer_backend: str = "openai_chat",
     target_backend: str = "openai_chat",
+    gate_metric: str = "hard",
     reasoning_effort: str = "",
     skill_update_mode: str = "patch",
 ) -> CandidatePackage:
@@ -69,6 +70,7 @@ def run_optimize(
         target_model=target_model,
         optimizer_backend=optimizer_backend,
         target_backend=target_backend,
+        gate_metric=gate_metric,
         reasoning_effort=reasoning_effort,
         skill_update_mode=skill_update_mode,
     )
@@ -107,10 +109,14 @@ def build_trainer_config(
     target_model: str,
     optimizer_backend: str,
     target_backend: str,
+    gate_metric: str,
     reasoning_effort: str,
     skill_update_mode: str,
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
+    normalized_gate_metric = str(gate_metric or "hard").strip().lower()
+    if normalized_gate_metric not in {"hard", "soft", "mixed"}:
+        raise ValueError(f"unsupported gate metric: {gate_metric}")
     return {
         "env": "gitmoot",
         "training_package": str(package_path),
@@ -190,7 +196,7 @@ def build_trainer_config(
         "longitudinal_pair_policy": "mixed",
         "use_meta_skill": False,
         "use_gate": True,
-        "gate_metric": "hard",
+        "gate_metric": normalized_gate_metric,
         "gate_mixed_weight": 0.5,
         "sel_env_num": 0,
         "test_env_num": 0,

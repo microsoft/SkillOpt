@@ -138,3 +138,31 @@ def test_optimize_threads_optional_reasoning_effort(tmp_path, monkeypatch):
 
     assert result == 0
     assert captured["reasoning_effort"] == "medium"
+
+
+def test_optimize_threads_gate_metric(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--gate-metric",
+            "soft",
+        ]
+    )
+
+    assert result == 0
+    assert captured["gate_metric"] == "soft"
