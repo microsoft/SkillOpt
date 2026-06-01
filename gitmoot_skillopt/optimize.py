@@ -34,6 +34,7 @@ def run_optimize(
     target_model: str = "gpt-5.5",
     optimizer_backend: str = "openai_chat",
     target_backend: str = "openai_chat",
+    reasoning_effort: str = "",
     skill_update_mode: str = "patch",
 ) -> CandidatePackage:
     package_path = _require_file(training_package, "training package")
@@ -68,6 +69,7 @@ def run_optimize(
         target_model=target_model,
         optimizer_backend=optimizer_backend,
         target_backend=target_backend,
+        reasoning_effort=reasoning_effort,
         skill_update_mode=skill_update_mode,
     )
     adapter = GitmootAdapter(
@@ -105,6 +107,7 @@ def build_trainer_config(
     target_model: str,
     optimizer_backend: str,
     target_backend: str,
+    reasoning_effort: str,
     skill_update_mode: str,
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
@@ -119,7 +122,7 @@ def build_trainer_config(
         "target_model": target_model,
         "optimizer_backend": optimizer_backend,
         "target_backend": target_backend,
-        "reasoning_effort": "medium",
+        "reasoning_effort": str(reasoning_effort or "").strip(),
         "rewrite_reasoning_effort": "",
         "rewrite_max_completion_tokens": 64000,
         "azure_openai_endpoint": "",
