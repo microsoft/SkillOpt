@@ -32,6 +32,10 @@ ENABLE_THINKING = os.environ.get("MINIMAX_ENABLE_THINKING", "false").strip().low
     "on",
 }
 
+OPTIMIZER_DEPLOYMENT = os.environ.get(
+    "OPTIMIZER_DEPLOYMENT",
+    default_model_for_backend("minimax_chat"),
+)
 TARGET_DEPLOYMENT = os.environ.get(
     "TARGET_DEPLOYMENT",
     default_model_for_backend("minimax_chat"),
@@ -214,6 +218,53 @@ def get_max_tokens() -> int:
     return MAX_TOKENS
 
 
+def chat_optimizer(
+    system: str,
+    user: str,
+    max_completion_tokens: int = 16384,
+    retries: int = 5,
+    stage: str = "optimizer",
+    reasoning_effort: str | None = None,
+    timeout: float | None = None,
+) -> tuple[str, dict[str, int]]:
+    del reasoning_effort
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return _chat_messages_impl(
+        messages,
+        max_completion_tokens,
+        retries,
+        stage,
+        deployment=OPTIMIZER_DEPLOYMENT,
+        timeout=timeout,
+    )
+
+
+def chat_optimizer_messages(
+    messages: list[dict[str, Any]],
+    max_completion_tokens: int = 16384,
+    retries: int = 5,
+    stage: str = "optimizer",
+    reasoning_effort: str | None = None,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    return_message: bool = False,
+    timeout: float | None = None,
+) -> tuple[Any, dict[str, int]]:
+    del reasoning_effort
+    return _chat_messages_impl(
+        messages,
+        max_completion_tokens,
+        retries,
+        stage,
+        tools=tools,
+        tool_choice=tool_choice,
+        return_message=return_message,
+        deployment=OPTIMIZER_DEPLOYMENT,
+        timeout=timeout,
+    )
+
+
 def chat_target(
     system: str,
     user: str,
@@ -269,6 +320,12 @@ def reset_token_tracker() -> None:
 
 def set_reasoning_effort(effort: str | None) -> None:
     del effort
+
+
+def set_optimizer_deployment(deployment: str) -> None:
+    global OPTIMIZER_DEPLOYMENT
+    OPTIMIZER_DEPLOYMENT = deployment or default_model_for_backend("minimax_chat")
+    os.environ["OPTIMIZER_DEPLOYMENT"] = OPTIMIZER_DEPLOYMENT
 
 
 def set_target_deployment(deployment: str) -> None:

@@ -26,9 +26,22 @@ from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.evaluation.gate import evaluate_gate, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
-from skillopt.optimizer.meta_skill import run_meta_skill
+from skillopt.model import (
+    configure_azure_openai,
+    configure_claude_code_exec,
+    configure_codex_exec,
+    configure_minimax_chat,
+    configure_qwen_chat,
+    get_token_summary,
+    set_optimizer_backend,
+    set_optimizer_deployment,
+    set_reasoning_effort,
+    set_target_backend,
+    set_target_deployment,
+)
 from skillopt.optimizer.clip import rank_and_select
 from skillopt.optimizer.lr_autonomous import decide_autonomous_learning_rate
+from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions
 from skillopt.optimizer.scheduler import build_scheduler
 from skillopt.optimizer.skill import apply_patch_with_report
@@ -47,22 +60,8 @@ from skillopt.optimizer.update_modes import (
     payload_label,
     short_item_summary,
 )
-from skillopt.model import (
-    configure_azure_openai,
-    configure_claude_code_exec,
-    configure_codex_exec,
-    configure_minimax_chat,
-    configure_qwen_chat,
-    get_token_summary,
-    reset_token_tracker,
-    set_reasoning_effort,
-    set_target_backend,
-    set_target_deployment,
-    set_optimizer_backend,
-    set_optimizer_deployment,
-)
 from skillopt.utils import compute_score, skill_hash
-
+from skillopt.utils.redaction import redact_secrets
 
 # ── Patch normalization ───────────────────────────────────────────────────────
 
@@ -246,25 +245,8 @@ def _build_longitudinal_pairs(
 
 # ── History / persistence helpers ─────────────────────────────────────────────
 
-_SECRET_KEYS = {
-    "azure_api_key",
-    "api_key",
-    "openai_api_key",
-}
-
-
-def _redact_value(val: str) -> str:
-    if len(val) <= 8:
-        return "*" * len(val)
-    return f"{val[:4]}...{val[-4:]}"
-
-
 def _redact_cfg(cfg: dict) -> dict:
-    redacted = dict(cfg)
-    for key in list(redacted):
-        if key.lower() in _SECRET_KEYS and redacted.get(key):
-            redacted[key] = _redact_value(str(redacted[key]))
-    return redacted
+    return redact_secrets(cfg)
 
 def _load_history(out_root: str) -> list[dict]:
     path = os.path.join(out_root, "history.json")
@@ -277,7 +259,7 @@ def _load_history(out_root: str) -> list[dict]:
 def _save_history(out_root: str, history: list[dict]) -> None:
     path = os.path.join(out_root, "history.json")
     with open(path, "w") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+        json.dump(redact_secrets(history), f, ensure_ascii=False, indent=2)
 
 
 def _save_skill(out_root: str, step: int, content: str) -> None:
@@ -324,7 +306,7 @@ def _load_runtime_state(out_root: str) -> dict | None:
 def _save_runtime_state(out_root: str, state: dict) -> None:
     path = os.path.join(out_root, "runtime_state.json")
     with open(path, "w") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(redact_secrets(state), f, ensure_ascii=False, indent=2)
 
 
 def _resolve_train_size(cfg: dict, dataloader) -> int:
@@ -602,6 +584,9 @@ class ReflACTTrainer:
             elif backend in {"qwen", "qwen_chat"}:
                 optimizer_backend = optimizer_backend or "openai_chat"
                 target_backend = target_backend or "qwen_chat"
+            elif backend in {"minimax", "minimax_chat"}:
+                optimizer_backend = optimizer_backend or "minimax_chat"
+                target_backend = target_backend or "minimax_chat"
             else:
                 optimizer_backend = optimizer_backend or "openai_chat"
                 target_backend = target_backend or "openai_chat"
@@ -653,6 +638,7 @@ class ReflACTTrainer:
             base_url=cfg.get("minimax_base_url") or None,
             api_key=cfg.get("minimax_api_key") or None,
             temperature=cfg.get("minimax_temperature"),
+            timeout_seconds=cfg.get("minimax_timeout_seconds"),
             max_tokens=cfg.get("minimax_max_tokens"),
             enable_thinking=cfg.get("minimax_enable_thinking"),
         )
@@ -1996,7 +1982,7 @@ class ReflACTTrainer:
 
             # Comparison
             delta_hard = (test_hard or 0) - (baseline_test_hard or 0)
-            print(f"\n  === Improvement (best vs baseline) ===")
+            print("\n  === Improvement (best vs baseline) ===")
             print(
                 f"    hard: {baseline_test_hard:.4f} -> {test_hard:.4f}  "
                 f"(delta={delta_hard:+.4f})"

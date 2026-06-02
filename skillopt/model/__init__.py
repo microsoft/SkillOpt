@@ -13,13 +13,13 @@ from skillopt.model.backend_config import (  # noqa: F401
     configure_codex_exec,
     get_claude_code_exec_config,
     get_codex_exec_config,
-    get_target_backend,
     get_optimizer_backend,
+    get_target_backend,
+    is_optimizer_chat_backend,
     is_target_chat_backend,
     is_target_exec_backend,
-    is_optimizer_chat_backend,
-    set_target_backend,
     set_optimizer_backend,
+    set_target_backend,
 )
 
 
@@ -97,6 +97,16 @@ def chat_optimizer(
         )
     if get_optimizer_backend() == "qwen_chat":
         return _qwen.chat_optimizer(
+            system=system,
+            user=user,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            timeout=timeout,
+        )
+    if get_optimizer_backend() == "minimax_chat":
+        return _minimax.chat_optimizer(
             system=system,
             user=user,
             max_completion_tokens=max_completion_tokens,
@@ -193,6 +203,18 @@ def chat_optimizer_messages(
         )
     if get_optimizer_backend() == "qwen_chat":
         return _qwen.chat_optimizer_messages(
+            messages=messages,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_choice=tool_choice,
+            return_message=return_message,
+            timeout=timeout,
+        )
+    if get_optimizer_backend() == "minimax_chat":
+        return _minimax.chat_optimizer_messages(
             messages=messages,
             max_completion_tokens=max_completion_tokens,
             retries=retries,
@@ -510,3 +532,4 @@ def set_optimizer_deployment(deployment: str) -> None:
     _openai.set_optimizer_deployment(deployment)
     _claude.set_optimizer_deployment(deployment)
     _qwen.set_optimizer_deployment(deployment)
+    _minimax.set_optimizer_deployment(deployment)
