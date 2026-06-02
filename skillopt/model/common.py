@@ -6,7 +6,6 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-
 _RESPONSES_API_MODELS = {
     "gpt-5.3-codex",
     "gpt-5.1-codex",

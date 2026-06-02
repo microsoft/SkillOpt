@@ -12,6 +12,7 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Any
+
 from openai import AzureOpenAI, OpenAI
 
 # Sentinel value used as the api_version when the "openai_compatible"
@@ -673,12 +674,12 @@ def configure_azure_openai(
         _clean(optimizer_managed_identity_client_id)
         or shared_managed_identity_client_id
     )
-    
+
     # Auto-configure for openai_compatible mode
     if resolved_optimizer_auth_mode in {"openai_compatible", "compat", "openai"}:
         if resolved_optimizer_api_version is None:
             resolved_optimizer_api_version = _OPENAI_COMPATIBLE_API_VERSION
-    
+
     resolved_target_endpoint = _clean(target_endpoint) or shared_endpoint
     resolved_target_api_version = _clean(target_api_version) or shared_api_version
     resolved_target_api_key = _clean(target_api_key) or shared_api_key
@@ -688,7 +689,7 @@ def configure_azure_openai(
         _clean(target_managed_identity_client_id)
         or shared_managed_identity_client_id
     )
-    
+
     # Auto-configure for openai_compatible mode
     if resolved_target_auth_mode in {"openai_compatible", "compat", "openai"}:
         if resolved_target_api_version is None:

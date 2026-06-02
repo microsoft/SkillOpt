@@ -7,12 +7,10 @@ Provides:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
-import sys
-import concurrent.futures
-import numpy as np
 
 from skillopt.model import chat_target
 
@@ -86,8 +84,9 @@ def build_alfworld_env(
     Returns:
         env_manager: AlfWorldEnvironmentManager instance
     """
-    from omegaconf import OmegaConf
     from functools import partial
+
+    from omegaconf import OmegaConf
 
     from skillopt.envs.alfworld.vendor.alfworld_envs import build_alfworld_envs
     from skillopt.envs.alfworld.vendor.alfworld_projection import alfworld_projection
@@ -222,7 +221,7 @@ def run_alfworld_batch(
                 if _extract_action(response) is None:
                     return idx, "<think>missing action tag</think><action>look</action>"
                 return idx, response
-            except Exception as e:
+            except Exception:
                 return idx, "<think>error</think><action>look</action>"
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_api_workers)

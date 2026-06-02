@@ -2,13 +2,12 @@
 # Original: agent_system/environments/env_package/alfworld/envs.py
 # Modified: imports use pip-installed alfworld package instead of vendored copy.
 
-import os
 import multiprocessing as mp
+import os
 import traceback
-import yaml
-import gymnasium as gym
-import numpy as np
 
+import gymnasium as gym
+import yaml
 from alfworld.agents.environment import get_environment
 
 

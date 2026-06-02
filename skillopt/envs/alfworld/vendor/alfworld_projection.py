@@ -1,8 +1,8 @@
 # Vendored from SkillRL (Apache-2.0 License)
 # Original: agent_system/environments/env_package/alfworld/projection.py
 
-from typing import List
 import re
+from typing import List
 
 
 def alfworld_projection(actions: List[str], action_pools: List[List[str]]):

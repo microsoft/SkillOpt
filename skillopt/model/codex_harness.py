@@ -17,7 +17,6 @@ from skillopt.model.backend_config import (
     get_target_backend,
 )
 
-
 ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {

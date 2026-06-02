@@ -8,7 +8,6 @@ import sys
 import tempfile
 import textwrap
 
-
 RUNNER_TEMPLATE = textwrap.dedent(
     """
     import os, sys, traceback

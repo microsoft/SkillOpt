@@ -1,10 +1,7 @@
 """Tests for skillopt.types — Edit and Patch dataclass serialization."""
 from __future__ import annotations
 
-import pytest
-
 from skillopt.types import Edit, Patch
-
 
 # ── Edit ────────────────────────────────────────────────────────────────────
 

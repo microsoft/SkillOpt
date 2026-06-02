@@ -3,7 +3,7 @@
 # Merged into a single file for simplicity.
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 class BaseMemory(ABC):

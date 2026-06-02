@@ -1,15 +1,13 @@
 """LiveMathematicianBench environment adapter for ReflACT."""
 from __future__ import annotations
 
-import json
 import os
 
 from skillopt.datasets.base import BatchSpec
-from skillopt.gradient.reflect import run_minibatch_reflect
 from skillopt.envs.base import EnvAdapter
 from skillopt.envs.livemathematicianbench.dataloader import LiveMathematicianBenchDataLoader
 from skillopt.envs.livemathematicianbench.rollout import run_batch
-from skillopt.model import get_target_backend
+from skillopt.gradient.reflect import run_minibatch_reflect
 
 
 class LiveMathematicianBenchAdapter(EnvAdapter):

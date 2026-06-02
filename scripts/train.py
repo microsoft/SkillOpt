@@ -26,7 +26,7 @@ _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from skillopt.model.common import default_model_for_backend, normalize_backend_name
+from skillopt.model.common import default_model_for_backend, normalize_backend_name  # noqa: E402
 
 _OPENAI_DEFAULT_MODEL_SENTINELS = {"gpt-5.4", "gpt-5.5"}
 
@@ -372,7 +372,8 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
 
 def load_config(args: argparse.Namespace) -> dict:
     """Load config with _base_ inheritance, then apply CLI overrides."""
-    from skillopt.config import load_config as _load, flatten_config, is_structured
+    from skillopt.config import flatten_config, is_structured
+    from skillopt.config import load_config as _load
 
     cfg = _load(args.config, overrides=args.cfg_options)
     structured = is_structured(cfg)
@@ -507,7 +508,7 @@ def main() -> None:
     cfg = load_config(args)
 
     print(f"\n{'='*60}")
-    print(f"  SkillOpt — Executive Strategy for Self-Evolving Agent Skills")
+    print("  SkillOpt — Executive Strategy for Self-Evolving Agent Skills")
     print(f"{'='*60}")
     print(f"  env:            {cfg.get('env')}")
     print(f"  optimizer_model:  {cfg.get('optimizer_model')}")
@@ -518,7 +519,7 @@ def main() -> None:
     print(f"  rewrite_effort: {cfg.get('rewrite_reasoning_effort') or 'off'}")
     print(f"  epochs:         {cfg.get('num_epochs')}")
     print(f"  train_size:     {cfg.get('train_size') or 'from dataset'}")
-    print(f"  steps/epoch:    auto")
+    print("  steps/epoch:    auto")
     print(f"  batch_size:     {cfg.get('batch_size')}")
     print(f"  edit_budget:    {cfg.get('edit_budget')}")
     print(f"  lr_scheduler:   {cfg.get('lr_scheduler', 'constant')}")

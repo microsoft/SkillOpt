@@ -2,16 +2,13 @@
 # Original: agent_system/environments/env_manager.py
 # Trimmed to only include AlfWorldEnvironmentManager and its helpers.
 
-from typing import List, Dict, Any
-from collections import defaultdict
-import numpy as np
+from typing import List
 
-from skillopt.envs.alfworld.vendor.env_base import EnvironmentManagerBase, to_numpy
 from skillopt.envs.alfworld.vendor.alfworld_prompts import (
     ALFWORLD_TEMPLATE,
     ALFWORLD_TEMPLATE_NO_HIS,
-    ALFWORLD_TEMPLATE_WITH_MEMORY,
 )
+from skillopt.envs.alfworld.vendor.env_base import EnvironmentManagerBase, to_numpy
 from skillopt.envs.alfworld.vendor.memory import SimpleMemory
 
 

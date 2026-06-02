@@ -14,7 +14,7 @@ from skillopt.envs.base import EnvAdapter
 class TemplateBenchmarkEnv(EnvAdapter):
     """
     Environment adapter for <Your Benchmark Name>.
-    
+
     Rename this class and implement the abstract methods below.
     """
 
@@ -41,8 +41,7 @@ class TemplateBenchmarkEnv(EnvAdapter):
         # Step 2: Call the target model
         # TODO: Customize the message format for your benchmark
         messages = [
-            {"role": "system", "content": skill},
-            {"role": "user", "content": item.input},
+            {"role": "user", "content": prompt},
         ]
         response = await model.generate(messages)
 
@@ -66,7 +65,7 @@ class TemplateBenchmarkEnv(EnvAdapter):
 
         Returns:
             Float between 0.0 (wrong) and 1.0 (correct)
-        
+
         TODO: Implement your scoring metric. Common options:
         - Exact match: float(pred.strip().lower() == gt.strip().lower())
         - F1 score: compute token overlap
@@ -83,9 +82,9 @@ class TemplateBenchmarkEnv(EnvAdapter):
     def parse_response(self, response: str) -> str:
         """
         Extract the answer from the model's raw response.
-        
+
         TODO: Implement extraction logic. For example:
-        - Extract text after "Answer:" 
+        - Extract text after "Answer:"
         - Parse JSON output
         - Extract from code blocks
         """

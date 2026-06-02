@@ -22,7 +22,6 @@ from skillopt.optimizer.update_modes import (
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
 
-
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _merge_batch(

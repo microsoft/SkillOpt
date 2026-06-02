@@ -19,7 +19,6 @@ from skillopt.model.common import (
     tracker,
 )
 
-
 CODEX_BIN = os.environ.get("CODEX_CLI_BIN", "codex")
 CODEX_PROFILE = os.environ.get("CODEX_PROFILE", "review")
 CODEX_SANDBOX_MODE = os.environ.get("CODEX_SANDBOX_MODE", "read-only")

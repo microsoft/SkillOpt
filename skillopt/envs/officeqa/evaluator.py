@@ -4,7 +4,6 @@ import re
 import string
 from collections import Counter
 
-
 _NUMERIC_CHARS = set("0123456789.-")
 
 

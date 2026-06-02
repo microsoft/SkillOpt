@@ -10,14 +10,11 @@ a Python code block, no function-calling / tool-use).
 """
 from __future__ import annotations
 
-import json
 import os
 import random
-import signal
 import time
 
 import openpyxl
-
 
 # ── Timeout helper ──────────────────────────────────────────────────────────
 
@@ -28,18 +25,17 @@ class TaskTimeout(Exception):
 def _timeout_handler(signum, frame):
     raise TaskTimeout("Task timed out")
 
-from skillopt.model.azure_openai import (
+from skillopt.envs.spreadsheetbench.evaluator import evaluate  # noqa: E402
+from skillopt.envs.spreadsheetbench.executor import run_generated_code  # noqa: E402
+from skillopt.model import is_target_exec_backend  # noqa: E402
+from skillopt.model.azure_openai import (  # noqa: E402
+    _needs_responses_api,
     get_reasoning_effort,
     get_target_client,
-    _needs_responses_api,
     tracker,
 )
-from skillopt.model import get_codex_exec_config, get_target_backend, is_target_exec_backend
-from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
-from skillopt.prompts import load_prompt
-from skillopt.envs.spreadsheetbench.executor import run_generated_code
-from skillopt.envs.spreadsheetbench.evaluator import evaluate
-
+from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec  # noqa: E402
+from skillopt.prompts import load_prompt  # noqa: E402
 
 # ── Eval feedback helper (no golden value leakage) ─────────────────────────
 

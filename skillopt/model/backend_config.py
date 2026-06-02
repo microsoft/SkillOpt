@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from skillopt.model.common import default_model_for_backend, normalize_backend_name
+from skillopt.model.common import normalize_backend_name
 
 
 def _parse_bool(value: str | None, default: bool) -> bool:

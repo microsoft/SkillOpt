@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skillopt.types import Edit as EditType, Patch as PatchType
+    from skillopt.types import Edit as EditType
+    from skillopt.types import Patch as PatchType
 
 SLOW_UPDATE_START = "<!-- SLOW_UPDATE_START -->"
 SLOW_UPDATE_END = "<!-- SLOW_UPDATE_END -->"

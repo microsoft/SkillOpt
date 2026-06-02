@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 
 from skillopt.model import chat_optimizer
-from skillopt.prompts import load_prompt
 from skillopt.optimizer.update_modes import get_payload_items
+from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
 
 

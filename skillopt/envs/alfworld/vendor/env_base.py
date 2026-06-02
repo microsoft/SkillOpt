@@ -2,9 +2,10 @@
 # Original: agent_system/environments/base.py
 # Trimmed to only include what ALFWorld needs.
 
-from typing import List, Tuple, Dict, Any
-import numpy as np
 from collections import defaultdict
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
 
 
 def to_numpy(data):

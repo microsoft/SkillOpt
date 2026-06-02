@@ -20,15 +20,16 @@ from concurrent.futures import (
     FIRST_COMPLETED,
     ThreadPoolExecutor,
     wait,
+)
+from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
 
 import openpyxl
 
-from skillopt.envs.spreadsheetbench.react_agent import run_react
-from skillopt.envs.spreadsheetbench.evaluator import evaluate, _generate_cell_names
+from skillopt.envs.spreadsheetbench.evaluator import _generate_cell_names, evaluate
 from skillopt.envs.spreadsheetbench.executor import run_generated_code
-
+from skillopt.envs.spreadsheetbench.react_agent import run_react
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
@@ -558,7 +559,7 @@ def process_one_codegen(
     This matches the official evaluation setting: LLM generates a Python code
     block, no function-calling / tool-use.
     """
-    from skillopt.envs.spreadsheetbench.codegen_agent import run_single, run_multi
+    from skillopt.envs.spreadsheetbench.codegen_agent import run_multi, run_single
 
     task_id = str(item["id"])
     instruction = item["instruction"]
@@ -614,7 +615,9 @@ def process_one_codegen(
 
         # ── Save context for Optimizer (Reflect stage) ──────────────────
         from skillopt.envs.spreadsheetbench.codegen_agent import (
-            _preview_workbook, _build_system, _build_user,
+            _build_system,
+            _build_user,
+            _preview_workbook,
         )
         first_input_for_preview = cases[0][1]
         try:

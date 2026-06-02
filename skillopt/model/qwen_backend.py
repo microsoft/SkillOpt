@@ -1,13 +1,13 @@
 """OpenAI-compatible Qwen chat backend for optimizer and target paths."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
 import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
 
 from skillopt.model.common import (

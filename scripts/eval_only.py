@@ -24,21 +24,20 @@ _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from skillopt.model import (
+from skillopt.model import (  # noqa: E402
     configure_azure_openai,
     configure_claude_code_exec,
     configure_codex_exec,
+    set_optimizer_backend,
+    set_optimizer_deployment,
     set_reasoning_effort,
     set_target_backend,
     set_target_deployment,
-    set_optimizer_backend,
-    set_optimizer_deployment,
 )
-from skillopt.model.common import default_model_for_backend, normalize_backend_name
+from skillopt.model.common import default_model_for_backend, normalize_backend_name  # noqa: E402
 
 _OPENAI_DEFAULT_MODEL_SENTINELS = {"gpt-5.4", "gpt-5.5"}
-from skillopt.utils import compute_score
-
+from skillopt.utils import compute_score  # noqa: E402
 
 # ── Reuse registry from train.py ───────────────────────────────────────────
 
@@ -201,7 +200,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    from skillopt.config import load_config as _load, flatten_config, is_structured
+    from skillopt.config import flatten_config, is_structured
+    from skillopt.config import load_config as _load
 
     cfg = _load(args.config, overrides=args.cfg_options)
     structured = is_structured(cfg)

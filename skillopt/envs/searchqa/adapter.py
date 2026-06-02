@@ -1,7 +1,6 @@
 """SearchQA environment adapter for ReflACT."""
 from __future__ import annotations
 
-import json
 import os
 
 from skillopt.datasets.base import BatchSpec
@@ -9,7 +8,6 @@ from skillopt.envs.base import EnvAdapter
 from skillopt.envs.searchqa.dataloader import SearchQADataLoader
 from skillopt.envs.searchqa.rollout import run_batch
 from skillopt.gradient.reflect import run_minibatch_reflect
-from skillopt.model import get_target_backend
 
 
 class SearchQAAdapter(EnvAdapter):

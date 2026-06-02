@@ -7,7 +7,6 @@ from typing import Any
 from . import azure_openai, claude_backend, codex_backend
 from .common import normalize_backend_name
 
-
 _ACTIVE_BACKEND = normalize_backend_name(
     os.environ.get("REFLACT_MODEL_BACKEND", "azure_openai")
 )

@@ -14,7 +14,7 @@ from pathlib import Path
 class TemplateBenchmarkLoader:
     """
     Data loader for <Your Benchmark Name>.
-    
+
     Rename this class and implement the methods below.
     """
 
@@ -26,9 +26,9 @@ class TemplateBenchmarkLoader:
     def setup(self, cfg: dict):
         """
         Initialize the loader with config.
-        
+
         Called once before training starts.
-        
+
         Args:
             cfg: Dict with keys like 'split_mode', 'train_ratio', 'val_ratio', etc.
         """
@@ -48,13 +48,13 @@ class TemplateBenchmarkLoader:
     def _load_items(self) -> list:
         """
         Load raw data into structured items.
-        
+
         TODO: Implement data loading. Each item should have at minimum:
         - id: unique identifier
         - input: the task input (question, instruction, etc.)
         - ground_truth: the expected answer
         - metadata: optional dict with extra info
-        
+
         Example:
             items = []
             for path in self.data_dir.glob("*.json"):
@@ -91,10 +91,10 @@ class TemplateBenchmarkLoader:
     def get_split_items(self, split: str) -> list:
         """
         Return items for a given split.
-        
+
         Args:
             split: One of "train", "valid", "test"
-            
+
         Returns:
             List of data items for the requested split
         """

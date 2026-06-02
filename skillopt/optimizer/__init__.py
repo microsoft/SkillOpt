@@ -11,5 +11,5 @@ Modules
 - slow_update: longitudinal comparison and guidance (EMA / regularization)
 - meta_skill: cross-epoch memory for optimizer context
 """
-from skillopt.optimizer.skill import apply_edit, apply_patch  # noqa: F401
 from skillopt.optimizer.clip import rank_and_select  # noqa: F401
+from skillopt.optimizer.skill import apply_edit, apply_patch  # noqa: F401

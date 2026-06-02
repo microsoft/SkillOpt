@@ -13,14 +13,12 @@ from __future__ import annotations
 import json
 import os
 import time
-import traceback
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from skillopt.model import chat_target, get_target_backend, is_target_exec_backend
+from skillopt.envs.searchqa.evaluator import evaluate
+from skillopt.model import chat_target, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
-from skillopt.envs.searchqa.evaluator import evaluate
-
 
 # ── Prompt templates ─────────────────────────────────────────────────────────
 

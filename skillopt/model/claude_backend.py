@@ -12,7 +12,13 @@ import time
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from skillopt.model.common import CompatAssistantMessage, CompatToolCall, CompatToolFunction, default_model_for_backend, tracker
+from skillopt.model.common import (
+    CompatAssistantMessage,
+    CompatToolCall,
+    CompatToolFunction,
+    default_model_for_backend,
+    tracker,
+)
 
 CLAUDE_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
 CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "dontAsk")

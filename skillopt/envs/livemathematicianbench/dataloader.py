@@ -10,7 +10,6 @@ from typing import Any
 
 from skillopt.datasets.base import BatchSpec, SplitDataLoader
 
-
 # ── Raw data loading utilities (for preprocessing / standalone eval) ─────
 
 _CHOICE_LABELS = ["A", "B", "C", "D", "E", "F", "G"]

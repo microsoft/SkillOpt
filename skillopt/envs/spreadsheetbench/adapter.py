@@ -12,13 +12,11 @@ from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.envs.spreadsheetbench.dataloader import SpreadsheetBenchDataLoader
 from skillopt.envs.spreadsheetbench.rollout import (
-    process_one,
     run_spreadsheet_batch,
     run_spreadsheet_batch_codegen,
 )
 from skillopt.gradient.reflect import run_minibatch_reflect
-from skillopt.model import get_target_backend, is_target_exec_backend
-
+from skillopt.model import is_target_exec_backend
 
 # Task types used for per-category breakdowns
 TASK_TYPES = ["cell_level", "sheet_level"]

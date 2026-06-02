@@ -11,12 +11,12 @@ BatchSpec              — from skillopt.datasets.base
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields as dc_fields
+from dataclasses import dataclass, field
+from dataclasses import fields as dc_fields
 from typing import Any, Literal
 
-from skillopt.evaluation.gate import GateAction, GateResult  # noqa: F401
 from skillopt.datasets.base import BatchSpec  # noqa: F401
-
+from skillopt.evaluation.gate import GateAction, GateResult  # noqa: F401
 
 # ── Atomic types ─────────────────────────────────────────────────────────
 

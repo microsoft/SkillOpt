@@ -26,9 +26,8 @@ Example::
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-import os
 import random
+from abc import ABC, abstractmethod
 
 from skillopt.datasets.base import BaseDataLoader, BatchSpec
 from skillopt.prompts import load_prompt

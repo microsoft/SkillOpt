@@ -5,20 +5,19 @@ Connects the ReflACT training loop to ALFWorld by implementing
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
+from dataclasses import dataclass
 
 from skillopt.datasets.base import BatchSpec
-from skillopt.envs.base import EnvAdapter
 from skillopt.envs.alfworld.dataloader import ALFWorldDataLoader
 from skillopt.envs.alfworld.rollout import (
+    TASKS,
     build_alfworld_env,
     run_alfworld_batch,
-    TASKS,
 )
+from skillopt.envs.base import EnvAdapter
 from skillopt.gradient.reflect import run_minibatch_reflect
-from skillopt.utils import compute_score
 
 
 @dataclass(frozen=True)

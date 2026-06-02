@@ -9,7 +9,7 @@ Modules
 - reflect: minibatch trajectory analysis (gradient computation)
 - aggregate: hierarchical patch merging (gradient aggregation)
 """
+from skillopt.gradient.aggregate import merge_patches  # noqa: F401
 from skillopt.gradient.reflect import (  # noqa: F401
     run_minibatch_reflect,
 )
-from skillopt.gradient.aggregate import merge_patches  # noqa: F401

@@ -33,13 +33,11 @@ from skillopt.optimizer.update_modes import (
     get_payload_items,
     is_full_rewrite_minibatch_mode,
     normalize_update_mode,
-    payload_key,
     payload_label,
     truncate_payload,
 )
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
-
 
 # ── Trajectory formatting ────────────────────────────────────────────────────
 
@@ -300,9 +298,9 @@ def run_error_analyst_minibatch(
     )
     if is_full_rewrite_minibatch_mode(mode):
         user += (
-            f"## Update Format\n"
-            f"Produce one complete replacement skill candidate for this minibatch. "
-            f"Do not output edits, patches, or revise suggestions.\n\n"
+            "## Update Format\n"
+            "Produce one complete replacement skill candidate for this minibatch. "
+            "Do not output edits, patches, or revise suggestions.\n\n"
         )
     else:
         user += (
@@ -378,9 +376,9 @@ def run_success_analyst_minibatch(
     )
     if is_full_rewrite_minibatch_mode(mode):
         user += (
-            f"## Update Format\n"
-            f"Produce one complete replacement skill candidate for this minibatch. "
-            f"Do not output edits, patches, or revise suggestions.\n\n"
+            "## Update Format\n"
+            "Produce one complete replacement skill candidate for this minibatch. "
+            "Do not output edits, patches, or revise suggestions.\n\n"
         )
     else:
         user += (

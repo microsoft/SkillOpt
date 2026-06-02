@@ -26,7 +26,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 GateAction = Literal["accept_new_best", "accept", "reject"]
 GateMetric = Literal["hard", "soft", "mixed"]
 
