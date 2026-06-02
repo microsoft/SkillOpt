@@ -1,8 +1,6 @@
 """Tests for skillopt.utils.json_utils."""
 from __future__ import annotations
 
-import pytest
-
 from skillopt.utils.json_utils import extract_json, extract_json_array
 
 
@@ -38,6 +36,14 @@ class TestExtractJson:
     def test_nested_json(self) -> None:
         text = '```json\n{"outer": {"inner": [1, 2, 3]}}\n```'
         assert extract_json(text) == {"outer": {"inner": [1, 2, 3]}}
+
+    def test_multiple_objects_returns_first_valid_object(self) -> None:
+        text = 'first {"a": 1} second {"b": 2}'
+        assert extract_json(text) == {"a": 1}
+
+    def test_fenced_array_does_not_satisfy_object_extraction(self) -> None:
+        text = '```json\n[1, 2, 3]\n```\nthen {"fallback": true}'
+        assert extract_json(text) == {"fallback": True}
 
     def test_no_json_returns_none(self) -> None:
         assert extract_json("Just plain text without JSON.") is None
@@ -89,6 +95,14 @@ class TestExtractJsonArray:
     def test_nested_array(self) -> None:
         text = '```json\n[[1, 2], [3, 4]]\n```'
         assert extract_json_array(text) == [[1, 2], [3, 4]]
+
+    def test_multiple_arrays_returns_first_valid_array(self) -> None:
+        text = 'first [1] second [2]'
+        assert extract_json_array(text) == [1]
+
+    def test_fenced_object_does_not_satisfy_array_extraction(self) -> None:
+        text = '```json\n{"not": "array"}\n```\nthen ["fallback"]'
+        assert extract_json_array(text) == ["fallback"]
 
     def test_no_array_returns_none(self) -> None:
         assert extract_json_array("no brackets here") is None
