@@ -16,7 +16,9 @@ from skillopt.envs.gitmoot.result_contract import (
     make_unscored_evaluation,
     normalize_scored_evaluation,
 )
-from skillopt.model import chat_target, is_target_chat_backend
+from skillopt.model import chat_target, get_target_backend, is_target_chat_backend, is_target_exec_backend
+from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
+from skillopt.model.common import default_model_for_backend
 
 
 def run_batch(
@@ -51,7 +53,7 @@ def process_one(
     prediction_id = safe_item_path_segment(item_id)
     pred_dir = os.path.join(out_root, "predictions", prediction_id)
     os.makedirs(pred_dir, exist_ok=True)
-    target_trace_path = os.path.join(pred_dir, "conversation.json")
+    target_trace_path = _target_trace_path(pred_dir, item)
     evaluator_trace_path = os.path.join(pred_dir, "result.json")
     system_prompt = _build_system_prompt(skill_content)
     user_prompt = str(item.get("prompt") or "")
@@ -61,7 +63,7 @@ def process_one(
     agent_failed = False
 
     try:
-        response = _run_agent(item, system_prompt, user_prompt, max_completion_tokens)
+        response = _run_agent(item, skill_content, system_prompt, user_prompt, max_completion_tokens, pred_dir)
         agent_ok = True
     except Exception as exc:  # noqa: BLE001 - rollout result records the failure.
         agent_failed = True
@@ -128,15 +130,22 @@ def process_one(
 
 def _run_agent(
     item: dict[str, Any],
+    skill_content: str,
     system_prompt: str,
     user_prompt: str,
     max_completion_tokens: int,
+    pred_dir: str,
 ) -> str:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    if metadata.get("mock_response") is not None:
+    if _has_mock_response(item):
         return str(metadata["mock_response"])
+    if is_target_exec_backend():
+        response = _run_exec_agent(item, skill_content, system_prompt, user_prompt, pred_dir)
+        if not response.strip():
+            raise RuntimeError("exec target returned empty response")
+        return response
     if not is_target_chat_backend():
-        raise RuntimeError("Gitmoot rollout currently requires a chat target backend or metadata.mock_response")
+        raise RuntimeError("Gitmoot rollout requires a chat target backend, exec target backend, or metadata.mock_response")
     response, _usage = chat_target(
         system=system_prompt,
         user=user_prompt,
@@ -145,6 +154,83 @@ def _run_agent(
         stage="gitmoot_rollout",
     )
     return response
+
+
+def _run_exec_agent(
+    item: dict[str, Any],
+    skill_content: str,
+    system_prompt: str,
+    user_prompt: str,
+    pred_dir: str,
+) -> str:
+    del item
+    work_dir = os.path.join(pred_dir, "target_exec")
+    skill_md = render_skill_md(
+        skill_content,
+        description="Dynamic Gitmoot SkillOpt agent-template guidance.",
+        preamble="Use this Gitmoot agent-template guidance to complete the task in `task.md`.",
+    )
+    prepare_workspace(
+        work_dir=work_dir,
+        skill_md=skill_md,
+        task_text=user_prompt,
+    )
+    model = os.environ.get("TARGET_DEPLOYMENT") or default_model_for_backend(get_target_backend())
+    try:
+        response, raw = run_target_exec(
+            work_dir=work_dir,
+            prompt=_build_exec_prompt(system_prompt),
+            model=model,
+            timeout=900,
+            allow_file_edits=False,
+        )
+    except Exception as exc:
+        _write_target_exec_trace_alias(pred_dir, error=str(exc) or "exec target failed")
+        raise
+    _write_target_exec_trace_alias(pred_dir, raw=raw)
+    with open(os.path.join(pred_dir, "target_exec_response.txt"), "w", encoding="utf-8") as handle:
+        handle.write(response)
+    return response
+
+
+def _build_exec_prompt(system_prompt: str) -> str:
+    return "\n\n".join(
+        [
+            "Use the `skillopt-target` skill available in this workspace.",
+            "Read `.agents/skills/skillopt-target/SKILL.md` directly; do not call a Skill tool.",
+            "Read `task.md` and complete the Gitmoot SkillOpt target task.",
+            "Return only the requested response text.",
+            "## System Instructions",
+            system_prompt,
+        ]
+    )
+
+
+def _write_target_exec_trace_alias(pred_dir: str, raw: str = "", error: str = "") -> None:
+    alias_path = os.path.join(pred_dir, "target_exec_raw.txt")
+    content = raw
+    if not content:
+        for name in ("codex_raw.txt", "claude_raw.txt"):
+            source_path = os.path.join(pred_dir, name)
+            if os.path.exists(source_path):
+                with open(source_path, encoding="utf-8") as handle:
+                    content = handle.read()
+                break
+    if not content:
+        content = f"exec target failed before raw trace was captured: {error}"
+    with open(alias_path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+
+
+def _has_mock_response(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    return metadata.get("mock_response") is not None
+
+
+def _target_trace_path(pred_dir: str, item: dict[str, Any]) -> str:
+    if is_target_exec_backend() and not _has_mock_response(item):
+        return os.path.join(pred_dir, "target_exec_raw.txt")
+    return os.path.join(pred_dir, "conversation.json")
 
 
 def _build_system_prompt(skill_content: str) -> str:

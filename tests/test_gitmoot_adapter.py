@@ -246,6 +246,150 @@ def test_unscored_result_serializes_null_scores(tmp_path):
     assert persisted["metadata"]["score_status"] == "unscored"
 
 
+def test_exec_target_backend_runs_harness_and_persists_raw_trace(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_exec(**kwargs):
+        captured.update(kwargs)
+        return "exec response", "raw exec trace"
+
+    monkeypatch.setenv("TARGET_DEPLOYMENT", "gpt-test")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    item = {
+        "id": "exec-item",
+        "prompt": "Prompt",
+        "metadata": {"expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["response"] == "exec response"
+    assert result["hard"] == 1
+    assert result["score_status"] == "scored"
+    assert captured["model"] == "gpt-test"
+    assert captured["work_dir"].endswith("predictions/exec-item/target_exec")
+    assert "## System Instructions" in captured["prompt"]
+    assert (tmp_path / "predictions" / "exec-item" / "target_exec" / "task.md").is_file()
+    assert (
+        tmp_path
+        / "predictions"
+        / "exec-item"
+        / "target_exec"
+        / ".agents"
+        / "skills"
+        / "skillopt-target"
+        / "SKILL.md"
+    ).is_file()
+    raw_path = tmp_path / "predictions" / "exec-item" / "target_exec_raw.txt"
+    assert raw_path.read_text(encoding="utf-8") == "raw exec trace"
+    assert result["target_trace_path"] == str(raw_path)
+
+
+def test_mock_response_under_exec_backend_records_conversation_trace(tmp_path, monkeypatch):
+    def fail_exec(**kwargs):
+        raise AssertionError("mock response should not invoke exec target")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fail_exec)
+    item = {
+        "id": "mock-exec",
+        "prompt": "Prompt",
+        "metadata": {"mock_response": "fixture response", "expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    conversation_path = tmp_path / "predictions" / "mock-exec" / "conversation.json"
+    assert result["response"] == "fixture response"
+    assert result["hard"] == 1
+    assert result["score_status"] == "scored"
+    assert result["target_trace_path"] == str(conversation_path)
+    assert conversation_path.is_file()
+    assert not (tmp_path / "predictions" / "mock-exec" / "target_exec_raw.txt").exists()
+
+
+def test_empty_exec_target_response_is_unscored_target_failure(tmp_path, monkeypatch):
+    def fake_exec(**kwargs):
+        return "", "raw exec trace"
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    item = {
+        "id": "empty-exec",
+        "prompt": "Prompt",
+        "metadata": {"expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["target_status"] == "failed"
+    assert result["evaluator_status"] == "not_run"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "target_rollout_failed"
+    assert result["fail_reason"] == "exec target returned empty response"
+    assert (tmp_path / "predictions" / "empty-exec" / "target_exec_raw.txt").is_file()
+
+
+def test_exec_target_exception_preserves_existing_raw_trace(tmp_path, monkeypatch):
+    def fail_exec(**kwargs):
+        pred_dir = tmp_path / "predictions" / "exec-error"
+        (pred_dir / "codex_raw.txt").write_text("codex failure trace", encoding="utf-8")
+        raise RuntimeError("codex failed")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fail_exec)
+    item = {
+        "id": "exec-error",
+        "prompt": "Prompt",
+        "metadata": {"expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    raw_path = tmp_path / "predictions" / "exec-error" / "target_exec_raw.txt"
+    assert result["hard"] is None
+    assert result["target_status"] == "failed"
+    assert result["score_status"] == "unscored"
+    assert result["fail_reason"] == "codex failed"
+    assert raw_path.read_text(encoding="utf-8") == "codex failure trace"
+    assert result["target_trace_path"] == str(raw_path)
+
+
+def test_unsupported_target_backend_is_unscored_target_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    item = {
+        "id": "unsupported-target",
+        "prompt": "Prompt",
+        "metadata": {"expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["target_status"] == "failed"
+    assert result["evaluator_status"] == "not_run"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "target_rollout_failed"
+    assert "chat target backend, exec target backend" in result["fail_reason"]
+
+
 def test_contains_evaluator_is_deterministic():
     item = {"metadata": {"required_text": "ship it"}}
 
