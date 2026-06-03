@@ -6,6 +6,7 @@ from typing import Any
 
 from skillopt.model import azure_openai as _openai
 from skillopt.model import claude_backend as _claude
+from skillopt.model import codex_backend as _codex
 from skillopt.model import minimax_backend as _minimax
 from skillopt.model import qwen_backend as _qwen
 from skillopt.model.backend_config import (  # noqa: F401
@@ -40,7 +41,7 @@ def set_backend(name: str | None) -> str:
         set_target_backend("claude_chat")
         return "claude_chat"
     if normalized == "codex":
-        set_optimizer_backend("openai_chat")
+        set_optimizer_backend("codex")
         set_target_backend("codex_exec")
         return "codex"
     if normalized in {"codex_exec", "claude_code_exec"}:
@@ -66,7 +67,7 @@ def get_backend_name() -> str:
         return "claude_chat"
     if optimizer == "openai_chat" and target == "openai_chat":
         return "azure_openai"
-    if optimizer == "openai_chat" and target == "codex_exec":
+    if optimizer == "codex" and target == "codex_exec":
         return "codex"
     if optimizer == "openai_chat" and target == "qwen_chat":
         return "qwen_chat"
@@ -86,6 +87,15 @@ def chat_optimizer(
 ) -> tuple[str, dict]:
     if get_optimizer_backend() == "claude_chat":
         return _claude.chat_optimizer(
+            system=system,
+            user=user,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            timeout=timeout,
+        )
+    if get_optimizer_backend() == "codex":
+        return _codex.chat_optimizer(
             system=system,
             user=user,
             max_completion_tokens=max_completion_tokens,
@@ -170,6 +180,17 @@ def chat_optimizer_messages(
 ) -> tuple[Any, dict]:
     if get_optimizer_backend() == "claude_chat":
         return _claude.chat_optimizer_messages(
+            messages=messages,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            tools=tools,
+            tool_choice=tool_choice,
+            return_message=return_message,
+            timeout=timeout,
+        )
+    if get_optimizer_backend() == "codex":
+        return _codex.chat_optimizer_messages(
             messages=messages,
             max_completion_tokens=max_completion_tokens,
             retries=retries,
@@ -454,6 +475,7 @@ def set_reasoning_effort(effort: str | None) -> None:
 def set_target_deployment(deployment: str) -> None:
     _openai.set_target_deployment(deployment)
     _claude.set_target_deployment(deployment)
+    _codex.set_target_deployment(deployment)
     _qwen.set_target_deployment(deployment)
     _minimax.set_target_deployment(deployment)
 
@@ -461,3 +483,4 @@ def set_target_deployment(deployment: str) -> None:
 def set_optimizer_deployment(deployment: str) -> None:
     _openai.set_optimizer_deployment(deployment)
     _claude.set_optimizer_deployment(deployment)
+    _codex.set_optimizer_deployment(deployment)

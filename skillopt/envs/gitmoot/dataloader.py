@@ -260,10 +260,7 @@ class GitmootDataLoader(BaseDataLoader):
 
     def _deterministic_holdout_split(self, items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         if len(items) < 3:
-            raise ValueError(
-                "Gitmoot packages without metadata.split require at least three items "
-                "to create disjoint train, val, and test splits"
-            )
+            return self._small_package_split(items)
         shuffled = list(items)
         random.Random(self.seed).shuffle(shuffled)
         test_count = max(1, len(shuffled) // 5)
@@ -277,6 +274,20 @@ class GitmootDataLoader(BaseDataLoader):
             "test": [dict(item, split="test") for item in shuffled[train_count + val_count :]],
         }
         return splits
+
+    def _small_package_split(self, items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        if not items:
+            raise ValueError("Gitmoot split planning requires at least one item")
+        shuffled = list(items)
+        random.Random(self.seed).shuffle(shuffled)
+        train = dict(shuffled[0], split="train")
+        val_source = shuffled[1] if len(shuffled) > 1 else shuffled[0]
+        test_source = shuffled[1] if len(shuffled) > 1 else shuffled[0]
+        return {
+            "train": [train],
+            "val": [dict(val_source, split="val")],
+            "test": [dict(test_source, split="test")],
+        }
 
     def _validate_splits(self, splits: dict[str, list[dict[str, Any]]], *, explicit: bool) -> None:
         missing = [name for name in ("train", "val", "test") if not splits.get(name)]
