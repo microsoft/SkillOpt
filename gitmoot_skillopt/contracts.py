@@ -64,6 +64,42 @@ def _require_int(value: Any, label: str) -> int:
     return value
 
 
+def _optional_number(value: Any, label: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ContractError(f"{label} must be numeric")
+    return float(value)
+
+
+def _optional_string_list(value: Any, label: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ContractError(f"{label} must be a list")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ContractError(f"{label} must contain strings")
+        normalized.append(item.strip())
+    return normalized
+
+
+def _optional_dimension_scores(value: Any) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ContractError("evaluator_score.dimension_scores must be an object")
+    scores: dict[str, float] = {}
+    for key, score in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ContractError("evaluator_score.dimension_scores keys must be strings")
+        if score is None:
+            raise ContractError("evaluator_score.dimension_scores value must be numeric")
+        scores[key.strip()] = _optional_number(score, "evaluator_score.dimension_scores value")
+    return scores
+
+
 def _raw_json(value: Any) -> Any:
     if value is None:
         return None
@@ -264,6 +300,300 @@ class ArtifactRef:
             "size_bytes": self.size_bytes,
             "driver": self.driver,
         }
+
+
+@dataclass(frozen=True)
+class EvaluatorCheckConfig:
+    id: str = ""
+    type: str = ""
+    when: str = ""
+    required: bool = False
+    config: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EvaluatorCheckConfig:
+        data = _require_mapping(data, "evaluator_profile.checks item")
+        required = data.get("required", False)
+        if not isinstance(required, bool):
+            raise ContractError("evaluator_profile.checks.required must be a boolean")
+        return cls(
+            id=_optional_string(data.get("id")),
+            type=_optional_string(data.get("type")),
+            when=_optional_string(data.get("when")),
+            required=required,
+            config=_raw_json(data.get("config")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.id:
+            data["id"] = self.id
+        if self.type:
+            data["type"] = self.type
+        if self.when:
+            data["when"] = self.when
+        if self.required:
+            data["required"] = self.required
+        if self.config is not None:
+            data["config"] = self.config
+        return data
+
+
+@dataclass(frozen=True)
+class EvaluatorJudgeConfig:
+    type: str = ""
+    when: str = ""
+    model: str = ""
+    config: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> EvaluatorJudgeConfig | None:
+        if data is None:
+            return None
+        data = _require_mapping(data, "evaluator_profile.judge")
+        return cls(
+            type=_optional_string(data.get("type")),
+            when=_optional_string(data.get("when")),
+            model=_optional_string(data.get("model")),
+            config=_raw_json(data.get("config")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.type:
+            data["type"] = self.type
+        if self.when:
+            data["when"] = self.when
+        if self.model:
+            data["model"] = self.model
+        if self.config is not None:
+            data["config"] = self.config
+        return data
+
+
+@dataclass(frozen=True)
+class EvaluatorProfile:
+    profile_id: str = ""
+    task_kind: str = ""
+    artifact_contract: str = ""
+    preview_adapter: str = ""
+    checks: list[EvaluatorCheckConfig] = field(default_factory=list)
+    judge: EvaluatorJudgeConfig | None = None
+    metadata: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> EvaluatorProfile | None:
+        if data is None:
+            return None
+        data = _require_mapping(data, "evaluator_profile")
+        checks = data.get("checks", [])
+        if not isinstance(checks, list):
+            raise ContractError("evaluator_profile.checks must be a list")
+        return cls(
+            profile_id=_optional_string(data.get("profile_id")),
+            task_kind=_optional_string(data.get("task_kind")),
+            artifact_contract=_optional_string(data.get("artifact_contract")),
+            preview_adapter=_optional_string(data.get("preview_adapter")),
+            checks=[EvaluatorCheckConfig.from_dict(check) for check in checks],
+            judge=EvaluatorJudgeConfig.from_dict(data.get("judge")),
+            metadata=_raw_json(data.get("metadata")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.profile_id:
+            data["profile_id"] = self.profile_id
+        if self.task_kind:
+            data["task_kind"] = self.task_kind
+        if self.artifact_contract:
+            data["artifact_contract"] = self.artifact_contract
+        if self.preview_adapter:
+            data["preview_adapter"] = self.preview_adapter
+        if self.checks:
+            data["checks"] = [check.to_dict() for check in self.checks]
+        if self.judge is not None:
+            data["judge"] = self.judge.to_dict()
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
+        return data
+
+
+@dataclass(frozen=True)
+class EvaluatorStageStatus:
+    stage: str = ""
+    status: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    duration_ms: int = 0
+    details: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EvaluatorStageStatus:
+        data = _require_mapping(data, "evaluator stage status")
+        duration_ms = data.get("duration_ms", 0)
+        if duration_ms is None:
+            duration_ms = 0
+        if isinstance(duration_ms, bool) or not isinstance(duration_ms, int):
+            raise ContractError("evaluator stage status duration_ms must be an integer")
+        return cls(
+            stage=_optional_string(data.get("stage")),
+            status=_optional_string(data.get("status")),
+            started_at=_optional_string(data.get("started_at")),
+            finished_at=_optional_string(data.get("finished_at")),
+            duration_ms=duration_ms,
+            details=_raw_json(data.get("details")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.stage:
+            data["stage"] = self.stage
+        if self.status:
+            data["status"] = self.status
+        if self.started_at:
+            data["started_at"] = self.started_at
+        if self.finished_at:
+            data["finished_at"] = self.finished_at
+        if self.duration_ms:
+            data["duration_ms"] = self.duration_ms
+        if self.details is not None:
+            data["details"] = self.details
+        return data
+
+
+@dataclass(frozen=True)
+class EvaluatorCheckResult:
+    check: str = ""
+    severity: str = ""
+    reason: str = ""
+    evidence: list[str] = field(default_factory=list)
+    metadata: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EvaluatorCheckResult:
+        data = _require_mapping(data, "evaluator failed check")
+        return cls(
+            check=_optional_string(data.get("check")),
+            severity=_optional_string(data.get("severity")),
+            reason=_optional_string(data.get("reason")),
+            evidence=_optional_string_list(data.get("evidence"), "evaluator failed check evidence"),
+            metadata=_raw_json(data.get("metadata")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.check:
+            data["check"] = self.check
+        if self.severity:
+            data["severity"] = self.severity
+        if self.reason:
+            data["reason"] = self.reason
+        if self.evidence:
+            data["evidence"] = self.evidence
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
+        return data
+
+
+@dataclass(frozen=True)
+class EvaluatorFailurePacket:
+    primary_reason: str = ""
+    human_reason: str = ""
+    optimizer_hint: str = ""
+    failed_checks: list[EvaluatorCheckResult] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    stage_status: list[EvaluatorStageStatus] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> EvaluatorFailurePacket | None:
+        if data is None:
+            return None
+        data = _require_mapping(data, "evaluator failure")
+        failed_checks = data.get("failed_checks", [])
+        if not isinstance(failed_checks, list):
+            raise ContractError("evaluator failure failed_checks must be a list")
+        stage_status = data.get("stage_status", [])
+        if not isinstance(stage_status, list):
+            raise ContractError("evaluator failure stage_status must be a list")
+        return cls(
+            primary_reason=_optional_string(data.get("primary_reason")),
+            human_reason=_optional_string(data.get("human_reason")),
+            optimizer_hint=_optional_string(data.get("optimizer_hint")),
+            failed_checks=[EvaluatorCheckResult.from_dict(check) for check in failed_checks],
+            evidence=_optional_string_list(data.get("evidence"), "evaluator failure evidence"),
+            stage_status=[EvaluatorStageStatus.from_dict(stage) for stage in stage_status],
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.primary_reason:
+            data["primary_reason"] = self.primary_reason
+        if self.human_reason:
+            data["human_reason"] = self.human_reason
+        if self.optimizer_hint:
+            data["optimizer_hint"] = self.optimizer_hint
+        if self.failed_checks:
+            data["failed_checks"] = [check.to_dict() for check in self.failed_checks]
+        if self.evidence:
+            data["evidence"] = self.evidence
+        if self.stage_status:
+            data["stage_status"] = [stage.to_dict() for stage in self.stage_status]
+        return data
+
+
+@dataclass(frozen=True)
+class EvaluatorScore:
+    profile_id: str = ""
+    task_kind: str = ""
+    hard: float | None = None
+    soft: float | None = None
+    dimension_scores: dict[str, float] | None = None
+    fail_reason: str = ""
+    failure: EvaluatorFailurePacket | None = None
+    stage_status: list[EvaluatorStageStatus] = field(default_factory=list)
+    metadata: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> EvaluatorScore | None:
+        if data is None:
+            return None
+        data = _require_mapping(data, "evaluator_score")
+        stage_status = data.get("stage_status", [])
+        if not isinstance(stage_status, list):
+            raise ContractError("evaluator_score.stage_status must be a list")
+        return cls(
+            profile_id=_optional_string(data.get("profile_id")),
+            task_kind=_optional_string(data.get("task_kind")),
+            hard=_optional_number(data.get("hard"), "evaluator_score.hard"),
+            soft=_optional_number(data.get("soft"), "evaluator_score.soft"),
+            dimension_scores=_optional_dimension_scores(data.get("dimension_scores")),
+            fail_reason=_optional_string(data.get("fail_reason")),
+            failure=EvaluatorFailurePacket.from_dict(data.get("failure")),
+            stage_status=[EvaluatorStageStatus.from_dict(stage) for stage in stage_status],
+            metadata=_raw_json(data.get("metadata")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.profile_id:
+            data["profile_id"] = self.profile_id
+        if self.task_kind:
+            data["task_kind"] = self.task_kind
+        if self.hard is not None:
+            data["hard"] = self.hard
+        if self.soft is not None:
+            data["soft"] = self.soft
+        if self.dimension_scores is not None:
+            data["dimension_scores"] = self.dimension_scores
+        if self.fail_reason:
+            data["fail_reason"] = self.fail_reason
+        if self.failure is not None:
+            data["failure"] = self.failure.to_dict()
+        if self.stage_status:
+            data["stage_status"] = [stage.to_dict() for stage in self.stage_status]
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
+        return data
 
 
 @dataclass(frozen=True)
@@ -545,6 +875,7 @@ class TrainingPackage:
     feedback_events: list[FeedbackEvent] = field(default_factory=list)
     ranked_feedback_events: list[RankedFeedbackEvent] = field(default_factory=list)
     evaluator_config: Any = None
+    evaluator_profile: EvaluatorProfile | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrainingPackage:
@@ -564,6 +895,7 @@ class TrainingPackage:
                 RankedFeedbackEvent.from_dict(event) for event in data.get("ranked_feedback_events", [])
             ],
             evaluator_config=_raw_json(data.get("evaluator_config")),
+            evaluator_profile=EvaluatorProfile.from_dict(data.get("evaluator_profile")),
         )
         package.validate()
         return package
@@ -629,6 +961,8 @@ class TrainingPackage:
             data["ranked_feedback_events"] = [event.to_dict() for event in self.ranked_feedback_events]
         if self.evaluator_config is not None:
             data["evaluator_config"] = self.evaluator_config
+        if self.evaluator_profile is not None:
+            data["evaluator_profile"] = self.evaluator_profile.to_dict()
         return data
 
     def dump(self, path: str | Path) -> None:
@@ -660,6 +994,8 @@ class CandidateSummary:
     score: float | None = None
     preference_summary: str = ""
     metadata: Any = None
+    evaluator_score: EvaluatorScore | None = None
+    failure: EvaluatorFailurePacket | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> CandidateSummary:
@@ -674,6 +1010,8 @@ class CandidateSummary:
             score=float(score) if score is not None else None,
             preference_summary=_optional_string(data.get("preference_summary")),
             metadata=_raw_json(data.get("metadata")),
+            evaluator_score=EvaluatorScore.from_dict(data.get("evaluator_score")),
+            failure=EvaluatorFailurePacket.from_dict(data.get("failure")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -685,6 +1023,10 @@ class CandidateSummary:
             data["score"] = self.score
         if self.metadata is not None:
             data["metadata"] = self.metadata
+        if self.evaluator_score is not None:
+            data["evaluator_score"] = self.evaluator_score.to_dict()
+        if self.failure is not None:
+            data["failure"] = self.failure.to_dict()
         return data
 
 

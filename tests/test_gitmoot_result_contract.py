@@ -3,6 +3,12 @@ from __future__ import annotations
 import pytest
 
 from skillopt.engine.trainer import _compute_task_type_buckets, _extract_failure_patterns
+from skillopt.envs.gitmoot.result_contract import (
+    EVALUATOR_FAILED,
+    TARGET_PASSED,
+    make_unscored_evaluation,
+    normalize_scored_evaluation,
+)
 from skillopt.utils.scoring import compute_score
 
 
@@ -67,3 +73,66 @@ def test_failure_patterns_include_unscored_results(tmp_path):
 
     assert patterns
     assert patterns[0]["pattern"] == "judge was not configured"
+
+
+def test_scored_evaluation_preserves_structured_failure_feedback():
+    result = normalize_scored_evaluation(
+        {
+            "hard": 0,
+            "soft": 0.2,
+            "fail_reason": "missing required artifact",
+            "profile_id": "vue_landing_page_v1",
+            "task_kind": "vue_landing_page",
+            "dimension_scores": {"artifact_contract": 0, "visual": 0.2},
+            "failure": {
+                "primary_reason": "missing_required_artifact",
+                "optimizer_hint": "Return the required Vue/Vite preview bundle before optimizing visual polish.",
+            },
+            "stage_status": [{"stage": "artifact_contract", "status": "failed"}],
+        }
+    )
+
+    assert result["hard"] == 0
+    assert result["profile_id"] == "vue_landing_page_v1"
+    assert result["dimension_scores"]["artifact_contract"] == 0
+    assert result["failure"]["primary_reason"] == "missing_required_artifact"
+    assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required Vue")
+
+
+def test_invalid_scored_evaluation_preserves_structured_failure_feedback():
+    result = normalize_scored_evaluation(
+        {
+            "hard": "not-a-score",
+            "soft": 0,
+            "metadata": {"evaluator": "fixture"},
+            "failure": {
+                "primary_reason": "invalid_score_with_failure_context",
+                "optimizer_hint": "Keep the evaluator failure packet even when score parsing fails.",
+            },
+        }
+    )
+
+    assert result["hard"] is None
+    assert result["score_status"] == "unscored"
+    assert result["failure"]["primary_reason"] == "invalid_score_with_failure_context"
+    assert result["metadata"]["failure"]["optimizer_hint"].startswith("Keep the evaluator failure packet")
+
+
+def test_unscored_evaluation_preserves_structured_failure_feedback_from_metadata():
+    result = make_unscored_evaluation(
+        fail_reason="render smoke failed",
+        target_status=TARGET_PASSED,
+        evaluator_status=EVALUATOR_FAILED,
+        blocker="render_smoke_failed",
+        metadata={
+            "failure": {
+                "primary_reason": "render_smoke_failed",
+                "optimizer_hint": "Fix the runtime error before sending the page to the visual judge.",
+            },
+            "stage_status": [{"stage": "render_smoke", "status": "failed"}],
+        },
+    )
+
+    assert result["hard"] is None
+    assert result["failure"]["primary_reason"] == "render_smoke_failed"
+    assert result["metadata"]["stage_status"][0]["stage"] == "render_smoke"

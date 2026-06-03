@@ -14,6 +14,18 @@ EVALUATOR_NOT_RUN = "not_run"
 SCORE_SCORED = "scored"
 SCORE_UNSCORED = "unscored"
 DEFAULT_EVALUATOR_VERSION = "v0"
+STRUCTURED_EVALUATOR_FIELDS = (
+    "profile_id",
+    "task_kind",
+    "dimension_scores",
+    "failure",
+    "primary_reason",
+    "human_reason",
+    "optimizer_hint",
+    "failed_checks",
+    "evidence",
+    "stage_status",
+)
 
 
 def normalize_scored_evaluation(
@@ -33,6 +45,7 @@ def normalize_scored_evaluation(
         or DEFAULT_EVALUATOR_VERSION
     )
     if hard is None or soft is None:
+        structured = _structured_evaluator_fields(score, metadata)
         return make_unscored_evaluation(
             fail_reason="evaluator returned invalid hard/soft scores",
             target_status=TARGET_PASSED,
@@ -42,12 +55,14 @@ def normalize_scored_evaluation(
             evaluator_version=evaluator_version,
             target_trace_path=target_trace_path,
             evaluator_trace_path=evaluator_trace_path,
-            metadata=metadata,
+            metadata={**metadata, **structured},
         )
+    structured = _structured_evaluator_fields(score, metadata)
     return {
         "hard": hard,
         "soft": soft,
         "fail_reason": str(score.get("fail_reason") or ""),
+        **structured,
         "target_status": TARGET_PASSED,
         "evaluator_status": EVALUATOR_PASSED,
         "score_status": SCORE_SCORED,
@@ -58,6 +73,7 @@ def normalize_scored_evaluation(
         "evaluator_trace_path": evaluator_trace_path,
         "metadata": {
             **metadata,
+            **structured,
             "target_status": TARGET_PASSED,
             "evaluator_status": EVALUATOR_PASSED,
             "score_status": SCORE_SCORED,
@@ -83,8 +99,10 @@ def make_unscored_evaluation(
     reason = fail_reason or blocker or "unscored evaluation"
     normalized_metadata = dict(metadata or {})
     normalized_metadata.setdefault("evaluator", evaluator_id or "not_run")
+    structured = _structured_evaluator_fields(normalized_metadata)
     normalized_metadata.update(
         {
+            **structured,
             "target_status": target_status,
             "evaluator_status": evaluator_status,
             "score_status": SCORE_UNSCORED,
@@ -97,6 +115,7 @@ def make_unscored_evaluation(
         "hard": None,
         "soft": None,
         "fail_reason": reason,
+        **structured,
         "target_status": target_status,
         "evaluator_status": evaluator_status,
         "score_status": SCORE_UNSCORED,
@@ -148,3 +167,14 @@ def _parse_soft(value: Any) -> float | None:
     if not math.isfinite(number):
         return None
     return max(0.0, min(1.0, number))
+
+
+def _structured_evaluator_fields(*sources: dict[str, Any]) -> dict[str, Any]:
+    structured: dict[str, Any] = {}
+    for key in STRUCTURED_EVALUATOR_FIELDS:
+        for source in sources:
+            value = source.get(key)
+            if value is not None:
+                structured[key] = value
+                break
+    return structured

@@ -11,6 +11,7 @@ from skillopt.envs.gitmoot.package import safe_item_path_segment
 from skillopt.envs.gitmoot.result_contract import (
     EVALUATOR_FAILED,
     EVALUATOR_NOT_RUN,
+    STRUCTURED_EVALUATOR_FIELDS,
     TARGET_FAILED,
     TARGET_PASSED,
     make_unscored_evaluation,
@@ -124,6 +125,9 @@ def process_one(
         "target_system_prompt": system_prompt,
         "target_user_prompt": user_prompt,
     }
+    for key in STRUCTURED_EVALUATOR_FIELDS:
+        if key in score:
+            result[key] = score[key]
     _write_prediction(pred_dir, result)
     return result
 

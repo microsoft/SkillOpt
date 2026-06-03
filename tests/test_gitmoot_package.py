@@ -203,6 +203,40 @@ def test_training_package_loads_and_round_trips(tmp_path):
     assert loaded.ranked_feedback_events[0].promote == "no"
 
 
+def test_training_package_evaluator_profile_round_trips():
+    data = training_package_dict()
+    data["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+        "preview_adapter": "vue_vite",
+        "checks": [
+            {"id": "required_files", "type": "artifact_contract", "required": True},
+            {"id": "render_smoke", "type": "playwright", "when": "checks_pass", "config": {"viewport": "mobile"}},
+        ],
+        "judge": {"type": "screenshot_llm", "when": "checks_pass", "model": "gpt-evaluator"},
+        "metadata": {"source": "issue-109"},
+    }
+
+    package = TrainingPackage.from_dict(data)
+
+    assert package.evaluator_profile is not None
+    assert package.evaluator_profile.profile_id == "vue_landing_page_v1"
+    assert package.evaluator_profile.checks[1].config == {"viewport": "mobile"}
+    assert package.to_dict()["evaluator_profile"] == data["evaluator_profile"]
+
+
+def test_training_package_rejects_malformed_evaluator_profile_check():
+    data = training_package_dict()
+    data["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "checks": [{"id": "required_files", "required": "yes"}],
+    }
+
+    with pytest.raises(ContractError, match="required must be a boolean"):
+        TrainingPackage.from_dict(data)
+
+
 def test_training_package_rejects_wrong_kind():
     data = training_package_dict()
     data["kind"] = "wrong"
@@ -335,6 +369,50 @@ def test_candidate_package_validates_content_metadata_consistency():
     assert package.to_dict()["candidate"]["metadata"] == metadata()
 
 
+def test_candidate_package_evaluator_score_and_failure_round_trip():
+    data = candidate_package_dict()
+    data["summary"] = {
+        **data["summary"],  # type: ignore[arg-type]
+        "evaluator_score": {
+            "profile_id": "vue_landing_page_v1",
+            "task_kind": "vue_landing_page",
+            "hard": 0,
+            "soft": 0.12,
+            "dimension_scores": {"artifact_contract": 0, "render_smoke": 0.25},
+            "fail_reason": "missing required artifact",
+            "failure": {
+                "primary_reason": "missing_required_artifact",
+                "human_reason": "The response did not include the required Vue/Vite preview bundle.",
+                "optimizer_hint": "Return serialized bundle JSON with required files.",
+                "failed_checks": [
+                    {
+                        "check": "artifact_contract.required_files",
+                        "severity": "hard_blocker",
+                        "reason": "src/App.vue was not present.",
+                        "evidence": ["src/App.vue missing"],
+                    }
+                ],
+                "evidence": ["bundle JSON shape missing"],
+                "stage_status": [{"stage": "artifact_contract", "status": "failed", "duration_ms": 7}],
+            },
+            "stage_status": [{"stage": "judge", "status": "not_run"}],
+        },
+        "failure": {
+            "primary_reason": "candidate_rejected",
+            "optimizer_hint": "Fix hard evaluator blockers before judging visuals.",
+        },
+    }
+
+    package = CandidatePackage.from_dict(data)
+
+    assert package.summary.evaluator_score is not None
+    assert package.summary.evaluator_score.dimension_scores == {"artifact_contract": 0.0, "render_smoke": 0.25}
+    assert package.summary.evaluator_score.failure is not None
+    assert package.summary.evaluator_score.failure.failed_checks[0].check == "artifact_contract.required_files"
+    assert package.summary.failure is not None
+    assert package.to_dict()["summary"]["evaluator_score"]["failure"]["primary_reason"] == "missing_required_artifact"
+
+
 def test_candidate_package_rejects_duplicate_artifact_ids():
     data = candidate_package_dict()
     artifact = data["artifacts"][0]  # type: ignore[index]
@@ -448,4 +526,24 @@ def test_candidate_package_rejects_boolean_summary_score():
     data["summary"] = summary
 
     with pytest.raises(ContractError, match="summary.score must be numeric"):
+        CandidatePackage.from_dict(data)
+
+
+def test_candidate_package_rejects_boolean_evaluator_score():
+    data = candidate_package_dict()
+    summary = dict(data["summary"])  # type: ignore[arg-type]
+    summary["evaluator_score"] = {"hard": True}
+    data["summary"] = summary
+
+    with pytest.raises(ContractError, match="evaluator_score.hard must be numeric"):
+        CandidatePackage.from_dict(data)
+
+
+def test_candidate_package_rejects_null_dimension_score():
+    data = candidate_package_dict()
+    summary = dict(data["summary"])  # type: ignore[arg-type]
+    summary["evaluator_score"] = {"dimension_scores": {"artifact_contract": None}}
+    data["summary"] = summary
+
+    with pytest.raises(ContractError, match="dimension_scores value must be numeric"):
         CandidatePackage.from_dict(data)

@@ -6,6 +6,7 @@ import os
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from skillopt.envs.gitmoot.rollout import process_one
+from skillopt.gradient.reflect import fmt_minibatch_trajectories
 from skillopt.model import get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
 from skillopt.model.common import default_model_for_backend
 from tests.test_gitmoot_dataloader import write_training_package
@@ -228,6 +229,69 @@ def test_invalid_evaluator_score_is_unscored_failure(tmp_path, monkeypatch):
     assert result["blocker"] == "invalid_evaluator_score"
     assert result["evaluator_id"] == "fixture"
     assert result["fail_reason"] == "evaluator returned invalid hard/soft scores"
+
+
+def test_structured_evaluator_feedback_reaches_rollout_result(tmp_path, monkeypatch):
+    def pass_agent(*args, **kwargs):
+        return "Candidate response"
+
+    def structured_evaluator(*args, **kwargs):
+        return {
+            "hard": 0,
+            "soft": 0.2,
+            "fail_reason": "missing required artifact",
+            "profile_id": "vue_landing_page_v1",
+            "task_kind": "vue_landing_page",
+            "failure": {
+                "primary_reason": "missing_required_artifact",
+                "optimizer_hint": "Return the required Vue/Vite preview bundle.",
+            },
+            "stage_status": [{"stage": "artifact_contract", "status": "failed"}],
+        }
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.evaluate_response", structured_evaluator)
+
+    result = process_one(item={"id": "structured", "prompt": "Prompt"}, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["failure"]["primary_reason"] == "missing_required_artifact"
+    assert result["stage_status"][0]["stage"] == "artifact_contract"
+    assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required")
+
+
+def test_structured_evaluator_feedback_reaches_reflection_prompt(tmp_path):
+    pred_dir = tmp_path / "predictions" / "structured"
+    pred_dir.mkdir(parents=True)
+    (pred_dir / "conversation.json").write_text(
+        json.dumps(
+            [
+                {"role": "user", "content": "Build the landing page."},
+                {"role": "assistant", "content": "Candidate response"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    text = fmt_minibatch_trajectories(
+        [
+            {
+                "id": "structured",
+                "task_description": "Landing page",
+                "task_type": "gitmoot-skillopt",
+                "fail_reason": "missing required artifact",
+                "failure": {
+                    "primary_reason": "missing_required_artifact",
+                    "optimizer_hint": "Return the required Vue/Vite preview bundle.",
+                },
+                "stage_status": [{"stage": "artifact_contract", "status": "failed"}],
+            }
+        ],
+        str(tmp_path / "predictions"),
+    )
+
+    assert "Structured Evaluator Feedback" in text
+    assert "missing_required_artifact" in text
+    assert "Return the required Vue" in text
 
 
 def test_unscored_result_serializes_null_scores(tmp_path):
