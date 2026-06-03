@@ -8,6 +8,14 @@ from typing import Any
 
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from skillopt.envs.gitmoot.package import safe_item_path_segment
+from skillopt.envs.gitmoot.result_contract import (
+    EVALUATOR_FAILED,
+    EVALUATOR_NOT_RUN,
+    TARGET_FAILED,
+    TARGET_PASSED,
+    make_unscored_evaluation,
+    normalize_scored_evaluation,
+)
 from skillopt.model import chat_target, is_target_chat_backend
 
 
@@ -43,6 +51,8 @@ def process_one(
     prediction_id = safe_item_path_segment(item_id)
     pred_dir = os.path.join(out_root, "predictions", prediction_id)
     os.makedirs(pred_dir, exist_ok=True)
+    target_trace_path = os.path.join(pred_dir, "conversation.json")
+    evaluator_trace_path = os.path.join(pred_dir, "result.json")
     system_prompt = _build_system_prompt(skill_content)
     user_prompt = str(item.get("prompt") or "")
     response = ""
@@ -58,19 +68,39 @@ def process_one(
         fail_reason = str(exc) or "agent execution failed"
 
     if agent_failed:
-        score = {
-            "hard": 0,
-            "soft": 0.0,
-            "fail_reason": fail_reason,
-            "metadata": {"evaluator": "not_run", "agent_error": True},
-        }
+        score = make_unscored_evaluation(
+            fail_reason=fail_reason,
+            target_status=TARGET_FAILED,
+            evaluator_status=EVALUATOR_NOT_RUN,
+            blocker="target_rollout_failed",
+            target_trace_path=target_trace_path,
+            evaluator_trace_path=evaluator_trace_path,
+            metadata={"evaluator": "not_run", "agent_error": True},
+        )
     else:
         config = evaluator_config if evaluator_config is not None else item.get("evaluator_config")
-        score = evaluate_response(item, response, config if isinstance(config, dict) else {})
+        try:
+            raw_score = evaluate_response(item, response, config if isinstance(config, dict) else {})
+            score = normalize_scored_evaluation(
+                raw_score,
+                target_trace_path=target_trace_path,
+                evaluator_trace_path=evaluator_trace_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - rollout result records the failure.
+            fail_reason = str(exc) or "evaluator execution failed"
+            score = make_unscored_evaluation(
+                fail_reason=fail_reason,
+                target_status=TARGET_PASSED,
+                evaluator_status=EVALUATOR_FAILED,
+                blocker="evaluator_failed",
+                target_trace_path=target_trace_path,
+                evaluator_trace_path=evaluator_trace_path,
+                metadata={"evaluator": "unknown"},
+            )
     result = {
         "id": item_id,
-        "hard": int(score.get("hard", 0)),
-        "soft": float(score.get("soft", 0.0)),
+        "hard": score.get("hard"),
+        "soft": score.get("soft"),
         "response": response,
         "fail_reason": str(score.get("fail_reason") or ""),
         "agent_ok": agent_ok,
@@ -81,6 +111,14 @@ def process_one(
             **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
             **(score.get("metadata") if isinstance(score.get("metadata"), dict) else {}),
         },
+        "target_status": score.get("target_status"),
+        "evaluator_status": score.get("evaluator_status"),
+        "score_status": score.get("score_status"),
+        "blocker": score.get("blocker", ""),
+        "evaluator_id": score.get("evaluator_id", ""),
+        "evaluator_version": score.get("evaluator_version", ""),
+        "target_trace_path": score.get("target_trace_path", ""),
+        "evaluator_trace_path": score.get("evaluator_trace_path", ""),
         "target_system_prompt": system_prompt,
         "target_user_prompt": user_prompt,
     }

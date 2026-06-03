@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from skillopt.envs.gitmoot.rollout import process_one
@@ -47,6 +49,11 @@ def test_adapter_rollout_returns_skillopt_result_shape(tmp_path):
     assert results[0]["id"] == "train-1"
     assert results[0]["hard"] == 1
     assert results[0]["soft"] == 1.0
+    assert results[0]["target_status"] == "passed"
+    assert results[0]["evaluator_status"] == "passed"
+    assert results[0]["score_status"] == "scored"
+    assert results[0]["evaluator_id"] == "fixture"
+    assert results[0]["evaluator_version"] == "v0"
     assert results[0]["response"] == "better plan"
     assert results[0]["fail_reason"] == ""
     assert (tmp_path / "out" / "predictions" / "train-1" / "conversation.json").is_file()
@@ -63,6 +70,7 @@ def test_adapter_eval_batch_uses_fixture_evaluator(tmp_path):
     assert results[0]["id"] == "val-1"
     assert results[0]["hard"] == 0
     assert results[0]["soft"] == 0.25
+    assert results[0]["score_status"] == "scored"
     assert results[0]["metadata"]["evaluator"] == "fixture"
 
 
@@ -120,8 +128,12 @@ def test_failed_agent_execution_overrides_fixture_success(tmp_path):
     result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
 
     assert result["agent_ok"] is False
-    assert result["hard"] == 0
-    assert result["soft"] == 0.0
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["target_status"] == "failed"
+    assert result["evaluator_status"] == "not_run"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "target_rollout_failed"
     assert result["fail_reason"]
 
 
@@ -134,7 +146,9 @@ def test_failed_agent_execution_does_not_call_judge(tmp_path, monkeypatch):
 
     result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
 
-    assert result["hard"] == 0
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["score_status"] == "unscored"
     assert result["metadata"]["agent_error"] is True
 
 
@@ -153,9 +167,83 @@ def test_empty_message_agent_exception_is_still_failure(tmp_path, monkeypatch):
     result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
 
     assert result["agent_ok"] is False
-    assert result["hard"] == 0
+    assert result["hard"] is None
+    assert result["soft"] is None
     assert result["fail_reason"] == "agent execution failed"
+    assert result["target_status"] == "failed"
+    assert result["evaluator_status"] == "not_run"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "target_rollout_failed"
     assert result["metadata"]["agent_error"] is True
+
+
+def test_evaluator_exception_is_unscored_failure(tmp_path, monkeypatch):
+    def pass_agent(*args, **kwargs):
+        return "Candidate response"
+
+    def fail_evaluator(*args, **kwargs):
+        raise RuntimeError("judge backend unavailable")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.evaluate_response", fail_evaluator)
+    item = {"id": "broken-eval", "prompt": "Prompt"}
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["agent_ok"] is True
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["target_status"] == "passed"
+    assert result["evaluator_status"] == "failed"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "evaluator_failed"
+    assert result["fail_reason"] == "judge backend unavailable"
+
+
+def test_invalid_evaluator_score_is_unscored_failure(tmp_path, monkeypatch):
+    def pass_agent(*args, **kwargs):
+        return "Candidate response"
+
+    def invalid_evaluator(*args, **kwargs):
+        return {
+            "hard": "not-a-score",
+            "soft": "also-not-a-score",
+            "metadata": {"evaluator": "fixture"},
+        }
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.evaluate_response", invalid_evaluator)
+    item = {"id": "invalid-score", "prompt": "Prompt"}
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["target_status"] == "passed"
+    assert result["evaluator_status"] == "failed"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "invalid_evaluator_score"
+    assert result["evaluator_id"] == "fixture"
+    assert result["fail_reason"] == "evaluator returned invalid hard/soft scores"
+
+
+def test_unscored_result_serializes_null_scores(tmp_path):
+    item = {
+        "id": "broken",
+        "prompt": "Prompt",
+        "metadata": {"expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+    result_path = tmp_path / "predictions" / "broken" / "result.json"
+    persisted = json.loads(result_path.read_text(encoding="utf-8"))
+
+    assert result["hard"] is None
+    assert persisted["hard"] is None
+    assert persisted["soft"] is None
+    assert persisted["score_status"] == "unscored"
+    assert persisted["metadata"]["score_status"] == "unscored"
 
 
 def test_contains_evaluator_is_deterministic():

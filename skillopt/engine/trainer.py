@@ -26,9 +26,22 @@ from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.evaluation.gate import evaluate_gate, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
-from skillopt.optimizer.meta_skill import run_meta_skill
+from skillopt.model import (
+    configure_azure_openai,
+    configure_claude_code_exec,
+    configure_codex_exec,
+    configure_minimax_chat,
+    configure_qwen_chat,
+    get_token_summary,
+    set_optimizer_backend,
+    set_optimizer_deployment,
+    set_reasoning_effort,
+    set_target_backend,
+    set_target_deployment,
+)
 from skillopt.optimizer.clip import rank_and_select
 from skillopt.optimizer.lr_autonomous import decide_autonomous_learning_rate
+from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions
 from skillopt.optimizer.scheduler import build_scheduler
 from skillopt.optimizer.skill import apply_patch_with_report
@@ -47,22 +60,7 @@ from skillopt.optimizer.update_modes import (
     payload_label,
     short_item_summary,
 )
-from skillopt.model import (
-    configure_azure_openai,
-    configure_claude_code_exec,
-    configure_codex_exec,
-    configure_minimax_chat,
-    configure_qwen_chat,
-    get_token_summary,
-    reset_token_tracker,
-    set_reasoning_effort,
-    set_target_backend,
-    set_target_deployment,
-    set_optimizer_backend,
-    set_optimizer_deployment,
-)
 from skillopt.utils import compute_score, skill_hash
-
 
 # ── Patch normalization ───────────────────────────────────────────────────────
 
@@ -368,16 +366,29 @@ def _compute_task_type_buckets(results: list[dict], task_types: list[str]) -> di
     """Compute per-task-type success rates."""
     buckets: dict[str, dict] = {}
     for task in task_types + ["overall"]:
-        buckets[task] = {"total": 0, "hard": 0, "soft": 0.0}
+        buckets[task] = {"total": 0, "hard": 0, "soft": 0.0, "unscored": 0}
     for r in results:
         tt = r.get("task_type", "other")
         for key in [tt, "overall"]:
             if key not in buckets:
-                buckets[key] = {"total": 0, "hard": 0, "soft": 0.0}
+                buckets[key] = {"total": 0, "hard": 0, "soft": 0.0, "unscored": 0}
             buckets[key]["total"] += 1
+            if _is_unscored_rollout_result(r):
+                buckets[key]["unscored"] += 1
+                continue
             buckets[key]["hard"] += float(r.get("hard", 0))
             buckets[key]["soft"] += float(r.get("soft", 0.0))
     return buckets
+
+
+def _is_unscored_rollout_result(result: dict) -> bool:
+    return str(result.get("score_status") or "").strip().lower() == "unscored" or result.get("hard") is None
+
+
+def _is_failed_rollout_result(result: dict) -> bool:
+    if _is_unscored_rollout_result(result):
+        return True
+    return not result.get("hard") or float(result.get("hard", 0)) < 1e-9
 
 
 def _format_rejection_buffer(buffer: list[dict]) -> str:
@@ -394,7 +405,7 @@ def _extract_failure_patterns(
     Uses analyst ``failure_summary`` from minibatch patches when available,
     otherwise falls back to ``fail_reason`` prefix grouping.
     """
-    failures = [r for r in rollout_results if not r.get("hard") or float(r.get("hard", 0)) < 1e-9]
+    failures = [r for r in rollout_results if _is_failed_rollout_result(r)]
     if not failures:
         return []
 
@@ -1383,7 +1394,7 @@ class ReflACTTrainer:
                 # ── Step buffer: unified failure patterns + rejected edits ─
                 action = step_rec.get("action", "unknown")
                 n_total = len(all_rollout_results) or 1
-                n_fail = sum(1 for r in all_rollout_results if not r.get("hard") or float(r.get("hard", 0)) < 1e-9)
+                n_fail = sum(1 for r in all_rollout_results if _is_failed_rollout_result(r))
                 failure_patterns = _extract_failure_patterns(
                     all_rollout_results, step_dir,
                 )
@@ -1984,7 +1995,7 @@ class ReflACTTrainer:
 
             # Comparison
             delta_hard = (test_hard or 0) - (baseline_test_hard or 0)
-            print(f"\n  === Improvement (best vs baseline) ===")
+            print("\n  === Improvement (best vs baseline) ===")
             print(
                 f"    hard: {baseline_test_hard:.4f} -> {test_hard:.4f}  "
                 f"(delta={delta_hard:+.4f})"
