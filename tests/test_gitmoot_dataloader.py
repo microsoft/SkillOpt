@@ -61,8 +61,29 @@ def write_training_package(tmp_path, *, artifact_driver: str = "text"):
     artifact_root = tmp_path / "blobs"
     baseline = b"Baseline plan\n"
     candidate = b"Candidate plan\n"
+    option_a = b"Option A plan\n"
+    option_b = b"Option B plan\n"
+    option_c = b"Option C plan\n"
+    option_d = json.dumps(
+        {
+            "renderer": "vue-vite",
+            "build_command": "npm run build",
+            "dist_dir": "dist",
+            "files": [
+                {"path": "package.json", "content": '{"scripts":{"build":"vite build"}}'},
+                {"path": "index.html", "content": '<div id="app"></div><script type="module" src="/src/main.js"></script>'},
+                {"path": "src/main.js", "content": "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"},
+                {"path": "src/style.css", "content": ""},
+                {"path": "src/App.vue", "content": "<template><main>Option D landing page</main></template>"},
+            ],
+        }
+    ).encode()
     baseline_hash = write_blob(artifact_root, baseline)
     candidate_hash = write_blob(artifact_root, candidate)
+    option_a_hash = write_blob(artifact_root, option_a)
+    option_b_hash = write_blob(artifact_root, option_b)
+    option_c_hash = write_blob(artifact_root, option_c)
+    option_d_hash = write_blob(artifact_root, option_d)
     content = template_content()
     package = {
         "kind": TRAINING_PACKAGE_KIND,
@@ -94,6 +115,12 @@ def write_training_package(tmp_path, *, artifact_driver: str = "text"):
                 "title": "Train item",
                 "baseline_artifact_id": "baseline",
                 "candidate_artifact_id": "candidate",
+                "options": [
+                    {"label": "a", "artifact_id": "option-a", "role": "ranked-option"},
+                    {"label": "b", "artifact_id": "option-b", "role": "ranked-option"},
+                    {"label": "c", "artifact_id": "option-c", "role": "ranked-option"},
+                    {"label": "d", "artifact_id": "option-d", "role": "ranked-option", "metadata": {"preview_url": "https://example.test/d"}},
+                ],
                 "metadata": {"split": "train", "mock_response": "better plan", "expected_hard": True},
             },
             {
@@ -126,6 +153,34 @@ def write_training_package(tmp_path, *, artifact_driver: str = "text"):
                 "size_bytes": len(candidate),
                 "driver": "text",
             },
+            {
+                "id": "option-a",
+                "hash": option_a_hash,
+                "media_type": "text/markdown",
+                "size_bytes": len(option_a),
+                "driver": "text",
+            },
+            {
+                "id": "option-b",
+                "hash": option_b_hash,
+                "media_type": "text/markdown",
+                "size_bytes": len(option_b),
+                "driver": "text",
+            },
+            {
+                "id": "option-c",
+                "hash": option_c_hash,
+                "media_type": "text/markdown",
+                "size_bytes": len(option_c),
+                "driver": "text",
+            },
+            {
+                "id": "option-d",
+                "hash": option_d_hash,
+                "media_type": "application/json",
+                "size_bytes": len(option_d),
+                "driver": "vue-vite",
+            },
         ],
         "feedback_events": [
             {
@@ -137,6 +192,28 @@ def write_training_package(tmp_path, *, artifact_driver: str = "text"):
                 "source": "markdown",
                 "source_url": "",
                 "created_at": "2026-05-31T00:00:00Z",
+                "quality": "acceptable",
+                "continue_mode": "refine",
+                "promote": "no",
+            }
+        ],
+        "ranked_feedback_events": [
+            {
+                "id": "ranked-1",
+                "run_id": "run-1",
+                "item_id": "train-1",
+                "ranking": ["d", "b", "c", "a"],
+                "winner": "d",
+                "quality": "acceptable",
+                "continue_mode": "refine",
+                "promote": "no",
+                "useful_traits": {"d": ["cleanest hero"]},
+                "rejected_traits": {"c": ["overlapping text"]},
+                "reasoning": "D is the cleanest option.",
+                "reviewer": "alice",
+                "source": "github",
+                "source_url": "https://github.com/owner/repo/issues/1#issuecomment-1",
+                "created_at": "2026-06-03T00:00:00Z",
             }
         ],
         "evaluator_config": {"mode": "fixture"},
@@ -163,7 +240,21 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     prompt = train_batch.payload[0]["prompt"]
     assert "Baseline plan" in prompt
     assert "Candidate plan" in prompt
+    assert "Ranked Option Artifacts" in prompt
+    assert "Preview bundle renderer: vue-vite" in prompt
+    assert "### src/style.css" in prompt
+    assert "Option D landing page" in prompt
+    assert "https://example.test/d" in prompt
     assert "Candidate is clearer" in prompt
+    assert '"quality": "acceptable"' in prompt
+    assert '"continue_mode": "refine"' in prompt
+    assert '"promote": "no"' in prompt
+    assert "Ranked Human Feedback Events" in prompt
+    assert '"ranking": [' in prompt
+    assert '"d"' in prompt
+    assert "cleanest hero" in prompt
+    assert "Option D landing page" in train_batch.payload[0]["artifacts"]["option:d"]["text"]
+    assert train_batch.payload[0]["ranked_feedback_events"][0]["winner"] == "d"
 
 
 def test_dataloader_creates_disjoint_splits_when_metadata_split_is_absent(tmp_path):
@@ -280,6 +371,7 @@ def test_dataloader_rejects_item_ids_that_are_unsafe_paths(tmp_path):
     package = json.loads(package_path.read_text(encoding="utf-8"))
     package["items"][0]["id"] = "../escape"
     package["feedback_events"][0]["item_id"] = "../escape"
+    package["ranked_feedback_events"][0]["item_id"] = "../escape"
     package_path.write_text(json.dumps(package), encoding="utf-8")
     loader = GitmootDataLoader(str(package_path), str(artifact_root))
 

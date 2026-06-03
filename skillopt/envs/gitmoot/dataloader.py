@@ -15,6 +15,7 @@ from skillopt.envs.gitmoot.package import (
     artifact_refs_by_id,
     feedback_events_for_item,
     json_safe_metadata,
+    ranked_feedback_events_for_item,
     safe_item_path_segment,
     split_template_document,
 )
@@ -29,6 +30,7 @@ _SPLIT_ALIASES = {
 }
 
 _SUPPORTED_TEXT_DRIVERS = {"text", "markdown", "text/markdown"}
+_SUPPORTED_PREVIEW_DRIVERS = {"vue-vite"}
 
 
 class GitmootDataLoader(BaseDataLoader):
@@ -175,19 +177,18 @@ class GitmootDataLoader(BaseDataLoader):
         artifact_refs = artifact_refs_by_id(self.package)
         artifacts = self._resolve_item_artifacts(item, artifact_refs, resolver)
         feedback_events = feedback_events_for_item(self.package, item.id)
+        ranked_feedback_events = ranked_feedback_events_for_item(self.package, item.id)
         prompt = build_task_prompt(
             package=self.package,
             item=item,
             artifacts=artifacts,
             feedback_events=[
-                {
-                    "choice": event.choice,
-                    "reasoning": event.reasoning,
-                    "reviewer": event.reviewer,
-                    "source": event.source,
-                    "created_at": event.created_at,
-                }
+                _feedback_event_prompt_context(event)
                 for event in feedback_events
+            ],
+            ranked_feedback_events=[
+                _ranked_feedback_event_prompt_context(event)
+                for event in ranked_feedback_events
             ],
         )
         return {
@@ -200,6 +201,7 @@ class GitmootDataLoader(BaseDataLoader):
             "prompt": prompt,
             "artifacts": artifacts,
             "feedback_events": [event.to_dict() for event in feedback_events],
+            "ranked_feedback_events": [event.to_dict() for event in ranked_feedback_events],
             "evaluator_config": self.evaluator_config,
         }
 
@@ -214,12 +216,8 @@ class GitmootDataLoader(BaseDataLoader):
             if not artifact_id:
                 continue
             ref = artifact_refs[artifact_id]
-            self._validate_text_artifact(ref)
             blob = resolver.read(ref.hash, expected_size=ref.size_bytes)
-            try:
-                text = blob.content.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise ArtifactError(f"artifact {ref.id!r} is not valid UTF-8 text") from exc
+            text = self._artifact_prompt_text(ref, blob.content)
             resolved[role] = {
                 "id": ref.id,
                 "hash": ref.hash,
@@ -229,6 +227,21 @@ class GitmootDataLoader(BaseDataLoader):
             }
         return resolved
 
+    def _artifact_prompt_text(self, artifact: ArtifactRef, content: bytes) -> str:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ArtifactError(f"artifact {artifact.id!r} is not valid UTF-8 text") from exc
+
+        driver = artifact.driver.strip().lower()
+        if driver in _SUPPORTED_TEXT_DRIVERS:
+            self._validate_text_artifact(artifact)
+            return text
+        if driver in _SUPPORTED_PREVIEW_DRIVERS:
+            self._validate_preview_artifact(artifact)
+            return _preview_bundle_prompt_text(artifact, text)
+        raise ArtifactError(f"artifact driver not supported yet: {artifact.driver}")
+
     def _validate_text_artifact(self, artifact: ArtifactRef) -> None:
         driver = artifact.driver.strip().lower()
         if driver not in _SUPPORTED_TEXT_DRIVERS:
@@ -236,6 +249,11 @@ class GitmootDataLoader(BaseDataLoader):
         media_type = artifact.media_type.strip().lower()
         if media_type and not (media_type.startswith("text/") or media_type in {"application/markdown"}):
             raise ArtifactError(f"artifact media type not supported yet: {artifact.media_type}")
+
+    def _validate_preview_artifact(self, artifact: ArtifactRef) -> None:
+        media_type = artifact.media_type.strip().lower()
+        if media_type != "application/json":
+            raise ArtifactError(f"preview artifact media type not supported yet: {artifact.media_type}")
 
     def _split_items(self, items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         splits: dict[str, list[dict[str, Any]]] = {"train": [], "val": [], "test": []}
@@ -306,6 +324,7 @@ def build_task_prompt(
     item: EvalItem,
     artifacts: dict[str, dict[str, Any]],
     feedback_events: list[dict[str, Any]],
+    ranked_feedback_events: list[dict[str, Any]] | None = None,
 ) -> str:
     parts = [
         "# Gitmoot SkillOpt Item",
@@ -328,12 +347,101 @@ def build_task_prompt(
                 artifact["text"],
             ]
         )
+    option_parts: list[str] = []
+    for option in item.options:
+        artifact = artifacts.get(f"option:{option.label}")
+        if not artifact:
+            continue
+        option_parts.extend(
+            [
+                "",
+                f"### Option {option.label}",
+                f"Artifact id: {artifact['id']}",
+            ]
+        )
+        if option.role:
+            option_parts.append(f"Role: {option.role}")
+        if option.metadata is not None:
+            option_parts.extend(["Metadata:", json.dumps(option.metadata, indent=2, sort_keys=True)])
+        option_parts.append(artifact["text"])
+    if option_parts:
+        parts.extend(["", "## Ranked Option Artifacts", *option_parts])
     if feedback_events:
         parts.extend(["", "## Human Feedback Events", json.dumps(feedback_events, indent=2, sort_keys=True)])
+    if ranked_feedback_events:
+        parts.extend(
+            [
+                "",
+                "## Ranked Human Feedback Events",
+                json.dumps(ranked_feedback_events, indent=2, sort_keys=True),
+            ]
+        )
     parts.append(
         "\nUse the current skill to produce the requested improved response. "
         "Ground the response in the artifacts and feedback above."
     )
+    return "\n".join(parts)
+
+
+def _feedback_event_prompt_context(event: Any) -> dict[str, str]:
+    context = {
+        "choice": event.choice,
+        "reasoning": event.reasoning,
+        "reviewer": event.reviewer,
+        "source": event.source,
+        "created_at": event.created_at,
+    }
+    for field in ("quality", "continue_mode", "promote"):
+        value = str(getattr(event, field, "") or "").strip()
+        if value:
+            context[field] = value
+    return context
+
+
+def _ranked_feedback_event_prompt_context(event: Any) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "ranking": list(event.ranking),
+        "reviewer": event.reviewer,
+        "source": event.source,
+        "created_at": event.created_at,
+    }
+    for field in ("winner", "quality", "continue_mode", "promote", "reasoning"):
+        value = str(getattr(event, field, "") or "").strip()
+        if value:
+            context[field] = value
+    for field in ("useful_traits", "rejected_traits"):
+        value = getattr(event, field, None)
+        if value is not None:
+            context[field] = value
+    return context
+
+
+def _preview_bundle_prompt_text(artifact: ArtifactRef, text: str) -> str:
+    try:
+        bundle = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ArtifactError(f"preview artifact {artifact.id!r} is not valid JSON") from exc
+    if not isinstance(bundle, dict):
+        raise ArtifactError(f"preview artifact {artifact.id!r} must be a JSON object")
+    files = bundle.get("files")
+    if not isinstance(files, list) or not files:
+        raise ArtifactError(f"preview artifact {artifact.id!r} must include files")
+
+    parts = [
+        f"Preview bundle renderer: {str(bundle.get('renderer') or '').strip()}",
+        f"Build command: {str(bundle.get('build_command') or '').strip()}",
+        f"Dist dir: {str(bundle.get('dist_dir') or '').strip()}",
+    ]
+    for index, file_entry in enumerate(files, start=1):
+        if not isinstance(file_entry, dict):
+            raise ArtifactError(f"preview artifact {artifact.id!r} file {index} must be an object")
+        path = str(file_entry.get("path") or "").strip()
+        if "content" not in file_entry:
+            raise ArtifactError(f"preview artifact {artifact.id!r} file {index} must include path and content")
+        content = str(file_entry["content"])
+        if not path:
+            raise ArtifactError(f"preview artifact {artifact.id!r} file {index} must include path and content")
+        parts.extend(["", f"### {path}", content])
     return "\n".join(parts)
 
 

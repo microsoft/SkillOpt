@@ -273,17 +273,30 @@ class EvalRun:
     template_version_id: str
     target_repo: str
     state: str
+    mode: str = ""
+    exploration_level: str = ""
+    options_count: int = 0
     metadata: Any = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvalRun:
         data = _require_mapping(data, "eval_run")
+        options_count = data.get("options_count", 0)
+        if options_count is None:
+            options_count = 0
+        if isinstance(options_count, bool) or not isinstance(options_count, int):
+            raise ContractError("eval_run.options_count must be an integer")
+        if options_count < 0:
+            raise ContractError("eval_run.options_count must be zero or greater")
         return cls(
             id=_require_string(data.get("id"), "eval_run.id"),
             template_id=validate_template_id(str(data.get("template_id", "")), "eval_run.template_id"),
             template_version_id=_optional_string(data.get("template_version_id")),
             target_repo=_optional_string(data.get("target_repo")),
             state=_require_string(data.get("state"), "eval_run.state"),
+            mode=_optional_string(data.get("mode")),
+            exploration_level=_optional_string(data.get("exploration_level")),
+            options_count=options_count,
             metadata=_raw_json(data.get("metadata")),
         )
 
@@ -295,6 +308,41 @@ class EvalRun:
             "target_repo": self.target_repo,
             "state": self.state,
         }
+        if self.mode:
+            data["mode"] = self.mode
+        if self.exploration_level:
+            data["exploration_level"] = self.exploration_level
+        if self.options_count:
+            data["options_count"] = self.options_count
+        if self.metadata is not None:
+            data["metadata"] = self.metadata
+        return data
+
+
+@dataclass(frozen=True)
+class EvalReviewOption:
+    label: str
+    artifact_id: str
+    role: str = ""
+    metadata: Any = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EvalReviewOption:
+        data = _require_mapping(data, "item option")
+        return cls(
+            label=_require_string(data.get("label"), "item.options.label"),
+            artifact_id=_require_string(data.get("artifact_id"), "item.options.artifact_id"),
+            role=_optional_string(data.get("role")),
+            metadata=_raw_json(data.get("metadata")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data = {
+            "label": self.label,
+            "artifact_id": self.artifact_id,
+        }
+        if self.role:
+            data["role"] = self.role
         if self.metadata is not None:
             data["metadata"] = self.metadata
         return data
@@ -309,11 +357,15 @@ class EvalItem:
     candidate_artifact_id: str = ""
     preview_artifact_id: str = ""
     diff_artifact_id: str = ""
+    options: list[EvalReviewOption] = field(default_factory=list)
     metadata: Any = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvalItem:
         data = _require_mapping(data, "item")
+        options = data.get("options") or []
+        if not isinstance(options, list):
+            raise ContractError("item.options must be a list")
         return cls(
             id=_require_string(data.get("id"), "item.id"),
             title=_optional_string(data.get("title")),
@@ -322,6 +374,7 @@ class EvalItem:
             candidate_artifact_id=_optional_string(data.get("candidate_artifact_id")),
             preview_artifact_id=_optional_string(data.get("preview_artifact_id")),
             diff_artifact_id=_optional_string(data.get("diff_artifact_id")),
+            options=[EvalReviewOption.from_dict(option) for option in options],
             metadata=_raw_json(data.get("metadata")),
         )
 
@@ -336,7 +389,7 @@ class EvalItem:
                 self.diff_artifact_id,
             )
             if artifact_id
-        ]
+        ] + [option.artifact_id for option in self.options if option.artifact_id]
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -348,6 +401,8 @@ class EvalItem:
             "preview_artifact_id": self.preview_artifact_id,
             "diff_artifact_id": self.diff_artifact_id,
         }
+        if self.options:
+            data["options"] = [option.to_dict() for option in self.options]
         if self.metadata is not None:
             data["metadata"] = self.metadata
         return data
@@ -363,6 +418,9 @@ class FeedbackEvent:
     created_at: str
     reasoning: str = ""
     source_url: str = ""
+    quality: str = ""
+    continue_mode: str = ""
+    promote: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FeedbackEvent:
@@ -376,10 +434,13 @@ class FeedbackEvent:
             source=_require_string(data.get("source"), "feedback.source"),
             source_url=_optional_string(data.get("source_url")),
             created_at=_require_string(data.get("created_at"), "feedback.created_at"),
+            quality=_optional_string(data.get("quality")),
+            continue_mode=_optional_string(data.get("continue_mode")),
+            promote=_optional_string(data.get("promote")),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "run_id": self.run_id,
             "item_id": self.item_id,
             "choice": self.choice,
@@ -389,6 +450,88 @@ class FeedbackEvent:
             "source_url": self.source_url,
             "created_at": self.created_at,
         }
+        if self.quality:
+            data["quality"] = self.quality
+        if self.continue_mode:
+            data["continue_mode"] = self.continue_mode
+        if self.promote:
+            data["promote"] = self.promote
+        return data
+
+
+@dataclass(frozen=True)
+class RankedFeedbackEvent:
+    id: str
+    run_id: str
+    item_id: str
+    ranking: list[str]
+    reviewer: str
+    source: str
+    created_at: str
+    winner: str = ""
+    useful_traits: Any = None
+    rejected_traits: Any = None
+    quality: str = ""
+    continue_mode: str = ""
+    promote: str = ""
+    reasoning: str = ""
+    source_url: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RankedFeedbackEvent:
+        data = _require_mapping(data, "ranked feedback event")
+        ranking = data.get("ranking")
+        if not ranking or not isinstance(ranking, list) or not all(isinstance(item, str) and item.strip() for item in ranking):
+            raise ContractError("ranked feedback ranking must be a non-empty string list")
+        normalized_ranking = [item.strip() for item in ranking]
+        if len(set(normalized_ranking)) != len(normalized_ranking):
+            raise ContractError("ranked feedback ranking labels must be unique")
+        return cls(
+            id=_optional_string(data.get("id")),
+            run_id=_require_string(data.get("run_id"), "ranked_feedback.run_id"),
+            item_id=_require_string(data.get("item_id"), "ranked_feedback.item_id"),
+            ranking=normalized_ranking,
+            winner=_optional_string(data.get("winner")),
+            useful_traits=_raw_json(data.get("useful_traits")),
+            rejected_traits=_raw_json(data.get("rejected_traits")),
+            quality=_optional_string(data.get("quality")),
+            continue_mode=_optional_string(data.get("continue_mode")),
+            promote=_optional_string(data.get("promote")),
+            reasoning=_optional_string(data.get("reasoning")),
+            reviewer=_require_string(data.get("reviewer"), "ranked_feedback.reviewer"),
+            source=_require_string(data.get("source"), "ranked_feedback.source"),
+            source_url=_optional_string(data.get("source_url")),
+            created_at=_require_string(data.get("created_at"), "ranked_feedback.created_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "run_id": self.run_id,
+            "item_id": self.item_id,
+            "ranking": self.ranking,
+            "reviewer": self.reviewer,
+            "source": self.source,
+            "created_at": self.created_at,
+        }
+        if self.id:
+            data["id"] = self.id
+        if self.winner:
+            data["winner"] = self.winner
+        if self.useful_traits is not None:
+            data["useful_traits"] = self.useful_traits
+        if self.rejected_traits is not None:
+            data["rejected_traits"] = self.rejected_traits
+        if self.quality:
+            data["quality"] = self.quality
+        if self.continue_mode:
+            data["continue_mode"] = self.continue_mode
+        if self.promote:
+            data["promote"] = self.promote
+        if self.reasoning:
+            data["reasoning"] = self.reasoning
+        if self.source_url:
+            data["source_url"] = self.source_url
+        return data
 
 
 @dataclass(frozen=True)
@@ -400,6 +543,7 @@ class TrainingPackage:
     items: list[EvalItem] = field(default_factory=list)
     artifacts: list[ArtifactRef] = field(default_factory=list)
     feedback_events: list[FeedbackEvent] = field(default_factory=list)
+    ranked_feedback_events: list[RankedFeedbackEvent] = field(default_factory=list)
     evaluator_config: Any = None
 
     @classmethod
@@ -416,6 +560,9 @@ class TrainingPackage:
             items=[EvalItem.from_dict(item) for item in data.get("items", [])],
             artifacts=[ArtifactRef.from_dict(artifact) for artifact in data.get("artifacts", [])],
             feedback_events=[FeedbackEvent.from_dict(event) for event in data.get("feedback_events", [])],
+            ranked_feedback_events=[
+                RankedFeedbackEvent.from_dict(event) for event in data.get("ranked_feedback_events", [])
+            ],
             evaluator_config=_raw_json(data.get("evaluator_config")),
         )
         package.validate()
@@ -434,18 +581,39 @@ class TrainingPackage:
         artifact_ids = {artifact.id for artifact in self.artifacts}
         if len(artifact_ids) != len(self.artifacts):
             raise ContractError("artifact ids must be unique")
-        item_ids = {item.id for item in self.items}
-        if len(item_ids) != len(self.items):
+        items_by_id = {item.id: item for item in self.items}
+        if len(items_by_id) != len(self.items):
             raise ContractError("item ids must be unique")
         for item in self.items:
+            option_labels = [option.label for option in item.options]
+            if len(set(option_labels)) != len(option_labels):
+                raise ContractError(f"item {item.id!r} option labels must be unique")
             for artifact_id in item.artifact_ids():
                 if artifact_id not in artifact_ids:
                     raise ContractError(f"item {item.id!r} references missing artifact {artifact_id!r}")
         for event in self.feedback_events:
             if event.run_id != self.eval_run.id:
                 raise ContractError(f"feedback event for item {event.item_id!r} has wrong run_id {event.run_id!r}")
-            if event.item_id not in item_ids:
+            if event.item_id not in items_by_id:
                 raise ContractError(f"feedback event references missing item {event.item_id!r}")
+        for event in self.ranked_feedback_events:
+            if event.run_id != self.eval_run.id:
+                raise ContractError(f"ranked feedback event for item {event.item_id!r} has wrong run_id {event.run_id!r}")
+            item = items_by_id.get(event.item_id)
+            if item is None:
+                raise ContractError(f"ranked feedback event references missing item {event.item_id!r}")
+            option_labels = {option.label for option in item.options}
+            if not option_labels:
+                raise ContractError(f"ranked feedback event references item {event.item_id!r} without options")
+            unknown_labels = [label for label in event.ranking if label not in option_labels]
+            if unknown_labels:
+                raise ContractError(
+                    f"ranked feedback event references unknown option labels: {', '.join(unknown_labels)}"
+                )
+            if event.winner and event.winner not in option_labels:
+                raise ContractError(f"ranked feedback winner references unknown option label {event.winner!r}")
+            if event.winner and event.winner not in event.ranking:
+                raise ContractError(f"ranked feedback winner {event.winner!r} must appear in ranking")
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -457,6 +625,8 @@ class TrainingPackage:
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "feedback_events": [event.to_dict() for event in self.feedback_events],
         }
+        if self.ranked_feedback_events:
+            data["ranked_feedback_events"] = [event.to_dict() for event in self.ranked_feedback_events]
         if self.evaluator_config is not None:
             data["evaluator_config"] = self.evaluator_config
         return data

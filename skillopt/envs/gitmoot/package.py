@@ -9,6 +9,7 @@ from gitmoot_skillopt.contracts import (
     ArtifactRef,
     EvalItem,
     FeedbackEvent,
+    RankedFeedbackEvent,
     TrainingPackage,
 )
 
@@ -44,18 +45,25 @@ def feedback_events_for_item(package: TrainingPackage, item_id: str) -> list[Fee
     return [event for event in package.feedback_events if event.item_id == item_id]
 
 
+def ranked_feedback_events_for_item(package: TrainingPackage, item_id: str) -> list[RankedFeedbackEvent]:
+    return [event for event in package.ranked_feedback_events if event.item_id == item_id]
+
+
 def artifact_refs_by_id(package: TrainingPackage) -> dict[str, ArtifactRef]:
     return {artifact.id: artifact for artifact in package.artifacts}
 
 
 def artifact_ids_for_item(item: EvalItem) -> dict[str, str]:
-    return {
+    artifact_ids = {
         "source": item.source_artifact_id,
         "baseline": item.baseline_artifact_id,
         "candidate": item.candidate_artifact_id,
         "preview": item.preview_artifact_id,
         "diff": item.diff_artifact_id,
     }
+    for option in item.options:
+        artifact_ids[f"option:{option.label}"] = option.artifact_id
+    return artifact_ids
 
 
 def json_safe_metadata(value: Any) -> dict[str, Any]:

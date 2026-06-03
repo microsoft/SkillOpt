@@ -76,6 +76,9 @@ def training_package_dict() -> dict[str, object]:
             "template_version_id": "planner@v1",
             "target_repo": "owner/repo",
             "state": "completed",
+            "mode": "explore",
+            "exploration_level": "high",
+            "options_count": 4,
             "metadata": {"metric": "preference"},
         },
         "items": [
@@ -84,6 +87,12 @@ def training_package_dict() -> dict[str, object]:
                 "title": "Item 1",
                 "baseline_artifact_id": "baseline",
                 "candidate_artifact_id": "candidate",
+                "options": [
+                    {"label": "a", "artifact_id": "baseline", "role": "baseline-option"},
+                    {"label": "b", "artifact_id": "candidate", "role": "candidate-option", "metadata": {"preview_url": "https://example.test/b"}},
+                    {"label": "c", "artifact_id": "baseline", "role": "alternate-option"},
+                    {"label": "d", "artifact_id": "candidate", "role": "alternate-option"},
+                ],
                 "metadata": {"difficulty": "easy"},
             }
         ],
@@ -113,6 +122,28 @@ def training_package_dict() -> dict[str, object]:
                 "source": "markdown",
                 "source_url": "",
                 "created_at": "2026-05-31T00:00:00Z",
+                "quality": "acceptable",
+                "continue_mode": "refine",
+                "promote": "no",
+            }
+        ],
+        "ranked_feedback_events": [
+            {
+                "id": "ranked-1",
+                "run_id": "run-1",
+                "item_id": "item-1",
+                "ranking": ["d", "b", "c", "a"],
+                "winner": "d",
+                "quality": "acceptable",
+                "continue_mode": "refine",
+                "promote": "no",
+                "useful_traits": {"d": ["cleanest hero"]},
+                "rejected_traits": {"c": ["overlapping text"]},
+                "reasoning": "D is the cleanest option.",
+                "reviewer": "alice",
+                "source": "github",
+                "source_url": "https://github.com/owner/repo/issues/1#issuecomment-1",
+                "created_at": "2026-06-03T00:00:00Z",
             }
         ],
         "evaluator_config": {"mode": "pairwise"},
@@ -158,6 +189,18 @@ def test_training_package_loads_and_round_trips(tmp_path):
 
     assert loaded.to_dict() == package.to_dict()
     assert loaded.artifacts[1].hash == "sha256:" + "3" * 64
+    assert loaded.eval_run.mode == "explore"
+    assert loaded.eval_run.exploration_level == "high"
+    assert loaded.eval_run.options_count == 4
+    assert loaded.feedback_events[0].quality == "acceptable"
+    assert loaded.feedback_events[0].continue_mode == "refine"
+    assert loaded.feedback_events[0].promote == "no"
+    assert loaded.items[0].options[1].label == "b"
+    assert loaded.items[0].options[1].metadata == {"preview_url": "https://example.test/b"}
+    assert loaded.ranked_feedback_events[0].ranking == ["d", "b", "c", "a"]
+    assert loaded.ranked_feedback_events[0].quality == "acceptable"
+    assert loaded.ranked_feedback_events[0].continue_mode == "refine"
+    assert loaded.ranked_feedback_events[0].promote == "no"
 
 
 def test_training_package_rejects_wrong_kind():
@@ -176,6 +219,14 @@ def test_training_package_rejects_boolean_contract_version():
         TrainingPackage.from_dict(data)
 
 
+def test_training_package_rejects_boolean_eval_run_options_count():
+    data = training_package_dict()
+    data["eval_run"] = {**data["eval_run"], "options_count": True}  # type: ignore[arg-type]
+
+    with pytest.raises(ContractError, match="options_count must be an integer"):
+        TrainingPackage.from_dict(data)
+
+
 def test_training_package_rejects_boolean_size():
     data = training_package_dict()
     artifacts = list(data["artifacts"])  # type: ignore[arg-type]
@@ -191,6 +242,70 @@ def test_training_package_rejects_missing_artifact_reference():
     data["artifacts"] = []
 
     with pytest.raises(ContractError, match="references missing artifact"):
+        TrainingPackage.from_dict(data)
+
+
+def test_training_package_rejects_empty_ranked_feedback_ranking():
+    data = training_package_dict()
+    ranked_events = list(data["ranked_feedback_events"])  # type: ignore[arg-type]
+    ranked_events[0] = {**ranked_events[0], "ranking": []}  # type: ignore[index]
+    data["ranked_feedback_events"] = ranked_events
+
+    with pytest.raises(ContractError, match="non-empty string list"):
+        TrainingPackage.from_dict(data)
+
+
+def test_training_package_rejects_unknown_ranked_feedback_option():
+    data = training_package_dict()
+    ranked_events = list(data["ranked_feedback_events"])  # type: ignore[arg-type]
+    ranked_events[0] = {**ranked_events[0], "ranking": ["d", "missing", "a"]}  # type: ignore[index]
+    data["ranked_feedback_events"] = ranked_events
+
+    with pytest.raises(ContractError, match="unknown option labels"):
+        TrainingPackage.from_dict(data)
+
+
+def test_training_package_rejects_unknown_ranked_feedback_winner():
+    data = training_package_dict()
+    ranked_events = list(data["ranked_feedback_events"])  # type: ignore[arg-type]
+    ranked_events[0] = {**ranked_events[0], "winner": "missing"}  # type: ignore[index]
+    data["ranked_feedback_events"] = ranked_events
+
+    with pytest.raises(ContractError, match="winner references unknown option label"):
+        TrainingPackage.from_dict(data)
+
+
+def test_training_package_rejects_duplicate_ranked_feedback_labels():
+    data = training_package_dict()
+    ranked_events = list(data["ranked_feedback_events"])  # type: ignore[arg-type]
+    ranked_events[0] = {**ranked_events[0], "ranking": ["d", "d", "a"]}  # type: ignore[index]
+    data["ranked_feedback_events"] = ranked_events
+
+    with pytest.raises(ContractError, match="ranking labels must be unique"):
+        TrainingPackage.from_dict(data)
+
+
+def test_training_package_rejects_ranked_feedback_winner_absent_from_ranking():
+    data = training_package_dict()
+    ranked_events = list(data["ranked_feedback_events"])  # type: ignore[arg-type]
+    ranked_events[0] = {**ranked_events[0], "ranking": ["b", "c", "a"], "winner": "d"}  # type: ignore[index]
+    data["ranked_feedback_events"] = ranked_events
+
+    with pytest.raises(ContractError, match="must appear in ranking"):
+        TrainingPackage.from_dict(data)
+
+
+def test_training_package_rejects_duplicate_item_option_labels():
+    data = training_package_dict()
+    items = list(data["items"])  # type: ignore[arg-type]
+    item = dict(items[0])  # type: ignore[index]
+    options = list(item["options"])  # type: ignore[index]
+    options[1] = {**options[1], "label": "a"}  # type: ignore[index]
+    item["options"] = options
+    items[0] = item
+    data["items"] = items
+
+    with pytest.raises(ContractError, match="option labels must be unique"):
         TrainingPackage.from_dict(data)
 
 
