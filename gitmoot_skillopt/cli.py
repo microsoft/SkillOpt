@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="path where the candidate package JSON should be written",
     )
     optimize.add_argument(
+        "--artifact-dir",
+        default="",
+        help="directory where candidate artifact files should be written; defaults to OUT_ROOT/artifacts",
+    )
+    optimize.add_argument(
         "--dry-run",
         action="store_true",
         help="produce a candidate package with zero training epochs; useful for fixture smoke tests",
@@ -95,6 +100,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         artifact_root=args.artifact_root,
         out_root=args.out_root,
         candidate_output=args.candidate_output,
+        artifact_dir=args.artifact_dir,
         dry_run=args.dry_run,
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,

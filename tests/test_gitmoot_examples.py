@@ -38,11 +38,11 @@ def test_gitmoot_mvp_fixture_dry_run_contract(tmp_path):
     assert result == 0
     candidate = CandidatePackage.load(candidate_output)
     assert candidate.template_id == "planner-fixture"
-    assert candidate.summary.diff_artifact_id == "candidate-diff"
+    assert candidate.summary.diff_artifact_id == "fixture-run-1/candidate-diff"
     assert candidate.summary.metadata["artifact_ids"] == [
-        "candidate-diff",
-        "eval-report",
-        "preference-summary",
+        "fixture-run-1/candidate-diff",
+        "fixture-run-1/eval-report",
+        "fixture-run-1/preference-summary",
     ]
 
     for artifact in candidate.artifacts:

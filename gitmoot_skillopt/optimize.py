@@ -26,6 +26,7 @@ def run_optimize(
     artifact_root: str,
     out_root: str,
     candidate_output: str,
+    artifact_dir: str = "",
     dry_run: bool = False,
     num_epochs: int = 1,
     batch_size: int = 4,
@@ -42,6 +43,7 @@ def run_optimize(
     artifact_root_path = _require_dir(artifact_root, "artifact root")
     out_root_path = Path(out_root).expanduser()
     out_root_path.mkdir(parents=True, exist_ok=True)
+    artifact_dir_path = Path(artifact_dir).expanduser() if str(artifact_dir).strip() else out_root_path / "artifacts"
 
     package = TrainingPackage.load(package_path)
     initial_skill_path = out_root_path / "initial_skill.md"
@@ -53,6 +55,7 @@ def run_optimize(
             candidate_content=package.template.content,
             summary=_dry_run_summary(package),
             out_root=out_root_path,
+            artifact_dir=artifact_dir_path,
             candidate_output=Path(candidate_output).expanduser(),
             dry_run=True,
         )
@@ -89,6 +92,7 @@ def run_optimize(
         candidate_content=candidate_content,
         summary=summary,
         out_root=out_root_path,
+        artifact_dir=artifact_dir_path,
         candidate_output=Path(candidate_output).expanduser(),
         dry_run=dry_run,
     )
@@ -210,32 +214,34 @@ def write_candidate_package(
     candidate_content: str,
     summary: dict[str, Any],
     out_root: Path,
+    artifact_dir: Path,
     candidate_output: Path,
     dry_run: bool,
 ) -> CandidatePackage:
-    writer = OutputArtifactWriter(out_root)
+    writer = OutputArtifactWriter(out_root, artifact_dir)
     diff_text = _diff_text(package.template.content, candidate_content)
     eval_report = _eval_report(summary, dry_run=dry_run)
     preference_summary = _preference_summary(summary, dry_run=dry_run)
+    diff_artifact_id = _candidate_artifact_id(package, "candidate-diff")
     artifacts = [
         writer.write_bytes(
             "candidate.diff.md",
             diff_text.encode(),
-            artifact_id="candidate-diff",
+            artifact_id=diff_artifact_id,
             media_type="text/markdown",
             driver="gitmoot-skillopt",
         ),
         writer.write_bytes(
             "eval-report.json",
             json.dumps(eval_report, indent=2, sort_keys=True).encode() + b"\n",
-            artifact_id="eval-report",
+            artifact_id=_candidate_artifact_id(package, "eval-report"),
             media_type="application/json",
             driver="gitmoot-skillopt",
         ),
         writer.write_bytes(
             "preference-summary.md",
             preference_summary.encode(),
-            artifact_id="preference-summary",
+            artifact_id=_candidate_artifact_id(package, "preference-summary"),
             media_type="text/markdown",
             driver="gitmoot-skillopt",
         ),
@@ -252,7 +258,7 @@ def write_candidate_package(
         artifacts=artifacts,
         eval_report=eval_report,
         summary=CandidateSummary(
-            diff_artifact_id="candidate-diff",
+            diff_artifact_id=diff_artifact_id,
             score=_summary_score(summary),
             preference_summary=preference_summary.strip(),
             metadata={"artifact_ids": [artifact.id for artifact in artifacts]},
@@ -262,6 +268,13 @@ def write_candidate_package(
     candidate_output.parent.mkdir(parents=True, exist_ok=True)
     candidate.dump(candidate_output)
     return candidate
+
+
+def _candidate_artifact_id(package: TrainingPackage, suffix: str) -> str:
+    run_id = str(package.eval_run.id or "").strip()
+    if not run_id:
+        run_id = str(package.template.id or "candidate").strip()
+    return f"{run_id}/{suffix}"
 
 
 def _require_file(path_text: str, label: str) -> Path:
