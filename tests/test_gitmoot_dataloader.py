@@ -200,6 +200,26 @@ def test_dataloader_rejects_incomplete_explicit_splits(tmp_path):
         loader.setup({})
 
 
+def test_dataloader_small_package_reuses_holdout_for_validation_and_test(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["items"] = package["items"][:2]
+    for item in package["items"]:
+        item["metadata"].pop("split", None)
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root), seed=1)
+
+    loader.setup({})
+
+    train_ids = [item["id"] for item in loader.build_train_batch(batch_size=10, seed=1).payload]
+    val_ids = [item["id"] for item in loader.build_eval_batch(env_num=10, split="valid_seen", seed=1).payload]
+    test_ids = [item["id"] for item in loader.build_eval_batch(env_num=10, split="valid_unseen", seed=1).payload]
+    assert train_ids
+    assert val_ids
+    assert test_ids
+    assert set(train_ids) | set(val_ids) | set(test_ids) == {"train-1", "val-1"}
+
+
 def test_dataloader_rejects_unknown_explicit_split_label(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
     package = json.loads(package_path.read_text(encoding="utf-8"))
