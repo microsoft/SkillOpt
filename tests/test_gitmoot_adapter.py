@@ -484,7 +484,7 @@ def test_landing_page_evaluator_returns_structured_score(tmp_path, monkeypatch):
     captured = {}
 
     def pass_agent(*args, **kwargs):
-        return "Vue landing page with full hero, final CTA, responsive CSS, and footer."
+        return _valid_vue_bundle_response()
 
     def fake_chat_optimizer(**kwargs):
         captured.update(kwargs)
@@ -527,7 +527,7 @@ def test_landing_page_evaluator_returns_structured_score(tmp_path, monkeypatch):
 
 def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatch):
     def pass_agent(*args, **kwargs):
-        return "Vue landing page with responsive sections, footer, and clear CTA."
+        return _valid_vue_bundle_response()
 
     def fake_chat_optimizer(**kwargs):
         return (
@@ -584,7 +584,7 @@ def test_landing_page_evaluator_uses_configured_evaluator_model(monkeypatch):
 
     score = evaluate_response(
         {"prompt": "Build a Vue landing page."},
-        "Vue landing page",
+        _valid_vue_bundle_response(),
         {
             "mode": "landing_page_v1",
             "evaluator_backend": "codex",
@@ -624,7 +624,7 @@ def test_landing_page_evaluator_restores_default_deployment_when_env_unset(monke
     try:
         score = evaluate_response(
             {"prompt": "Build a Vue landing page."},
-            "Vue landing page",
+            _valid_vue_bundle_response(),
             {
                 "mode": "landing_page_v1",
                 "evaluator_model": "gpt-evaluator",
@@ -642,7 +642,7 @@ def test_landing_page_evaluator_restores_default_deployment_when_env_unset(monke
 
 def test_landing_page_evaluator_invalid_json_fails_closed(tmp_path, monkeypatch):
     def pass_agent(*args, **kwargs):
-        return "Vue landing page"
+        return _valid_vue_bundle_response()
 
     def fake_chat_optimizer(**kwargs):
         return ("not json", {})
@@ -666,6 +666,192 @@ def test_landing_page_evaluator_invalid_json_fails_closed(tmp_path, monkeypatch)
     assert result["fail_reason"] == "landing_page_v1 judge did not return JSON"
 
 
+def test_landing_page_evaluator_rejects_missing_vue_bundle_file_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[("package.json", '{"scripts":{"build":"vite build"}}')]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.0
+    assert score["evaluator_id"] == "landing_page_v1"
+    assert score["failure"]["primary_reason"] == "vue_vite_bundle_contract_failed"
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.required_files"
+    assert "src/App.vue" in score["failure"]["evidence"][-1]
+    assert score["failure"]["optimizer_hint"].startswith("Return a JSON Vue/Vite preview bundle")
+    assert score["stage_status"] == [{"stage": "artifact_contract", "status": "failed"}]
+
+
+def test_landing_page_evaluator_rejects_external_href_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(app_vue='<template><main><a href="https://example.com">Docs</a></main></template>'),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.local_hrefs"
+    assert "href='https://example.com'" in repr(score["failure"]["evidence"])
+
+
+def test_landing_page_evaluator_rejects_external_v_bind_href_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(app_vue='<template><main><a v-bind:href="\'https://example.com\'">Docs</a></main></template>'),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.local_hrefs"
+    assert "href='https://example.com'" in repr(score["failure"]["evidence"])
+
+
+def test_landing_page_evaluator_rejects_dynamic_import_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(
+            app_vue='<template><main><button @click="import(\'https://example.com/x.js\')">Load</button></main></template>'
+        ),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.app_vue.dynamic_import"
+
+
+def test_landing_page_evaluator_rejects_build_script_that_only_mentions_vite(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(package_json='{"scripts":{"build":"echo vite build"}}'),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.package_json.build"
+
+
+def test_landing_page_evaluator_rejects_non_string_file_content_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", None),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.files"
+    assert "content is NoneType" in score["failure"]["evidence"][0]
+
+
+def test_landing_page_evaluator_allows_import_copy_and_resource_hrefs(monkeypatch):
+    called = False
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal called
+        called = True
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.9,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Bundle passed artifact checks and reached the judge.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    response = _valid_vue_bundle_response(
+        app_vue=(
+            "<template>\n"
+            "  <main>\n"
+            "    <h1>Import issues from GitHub</h1>\n"
+            "    Import issues into a cleaner landing page.\n"
+            "    <a data-href=\"https://example.com\" :href=\"'#start'\">Start</a>\n"
+            "  </main>\n"
+            "</template>"
+        ),
+        index_html='<div id="app"></div><link rel="icon" href="/vite.svg"><script type="module" src="/src/main.js"></script>',
+    )
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        response,
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert called is True
+    assert score["hard"] == 1
+
+
+def test_landing_page_evaluator_keeps_text_scoring_when_bundle_not_required(monkeypatch):
+    called = False
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal called
+        called = True
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.88,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Text feedback response is suitable.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        "Preserve option D and improve the hero animation.",
+        {"mode": "landing_page_v1"},
+    )
+
+    assert called is True
+    assert score["hard"] == 1
+
+
 def _landing_dimension_scores():
     return {
         "mobile_responsiveness": 0.9,
@@ -677,3 +863,27 @@ def _landing_dimension_scores():
         "text_overlap_readability": 0.95,
         "ranked_strength_preservation": 0.85,
     }
+
+
+def _valid_vue_bundle_response(
+    *,
+    app_vue: str = "<template><main><a href=\"#hero\">Hero</a><footer>Footer</footer></main></template>",
+    index_html: str = '<div id="app"></div><script type="module" src="/src/main.js"></script>',
+    package_json: str = '{"scripts":{"build":"vite build"}}',
+    files: list[tuple[str, str]] | None = None,
+) -> str:
+    if files is None:
+        files = [
+            ("package.json", package_json),
+            ("index.html", index_html),
+            ("src/main.js", "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", app_vue),
+        ]
+    return json.dumps(
+        {
+            "renderer": "vue-vite",
+            "build_command": "npm run build",
+            "dist_dir": "dist",
+            "files": [{"path": path, "content": content} for path, content in files],
+        }
+    )

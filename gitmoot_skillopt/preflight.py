@@ -47,7 +47,10 @@ def resolve_evaluator_config(
     evaluator_backend: str = "",
     evaluator_model: str = "",
 ) -> dict[str, Any]:
-    config = dict(package.evaluator_config) if isinstance(package.evaluator_config, dict) else {}
+    profile_config = _evaluator_profile_config(package)
+    package_config = dict(package.evaluator_config) if isinstance(package.evaluator_config, dict) else {}
+    config = {**profile_config, **package_config}
+    _apply_evaluator_id_mode_override(config, package_config)
     explicit = _normal_evaluator_id(evaluator_id)
     configured = _configured_evaluator_id(config)
     inferred = _infer_evaluator_id(package)
@@ -145,6 +148,17 @@ def _configured_evaluator_id(config: dict[str, Any]) -> str:
     return ""
 
 
+def _apply_evaluator_id_mode_override(config: dict[str, Any], override_config: dict[str, Any]) -> None:
+    if "mode" in override_config:
+        return
+    driver = str(override_config.get("driver") or "").strip().lower().replace("-", "_")
+    evaluator_id = _normal_evaluator_id(str(override_config.get("evaluator_id") or override_config.get("id") or ""))
+    if not evaluator_id and driver and driver != "manual_review":
+        evaluator_id = _normal_evaluator_id(driver)
+    if evaluator_id:
+        config["mode"] = evaluator_id
+
+
 def _infer_evaluator_id(package: TrainingPackage) -> str:
     driver = ""
     if isinstance(package.evaluator_config, dict):
@@ -152,6 +166,37 @@ def _infer_evaluator_id(package: TrainingPackage) -> str:
     if driver == "manual_review" and _package_uses_vue_preview(package):
         return LANDING_PAGE_EVALUATOR_ID
     return ""
+
+
+def _evaluator_profile_config(package: TrainingPackage) -> dict[str, Any]:
+    profile = package.evaluator_profile
+    if profile is None:
+        return {}
+    config: dict[str, Any] = {}
+    if profile.artifact_contract:
+        config["artifact_contract"] = profile.artifact_contract
+    if profile.preview_adapter:
+        config["preview_adapter"] = profile.preview_adapter
+    if profile.task_kind:
+        config["task_kind"] = profile.task_kind
+    if profile.profile_id:
+        config["profile_id"] = profile.profile_id
+    if profile.judge is not None and profile.judge.model:
+        config["evaluator_model"] = profile.judge.model
+    if _profile_requires_landing_page_mode(config):
+        config["mode"] = LANDING_PAGE_EVALUATOR_ID
+    return config
+
+
+def _profile_requires_landing_page_mode(config: dict[str, Any]) -> bool:
+    profile_id = str(config.get("profile_id") or "").strip().lower()
+    task_kind = str(config.get("task_kind") or "").strip().lower()
+    artifact_contract = str(config.get("artifact_contract") or "").strip().lower()
+    return (
+        profile_id in {LANDING_PAGE_EVALUATOR_ID, "vue_landing_page_v1"}
+        or task_kind == "vue_landing_page"
+        or artifact_contract in {"vue_vite_bundle", "vue-vite-bundle"}
+    )
 
 
 def _package_uses_vue_preview(package: TrainingPackage) -> bool:

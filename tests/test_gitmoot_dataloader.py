@@ -257,6 +257,99 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     assert train_batch.payload[0]["ranked_feedback_events"][0]["winner"] == "d"
 
 
+def test_dataloader_threads_evaluator_profile_contract(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+        "preview_adapter": "vue_vite",
+        "judge": {"type": "screenshot_llm", "model": "gpt-profile-eval"},
+    }
+    package.pop("evaluator_config")
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+
+    assert item["evaluator_config"]["profile_id"] == "vue_landing_page_v1"
+    assert item["evaluator_config"]["mode"] == "landing_page_v1"
+    assert item["evaluator_config"]["artifact_contract"] == "vue_vite_bundle"
+    assert item["evaluator_config"]["preview_adapter"] == "vue_vite"
+    assert item["evaluator_config"]["evaluator_model"] == "gpt-profile-eval"
+
+
+def test_dataloader_honors_evaluator_id_override_over_profile_mode(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+        "preview_adapter": "vue_vite",
+    }
+    package["evaluator_config"] = {"evaluator_id": "fixture"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+
+    assert item["evaluator_config"]["evaluator_id"] == "fixture"
+    assert item["evaluator_config"]["mode"] == "fixture"
+    assert item["evaluator_config"]["artifact_contract"] == "vue_vite_bundle"
+
+
+def test_dataloader_runtime_mode_override_wins_over_package_evaluator_id(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"evaluator_id": "fixture"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({"evaluator_config": {"mode": "landing_page_v1", "evaluator_id": "landing_page_v1"}})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+
+    assert item["evaluator_config"]["mode"] == "landing_page_v1"
+    assert item["evaluator_config"]["evaluator_id"] == "landing_page_v1"
+
+
+def test_dataloader_honors_driver_override_over_profile_mode(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+    }
+    package["evaluator_config"] = {"driver": "fixture"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+
+    assert item["evaluator_config"]["mode"] == "fixture"
+    assert item["evaluator_config"]["driver"] == "fixture"
+    assert item["evaluator_config"]["profile_id"] == "vue_landing_page_v1"
+
+
+def test_dataloader_does_not_force_default_override_evaluator_id(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package.pop("evaluator_config")
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({"evaluator_config": {"evaluator_id": "llm_judge"}})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+
+    assert item["evaluator_config"]["evaluator_id"] == "llm_judge"
+    assert "mode" not in item["evaluator_config"]
+
+
 def test_dataloader_creates_disjoint_splits_when_metadata_split_is_absent(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
     package = json.loads(package_path.read_text(encoding="utf-8"))

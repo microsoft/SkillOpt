@@ -277,6 +277,67 @@ def test_preflight_infers_landing_page_evaluator_for_vue_preview_manual_review(t
     assert config["driver"] == "manual-review"
 
 
+def test_preflight_threads_evaluator_profile_contract(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package.pop("evaluator_config", None)
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+        "preview_adapter": "vue_vite",
+        "judge": {"type": "screenshot_llm", "model": "gpt-profile-eval"},
+    }
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+
+    assert config["mode"] == "landing_page_v1"
+    assert config["evaluator_id"] == "landing_page_v1"
+    assert config["profile_id"] == "vue_landing_page_v1"
+    assert config["artifact_contract"] == "vue_vite_bundle"
+    assert config["preview_adapter"] == "vue_vite"
+    assert config["evaluator_model"] == "gpt-profile-eval"
+
+
+def test_preflight_honors_evaluator_id_override_over_profile_mode(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+        "preview_adapter": "vue_vite",
+    }
+    package["evaluator_config"] = {"evaluator_id": "fixture"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+
+    assert config["mode"] == "fixture"
+    assert config["evaluator_id"] == "fixture"
+    assert config["profile_id"] == "vue_landing_page_v1"
+    assert config["artifact_contract"] == "vue_vite_bundle"
+
+
+def test_preflight_honors_driver_override_over_profile_mode(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+    }
+    package["evaluator_config"] = {"driver": "fixture"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+
+    assert config["mode"] == "fixture"
+    assert config["evaluator_id"] == "fixture"
+    assert config["profile_id"] == "vue_landing_page_v1"
+
+
 @pytest.mark.parametrize(
     ("raw_config", "expected_mode"),
     [

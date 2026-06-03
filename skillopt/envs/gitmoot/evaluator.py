@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from skillopt.model import chat_optimizer, get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
@@ -22,6 +23,27 @@ LANDING_PAGE_DIMENSIONS = (
     "text_overlap_readability",
     "ranked_strength_preservation",
 )
+VUE_BUNDLE_REQUIRED_FILES = (
+    "package.json",
+    "index.html",
+    "src/main.js",
+    "src/App.vue",
+)
+_APP_VUE_FORBIDDEN_PATTERNS = (
+    ("script_tag", re.compile(r"<\s*script\b", re.IGNORECASE)),
+    (
+        "import_statement",
+        re.compile(r"(?:^|[;{}\n]\s*)import\s+(?:[\w*{}\s,]+?\s+from\s+['\"]|['\"][^'\"]+['\"])"),
+    ),
+    ("dynamic_import", re.compile(r"\bimport\s*\(")),
+    ("require_call", re.compile(r"\brequire\s*\(", re.IGNORECASE)),
+    ("import_meta", re.compile(r"\bimport\.meta\b", re.IGNORECASE)),
+    ("css_import", re.compile(r"@import\b", re.IGNORECASE)),
+    ("css_url", re.compile(r"\burl\s*\(", re.IGNORECASE)),
+)
+_VITE_BUILD_COMMAND_RE = re.compile(r"(?:^|[;&|]\s*)(?:npx\s+)?vite\s+build(?:\s|$)")
+_A_TAG_RE = re.compile(r"<a\b[^>]*>", re.IGNORECASE)
+_HREF_RE = re.compile(r"(?:^|[\s<])(?:v-bind:|:)?href\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", re.IGNORECASE)
 
 
 def evaluate_response(item: dict[str, Any], response: str, evaluator_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -125,6 +147,11 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
 
 
 def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
+    if _requires_vue_vite_bundle(item, config):
+        artifact_check = _check_vue_vite_bundle(response)
+        if artifact_check is not None:
+            return artifact_check
+
     raw, _usage = _chat_evaluator(
         config,
         system=_landing_page_system_prompt(),
@@ -137,6 +164,221 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     if not isinstance(parsed, dict):
         raise ValueError("landing_page_v1 judge did not return JSON")
     return _normalize_landing_page_score(parsed, raw=raw)
+
+
+def _requires_vue_vite_bundle(item: dict[str, Any], config: dict[str, Any]) -> bool:
+    if bool(config.get("require_vue_vite_bundle")):
+        return True
+    for source in (config, item.get("metadata") if isinstance(item.get("metadata"), dict) else {}):
+        artifact_contract = str(source.get("artifact_contract") or source.get("output_contract") or "").strip().lower()
+        if artifact_contract in {"vue_vite_bundle", "vue-vite-bundle"}:
+            return True
+        output_type = str(source.get("output_type") or "").strip().lower()
+        if output_type in {"vue_vite_bundle", "vue-vite-bundle"}:
+            return True
+    return False
+
+
+def _check_vue_vite_bundle(response: str) -> dict[str, Any] | None:
+    parsed = extract_json(response)
+    failures: list[dict[str, Any]] = []
+    evidence: list[str] = []
+    if not isinstance(parsed, dict):
+        return _vue_bundle_failure(
+            [
+                _failed_check(
+                    "vue_vite_bundle.json",
+                    "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
+                    ["response did not contain a parseable JSON object"],
+                )
+            ]
+        )
+
+    files = parsed.get("files")
+    if not isinstance(files, list) or not files:
+        return _vue_bundle_failure(
+            [
+                _failed_check(
+                    "vue_vite_bundle.files",
+                    "Vue/Vite preview bundle must include a non-empty files array.",
+                    ["files missing or empty"],
+                )
+            ]
+        )
+
+    file_map: dict[str, str] = {}
+    for index, file_entry in enumerate(files, start=1):
+        if not isinstance(file_entry, dict):
+            failures.append(
+                _failed_check(
+                    "vue_vite_bundle.files",
+                    f"File entry {index} must be an object.",
+                    [f"files[{index - 1}] is {type(file_entry).__name__}"],
+                )
+            )
+            continue
+        path = str(file_entry.get("path") or "").strip()
+        if not path or "content" not in file_entry:
+            failures.append(
+                _failed_check(
+                    "vue_vite_bundle.files",
+                    f"File entry {index} must include path and content.",
+                    [f"files[{index - 1}] missing path or content"],
+                )
+            )
+            continue
+        content = file_entry["content"]
+        if not isinstance(content, str):
+            failures.append(
+                _failed_check(
+                    "vue_vite_bundle.files",
+                    f"File entry {index} content must be a string.",
+                    [f"files[{index - 1}].content is {type(content).__name__}"],
+                )
+            )
+            continue
+        file_map[path] = content
+
+    missing = [path for path in VUE_BUNDLE_REQUIRED_FILES if path not in file_map]
+    if missing:
+        failures.append(
+            _failed_check(
+                "vue_vite_bundle.required_files",
+                "Vue/Vite preview bundle is missing required files.",
+                [f"missing {path}" for path in missing],
+            )
+        )
+
+    if "package.json" in file_map:
+        package_failure = _check_package_json(file_map["package.json"])
+        if package_failure is not None:
+            failures.append(package_failure)
+
+    if "src/App.vue" in file_map:
+        failures.extend(_check_app_vue(file_map["src/App.vue"]))
+
+    href_failures = _check_local_href_anchors(file_map)
+    failures.extend(href_failures)
+
+    if failures:
+        for failure in failures:
+            evidence.extend(str(item) for item in failure.get("evidence", []))
+        return _vue_bundle_failure(failures, evidence=evidence)
+    return None
+
+
+def _check_package_json(content: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return _failed_check(
+            "vue_vite_bundle.package_json",
+            "package.json must be valid JSON.",
+            ["package.json is not valid JSON"],
+        )
+    if not isinstance(parsed, dict):
+        return _failed_check(
+            "vue_vite_bundle.package_json",
+            "package.json must be a JSON object.",
+            ["package.json root is not an object"],
+        )
+    scripts = parsed.get("scripts")
+    build_script = scripts.get("build") if isinstance(scripts, dict) else None
+    if not isinstance(build_script, str) or _VITE_BUILD_COMMAND_RE.search(build_script) is None:
+        return _failed_check(
+            "vue_vite_bundle.package_json.build",
+            "package.json must define a build script that runs vite build.",
+            ["scripts.build missing vite build"],
+        )
+    return None
+
+
+def _check_app_vue(content: str) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for pattern_id, pattern in _APP_VUE_FORBIDDEN_PATTERNS:
+        match = pattern.search(content)
+        if match is None:
+            continue
+        failures.append(
+            _failed_check(
+                f"vue_vite_bundle.app_vue.{pattern_id}",
+                "src/App.vue contains forbidden code or external-loading patterns.",
+                [f"src/App.vue matched {pattern.pattern!r}: {match.group(0)!r}"],
+            )
+        )
+    return failures
+
+
+def _check_local_href_anchors(files: dict[str, str]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for path, content in files.items():
+        for anchor in _A_TAG_RE.finditer(content):
+            href_match = _HREF_RE.search(anchor.group(0))
+            if href_match is None:
+                continue
+            href = _normalize_href_value(next((group for group in href_match.groups() if group is not None), ""))
+            if href.startswith("#"):
+                continue
+            failures.append(
+                _failed_check(
+                    "vue_vite_bundle.local_hrefs",
+                    "All href attributes must be local # anchors.",
+                    [f"{path} has href={href!r}"],
+                )
+            )
+    return failures
+
+
+def _normalize_href_value(value: str) -> str:
+    href = value.strip()
+    for _ in range(2):
+        if len(href) >= 2 and href[0] in {"'", '"'} and href[-1] == href[0]:
+            href = href[1:-1].strip()
+    return href
+
+
+def _failed_check(check: str, reason: str, evidence: list[str]) -> dict[str, Any]:
+    return {
+        "check": check,
+        "severity": "hard_blocker",
+        "reason": reason,
+        "evidence": evidence,
+    }
+
+
+def _vue_bundle_failure(failed_checks: list[dict[str, Any]], *, evidence: list[str] | None = None) -> dict[str, Any]:
+    first_reason = failed_checks[0]["reason"] if failed_checks else "Vue/Vite preview bundle failed validation."
+    evidence = evidence or [item for check in failed_checks for item in check.get("evidence", [])]
+    failure = {
+        "primary_reason": "vue_vite_bundle_contract_failed",
+        "human_reason": first_reason,
+        "optimizer_hint": (
+            "Return a JSON Vue/Vite preview bundle with package.json, index.html, src/main.js, "
+            "and src/App.vue. Keep src/App.vue template/style-only, use vite build, and make links local # anchors."
+        ),
+        "failed_checks": failed_checks,
+        "evidence": evidence,
+        "stage_status": [{"stage": "artifact_contract", "status": "failed"}],
+    }
+    return {
+        "hard": 0,
+        "soft": 0.0,
+        "fail_reason": first_reason,
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "dimension_scores": {"artifact_contract": 0.0},
+        "failure": failure,
+        "stage_status": failure["stage_status"],
+        "evaluator_id": LANDING_PAGE_EVALUATOR_ID,
+        "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+        "metadata": {
+            "evaluator": LANDING_PAGE_EVALUATOR_ID,
+            "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+            "dimension_scores": {"artifact_contract": 0.0},
+            "failure": failure,
+            "stage_status": failure["stage_status"],
+        },
+    }
 
 
 def _chat_evaluator(config: dict[str, Any], **kwargs) -> tuple[str, dict[str, Any]]:

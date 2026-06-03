@@ -64,9 +64,12 @@ class GitmootDataLoader(BaseDataLoader):
             raise ValueError("GitmootDataLoader requires artifact_root")
 
         self.package = TrainingPackage.load(self.training_package)
+        profile_config = _evaluator_profile_config(self.package)
         package_config = self.package.evaluator_config if isinstance(self.package.evaluator_config, dict) else {}
         override_config = cfg.get("evaluator_config") if isinstance(cfg.get("evaluator_config"), dict) else {}
-        self.evaluator_config = {**package_config, **override_config}
+        self.evaluator_config = {**profile_config, **package_config}
+        _apply_evaluator_id_mode_override(self.evaluator_config, package_config)
+        self.evaluator_config = {**self.evaluator_config, **override_config}
         resolver = GitmootArtifactResolver(self.artifact_root)
         items = [self._item_to_task(item, resolver) for item in self.package.items]
         self._splits = self._split_items(items)
@@ -381,6 +384,61 @@ def build_task_prompt(
         "Ground the response in the artifacts and feedback above."
     )
     return "\n".join(parts)
+
+
+def _evaluator_profile_config(package: TrainingPackage) -> dict[str, Any]:
+    profile = package.evaluator_profile
+    if profile is None:
+        return {}
+    config: dict[str, Any] = {}
+    if profile.artifact_contract:
+        config["artifact_contract"] = profile.artifact_contract
+    if profile.preview_adapter:
+        config["preview_adapter"] = profile.preview_adapter
+    if profile.task_kind:
+        config["task_kind"] = profile.task_kind
+    if profile.profile_id:
+        config["profile_id"] = profile.profile_id
+    if profile.judge is not None and profile.judge.model:
+        config["evaluator_model"] = profile.judge.model
+    if _profile_requires_landing_page_mode(config):
+        config["mode"] = "landing_page_v1"
+    return config
+
+
+def _profile_requires_landing_page_mode(config: dict[str, Any]) -> bool:
+    profile_id = str(config.get("profile_id") or "").strip().lower()
+    task_kind = str(config.get("task_kind") or "").strip().lower()
+    artifact_contract = str(config.get("artifact_contract") or "").strip().lower()
+    return (
+        profile_id in {"landing_page_v1", "vue_landing_page_v1"}
+        or task_kind == "vue_landing_page"
+        or artifact_contract in {"vue_vite_bundle", "vue-vite-bundle"}
+    )
+
+
+def _apply_evaluator_id_mode_override(config: dict[str, Any], override_config: dict[str, Any]) -> None:
+    if "mode" in override_config:
+        return
+    driver = str(override_config.get("driver") or "").strip().lower().replace("-", "_")
+    evaluator_id = _normal_evaluator_mode(override_config.get("evaluator_id") or override_config.get("id") or "")
+    if not evaluator_id and driver and driver != "manual_review":
+        evaluator_id = _normal_evaluator_mode(driver)
+    if evaluator_id:
+        config["mode"] = evaluator_id
+
+
+def _normal_evaluator_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    if normalized in {"judge", "llm", "llmjudge", "manual_judge", "manual_review", "pairwise"}:
+        return "llm_judge"
+    if normalized == "landing_page":
+        return "landing_page_v1"
+    if normalized in {"deterministic", "mock"}:
+        return "fixture"
+    if normalized == "substring":
+        return "contains"
+    return normalized
 
 
 def _feedback_event_prompt_context(event: Any) -> dict[str, str]:
