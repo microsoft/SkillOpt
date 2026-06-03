@@ -411,3 +411,121 @@ def test_judge_evaluator_parses_string_hard_values(monkeypatch):
     assert score["hard"] == 0
     assert score["soft"] == 0.2
     assert score["fail_reason"] == "bad"
+
+
+def test_landing_page_evaluator_returns_structured_score(tmp_path, monkeypatch):
+    captured = {}
+
+    def pass_agent(*args, **kwargs):
+        return "Vue landing page with full hero, final CTA, responsive CSS, and footer."
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.87,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Clear hero, CTA, footer, and responsive layout.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "landing-page",
+        "prompt": "Build a Vue landing page.\nHuman ranking: D > B > C > A.\nNeeds mobile responsiveness.",
+        "metadata": {"kind": "landing_page"},
+        "evaluator_config": {"mode": "landing_page_v1"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.87
+    assert result["score_status"] == "scored"
+    assert result["evaluator_id"] == "landing_page_v1"
+    assert result["evaluator_version"] == "v1"
+    assert result["metadata"]["dimension_scores"]["mobile_responsiveness"] == 0.9
+    assert result["metadata"]["rationale"] == "Clear hero, CTA, footer, and responsive layout."
+    assert captured["stage"] == "gitmoot_landing_page_judge"
+    assert "Human ranking: D > B > C > A" in captured["user"]
+    assert "Generated Landing Page Response" in captured["user"]
+    assert "mobile_responsiveness" in captured["system"]
+
+
+def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatch):
+    def pass_agent(*args, **kwargs):
+        return "Vue landing page with responsive sections, footer, and clear CTA."
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": "1.0",
+                    "soft": "0.82",
+                    "dimension_scores": {key: str(value) for key, value in _landing_dimension_scores().items()},
+                    "rationale": "Strong enough to promote with responsive layout and footer.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "landing-page-numeric-hard",
+        "prompt": "Build a Vue landing page.",
+        "evaluator_config": {"mode": "landing_page_v1"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.82
+    assert result["score_status"] == "scored"
+    assert result["evaluator_status"] == "passed"
+
+
+def test_landing_page_evaluator_invalid_json_fails_closed(tmp_path, monkeypatch):
+    def pass_agent(*args, **kwargs):
+        return "Vue landing page"
+
+    def fake_chat_optimizer(**kwargs):
+        return ("not json", {})
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "landing-page-invalid",
+        "prompt": "Build a Vue landing page.",
+        "evaluator_config": {"mode": "landing_page_v1"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] is None
+    assert result["soft"] is None
+    assert result["target_status"] == "passed"
+    assert result["evaluator_status"] == "failed"
+    assert result["score_status"] == "unscored"
+    assert result["blocker"] == "evaluator_failed"
+    assert result["fail_reason"] == "landing_page_v1 judge did not return JSON"
+
+
+def _landing_dimension_scores():
+    return {
+        "mobile_responsiveness": 0.9,
+        "footer_presence_clarity": 0.8,
+        "hero_quality": 0.9,
+        "cta_clarity": 0.85,
+        "visual_images_relevance": 0.75,
+        "animation_motion_quality": 0.7,
+        "text_overlap_readability": 0.95,
+        "ranked_strength_preservation": 0.85,
+    }
