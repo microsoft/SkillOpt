@@ -5,7 +5,8 @@ import json
 import pytest
 
 from gitmoot_skillopt.cli import main
-from gitmoot_skillopt.contracts import CANDIDATE_PACKAGE_KIND, CandidatePackage
+from gitmoot_skillopt.contracts import CANDIDATE_PACKAGE_KIND, CandidatePackage, TrainingPackage
+from gitmoot_skillopt.optimize import write_candidate_package
 from tests.test_gitmoot_dataloader import write_training_package
 
 
@@ -197,3 +198,47 @@ def test_optimize_threads_gate_metric(tmp_path, monkeypatch):
 
     assert result == 0
     assert captured["gate_metric"] == "soft"
+
+
+def test_blocked_summary_writes_non_promotable_candidate_metadata(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    del artifact_root
+    package = TrainingPackage.load(package_path)
+    candidate_output = tmp_path / "out" / "candidate.json"
+    block = {
+        "blocker": "evaluator_not_run",
+        "items": [
+            {
+                "id": "val-1",
+                "blocker": "evaluator_not_run",
+                "score_status": "unscored",
+                "target_trace_path": "predictions/val-1/conversation.json",
+                "evaluator_trace_path": "predictions/val-1/result.json",
+            }
+        ],
+    }
+
+    candidate = write_candidate_package(
+        package=package,
+        candidate_content=package.template.content,
+        summary={
+            "gate_status": "blocked",
+            "gate_blocker": "evaluator_not_run",
+            "gate_blockers": [block],
+            "best_selection_hard": None,
+            "baseline_selection_hard": None,
+        },
+        out_root=tmp_path / "out",
+        artifact_dir=tmp_path / "out" / "artifacts",
+        candidate_output=candidate_output,
+        dry_run=False,
+    )
+
+    loaded = CandidatePackage.load(candidate_output)
+    assert candidate.summary.score is None
+    assert loaded.summary.score is None
+    assert loaded.eval_report["gate_status"] == "blocked"
+    assert loaded.eval_report["promotable"] is False
+    assert loaded.summary.metadata["promotable"] is False
+    assert loaded.summary.metadata["gate_blocker"] == "evaluator_not_run"
+    assert loaded.summary.metadata["gate_blockers"][0]["items"][0]["id"] == "val-1"

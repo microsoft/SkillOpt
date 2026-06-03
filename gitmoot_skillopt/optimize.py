@@ -246,6 +246,7 @@ def write_candidate_package(
             driver="gitmoot-skillopt",
         ),
     ]
+    summary_metadata = _summary_metadata(summary, artifacts=artifacts)
     candidate = CandidatePackage(
         kind=CANDIDATE_PACKAGE_KIND,
         contract_version=CONTRACT_VERSION,
@@ -261,7 +262,7 @@ def write_candidate_package(
             diff_artifact_id=diff_artifact_id,
             score=_summary_score(summary),
             preference_summary=preference_summary.strip(),
-            metadata={"artifact_ids": [artifact.id for artifact in artifacts]},
+            metadata=summary_metadata,
         ),
     )
     candidate.validate()
@@ -310,14 +311,22 @@ def _diff_text(base: str, candidate: str) -> str:
 
 
 def _eval_report(summary: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    gate_status = str(summary.get("gate_status") or "passed")
     return {
         "dry_run": dry_run,
+        "gate_status": gate_status,
+        "gate_blocker": summary.get("gate_blocker", ""),
+        "gate_blockers": summary.get("gate_blockers", []),
+        "promotable": _summary_promotable(summary),
         "best_selection_hard": summary.get("best_selection_hard"),
+        "best_selection_soft": summary.get("best_selection_soft"),
         "baseline_selection_hard": summary.get("baseline_selection_hard"),
+        "baseline_selection_soft": summary.get("baseline_selection_soft"),
         "best_step": summary.get("best_step"),
         "total_steps": summary.get("total_steps"),
         "total_accepts": summary.get("total_accepts"),
         "total_rejects": summary.get("total_rejects"),
+        "total_blocks": summary.get("total_blocks"),
         "total_skips": summary.get("total_skips"),
         "token_summary": summary.get("token_summary", {}),
     }
@@ -331,7 +340,12 @@ def _dry_run_summary(package: TrainingPackage) -> dict[str, Any]:
         "total_steps": 0,
         "total_accepts": 0,
         "total_rejects": 0,
+        "total_blocks": 0,
         "total_skips": 0,
+        "gate_status": "passed",
+        "gate_blocker": "",
+        "gate_blockers": [],
+        "promotable": True,
         "token_summary": {},
         "training_package": {
             "template_id": package.template.id,
@@ -342,17 +356,41 @@ def _dry_run_summary(package: TrainingPackage) -> dict[str, Any]:
 
 def _preference_summary(summary: dict[str, Any], *, dry_run: bool) -> str:
     mode = "dry-run fixture" if dry_run else "optimizer"
+    gate_status = str(summary.get("gate_status") or "passed")
     return (
         f"# Gitmoot SkillOpt Candidate\n\n"
         f"Mode: {mode}\n\n"
         f"Best selection hard: {summary.get('best_selection_hard')}\n"
         f"Baseline selection hard: {summary.get('baseline_selection_hard')}\n"
+        f"Gate status: {gate_status}\n"
+        f"Promotable: {_summary_promotable(summary)}\n"
         f"Total steps: {summary.get('total_steps')}\n"
     )
 
 
 def _summary_score(summary: dict[str, Any]) -> float | None:
+    if not _summary_promotable(summary):
+        return None
     score = summary.get("best_selection_hard")
     if isinstance(score, bool) or not isinstance(score, int | float):
         return None
     return float(score)
+
+
+def _summary_promotable(summary: dict[str, Any]) -> bool:
+    gate_status = str(summary.get("gate_status") or "passed")
+    return bool(summary.get("promotable", gate_status != "blocked"))
+
+
+def _summary_metadata(summary: dict[str, Any], *, artifacts: list[Any]) -> dict[str, Any]:
+    gate_status = str(summary.get("gate_status") or "passed")
+    gate_blockers = summary.get("gate_blockers")
+    if not isinstance(gate_blockers, list):
+        gate_blockers = []
+    return {
+        "artifact_ids": [artifact.id for artifact in artifacts],
+        "gate_status": gate_status,
+        "gate_blocker": str(summary.get("gate_blocker") or ""),
+        "gate_blockers": gate_blockers,
+        "promotable": _summary_promotable(summary),
+    }

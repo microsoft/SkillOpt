@@ -24,8 +24,7 @@ Three gate metrics are supported:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
-
+from typing import Any, Literal
 
 GateAction = Literal["accept_new_best", "accept", "reject"]
 GateMetric = Literal["hard", "soft", "mixed"]
@@ -41,6 +40,32 @@ class GateResult:
     best_skill: str
     best_score: float
     best_step: int
+
+
+@dataclass(frozen=True)
+class GateBlock:
+    """Structured reason a validation gate cannot make a decision."""
+
+    blocker: str
+    items: list[dict[str, Any]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"blocker": self.blocker, "items": self.items}
+
+
+def find_gate_block(results: list[object]) -> GateBlock | None:
+    """Return a block report when required gate results are not scored."""
+    items = [_blocking_item(result) for result in results if _is_gate_unscored(result)]
+    if not items:
+        return None
+    return GateBlock(blocker=_primary_blocker(items), items=items)
+
+
+def require_scored_gate_results(results: list[object]) -> None:
+    """Raise if a gate would be comparing incomplete evaluation results."""
+    block = find_gate_block(results)
+    if block is not None:
+        raise ValueError(f"blocked:{block.blocker}")
 
 
 def select_gate_score(
@@ -71,6 +96,65 @@ def select_gate_score(
     raise ValueError(
         f"unknown gate metric {metric!r}; expected 'hard', 'soft', or 'mixed'"
     )
+
+
+def _is_gate_unscored(result: object) -> bool:
+    status = str(_result_field(result, "score_status", "") or "").strip().lower()
+    return status == "unscored" or _result_field(result, "hard", None) is None or _result_field(result, "soft", None) is None
+
+
+def _blocking_item(result: object) -> dict[str, Any]:
+    blocker = _result_blocker(result)
+    item = {
+        "id": str(_result_field(result, "id", "unknown")),
+        "blocker": blocker,
+        "score_status": str(_result_field(result, "score_status", "unscored") or "unscored"),
+        "target_status": str(_result_field(result, "target_status", "") or ""),
+        "evaluator_status": str(_result_field(result, "evaluator_status", "") or ""),
+        "target_trace_path": str(_result_field(result, "target_trace_path", "") or ""),
+        "evaluator_trace_path": str(_result_field(result, "evaluator_trace_path", "") or ""),
+        "fail_reason": str(_result_field(result, "fail_reason", "") or ""),
+    }
+    return {key: value for key, value in item.items() if value != ""}
+
+
+def _result_blocker(result: object) -> str:
+    explicit = str(_result_field(result, "blocker", "") or "").strip()
+    if explicit:
+        return explicit
+    target_status = str(_result_field(result, "target_status", "") or "").strip().lower()
+    evaluator_status = str(_result_field(result, "evaluator_status", "") or "").strip().lower()
+    if target_status == "failed":
+        return "target_rollout_failed"
+    if evaluator_status == "not_run":
+        return "evaluator_not_run"
+    if evaluator_status == "failed":
+        return "evaluator_failed"
+    if _result_field(result, "hard", None) is None or _result_field(result, "soft", None) is None:
+        return "invalid_evaluator_score"
+    return "unscored"
+
+
+def _primary_blocker(items: list[dict[str, Any]]) -> str:
+    priority = [
+        "target_rollout_failed",
+        "evaluator_not_run",
+        "evaluator_failed",
+        "invalid_evaluator_score",
+    ]
+    blockers = {str(item.get("blocker") or "") for item in items}
+    for blocker in priority:
+        if blocker in blockers:
+            return blocker
+    return next((blocker for blocker in blockers if blocker), "unscored")
+
+
+def _result_field(result: object, key: str, default: Any) -> Any:
+    if hasattr(result, key):
+        return getattr(result, key)
+    if isinstance(result, dict):
+        return result.get(key, default)
+    return default
 
 
 def evaluate_gate(
