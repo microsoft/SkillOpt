@@ -108,14 +108,17 @@ class CandidateArtifactManifestEntry:
 
 
 class OutputArtifactWriter:
-    """Write optimizer artifacts under ``out_root/artifacts`` and emit manifests."""
+    """Write optimizer artifacts under an artifact directory and emit manifests."""
 
-    def __init__(self, out_root: str | Path) -> None:
+    def __init__(self, out_root: str | Path, artifact_dir: str | Path | None = None) -> None:
         if str(out_root).strip() == "":
             raise ArtifactError("output root is required")
         root = Path(out_root).expanduser()
         self.out_root = root
-        self.artifact_root = self.out_root / "artifacts"
+        if artifact_dir is None or str(artifact_dir).strip() == "":
+            self.artifact_root = self.out_root / "artifacts"
+        else:
+            self.artifact_root = Path(artifact_dir).expanduser()
 
     def write_bytes(
         self,

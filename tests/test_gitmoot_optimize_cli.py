@@ -58,14 +58,45 @@ def test_optimize_dry_run_writes_candidate_package_and_artifacts(tmp_path):
     assert loaded.kind == CANDIDATE_PACKAGE_KIND
     assert loaded.template_id == "planner"
     assert loaded.candidate.content.startswith("---\n")
-    assert loaded.summary.diff_artifact_id == "candidate-diff"
+    assert loaded.summary.diff_artifact_id == "run-1/candidate-diff"
     assert {artifact.id for artifact in loaded.artifacts} == {
-        "candidate-diff",
-        "eval-report",
-        "preference-summary",
+        "run-1/candidate-diff",
+        "run-1/eval-report",
+        "run-1/preference-summary",
     }
     for artifact in loaded.artifacts:
         assert (out_root / "artifacts" / artifact.path).is_file()
+
+
+def test_optimize_dry_run_accepts_explicit_artifact_dir(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    out_root = tmp_path / "out"
+    artifact_dir = tmp_path / "candidate-artifacts"
+    candidate_output = out_root / "candidate.json"
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            str(package_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--out-root",
+            str(out_root),
+            "--candidate-output",
+            str(candidate_output),
+            "--artifact-dir",
+            str(artifact_dir),
+            "--dry-run",
+        ]
+    )
+
+    assert result == 0
+    data = json.loads(candidate_output.read_text(encoding="utf-8"))
+    loaded = CandidatePackage.from_dict(data)
+    for artifact in loaded.artifacts:
+        assert (artifact_dir / artifact.path).is_file()
+    assert not (out_root / "artifacts").exists()
 
 
 def test_optimize_dry_run_does_not_start_trainer(tmp_path, monkeypatch):
