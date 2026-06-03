@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
+from skillopt.model.common import default_model_for_backend
 from skillopt.utils import extract_json
 
 LANDING_PAGE_EVALUATOR_ID = "landing_page_v1"
@@ -87,7 +89,14 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             response,
         ]
     )
-    raw, _usage = chat_optimizer(system=system, user=user, max_completion_tokens=2048, retries=2, stage="gitmoot_judge")
+    raw, _usage = _chat_evaluator(
+        config,
+        system=system,
+        user=user,
+        max_completion_tokens=2048,
+        retries=2,
+        stage="gitmoot_judge",
+    )
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         return {
@@ -116,7 +125,8 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
 
 
 def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
-    raw, _usage = chat_optimizer(
+    raw, _usage = _chat_evaluator(
+        config,
         system=_landing_page_system_prompt(),
         user=_landing_page_user_prompt(item, response, config),
         max_completion_tokens=4096,
@@ -127,6 +137,25 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     if not isinstance(parsed, dict):
         raise ValueError("landing_page_v1 judge did not return JSON")
     return _normalize_landing_page_score(parsed, raw=raw)
+
+
+def _chat_evaluator(config: dict[str, Any], **kwargs) -> tuple[str, dict[str, Any]]:
+    evaluator_backend = str(config.get("evaluator_backend") or "").strip()
+    evaluator_model = str(config.get("evaluator_model") or "").strip()
+    if not evaluator_backend and not evaluator_model:
+        return chat_optimizer(**kwargs)
+
+    previous_backend = get_optimizer_backend()
+    previous_model = os.environ.get("OPTIMIZER_DEPLOYMENT", "")
+    try:
+        if evaluator_backend:
+            set_optimizer_backend(evaluator_backend)
+        if evaluator_model:
+            set_optimizer_deployment(evaluator_model)
+        return chat_optimizer(**kwargs)
+    finally:
+        set_optimizer_backend(previous_backend)
+        set_optimizer_deployment(previous_model or default_model_for_backend(previous_backend))
 
 
 def _landing_page_system_prompt() -> str:

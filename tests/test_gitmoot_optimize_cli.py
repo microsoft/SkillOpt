@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
 from gitmoot_skillopt.cli import main
 from gitmoot_skillopt.contracts import CANDIDATE_PACKAGE_KIND, CandidatePackage, TrainingPackage
 from gitmoot_skillopt.optimize import write_candidate_package
+from gitmoot_skillopt.preflight import PreflightResult, resolve_evaluator_config
+from skillopt.envs.gitmoot.evaluator import evaluate_response
 from tests.test_gitmoot_dataloader import write_training_package
 
 
@@ -127,6 +130,32 @@ def test_optimize_dry_run_does_not_start_trainer(tmp_path, monkeypatch):
     assert result == 0
 
 
+def test_optimize_dry_run_skips_evaluator_resolution(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"mode": "legacy-manual-evaluator"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    out_root = tmp_path / "out"
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            str(package_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--out-root",
+            str(out_root),
+            "--candidate-output",
+            str(out_root / "candidate.json"),
+            "--dry-run",
+        ]
+    )
+
+    assert result == 0
+    assert (out_root / "candidate.json").is_file()
+
+
 def test_optimize_threads_optional_reasoning_effort(tmp_path, monkeypatch):
     captured = {}
 
@@ -198,6 +227,372 @@ def test_optimize_threads_gate_metric(tmp_path, monkeypatch):
 
     assert result == 0
     assert captured["gate_metric"] == "soft"
+
+
+def test_optimize_threads_evaluator_options(monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--evaluator-id",
+            "landing_page_v1",
+            "--evaluator-model",
+            "gpt-evaluator",
+            "--evaluator-backend",
+            "codex",
+        ]
+    )
+
+    assert result == 0
+    assert captured["evaluator_id"] == "landing_page_v1"
+    assert captured["evaluator_model"] == "gpt-evaluator"
+    assert captured["evaluator_backend"] == "codex"
+
+
+def test_preflight_infers_landing_page_evaluator_for_vue_preview_manual_review(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"driver": "manual-review"}
+    package["items"][0]["metadata"] = {"split": "train", "artifact_type": "vue-preview"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+
+    assert config["mode"] == "landing_page_v1"
+    assert config["evaluator_id"] == "landing_page_v1"
+    assert config["driver"] == "manual-review"
+
+
+@pytest.mark.parametrize(
+    ("raw_config", "expected_mode"),
+    [
+        ({}, "llm_judge"),
+        ({"mode": "deterministic"}, "fixture"),
+        ({"mode": "mock"}, "fixture"),
+        ({"mode": "substring"}, "contains"),
+        ({"mode": "llm-judge"}, "llm_judge"),
+        ({"mode": "pairwise"}, "llm_judge"),
+    ],
+)
+def test_preflight_preserves_adapter_evaluator_aliases(tmp_path, raw_config, expected_mode):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    if raw_config:
+        package["evaluator_config"] = raw_config
+    else:
+        package.pop("evaluator_config", None)
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+
+    assert config["evaluator_id"] == expected_mode
+    if raw_config:
+        assert config["mode"] == expected_mode
+    else:
+        assert "mode" not in config
+
+
+def test_preflight_default_does_not_override_item_evaluator_mode(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package.pop("evaluator_config", None)
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+    score = evaluate_response(
+        {"metadata": {"evaluator_mode": "fixture", "expected_hard": False, "expected_soft": 0.25}},
+        "response",
+        config,
+    )
+
+    assert config["evaluator_id"] == "llm_judge"
+    assert "mode" not in config
+    assert score["metadata"]["evaluator"] == "fixture"
+    assert score["hard"] == 0
+    assert score["soft"] == 0.25
+
+
+def test_preflight_restores_optimizer_deployment_after_evaluator_canary(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"mode": "llm_judge"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    captured = {}
+
+    def fake_chat_target(**kwargs):
+        captured["target_stage"] = kwargs["stage"]
+        return "gitmoot-target-canary-ok", {}
+
+    def fake_chat_optimizer(**kwargs):
+        stage = kwargs["stage"]
+        if stage == "gitmoot_preflight_optimizer":
+            captured["optimizer_stage"] = stage
+            captured["optimizer_deployment"] = os.environ.get("OPTIMIZER_DEPLOYMENT")
+            return "gitmoot-optimizer-canary-ok", {}
+        captured["evaluator_stage"] = stage
+        captured["evaluator_deployment"] = os.environ.get("OPTIMIZER_DEPLOYMENT")
+        return '{"hard": 1, "soft": 0.9, "fail_reason": "", "reasoning": "ok"}', {}
+
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+
+    result = preflight.run_optimizer_preflight(
+        TrainingPackage.load(package_path),
+        optimizer_backend="openai_chat",
+        target_backend="openai_chat",
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        evaluator_backend="codex",
+        evaluator_model="gpt-eval",
+    )
+
+    assert result.optimizer_model == "gpt-opt"
+    assert captured["optimizer_stage"] == "gitmoot_preflight_optimizer"
+    assert captured["optimizer_deployment"] == "gpt-opt"
+    assert captured["target_stage"] == "gitmoot_preflight_target"
+    assert captured["evaluator_stage"] == "gitmoot_preflight_evaluator"
+    assert captured["evaluator_deployment"] == "gpt-eval"
+    assert os.environ["OPTIMIZER_DEPLOYMENT"] == "gpt-opt"
+
+
+def test_preflight_requires_exact_target_canary(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+
+    def fake_chat_optimizer(**kwargs):
+        assert kwargs["stage"] == "gitmoot_preflight_optimizer"
+        return "gitmoot-optimizer-canary-ok", {}
+
+    def fake_chat_target(**kwargs):
+        assert kwargs["stage"] == "gitmoot_preflight_target"
+        return "target returned a refusal instead", {}
+
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+
+    with pytest.raises(ValueError, match="target canary returned unexpected response"):
+        preflight.run_optimizer_preflight(
+            TrainingPackage.load(package_path),
+            optimizer_backend="openai_chat",
+            target_backend="openai_chat",
+            optimizer_model="gpt-opt",
+            target_model="gpt-target",
+        )
+
+
+def test_preflight_preserves_package_evaluator_backend_and_model(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+    from skillopt.model import get_optimizer_backend
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {
+        "mode": "llm_judge",
+        "evaluator_backend": "codex",
+        "evaluator_model": "gpt-package-eval",
+    }
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        stage = kwargs["stage"]
+        if stage == "gitmoot_preflight_optimizer":
+            captured["optimizer_backend"] = get_optimizer_backend()
+            captured["optimizer_deployment"] = os.environ.get("OPTIMIZER_DEPLOYMENT")
+            return "gitmoot-optimizer-canary-ok", {}
+        captured["evaluator_backend"] = get_optimizer_backend()
+        captured["evaluator_deployment"] = os.environ.get("OPTIMIZER_DEPLOYMENT")
+        return '{"hard": 1, "soft": 0.9, "fail_reason": "", "reasoning": "ok"}', {}
+
+    def fake_chat_target(**kwargs):
+        return "gitmoot-target-canary-ok", {}
+
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+
+    result = preflight.run_optimizer_preflight(
+        TrainingPackage.load(package_path),
+        optimizer_backend="openai_chat",
+        target_backend="openai_chat",
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+    )
+
+    assert result.evaluator_backend == "codex"
+    assert result.evaluator_model == "gpt-package-eval"
+    assert result.evaluator_config["evaluator_backend"] == "codex"
+    assert result.evaluator_config["evaluator_model"] == "gpt-package-eval"
+    assert captured["optimizer_backend"] == "openai_chat"
+    assert captured["optimizer_deployment"] == "gpt-opt"
+    assert captured["evaluator_backend"] == "codex"
+    assert captured["evaluator_deployment"] == "gpt-package-eval"
+
+
+def test_preflight_accepts_azure_openai_backend_aliases(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+    from skillopt.model import get_optimizer_backend
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"mode": "llm_judge"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        stage = kwargs["stage"]
+        if stage == "gitmoot_preflight_optimizer":
+            captured["optimizer_backend"] = get_optimizer_backend()
+            return "gitmoot-optimizer-canary-ok", {}
+        captured["evaluator_backend"] = get_optimizer_backend()
+        return '{"hard": 1, "soft": 0.9, "fail_reason": "", "reasoning": "ok"}', {}
+
+    def fake_chat_target(**kwargs):
+        captured["target_stage"] = kwargs["stage"]
+        return "gitmoot-target-canary-ok", {}
+
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+
+    result = preflight.run_optimizer_preflight(
+        TrainingPackage.load(package_path),
+        optimizer_backend="azure_openai",
+        target_backend="azure_openai",
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        evaluator_backend="azure_openai",
+        evaluator_model="gpt-eval",
+    )
+
+    assert result.optimizer_backend == "openai_chat"
+    assert result.target_backend == "openai_chat"
+    assert result.evaluator_backend == "openai_chat"
+    assert result.evaluator_config["evaluator_backend"] == "openai_chat"
+    assert captured["optimizer_backend"] == "openai_chat"
+    assert captured["target_stage"] == "gitmoot_preflight_target"
+    assert captured["evaluator_backend"] == "openai_chat"
+
+
+def test_optimize_runs_preflight_before_real_trainer(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    out_root = tmp_path / "out"
+    captured = {}
+
+    def fake_preflight(package, **kwargs):
+        captured["preflight"] = kwargs
+        return PreflightResult(
+            optimizer_backend="codex",
+            target_backend="codex_exec",
+            evaluator_backend="openai_chat",
+            optimizer_model="gpt-resolved-opt",
+            target_model="gpt-resolved-target",
+            evaluator_model="gpt-eval",
+            evaluator_config={"mode": "landing_page_v1", "evaluator_id": "landing_page_v1"},
+        )
+
+    class FakeTrainer:
+        def __init__(self, cfg, adapter):
+            captured["cfg"] = cfg
+            captured["adapter"] = adapter
+
+        def train(self):
+            return {
+                "gate_status": "passed",
+                "promotable": True,
+                "best_selection_hard": 1.0,
+                "baseline_selection_hard": 0.0,
+                "best_step": 1,
+                "total_steps": 1,
+            }
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimizer_preflight", fake_preflight)
+    monkeypatch.setattr("gitmoot_skillopt.optimize.ReflACTTrainer", FakeTrainer)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            str(package_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--out-root",
+            str(out_root),
+            "--candidate-output",
+            str(out_root / "candidate.json"),
+            "--optimizer-backend",
+            "openai_chat",
+            "--target-backend",
+            "codex_exec",
+            "--optimizer-model",
+            "gpt-opt",
+            "--target-model",
+            "gpt-target",
+            "--evaluator-id",
+            "landing_page_v1",
+            "--evaluator-backend",
+            "codex",
+            "--evaluator-model",
+            "gpt-eval",
+        ]
+    )
+
+    assert result == 0
+    assert captured["preflight"]["target_backend"] == "codex_exec"
+    assert captured["preflight"]["evaluator_id"] == "landing_page_v1"
+    assert captured["cfg"]["optimizer_backend"] == "codex"
+    assert captured["cfg"]["target_backend"] == "codex_exec"
+    assert captured["cfg"]["optimizer_model"] == "gpt-resolved-opt"
+    assert captured["cfg"]["target_model"] == "gpt-resolved-target"
+    assert captured["cfg"]["evaluator_config"]["mode"] == "landing_page_v1"
+    assert (out_root / "candidate.json").is_file()
+
+
+def test_optimize_preflight_failure_blocks_trainer(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    out_root = tmp_path / "out"
+
+    def fail_preflight(*args, **kwargs):
+        raise ValueError("evaluator canary did not return JSON")
+
+    class FailingTrainer:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("trainer must not start after preflight failure")
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimizer_preflight", fail_preflight)
+    monkeypatch.setattr("gitmoot_skillopt.optimize.ReflACTTrainer", FailingTrainer)
+
+    with pytest.raises(ValueError, match="evaluator canary did not return JSON"):
+        main(
+            [
+                "optimize",
+                "--training-package",
+                str(package_path),
+                "--artifact-root",
+                str(artifact_root),
+                "--out-root",
+                str(out_root),
+                "--candidate-output",
+                str(out_root / "candidate.json"),
+            ]
+        )
+
+    assert not (out_root / "candidate.json").exists()
 
 
 def test_blocked_summary_writes_non_promotable_candidate_metadata(tmp_path):

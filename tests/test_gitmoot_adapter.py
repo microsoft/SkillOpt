@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from skillopt.envs.gitmoot.rollout import process_one
+from skillopt.model import get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
+from skillopt.model.common import default_model_for_backend
 from tests.test_gitmoot_dataloader import write_training_package
 
 
@@ -490,6 +493,87 @@ def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatc
     assert result["soft"] == 0.82
     assert result["score_status"] == "scored"
     assert result["evaluator_status"] == "passed"
+
+
+def test_landing_page_evaluator_uses_configured_evaluator_model(monkeypatch):
+    captured = {}
+    previous_backend = get_optimizer_backend()
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        captured["optimizer_deployment"] = os.environ.get("OPTIMIZER_DEPLOYMENT")
+        captured["optimizer_backend"] = get_optimizer_backend()
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.9,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Evaluator model judged the page as promotable.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        "Vue landing page",
+        {
+            "mode": "landing_page_v1",
+            "evaluator_backend": "codex",
+            "evaluator_model": "gpt-evaluator",
+        },
+    )
+
+    assert score["hard"] == 1
+    assert captured["optimizer_backend"] == "codex"
+    assert captured["optimizer_deployment"] == "gpt-evaluator"
+    assert get_optimizer_backend() == previous_backend
+
+
+def test_landing_page_evaluator_restores_default_deployment_when_env_unset(monkeypatch):
+    captured = {}
+    previous_backend = get_optimizer_backend()
+    previous_deployment = os.environ.get("OPTIMIZER_DEPLOYMENT")
+
+    def fake_chat_optimizer(**kwargs):
+        captured["optimizer_deployment"] = os.environ.get("OPTIMIZER_DEPLOYMENT")
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.9,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Evaluator model judged the page as promotable.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    monkeypatch.delenv("OPTIMIZER_DEPLOYMENT", raising=False)
+    set_optimizer_backend("openai_chat")
+    try:
+        score = evaluate_response(
+            {"prompt": "Build a Vue landing page."},
+            "Vue landing page",
+            {
+                "mode": "landing_page_v1",
+                "evaluator_model": "gpt-evaluator",
+            },
+        )
+
+        assert score["hard"] == 1
+        assert captured["optimizer_deployment"] == "gpt-evaluator"
+        assert os.environ["OPTIMIZER_DEPLOYMENT"] == default_model_for_backend("openai_chat")
+    finally:
+        set_optimizer_backend(previous_backend)
+        if previous_deployment:
+            set_optimizer_deployment(previous_deployment)
 
 
 def test_landing_page_evaluator_invalid_json_fails_closed(tmp_path, monkeypatch):

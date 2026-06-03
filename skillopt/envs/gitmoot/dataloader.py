@@ -48,6 +48,7 @@ class GitmootDataLoader(BaseDataLoader):
         self.seed = int(seed)
         self.limit = int(limit)
         self.package: TrainingPackage | None = None
+        self.evaluator_config: dict[str, Any] = {}
         self._splits: dict[str, list[dict[str, Any]]] = {"train": [], "val": [], "test": []}
 
     def setup(self, cfg: dict) -> None:
@@ -61,6 +62,9 @@ class GitmootDataLoader(BaseDataLoader):
             raise ValueError("GitmootDataLoader requires artifact_root")
 
         self.package = TrainingPackage.load(self.training_package)
+        package_config = self.package.evaluator_config if isinstance(self.package.evaluator_config, dict) else {}
+        override_config = cfg.get("evaluator_config") if isinstance(cfg.get("evaluator_config"), dict) else {}
+        self.evaluator_config = {**package_config, **override_config}
         resolver = GitmootArtifactResolver(self.artifact_root)
         items = [self._item_to_task(item, resolver) for item in self.package.items]
         self._splits = self._split_items(items)
@@ -196,7 +200,7 @@ class GitmootDataLoader(BaseDataLoader):
             "prompt": prompt,
             "artifacts": artifacts,
             "feedback_events": [event.to_dict() for event in feedback_events],
-            "evaluator_config": self.package.evaluator_config or {},
+            "evaluator_config": self.evaluator_config,
         }
 
     def _resolve_item_artifacts(

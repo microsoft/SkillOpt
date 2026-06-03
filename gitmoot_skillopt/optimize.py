@@ -16,6 +16,7 @@ from gitmoot_skillopt.contracts import (
     CandidateTemplate,
     TrainingPackage,
 )
+from gitmoot_skillopt.preflight import run_optimizer_preflight
 from skillopt.engine.trainer import ReflACTTrainer
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
 
@@ -35,6 +36,9 @@ def run_optimize(
     target_model: str = "gpt-5.5",
     optimizer_backend: str = "openai_chat",
     target_backend: str = "openai_chat",
+    evaluator_id: str = "",
+    evaluator_model: str = "",
+    evaluator_backend: str = "",
     gate_metric: str = "hard",
     reasoning_effort: str = "",
     skill_update_mode: str = "patch",
@@ -60,6 +64,17 @@ def run_optimize(
             dry_run=True,
         )
 
+    preflight = run_optimizer_preflight(
+        package,
+        optimizer_backend=optimizer_backend,
+        target_backend=target_backend,
+        optimizer_model=optimizer_model,
+        target_model=target_model,
+        evaluator_id=evaluator_id,
+        evaluator_backend=evaluator_backend,
+        evaluator_model=evaluator_model,
+    )
+    evaluator_config = preflight.evaluator_config
     cfg = build_trainer_config(
         package_path=package_path,
         artifact_root=artifact_root_path,
@@ -69,10 +84,11 @@ def run_optimize(
         num_epochs=num_epochs,
         batch_size=batch_size,
         seed=seed,
-        optimizer_model=optimizer_model,
-        target_model=target_model,
-        optimizer_backend=optimizer_backend,
-        target_backend=target_backend,
+        optimizer_model=preflight.optimizer_model,
+        target_model=preflight.target_model,
+        optimizer_backend=preflight.optimizer_backend,
+        target_backend=preflight.target_backend,
+        evaluator_config=evaluator_config,
         gate_metric=gate_metric,
         reasoning_effort=reasoning_effort,
         skill_update_mode=skill_update_mode,
@@ -113,6 +129,7 @@ def build_trainer_config(
     target_model: str,
     optimizer_backend: str,
     target_backend: str,
+    evaluator_config: dict[str, Any],
     gate_metric: str,
     reasoning_effort: str,
     skill_update_mode: str,
@@ -132,6 +149,7 @@ def build_trainer_config(
         "target_model": target_model,
         "optimizer_backend": optimizer_backend,
         "target_backend": target_backend,
+        "evaluator_config": evaluator_config,
         "reasoning_effort": str(reasoning_effort or "").strip(),
         "rewrite_reasoning_effort": "",
         "rewrite_max_completion_tokens": 64000,

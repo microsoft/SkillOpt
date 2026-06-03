@@ -70,6 +70,17 @@ def build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--target-model", default="gpt-5.5", help="target model name")
     optimize.add_argument("--optimizer-backend", default="openai_chat", help="optimizer backend")
     optimize.add_argument("--target-backend", default="openai_chat", help="target backend")
+    optimize.add_argument("--evaluator-id", default="", help="evaluator id, such as landing_page_v1")
+    optimize.add_argument(
+        "--evaluator-model",
+        default="",
+        help="evaluator model name; defaults to the optimizer model",
+    )
+    optimize.add_argument(
+        "--evaluator-backend",
+        default="",
+        help="evaluator backend; defaults to the optimizer backend",
+    )
     optimize.add_argument(
         "--gate-metric",
         default="hard",
@@ -109,6 +120,9 @@ def _run_optimize(args: argparse.Namespace) -> int:
         target_model=args.target_model,
         optimizer_backend=args.optimizer_backend,
         target_backend=args.target_backend,
+        evaluator_id=args.evaluator_id,
+        evaluator_model=args.evaluator_model,
+        evaluator_backend=args.evaluator_backend,
         gate_metric=args.gate_metric,
         reasoning_effort=args.reasoning_effort,
         skill_update_mode=args.skill_update_mode,
