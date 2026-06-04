@@ -733,6 +733,8 @@ def _selection_reject_gate_rejection(
     baseline_scores: tuple[float | None, float | None],
     gate_metric: str,
     gate_mixed_weight: float,
+    retry_used: int = 0,
+    retry_budget: int = 0,
 ) -> dict | None:
     reject_steps = [record for record in history if record.get("action") == "reject"]
     if not reject_steps:
@@ -788,7 +790,10 @@ def _selection_reject_gate_rejection(
         if isinstance(rejected.get("gate_rejection"), dict)
         else {}
     )
-    retry_attempts = str(existing_gate_rejection.get("retry_attempts") or "0/0")
+    retry_attempts = str(
+        existing_gate_rejection.get("retry_attempts")
+        or f"{max(0, int(retry_used))}/{max(0, int(retry_budget))}"
+    )
     next_action = str(
         existing_gate_rejection.get("next_action")
         or "Stop this pass without final test eval; retry only when gate-rejection retry is enabled or collect more feedback."
@@ -2883,6 +2888,13 @@ class ReflACTTrainer:
                 baseline_scores=baseline_selection_scores,
                 gate_metric=gate_metric,
                 gate_mixed_weight=gate_mixed_weight,
+                retry_used=sum(
+                    1
+                    for record in history
+                    for attempt in record.get("gate_reject_retry_attempts", [])
+                    if isinstance(attempt, dict) and attempt.get("action") == "retry"
+                ),
+                retry_budget=max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0)),
             )
             if selection_reject_gate_rejection is not None:
                 skip_final_test_reason = "selection_gate_rejected_candidate"
