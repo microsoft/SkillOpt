@@ -5,7 +5,13 @@ import json
 from gitmoot_skillopt.contracts import TrainingPackage
 from gitmoot_skillopt.optimize import build_trainer_config
 from skillopt.datasets.base import BatchSpec
-from skillopt.engine.trainer import ReflACTTrainer, _best_selection_scores, _detect_no_meaningful_change
+from skillopt.engine.trainer import (
+    ReflACTTrainer,
+    _best_selection_scores,
+    _detect_no_meaningful_change,
+    _selection_reject_gate_rejection,
+    _should_skip_final_test_after_selection_reject,
+)
 from skillopt.evaluation.gate import evaluate_gate, find_gate_block
 from tests.test_gitmoot_dataloader import write_training_package
 
@@ -461,6 +467,106 @@ def test_trainer_stops_repeated_noop_candidate_without_fake_candidate(tmp_path, 
     assert summary["epoch_stats"][0]["skips"] == 1
     assert len(summary["noop_retry_attempts"]) == 2
     assert summary["noop_retry_attempts"][1]["attempt"] == 1
+
+
+def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    final_test_rollouts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "weak candidate",
+                    "change_summary": ["artifact delivery only"],
+                    "new_skill": skill_content.rstrip() + "\n\nArtifact delivery only.\n",
+                }
+            ],
+        }
+
+    class RejectingAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, kwargs
+            out_dir_text = str(out_dir)
+            if "test_eval" in out_dir_text:
+                final_test_rollouts.append(out_dir_text)
+            changed = "Artifact delivery only" in skill_content
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": 0.84 if changed else 0.89,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["eval_test"] = True
+    cfg["gate_metric"] = "soft"
+
+    summary = ReflACTTrainer(cfg, RejectingAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 0
+    assert summary["total_rejects"] == 1
+    assert summary["best_origin"] == "initial_skill"
+    assert summary["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
+    assert summary["baseline_test_hard"] is None
+    assert summary["test_hard"] is None
+    assert final_test_rollouts == []
+    assert not (tmp_path / "out" / "test_eval").exists()
+    rejection = summary["gate_rejection"]
+    assert rejection["rejection_type"] == "candidate_score_regression"
+    assert rejection["baseline"]["gate_score"] == 0.89
+    assert rejection["candidate"]["gate_score"] == 0.84
+    assert rejection["attempted_patch"] == "artifact delivery only"
+
+
+def test_selection_reject_skip_requires_unchanged_best_skill():
+    history = [{"action": "reject"}]
+
+    assert _should_skip_final_test_after_selection_reject(
+        history=history,
+        best_origin="initial_skill",
+        best_skill="Initial skill\n",
+        skill_init="Initial skill\n",
+    )
+    assert not _should_skip_final_test_after_selection_reject(
+        history=history,
+        best_origin="initial_skill",
+        best_skill="Initial skill\n\nSlow update guidance.\n",
+        skill_init="Initial skill\n",
+    )
+
+
+def test_gate_rejection_packet_handles_malformed_change_summary():
+    rejection = _selection_reject_gate_rejection(
+        history=[
+            {
+                "action": "reject",
+                "selection_hard": 1.0,
+                "selection_soft": 0.84,
+                "candidate_gate_score": 0.84,
+                "rewrite_change_summary": None,
+            }
+        ],
+        baseline_scores=(1.0, 0.89),
+        gate_metric="soft",
+        gate_mixed_weight=0.5,
+    )
+
+    assert rejection is not None
+    assert rejection["attempted_patch"] == "selection-gated candidate update"
 
 
 def test_trainer_noop_skip_after_accept_does_not_poison_final_candidate(tmp_path, monkeypatch):

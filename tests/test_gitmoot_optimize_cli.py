@@ -954,3 +954,54 @@ def test_initial_skill_best_origin_writes_no_candidate_metadata(tmp_path):
     assert loaded.eval_report["promotable"] is False
     assert loaded.eval_report["no_candidate_reason"] == "best_origin_initial_skill"
     assert loaded.summary.metadata["no_candidate_triggers"] == ["best_origin_initial_skill"]
+
+
+def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    del artifact_root
+    package = TrainingPackage.load(package_path)
+    candidate_output = tmp_path / "out" / "candidate.json"
+
+    candidate = write_candidate_package(
+        package=package,
+        candidate_content=package.template.content,
+        summary={
+            "gate_status": "passed",
+            "promotable": True,
+            "best_origin": "initial_skill",
+            "total_accepts": 0,
+            "total_rejects": 1,
+            "best_selection_hard": 1.0,
+            "best_selection_soft": 0.89,
+            "baseline_selection_hard": 1.0,
+            "baseline_selection_soft": 0.89,
+            "final_test_skipped_reason": "selection_gate_rejected_candidate",
+            "gate_rejection": {
+                "rejection_type": "candidate_score_regression",
+                "retryable": True,
+                "baseline": {"hard": 1.0, "soft": 0.89, "gate_score": 0.89},
+                "candidate": {"hard": 1.0, "soft": 0.84, "gate_score": 0.84},
+                "primary_reason": "candidate_quality_regressed",
+                "human_reason": "The candidate lost selection evaluation against the baseline skill.",
+                "optimizer_hint": "Use gate rejection evidence before spending final test budget.",
+                "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
+                "evidence": ["Candidate gate score 0.8400 <= baseline gate score 0.8900."],
+                "attempted_patch": "artifact delivery only",
+                "retry_attempts": "0/0",
+                "next_action": "Stop without final test eval.",
+            },
+        },
+        out_root=tmp_path / "out",
+        artifact_dir=tmp_path / "out" / "artifacts",
+        candidate_output=candidate_output,
+        dry_run=False,
+    )
+
+    loaded = CandidatePackage.load(candidate_output)
+    assert candidate.summary.score is None
+    assert loaded.eval_report["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
+    assert loaded.eval_report["gate_rejection"]["candidate"]["gate_score"] == 0.84
+    assert loaded.summary.metadata["gate_rejection"]["baseline"]["gate_score"] == 0.89
+    assert loaded.summary.gate_rejection is not None
+    assert loaded.summary.gate_rejection.primary_reason == "candidate_quality_regressed"
+    assert loaded.summary.gate_rejection.attempted_patch == "artifact delivery only"

@@ -635,6 +635,106 @@ def _best_selection_scores(
     return hard, soft
 
 
+def _gate_score_for_summary(hard: float | None, soft: float | None, gate_metric: str, gate_mixed_weight: float) -> float | None:
+    if hard is None or soft is None:
+        return None
+    return select_gate_score(float(hard), float(soft), gate_metric, gate_mixed_weight)
+
+
+def _selection_reject_gate_rejection(
+    *,
+    history: list[dict],
+    baseline_scores: tuple[float | None, float | None],
+    gate_metric: str,
+    gate_mixed_weight: float,
+) -> dict | None:
+    reject_steps = [record for record in history if record.get("action") == "reject"]
+    if not reject_steps:
+        return None
+    rejected = reject_steps[-1]
+    baseline_hard, baseline_soft = baseline_scores
+    candidate_hard = rejected.get("selection_hard")
+    candidate_soft = rejected.get("selection_soft")
+    baseline_gate_score = _gate_score_for_summary(
+        baseline_hard,
+        baseline_soft,
+        gate_metric,
+        gate_mixed_weight,
+    )
+    candidate_gate_score = rejected.get("candidate_gate_score")
+    if candidate_gate_score is None:
+        candidate_gate_score = _gate_score_for_summary(
+            candidate_hard,
+            candidate_soft,
+            gate_metric,
+            gate_mixed_weight,
+        )
+
+    raw_change_summary = rejected.get("rewrite_change_summary", [])
+    if raw_change_summary is None:
+        change_summary: list = []
+    elif isinstance(raw_change_summary, list):
+        change_summary = raw_change_summary
+    else:
+        change_summary = [raw_change_summary]
+    attempted_patch = ", ".join(
+        str(item).strip()
+        for item in change_summary
+        if str(item).strip()
+    )
+    if not attempted_patch:
+        attempted_patch = "selection-gated candidate update"
+
+    evidence: list[str] = []
+    if candidate_gate_score is not None and baseline_gate_score is not None:
+        evidence.append(
+            f"Candidate gate score {candidate_gate_score:.4f} <= baseline gate score {baseline_gate_score:.4f}."
+        )
+    if candidate_soft is not None and baseline_soft is not None:
+        evidence.append(
+            f"Candidate soft score {float(candidate_soft):.4f}; baseline soft score {float(baseline_soft):.4f}."
+        )
+    if not evidence:
+        evidence.append("Candidate selection gate action was reject.")
+
+    return {
+        "rejection_type": "candidate_score_regression",
+        "retryable": True,
+        "baseline": {
+            "hard": baseline_hard,
+            "soft": baseline_soft,
+            "gate_score": baseline_gate_score,
+        },
+        "candidate": {
+            "hard": candidate_hard,
+            "soft": candidate_soft,
+            "gate_score": candidate_gate_score,
+        },
+        "primary_reason": "candidate_quality_regressed",
+        "human_reason": "The candidate lost selection evaluation against the baseline skill, so final test evaluation was skipped.",
+        "optimizer_hint": "Use the gate rejection evidence and human feedback to change the skill direction before spending final test-eval budget.",
+        "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
+        "evidence": evidence,
+        "attempted_patch": attempted_patch,
+        "retry_attempts": "0/0",
+        "next_action": "Stop this pass without final test eval; retry only when gate-rejection retry is enabled or collect more feedback.",
+    }
+
+
+def _should_skip_final_test_after_selection_reject(
+    *,
+    history: list[dict],
+    best_origin: str,
+    best_skill: str,
+    skill_init: str,
+) -> bool:
+    return (
+        best_origin == "initial_skill"
+        and skill_hash(best_skill) == skill_hash(skill_init)
+        and any(record.get("action") == "reject" for record in history)
+    )
+
+
 def _format_rejection_buffer(buffer: list[dict]) -> str:
     """**DEPRECATED** — kept for backward compat; use _format_step_buffer."""
     return _format_step_buffer(buffer)
@@ -2296,13 +2396,36 @@ class ReflACTTrainer:
             f"score={best_score:.4f}"
         )
 
+        baseline_selection_scores = sel_cache.get(skill_hash(skill_init), (None, None))
+        selection_reject_gate_rejection = None
+        skip_final_test_reason = ""
+        if _should_skip_final_test_after_selection_reject(
+            history=history,
+            best_origin=best_origin,
+            best_skill=best_skill,
+            skill_init=skill_init,
+        ):
+            selection_reject_gate_rejection = _selection_reject_gate_rejection(
+                history=history,
+                baseline_scores=baseline_selection_scores,
+                gate_metric=gate_metric,
+                gate_mixed_weight=gate_mixed_weight,
+            )
+            if selection_reject_gate_rejection is not None:
+                skip_final_test_reason = "selection_gate_rejected_candidate"
+
         # ── Final test evaluation (valid_unseen) ─────────────────────────
         baseline_test_hard = None
         baseline_test_soft = None
         test_hard = None
         test_soft = None
 
-        if cfg["eval_test"]:
+        if cfg["eval_test"] and skip_final_test_reason:
+            print(
+                "\n  [skip final test] selection gate rejected the candidate; "
+                "final test eval is skipped by default."
+            )
+        elif cfg["eval_test"]:
             task_types = adapter.get_task_types()
 
             # Baseline: S_0 on test set (valid_unseen)
@@ -2423,7 +2546,6 @@ class ReflACTTrainer:
                     "current_score_at_epoch_end": epoch_records[-1].get("current_score", 0.0),
                 })
 
-        baseline_selection_scores = sel_cache.get(skill_hash(skill_init), (None, None))
         best_selection_hard, best_selection_soft = _best_selection_scores(
             history=history,
             best_step=best_step,
@@ -2455,6 +2577,8 @@ class ReflACTTrainer:
             "noop_retry_attempts": noop_retry_attempts,
             "no_candidate_triggers": no_candidate_triggers,
             "no_candidate_reason": no_candidate_triggers[0] if no_candidate_triggers else "",
+            "gate_rejection": selection_reject_gate_rejection,
+            "final_test_skipped_reason": skip_final_test_reason,
             "epoch_stats": epoch_stats,
             "baseline_test_hard": baseline_test_hard,
             "baseline_test_soft": baseline_test_soft,

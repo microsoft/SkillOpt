@@ -14,6 +14,7 @@ from gitmoot_skillopt.contracts import (
     CandidatePackage,
     CandidateSummary,
     CandidateTemplate,
+    GateRejectionPacket,
     TrainingPackage,
 )
 from gitmoot_skillopt.preflight import run_optimizer_preflight
@@ -267,6 +268,7 @@ def write_candidate_package(
         ),
     ]
     summary_metadata = _summary_metadata(summary, artifacts=artifacts, no_candidate_triggers=no_candidate_triggers)
+    gate_rejection = _gate_rejection_packet(summary)
     candidate = CandidatePackage(
         kind=CANDIDATE_PACKAGE_KIND,
         contract_version=CONTRACT_VERSION,
@@ -283,6 +285,7 @@ def write_candidate_package(
             score=_summary_score(summary, no_candidate_triggers=no_candidate_triggers),
             preference_summary=preference_summary.strip(),
             metadata=summary_metadata,
+            gate_rejection=gate_rejection,
         ),
     )
     candidate.validate()
@@ -353,6 +356,8 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "total_blocks": summary.get("total_blocks"),
         "total_skips": summary.get("total_skips"),
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
+        "gate_rejection": _gate_rejection_dict(summary),
+        "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
         "token_summary": summary.get("token_summary", {}),
     }
 
@@ -431,8 +436,24 @@ def _summary_metadata(
         "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
         "no_candidate_triggers": no_candidate_triggers,
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
+        "gate_rejection": _gate_rejection_dict(summary),
+        "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
         "next_action": _no_candidate_next_action(no_candidate_triggers),
     }
+
+
+def _gate_rejection_dict(summary: dict[str, Any]) -> dict[str, Any] | None:
+    value = summary.get("gate_rejection")
+    if not isinstance(value, dict):
+        return None
+    return {key: data for key, data in value.items() if data not in (None, "", [], {})}
+
+
+def _gate_rejection_packet(summary: dict[str, Any]) -> GateRejectionPacket | None:
+    value = _gate_rejection_dict(summary)
+    if value is None:
+        return None
+    return GateRejectionPacket.from_dict(value)
 
 
 def _no_candidate_triggers(summary: dict[str, Any], base_content: str, candidate_content: str) -> list[str]:
