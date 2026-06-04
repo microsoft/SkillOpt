@@ -21,6 +21,7 @@ import random
 import re
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
@@ -119,6 +120,178 @@ def _normalise_longitudinal_pair_policy(policy: str | None) -> str:
             "mixed, changed, unchanged"
         )
     return aliases[raw]
+
+
+@dataclass
+class NoMeaningfulChangeCheck:
+    reasons: list[str]
+    retry_hints: dict[str, list[str]]
+
+
+def _dedupe_texts(values: list[str], *, limit: int = 8) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _flatten_trait_values(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            out.extend(_flatten_trait_values(item))
+        return out
+    if isinstance(value, dict):
+        out: list[str] = []
+        for key, item in value.items():
+            for text in _flatten_trait_values(item):
+                out.append(f"{key}: {text}" if str(key).strip() else text)
+        return out
+    return []
+
+
+def _feedback_retry_hints(dataloader, result_ids: set[str]) -> dict[str, list[str]]:
+    hints = {
+        "preserve": [],
+        "improve": [],
+        "avoid": [],
+        "already_covered": [],
+    }
+    if dataloader is None or not hasattr(dataloader, "train_items"):
+        return hints
+    try:
+        train_items = dataloader.train_items
+    except Exception:  # noqa: BLE001
+        return hints
+    for item in train_items:
+        if result_ids and str(item.get("id", "")) not in result_ids:
+            continue
+        events = item.get("ranked_feedback_events")
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            hints["preserve"].extend(_flatten_trait_values(event.get("useful_traits")))
+            hints["improve"].extend(_flatten_trait_values(event.get("required_improvements")))
+            hints["avoid"].extend(_flatten_trait_values(event.get("rejected_traits")))
+    return {key: _dedupe_texts(values) for key, values in hints.items()}
+
+
+def _contains_topic(content: str, topic: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(topic or "").lower()).strip()
+    if not normalized:
+        return False
+    words = [word for word in normalized.split() if len(word) >= 4]
+    if not words:
+        return False
+    haystack = re.sub(r"[^a-z0-9]+", " ", content.lower())
+    return all(word in haystack for word in words[:4])
+
+
+def _patch_texts(items: list[dict], update_mode: str) -> list[str]:
+    texts: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if is_full_rewrite_minibatch_mode(update_mode):
+            texts.extend(_flatten_trait_values(item.get("change_summary")))
+            texts.append(str(item.get("title", "")))
+        elif normalize_update_mode(update_mode) == "rewrite_from_suggestions":
+            texts.append(str(item.get("title", "")))
+            texts.append(str(item.get("instruction", "")))
+        else:
+            texts.append(str(item.get("content", "")))
+            texts.append(str(item.get("target", "")))
+    return _dedupe_texts(texts, limit=12)
+
+
+def _detect_no_meaningful_change(
+    *,
+    current_skill: str,
+    candidate_skill: str,
+    ranked_items: list[dict],
+    apply_report: list[dict],
+    update_mode: str,
+    dataloader,
+    rollout_results: list[dict],
+) -> NoMeaningfulChangeCheck:
+    reasons: list[str] = []
+    current_hash = skill_hash(current_skill)
+    candidate_hash = skill_hash(candidate_skill)
+    unchanged = current_hash == candidate_hash
+    if not ranked_items:
+        reasons.append("no_meaningful_skill_change")
+    if unchanged:
+        reasons.extend(["no_meaningful_skill_change", "candidate_content_unchanged"])
+    if apply_report:
+        applied = [
+            row for row in apply_report
+            if str(row.get("status", "")).startswith("applied")
+        ]
+        if not applied:
+            reasons.extend(["no_meaningful_skill_change", "duplicate_or_already_covered_patch"])
+
+    result_ids = {str(row.get("id", "")) for row in rollout_results if isinstance(row, dict)}
+    retry_hints = _feedback_retry_hints(dataloader, result_ids)
+    patch_texts = _patch_texts(ranked_items, update_mode)
+    already_covered = [
+        text for text in patch_texts
+        if _contains_topic(current_skill, text)
+    ]
+    retry_hints["already_covered"] = _dedupe_texts(retry_hints["already_covered"] + already_covered)
+
+    explicit_traits = bool(retry_hints["preserve"] or retry_hints["improve"] or retry_hints["avoid"])
+    if explicit_traits and unchanged:
+        reasons.append("human_feedback_not_incorporated")
+    if unchanged and patch_texts and already_covered and len(already_covered) == len(patch_texts):
+        reasons.extend(["no_meaningful_skill_change", "duplicate_or_already_covered_patch"])
+
+    return NoMeaningfulChangeCheck(
+        reasons=_dedupe_texts(reasons, limit=8),
+        retry_hints=retry_hints,
+    )
+
+
+def _format_noop_retry_context(check: NoMeaningfulChangeCheck, attempt: int) -> str:
+    lines = [
+        "## Optimizer No-Op Retry",
+        f"Attempt {attempt} was rejected before candidate import.",
+        "Reasons: " + ", ".join(check.reasons),
+        "Produce a meaningful skill change that incorporates the imported human feedback. "
+        "Do not repeat unchanged or already-covered contract language.",
+    ]
+    labels = {
+        "preserve": "Preserve",
+        "improve": "Improve",
+        "avoid": "Avoid",
+        "already_covered": "Already covered",
+    }
+    for key, label in labels.items():
+        values = check.retry_hints.get(key) or []
+        if values:
+            lines.append(f"{label}: " + "; ".join(values[:6]))
+    return "\n".join(lines)
+
+
+def _join_optimizer_context(*parts: str) -> str:
+    return "\n\n".join(part.strip() for part in parts if str(part or "").strip())
+
+
+def _is_skipped_step(action: str) -> bool:
+    return str(action or "").startswith("skip_")
 
 
 def _normalise_lr_control_mode(mode: str | None) -> str:
@@ -1209,193 +1382,253 @@ class ReflACTTrainer:
                     print("    [skip] no usable patches — skill unchanged")
                     continue
 
-                # ③ AGGREGATE ──────────────────────────────────────────────
-                t_phase = time.time()
-                merged_patch = merge_patches(
-                    current_skill, all_failure_patches, all_success_patches,
-                    batch_size=merge_bs, verbose=True,
-                    workers=cfg["analyst_workers"],
-                    update_mode=update_mode,
-                    meta_skill_context=active_meta_skill,
-                )
-                with open(os.path.join(step_dir, "merged_patch.json"), "w") as f:
-                    json.dump(merged_patch, f, ensure_ascii=False, indent=2)
+                noop_retry_budget = max(0, int(cfg.get("noop_retry_budget", 1) or 0))
+                noop_retry_attempts: list[dict] = []
+                noop_retry_context = ""
+                skip_step_after_noop = False
 
-                merged_items = get_payload_items(merged_patch, update_mode)
-                n_edits_merged = len(merged_items)
-                step_rec["n_edits_merged"] = n_edits_merged
-                step_rec["timing"]["aggregate_s"] = round(time.time() - t_phase, 1)
-                print(f"    [3/6 done] merged {n_edits_merged} {payload_label(update_mode)}")
-
-                # ④ SELECT ─────────────────────────────────────────────────
-                t_phase = time.time()
-                lr_decision = None
-                if is_full_rewrite_minibatch_mode(update_mode):
-                    edit_budget = None
-                    ranked_patch = merged_patch
-                    ranked_items = merged_items
-                    n_edits_ranked = len(ranked_items)
-                    step_rec["n_edits_ranked"] = n_edits_ranked
-                    step_rec["edit_budget"] = None
-                    step_rec["lr_control_mode"] = "none"
-                    with open(os.path.join(step_dir, "ranked_edits.json"), "w") as f:
-                        json.dump(ranked_patch, f, ensure_ascii=False, indent=2)
-                else:
-                    if lr_control_mode == "autonomous":
-                        lr_decision = decide_autonomous_learning_rate(
-                            skill_content=current_skill,
-                            merged_patch=merged_patch,
-                            update_mode=update_mode,
-                            rollout_hard=agg_hard,
-                            rollout_soft=agg_soft,
-                            rollout_n=total_n,
-                            step_buffer_context=step_buffer_context,
-                            meta_skill_context=active_meta_skill,
+                for noop_attempt in range(noop_retry_budget + 1):
+                    retry_suffix = "" if noop_attempt == 0 else f"_retry_{noop_attempt:02d}"
+                    optimizer_context = _join_optimizer_context(active_meta_skill, noop_retry_context)
+                    rewrite_step_context = _join_optimizer_context(step_buffer_context, noop_retry_context)
+                    if noop_attempt:
+                        print(
+                            f"    [noop retry {noop_attempt}/{noop_retry_budget}] "
+                            "rerunning aggregate/select/update with no-op feedback"
                         )
-                        edit_budget = int(lr_decision["learning_rate"])
-                        with open(os.path.join(step_dir, "lr_decision.json"), "w") as f:
-                            json.dump(lr_decision, f, ensure_ascii=False, indent=2)
-                        with open(os.path.join(out_root, "lr_history.jsonl"), "a") as f:
-                            f.write(json.dumps({
-                                "step": global_step,
-                                "epoch": epoch,
-                                **lr_decision,
-                            }, ensure_ascii=False) + "\n")
-                    else:
-                        edit_budget = scheduler.step()
-                    ranked_patch = rank_and_select(
-                        current_skill, merged_patch,
-                        max_edits=edit_budget,
+
+                    # ③ AGGREGATE ──────────────────────────────────────────────
+                    t_phase = time.time()
+                    merged_patch = merge_patches(
+                        current_skill, all_failure_patches, all_success_patches,
+                        batch_size=merge_bs, verbose=True,
+                        workers=cfg["analyst_workers"],
                         update_mode=update_mode,
-                        meta_skill_context=active_meta_skill,
+                        meta_skill_context=optimizer_context,
                     )
-                    with open(os.path.join(step_dir, "ranked_edits.json"), "w") as f:
-                        json.dump(ranked_patch, f, ensure_ascii=False, indent=2)
+                    with open(os.path.join(step_dir, f"merged_patch{retry_suffix}.json"), "w") as f:
+                        json.dump(merged_patch, f, ensure_ascii=False, indent=2)
 
-                    ranked_items = get_payload_items(ranked_patch, update_mode)
-                    n_edits_ranked = len(ranked_items)
-                    step_rec["n_edits_ranked"] = n_edits_ranked
-                    step_rec["edit_budget"] = edit_budget
-                    step_rec["lr_control_mode"] = lr_control_mode
-                    if lr_decision is not None:
-                        step_rec["lr_decision"] = lr_decision
-                step_rec["timing"]["select_s"] = round(time.time() - t_phase, 1)
+                    merged_items = get_payload_items(merged_patch, update_mode)
+                    n_edits_merged = len(merged_items)
+                    step_rec["n_edits_merged"] = n_edits_merged
+                    step_rec["timing"]["aggregate_s"] = round(time.time() - t_phase, 1)
+                    print(f"    [3/6 done] merged {n_edits_merged} {payload_label(update_mode)}")
 
-                support_counts = [
-                    item.get("support_count", 0) for item in ranked_items if isinstance(item, dict)
-                ]
-                step_rec["support_counts"] = support_counts
-                if is_full_rewrite_minibatch_mode(update_mode):
-                    print(
-                        f"    [4/6 SELECT] skipped LR/select; "
-                        f"using {n_edits_ranked} merged {payload_label(update_mode)}"
-                    )
-                else:
-                    print(
-                        f"    [4/6 SELECT] "
-                        f"{n_edits_merged} -> {n_edits_ranked} {payload_label(update_mode)} "
-                        f"(budget={edit_budget}, lr_control={lr_control_mode})"
-                    )
-
-                # ⑤ UPDATE ─────────────────────────────────────────────────
-                t_phase = time.time()
-                rewrite_result = None
-                if update_mode == "rewrite_from_suggestions":
-                    rewrite_result = rewrite_skill_from_suggestions(
-                        current_skill,
-                        ranked_patch,
-                        step_buffer_context=step_buffer_context,
-                        env=cfg.get("env"),
-                        reasoning_effort=rewrite_reasoning_effort,
-                        max_completion_tokens=rewrite_max_completion_tokens,
-                    )
-                    if rewrite_result and rewrite_result.get("new_skill"):
-                        candidate_skill = rewrite_result["new_skill"]
-                        apply_report = []
-                        with open(os.path.join(step_dir, "rewrite_result.json"), "w") as f:
-                            json.dump(rewrite_result, f, ensure_ascii=False, indent=2)
+                    # ④ SELECT ─────────────────────────────────────────────────
+                    t_phase = time.time()
+                    lr_decision = None
+                    if is_full_rewrite_minibatch_mode(update_mode):
+                        edit_budget = None
+                        ranked_patch = merged_patch
+                        ranked_items = merged_items
+                        n_edits_ranked = len(ranked_items)
+                        step_rec["n_edits_ranked"] = n_edits_ranked
+                        step_rec["edit_budget"] = None
+                        step_rec["lr_control_mode"] = "none"
+                        with open(os.path.join(step_dir, f"ranked_edits{retry_suffix}.json"), "w") as f:
+                            json.dump(ranked_patch, f, ensure_ascii=False, indent=2)
                     else:
-                        candidate_skill = current_skill
-                        apply_report = []
-                elif is_full_rewrite_minibatch_mode(update_mode):
-                    skill_candidates = get_payload_items(ranked_patch, update_mode)
-                    selected_candidate = next(
-                        (
-                            item for item in skill_candidates
-                            if isinstance(item, dict) and str(item.get("new_skill", "")).strip()
-                        ),
-                        None,
-                    )
-                    if selected_candidate:
-                        candidate_skill = str(selected_candidate["new_skill"]).rstrip() + "\n"
-                        apply_report = []
-                        rewrite_result = {
-                            "reasoning": ranked_patch.get("reasoning", ""),
-                            "change_summary": selected_candidate.get("change_summary", []),
-                            "title": selected_candidate.get("title", ""),
-                            "source_type": selected_candidate.get("source_type", ""),
-                        }
-                        with open(os.path.join(step_dir, "full_rewrite_result.json"), "w") as f:
-                            json.dump(
-                                {
-                                    "selected_candidate": selected_candidate,
-                                    "merged_patch": ranked_patch,
-                                },
-                                f,
-                                ensure_ascii=False,
-                                indent=2,
+                        if lr_control_mode == "autonomous":
+                            lr_decision = decide_autonomous_learning_rate(
+                                skill_content=current_skill,
+                                merged_patch=merged_patch,
+                                update_mode=update_mode,
+                                rollout_hard=agg_hard,
+                                rollout_soft=agg_soft,
+                                rollout_n=total_n,
+                                step_buffer_context=rewrite_step_context,
+                                meta_skill_context=optimizer_context,
                             )
-                    else:
-                        candidate_skill = current_skill
-                        apply_report = []
-                else:
-                    candidate_skill, apply_report = apply_patch_with_report(current_skill, ranked_patch)
-                with open(os.path.join(step_dir, "candidate_skill.md"), "w") as f:
-                    f.write(candidate_skill)
-                if apply_report:
-                    with open(os.path.join(step_dir, "edit_apply_report.json"), "w") as f:
-                        json.dump(apply_report, f, indent=2, ensure_ascii=False)
+                            edit_budget = int(lr_decision["learning_rate"])
+                            with open(os.path.join(step_dir, f"lr_decision{retry_suffix}.json"), "w") as f:
+                                json.dump(lr_decision, f, ensure_ascii=False, indent=2)
+                            with open(os.path.join(out_root, "lr_history.jsonl"), "a") as f:
+                                f.write(json.dumps({
+                                    "step": global_step,
+                                    "epoch": epoch,
+                                    "noop_retry_attempt": noop_attempt,
+                                    **lr_decision,
+                                }, ensure_ascii=False) + "\n")
+                        else:
+                            edit_budget = scheduler.step() if noop_attempt == 0 else int(step_rec.get("edit_budget") or cfg["edit_budget"])
+                        ranked_patch = rank_and_select(
+                            current_skill, merged_patch,
+                            max_edits=edit_budget,
+                            update_mode=update_mode,
+                            meta_skill_context=optimizer_context,
+                        )
+                        with open(os.path.join(step_dir, f"ranked_edits{retry_suffix}.json"), "w") as f:
+                            json.dump(ranked_patch, f, ensure_ascii=False, indent=2)
 
-                cand_hash = skill_hash(candidate_skill)
-                step_rec["candidate_hash"] = cand_hash
-                step_rec["candidate_skill_len"] = len(candidate_skill)
-                if rewrite_result:
-                    step_rec["rewrite_change_summary"] = rewrite_result.get("change_summary", [])
-                if apply_report:
-                    step_rec["edit_apply_summary"] = {
-                        "total": len(apply_report),
-                        "applied": sum(
-                            1 for row in apply_report if str(row.get("status", "")).startswith("applied")
-                        ),
-                        "skipped": sum(
-                            1 for row in apply_report if str(row.get("status", "")).startswith("skipped")
-                        ),
-                        "errors": sum(
-                            1 for row in apply_report if row.get("status") == "error"
-                        ),
-                    }
-                step_rec["timing"]["update_s"] = round(time.time() - t_phase, 1)
-                if (
-                    update_mode == "rewrite_from_suggestions"
-                    and rewrite_result is None
-                ) or (
-                    is_full_rewrite_minibatch_mode(update_mode)
-                    and rewrite_result is None
-                ):
-                    step_rec["action"] = "skip_no_rewrite"
-                    step_rec["current_score"] = current_score
-                    step_rec["best_score"] = best_score
-                    step_rec["best_step"] = best_step
-                    step_rec["skill_len"] = len(current_skill)
-                    step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
-                    history.append(step_rec)
-                    _save_history(out_root, history)
-                    _save_skill(out_root, global_step, current_skill)
-                    _persist_runtime_state(global_step)
-                    with open(os.path.join(step_dir, "step_record.json"), "w") as f:
-                        json.dump(step_rec, f, indent=2, ensure_ascii=False)
-                    print("    [skip] no usable rewrite generated — skill unchanged")
+                        ranked_items = get_payload_items(ranked_patch, update_mode)
+                        n_edits_ranked = len(ranked_items)
+                        step_rec["n_edits_ranked"] = n_edits_ranked
+                        step_rec["edit_budget"] = edit_budget
+                        step_rec["lr_control_mode"] = lr_control_mode
+                        if lr_decision is not None:
+                            step_rec["lr_decision"] = lr_decision
+                    step_rec["timing"]["select_s"] = round(time.time() - t_phase, 1)
+
+                    support_counts = [
+                        item.get("support_count", 0) for item in ranked_items if isinstance(item, dict)
+                    ]
+                    step_rec["support_counts"] = support_counts
+                    if is_full_rewrite_minibatch_mode(update_mode):
+                        print(
+                            f"    [4/6 SELECT] skipped LR/select; "
+                            f"using {n_edits_ranked} merged {payload_label(update_mode)}"
+                        )
+                    else:
+                        print(
+                            f"    [4/6 SELECT] "
+                            f"{n_edits_merged} -> {n_edits_ranked} {payload_label(update_mode)} "
+                            f"(budget={edit_budget}, lr_control={lr_control_mode})"
+                        )
+
+                    # ⑤ UPDATE ─────────────────────────────────────────────────
+                    t_phase = time.time()
+                    rewrite_result = None
+                    if update_mode == "rewrite_from_suggestions":
+                        rewrite_result = rewrite_skill_from_suggestions(
+                            current_skill,
+                            ranked_patch,
+                            step_buffer_context=rewrite_step_context,
+                            env=cfg.get("env"),
+                            reasoning_effort=rewrite_reasoning_effort,
+                            max_completion_tokens=rewrite_max_completion_tokens,
+                        )
+                        if rewrite_result and rewrite_result.get("new_skill"):
+                            candidate_skill = rewrite_result["new_skill"]
+                            apply_report = []
+                            with open(os.path.join(step_dir, f"rewrite_result{retry_suffix}.json"), "w") as f:
+                                json.dump(rewrite_result, f, ensure_ascii=False, indent=2)
+                        else:
+                            candidate_skill = current_skill
+                            apply_report = []
+                    elif is_full_rewrite_minibatch_mode(update_mode):
+                        skill_candidates = get_payload_items(ranked_patch, update_mode)
+                        selected_candidate = next(
+                            (
+                                item for item in skill_candidates
+                                if isinstance(item, dict) and str(item.get("new_skill", "")).strip()
+                            ),
+                            None,
+                        )
+                        if selected_candidate:
+                            candidate_skill = str(selected_candidate["new_skill"]).rstrip() + "\n"
+                            apply_report = []
+                            rewrite_result = {
+                                "reasoning": ranked_patch.get("reasoning", ""),
+                                "change_summary": selected_candidate.get("change_summary", []),
+                                "title": selected_candidate.get("title", ""),
+                                "source_type": selected_candidate.get("source_type", ""),
+                            }
+                            with open(os.path.join(step_dir, f"full_rewrite_result{retry_suffix}.json"), "w") as f:
+                                json.dump(
+                                    {
+                                        "selected_candidate": selected_candidate,
+                                        "merged_patch": ranked_patch,
+                                    },
+                                    f,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                )
+                        else:
+                            candidate_skill = current_skill
+                            apply_report = []
+                    else:
+                        candidate_skill, apply_report = apply_patch_with_report(current_skill, ranked_patch)
+                    candidate_skill_path = os.path.join(step_dir, f"candidate_skill{retry_suffix}.md")
+                    with open(candidate_skill_path, "w") as f:
+                        f.write(candidate_skill)
+                    if retry_suffix:
+                        with open(os.path.join(step_dir, "candidate_skill.md"), "w") as f:
+                            f.write(candidate_skill)
+                    if apply_report:
+                        with open(os.path.join(step_dir, f"edit_apply_report{retry_suffix}.json"), "w") as f:
+                            json.dump(apply_report, f, indent=2, ensure_ascii=False)
+
+                    cand_hash = skill_hash(candidate_skill)
+                    step_rec["candidate_hash"] = cand_hash
+                    step_rec["candidate_skill_len"] = len(candidate_skill)
+                    if rewrite_result:
+                        step_rec["rewrite_change_summary"] = rewrite_result.get("change_summary", [])
+                    if apply_report:
+                        step_rec["edit_apply_summary"] = {
+                            "total": len(apply_report),
+                            "applied": sum(
+                                1 for row in apply_report if str(row.get("status", "")).startswith("applied")
+                            ),
+                            "skipped": sum(
+                                1 for row in apply_report if str(row.get("status", "")).startswith("skipped")
+                            ),
+                            "errors": sum(
+                                1 for row in apply_report if row.get("status") == "error"
+                            ),
+                        }
+                    step_rec["timing"]["update_s"] = round(time.time() - t_phase, 1)
+
+                    no_rewrite = (
+                        update_mode == "rewrite_from_suggestions"
+                        and rewrite_result is None
+                    ) or (
+                        is_full_rewrite_minibatch_mode(update_mode)
+                        and rewrite_result is None
+                    )
+                    change_check = _detect_no_meaningful_change(
+                        current_skill=current_skill,
+                        candidate_skill=candidate_skill,
+                        ranked_items=ranked_items,
+                        apply_report=apply_report,
+                        update_mode=update_mode,
+                        dataloader=dataloader,
+                        rollout_results=all_rollout_results,
+                    )
+                    if no_rewrite and "no_meaningful_skill_change" not in change_check.reasons:
+                        change_check.reasons.insert(0, "no_meaningful_skill_change")
+                    if change_check.reasons:
+                        attempt_record = {
+                            "attempt": noop_attempt,
+                            "reasons": change_check.reasons,
+                            "retry_hints": change_check.retry_hints,
+                            "candidate_hash": cand_hash,
+                        }
+                        noop_retry_attempts.append(attempt_record)
+                        step_rec["noop_retry_attempts"] = noop_retry_attempts
+                        with open(os.path.join(step_dir, f"noop_change_check{retry_suffix}.json"), "w") as f:
+                            json.dump(attempt_record, f, indent=2, ensure_ascii=False)
+                        if noop_attempt < noop_retry_budget:
+                            noop_retry_context = _format_noop_retry_context(change_check, noop_attempt + 1)
+                            print(
+                                "    [noop] rejected optimizer update before evaluation: "
+                                + ", ".join(change_check.reasons)
+                            )
+                            continue
+                        step_rec["action"] = "skip_no_meaningful_change"
+                        step_rec["no_candidate_reason"] = change_check.reasons[0]
+                        step_rec["no_candidate_triggers"] = change_check.reasons
+                        step_rec["current_score"] = current_score
+                        step_rec["best_score"] = best_score
+                        step_rec["best_step"] = best_step
+                        step_rec["skill_len"] = len(current_skill)
+                        step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
+                        history.append(step_rec)
+                        _save_history(out_root, history)
+                        _save_skill(out_root, global_step, current_skill)
+                        _persist_runtime_state(global_step)
+                        with open(os.path.join(step_dir, "step_record.json"), "w") as f:
+                            json.dump(step_rec, f, indent=2, ensure_ascii=False)
+                        print(
+                            "    [skip] no meaningful skill change after retry budget: "
+                            + ", ".join(change_check.reasons)
+                        )
+                        skip_step_after_noop = True
+                    break
+
+                if skip_step_after_noop:
                     continue
+
                 print(
                     f"    [5/6 UPDATE] "
                     f"skill_len {len(current_skill)} -> {len(candidate_skill)}"
@@ -2152,13 +2385,26 @@ class ReflACTTrainer:
         total_wall = time.time() - t_loop_start
         n_accept = sum(1 for h in history if "accept" in h.get("action", ""))
         n_reject = sum(1 for h in history if h.get("action") == "reject")
+        noop_retry_attempts = [
+            attempt
+            for h in history
+            for attempt in h.get("noop_retry_attempts", [])
+            if isinstance(attempt, dict)
+        ]
+        final_has_candidate = n_accept > 0 or best_origin != "initial_skill"
+        no_candidate_triggers = [] if final_has_candidate else _dedupe_texts([
+            trigger
+            for h in history
+            for trigger in h.get("no_candidate_triggers", [])
+            if isinstance(trigger, str)
+        ])
         gate_blockers = [
             h["gate_block"]
             for h in history
             if isinstance(h.get("gate_block"), dict)
         ] + run_gate_blocks
         n_block = len(gate_blockers)
-        n_skip = sum(1 for h in history if h.get("action") == "skip_no_patches")
+        n_skip = sum(1 for h in history if _is_skipped_step(h.get("action", "")))
 
         token_summary = get_token_summary()
 
@@ -2172,7 +2418,7 @@ class ReflACTTrainer:
                     "steps": [h["step"] for h in epoch_records],
                     "accepts": sum(1 for h in epoch_records if "accept" in h.get("action", "")),
                     "rejects": sum(1 for h in epoch_records if h.get("action") == "reject"),
-                    "skips": sum(1 for h in epoch_records if h.get("action") == "skip_no_patches"),
+                    "skips": sum(1 for h in epoch_records if _is_skipped_step(h.get("action", ""))),
                     "best_score_at_epoch_end": epoch_records[-1].get("best_score", 0.0),
                     "current_score_at_epoch_end": epoch_records[-1].get("current_score", 0.0),
                 })
@@ -2206,6 +2452,9 @@ class ReflACTTrainer:
             "total_rejects": n_reject,
             "total_blocks": n_block,
             "total_skips": n_skip,
+            "noop_retry_attempts": noop_retry_attempts,
+            "no_candidate_triggers": no_candidate_triggers,
+            "no_candidate_reason": no_candidate_triggers[0] if no_candidate_triggers else "",
             "epoch_stats": epoch_stats,
             "baseline_test_hard": baseline_test_hard,
             "baseline_test_soft": baseline_test_soft,

@@ -223,6 +223,7 @@ def build_trainer_config(
         "sel_env_num": 0,
         "test_env_num": 0,
         "eval_test": False if dry_run else True,
+        "noop_retry_budget": 1,
     }
 
 
@@ -351,6 +352,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "total_rejects": summary.get("total_rejects"),
         "total_blocks": summary.get("total_blocks"),
         "total_skips": summary.get("total_skips"),
+        "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "token_summary": summary.get("token_summary", {}),
     }
 
@@ -428,12 +430,20 @@ def _summary_metadata(
         "promotable": _summary_promotable(summary, no_candidate_triggers=no_candidate_triggers),
         "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
         "no_candidate_triggers": no_candidate_triggers,
+        "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "next_action": _no_candidate_next_action(no_candidate_triggers),
     }
 
 
 def _no_candidate_triggers(summary: dict[str, Any], base_content: str, candidate_content: str) -> list[str]:
-    triggers: list[str] = []
+    triggers = [
+        str(trigger).strip()
+        for trigger in summary.get("no_candidate_triggers", [])
+        if str(trigger).strip()
+    ] if isinstance(summary.get("no_candidate_triggers"), list) else []
+    reason = str(summary.get("no_candidate_reason") or "").strip()
+    if reason:
+        triggers.append(reason)
     if content_hash(base_content.encode()) == content_hash(candidate_content.encode()):
         triggers.append("candidate_content_unchanged")
     best_origin = str(summary.get("best_origin") or "").strip()
@@ -445,7 +455,19 @@ def _no_candidate_triggers(summary: dict[str, Any], base_content: str, candidate
             total_accepts = None
         if total_accepts == 0:
             triggers.append("optimizer_total_accepts_zero")
-    return triggers
+    return _dedupe_triggers(triggers)
+
+
+def _dedupe_triggers(triggers: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for trigger in triggers:
+        key = str(trigger or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 
 def _primary_no_candidate_reason(no_candidate_triggers: list[str] | None) -> str:
