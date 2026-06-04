@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from gitmoot_skillopt.artifacts import OutputArtifactWriter
+from gitmoot_skillopt.artifacts import OutputArtifactWriter, content_hash
 from gitmoot_skillopt.contracts import (
     CANDIDATE_PACKAGE_KIND,
     CONTRACT_VERSION,
@@ -238,8 +238,9 @@ def write_candidate_package(
 ) -> CandidatePackage:
     writer = OutputArtifactWriter(out_root, artifact_dir)
     diff_text = _diff_text(package.template.content, candidate_content)
-    eval_report = _eval_report(summary, dry_run=dry_run)
-    preference_summary = _preference_summary(summary, dry_run=dry_run)
+    no_candidate_triggers = _no_candidate_triggers(summary, package.template.content, candidate_content)
+    eval_report = _eval_report(summary, dry_run=dry_run, no_candidate_triggers=no_candidate_triggers)
+    preference_summary = _preference_summary(summary, dry_run=dry_run, no_candidate_triggers=no_candidate_triggers)
     diff_artifact_id = _candidate_artifact_id(package, "candidate-diff")
     artifacts = [
         writer.write_bytes(
@@ -264,7 +265,7 @@ def write_candidate_package(
             driver="gitmoot-skillopt",
         ),
     ]
-    summary_metadata = _summary_metadata(summary, artifacts=artifacts)
+    summary_metadata = _summary_metadata(summary, artifacts=artifacts, no_candidate_triggers=no_candidate_triggers)
     candidate = CandidatePackage(
         kind=CANDIDATE_PACKAGE_KIND,
         contract_version=CONTRACT_VERSION,
@@ -278,7 +279,7 @@ def write_candidate_package(
         eval_report=eval_report,
         summary=CandidateSummary(
             diff_artifact_id=diff_artifact_id,
-            score=_summary_score(summary),
+            score=_summary_score(summary, no_candidate_triggers=no_candidate_triggers),
             preference_summary=preference_summary.strip(),
             metadata=summary_metadata,
         ),
@@ -328,14 +329,18 @@ def _diff_text(base: str, candidate: str) -> str:
     return diff or "No content changes.\n"
 
 
-def _eval_report(summary: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_triggers: list[str] | None = None) -> dict[str, Any]:
     gate_status = str(summary.get("gate_status") or "passed")
+    no_candidate_triggers = no_candidate_triggers or []
     return {
         "dry_run": dry_run,
         "gate_status": gate_status,
         "gate_blocker": summary.get("gate_blocker", ""),
         "gate_blockers": summary.get("gate_blockers", []),
-        "promotable": _summary_promotable(summary),
+        "promotable": _summary_promotable(summary, no_candidate_triggers=no_candidate_triggers),
+        "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
+        "no_candidate_triggers": no_candidate_triggers,
+        "next_action": _no_candidate_next_action(no_candidate_triggers),
         "best_selection_hard": summary.get("best_selection_hard"),
         "best_selection_soft": summary.get("best_selection_soft"),
         "baseline_selection_hard": summary.get("baseline_selection_hard"),
@@ -372,22 +377,24 @@ def _dry_run_summary(package: TrainingPackage) -> dict[str, Any]:
     }
 
 
-def _preference_summary(summary: dict[str, Any], *, dry_run: bool) -> str:
+def _preference_summary(summary: dict[str, Any], *, dry_run: bool, no_candidate_triggers: list[str] | None = None) -> str:
     mode = "dry-run fixture" if dry_run else "optimizer"
     gate_status = str(summary.get("gate_status") or "passed")
+    no_candidate_triggers = no_candidate_triggers or []
     return (
         f"# Gitmoot SkillOpt Candidate\n\n"
         f"Mode: {mode}\n\n"
         f"Best selection hard: {summary.get('best_selection_hard')}\n"
         f"Baseline selection hard: {summary.get('baseline_selection_hard')}\n"
         f"Gate status: {gate_status}\n"
-        f"Promotable: {_summary_promotable(summary)}\n"
+        f"Promotable: {_summary_promotable(summary, no_candidate_triggers=no_candidate_triggers)}\n"
+        f"No candidate reason: {_primary_no_candidate_reason(no_candidate_triggers) or 'none'}\n"
         f"Total steps: {summary.get('total_steps')}\n"
     )
 
 
-def _summary_score(summary: dict[str, Any]) -> float | None:
-    if not _summary_promotable(summary):
+def _summary_score(summary: dict[str, Any], *, no_candidate_triggers: list[str] | None = None) -> float | None:
+    if not _summary_promotable(summary, no_candidate_triggers=no_candidate_triggers):
         return None
     score = summary.get("best_selection_hard")
     if isinstance(score, bool) or not isinstance(score, int | float):
@@ -395,20 +402,58 @@ def _summary_score(summary: dict[str, Any]) -> float | None:
     return float(score)
 
 
-def _summary_promotable(summary: dict[str, Any]) -> bool:
+def _summary_promotable(summary: dict[str, Any], *, no_candidate_triggers: list[str] | None = None) -> bool:
+    if no_candidate_triggers:
+        return False
     gate_status = str(summary.get("gate_status") or "passed")
     return bool(summary.get("promotable", gate_status != "blocked"))
 
 
-def _summary_metadata(summary: dict[str, Any], *, artifacts: list[Any]) -> dict[str, Any]:
+def _summary_metadata(
+    summary: dict[str, Any],
+    *,
+    artifacts: list[Any],
+    no_candidate_triggers: list[str] | None = None,
+) -> dict[str, Any]:
     gate_status = str(summary.get("gate_status") or "passed")
     gate_blockers = summary.get("gate_blockers")
     if not isinstance(gate_blockers, list):
         gate_blockers = []
+    no_candidate_triggers = no_candidate_triggers or []
     return {
         "artifact_ids": [artifact.id for artifact in artifacts],
         "gate_status": gate_status,
         "gate_blocker": str(summary.get("gate_blocker") or ""),
         "gate_blockers": gate_blockers,
-        "promotable": _summary_promotable(summary),
+        "promotable": _summary_promotable(summary, no_candidate_triggers=no_candidate_triggers),
+        "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
+        "no_candidate_triggers": no_candidate_triggers,
+        "next_action": _no_candidate_next_action(no_candidate_triggers),
     }
+
+
+def _no_candidate_triggers(summary: dict[str, Any], base_content: str, candidate_content: str) -> list[str]:
+    triggers: list[str] = []
+    if content_hash(base_content.encode()) == content_hash(candidate_content.encode()):
+        triggers.append("candidate_content_unchanged")
+    best_origin = str(summary.get("best_origin") or "").strip()
+    if best_origin == "initial_skill":
+        triggers.append("best_origin_initial_skill")
+    if "total_accepts" in summary:
+        total_accepts = summary.get("total_accepts")
+        if isinstance(total_accepts, bool) or not isinstance(total_accepts, int | float):
+            total_accepts = None
+        if total_accepts == 0:
+            triggers.append("optimizer_total_accepts_zero")
+    return triggers
+
+
+def _primary_no_candidate_reason(no_candidate_triggers: list[str] | None) -> str:
+    triggers = no_candidate_triggers or []
+    return triggers[0] if triggers else ""
+
+
+def _no_candidate_next_action(no_candidate_triggers: list[str] | None) -> str:
+    if not no_candidate_triggers:
+        return ""
+    return "Do not import or publish a candidate review; continue training with revised feedback or stop the run."

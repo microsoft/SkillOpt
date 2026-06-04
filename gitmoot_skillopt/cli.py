@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _run_optimize(args: argparse.Namespace) -> int:
     from .optimize import run_optimize
 
-    run_optimize(
+    candidate = run_optimize(
         training_package=args.training_package,
         artifact_root=args.artifact_root,
         out_root=args.out_root,
@@ -127,7 +127,15 @@ def _run_optimize(args: argparse.Namespace) -> int:
         reasoning_effort=args.reasoning_effort,
         skill_update_mode=args.skill_update_mode,
     )
-    print(f"wrote candidate package: {args.candidate_output}")
+    summary = getattr(candidate, "summary", None)
+    metadata = summary.metadata if summary is not None and isinstance(summary.metadata, dict) else {}
+    no_candidate_reason = str(metadata.get("no_candidate_reason") or "").strip()
+    if no_candidate_reason:
+        print(f"wrote no-candidate package: {args.candidate_output}")
+        print(f"no_candidate_reason: {no_candidate_reason}")
+        print(f"next_action: {metadata.get('next_action')}")
+    else:
+        print(f"wrote candidate package: {args.candidate_output}")
     return 0
 
 
