@@ -801,6 +801,7 @@ class RankedFeedbackEvent:
     winner: str = ""
     useful_traits: Any = None
     rejected_traits: Any = None
+    required_improvements: Any = None
     quality: str = ""
     continue_mode: str = ""
     promote: str = ""
@@ -824,6 +825,7 @@ class RankedFeedbackEvent:
             winner=_optional_string(data.get("winner")),
             useful_traits=_raw_json(data.get("useful_traits")),
             rejected_traits=_raw_json(data.get("rejected_traits")),
+            required_improvements=_raw_json(data.get("required_improvements")),
             quality=_optional_string(data.get("quality")),
             continue_mode=_optional_string(data.get("continue_mode")),
             promote=_optional_string(data.get("promote")),
@@ -851,6 +853,8 @@ class RankedFeedbackEvent:
             data["useful_traits"] = self.useful_traits
         if self.rejected_traits is not None:
             data["rejected_traits"] = self.rejected_traits
+        if self.required_improvements is not None:
+            data["required_improvements"] = self.required_improvements
         if self.quality:
             data["quality"] = self.quality
         if self.continue_mode:

@@ -338,6 +338,9 @@ def build_task_prompt(
     ]
     if item.metadata is not None:
         parts.extend(["", "## Item Metadata", json.dumps(item.metadata, indent=2, sort_keys=True)])
+    preference_summary = _human_preference_summary(ranked_feedback_events or [])
+    if preference_summary:
+        parts.extend(["", "## Human Preference Summary", preference_summary])
     for role in ("source", "baseline", "candidate", "preview", "diff"):
         artifact = artifacts.get(role)
         if not artifact:
@@ -469,11 +472,87 @@ def _ranked_feedback_event_prompt_context(event: Any) -> dict[str, Any]:
         value = str(getattr(event, field, "") or "").strip()
         if value:
             context[field] = value
-    for field in ("useful_traits", "rejected_traits"):
+    for field in ("useful_traits", "rejected_traits", "required_improvements"):
         value = getattr(event, field, None)
         if value is not None:
             context[field] = value
     return context
+
+
+def _human_preference_summary(ranked_feedback_events: list[dict[str, Any]]) -> str:
+    blocks: list[str] = []
+    for index, event in enumerate(ranked_feedback_events, start=1):
+        lines: list[str] = []
+        reviewer = _summary_text(event.get("reviewer"))
+        source = _summary_text(event.get("source"))
+        label_parts = [part for part in (reviewer, source) if part]
+        label = f" ({', '.join(label_parts)})" if label_parts else ""
+        ranking = _summary_ranking(event.get("ranking"))
+        headline_parts = [f"ranking {ranking}" if ranking else ""]
+        winner = _summary_text(event.get("winner"))
+        if winner:
+            headline_parts.append(f"winner {winner}")
+        for field in ("quality", "continue_mode", "promote"):
+            value = _summary_text(event.get(field))
+            if value:
+                headline_parts.append(f"{field} {value}")
+        headline = "; ".join(part for part in headline_parts if part) or "ranked feedback"
+        lines.append(f"- Review {index}{label}: {headline}.")
+
+        reasoning = _summary_text(event.get("reasoning"), limit=700)
+        if reasoning:
+            lines.append(f"  Reasoning: {reasoning}")
+        useful_traits = _summary_traits(event.get("useful_traits"))
+        if useful_traits:
+            lines.append(f"  Useful traits: {useful_traits}")
+        rejected_traits = _summary_traits(event.get("rejected_traits"))
+        if rejected_traits:
+            lines.append(f"  Rejected traits: {rejected_traits}")
+        required_improvements = _summary_list(event.get("required_improvements"))
+        if required_improvements:
+            lines.append(f"  Required improvements: {required_improvements}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
+def _summary_ranking(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    labels = [_summary_text(item) for item in value]
+    labels = [label for label in labels if label]
+    return " > ".join(labels)
+
+
+def _summary_traits(value: Any) -> str:
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in sorted(value):
+            label = _summary_text(key)
+            summary = _summary_list(value.get(key))
+            if label and summary:
+                parts.append(f"{label}: {summary}")
+        return "; ".join(parts)
+    return _summary_list(value)
+
+
+def _summary_list(value: Any) -> str:
+    if isinstance(value, list):
+        items = [_summary_text(item, limit=180) for item in value]
+        return "; ".join(item for item in items if item)
+    return _summary_text(value)
+
+
+def _summary_text(value: Any, *, limit: int = 220) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, sort_keys=True)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
 
 
 def _preview_bundle_prompt_text(artifact: ArtifactRef, text: str) -> str:
