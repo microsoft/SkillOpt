@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from gitmoot_skillopt.contracts import TrainingPackage
 from gitmoot_skillopt.optimize import build_trainer_config
 from skillopt.datasets.base import BatchSpec
@@ -524,6 +522,9 @@ def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypa
     assert summary["total_rejects"] == 1
     assert summary["best_origin"] == "initial_skill"
     assert summary["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
+    assert len(summary["gate_reject_retry_attempts"]) == 2
+    assert summary["gate_reject_retry_attempts"][0]["action"] == "retry"
+    assert summary["gate_reject_retry_attempts"][1]["action"] == "stop"
     assert summary["baseline_test_hard"] is None
     assert summary["test_hard"] is None
     assert final_test_rollouts == []
@@ -533,15 +534,9 @@ def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypa
     assert rejection["baseline"]["gate_score"] == 0.89
     assert rejection["candidate"]["gate_score"] == 0.84
     assert rejection["attempted_patch"] == "artifact delivery only"
+    assert rejection["retry_attempts"] == "1/1"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "final best-origin-initial-skill selection rejection currently creates a "
-        "gate_rejection packet after the retry opportunity and reports 0/0 retry accounting"
-    ),
-    strict=True,
-)
 def test_final_selection_reject_packet_uses_configured_gate_retry_budget():
     history = [
         {
@@ -564,12 +559,14 @@ def test_final_selection_reject_packet_uses_configured_gate_retry_budget():
         baseline_scores=(1.0, 0.89),
         gate_metric="mixed",
         gate_mixed_weight=0.5,
+        retry_used=0,
+        retry_budget=1,
     )
 
     assert rejection is not None
     assert rejection["retryable"] is True
     assert rejection["candidate"]["gate_score"] == 0.84
-    assert rejection["baseline"]["gate_score"] == 0.945
+    assert round(rejection["baseline"]["gate_score"], 3) == 0.945
     assert rejection["retry_attempts"] == "0/1"
     assert "retry" in rejection["next_action"].lower()
 
