@@ -378,6 +378,12 @@ def test_candidate_package_evaluator_score_and_failure_round_trip():
         "evaluator_score": {
             "profile_id": "vue_landing_page_v1",
             "task_kind": "vue_landing_page",
+            "contract_status": "failed",
+            "quality_status": "not_run",
+            "human_feedback_alignment": {
+                "status": "feedback_available",
+                "required_improvements": ["stronger product visuals"],
+            },
             "hard": 0,
             "soft": 0.12,
             "dimension_scores": {"artifact_contract": 0, "render_smoke": 0.25},
@@ -408,6 +414,12 @@ def test_candidate_package_evaluator_score_and_failure_round_trip():
     package = CandidatePackage.from_dict(data)
 
     assert package.summary.evaluator_score is not None
+    assert package.summary.evaluator_score.contract_status == "failed"
+    assert package.summary.evaluator_score.quality_status == "not_run"
+    assert package.summary.evaluator_score.human_feedback_alignment == {
+        "status": "feedback_available",
+        "required_improvements": ["stronger product visuals"],
+    }
     assert package.summary.evaluator_score.dimension_scores == {"artifact_contract": 0.0, "render_smoke": 0.25}
     assert package.summary.evaluator_score.failure is not None
     assert package.summary.evaluator_score.failure.failed_checks[0].check == "artifact_contract.required_files"

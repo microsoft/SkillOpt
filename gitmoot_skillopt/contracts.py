@@ -545,6 +545,9 @@ class EvaluatorFailurePacket:
 class EvaluatorScore:
     profile_id: str = ""
     task_kind: str = ""
+    contract_status: str = ""
+    quality_status: str = ""
+    human_feedback_alignment: Any = None
     hard: float | None = None
     soft: float | None = None
     dimension_scores: dict[str, float] | None = None
@@ -564,6 +567,9 @@ class EvaluatorScore:
         return cls(
             profile_id=_optional_string(data.get("profile_id")),
             task_kind=_optional_string(data.get("task_kind")),
+            contract_status=_optional_string(data.get("contract_status")),
+            quality_status=_optional_string(data.get("quality_status")),
+            human_feedback_alignment=_raw_json(data.get("human_feedback_alignment")),
             hard=_optional_number(data.get("hard"), "evaluator_score.hard"),
             soft=_optional_number(data.get("soft"), "evaluator_score.soft"),
             dimension_scores=_optional_dimension_scores(data.get("dimension_scores")),
@@ -579,6 +585,12 @@ class EvaluatorScore:
             data["profile_id"] = self.profile_id
         if self.task_kind:
             data["task_kind"] = self.task_kind
+        if self.contract_status:
+            data["contract_status"] = self.contract_status
+        if self.quality_status:
+            data["quality_status"] = self.quality_status
+        if self.human_feedback_alignment is not None:
+            data["human_feedback_alignment"] = self.human_feedback_alignment
         if self.hard is not None:
             data["hard"] = self.hard
         if self.soft is not None:

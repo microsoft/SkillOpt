@@ -83,6 +83,12 @@ def test_scored_evaluation_preserves_structured_failure_feedback():
             "fail_reason": "missing required artifact",
             "profile_id": "vue_landing_page_v1",
             "task_kind": "vue_landing_page",
+            "contract_status": "failed",
+            "quality_status": "not_run",
+            "human_feedback_alignment": {
+                "status": "feedback_available",
+                "required_improvements": ["make the layout responsive"],
+            },
             "dimension_scores": {"artifact_contract": 0, "visual": 0.2},
             "failure": {
                 "primary_reason": "missing_required_artifact",
@@ -94,6 +100,9 @@ def test_scored_evaluation_preserves_structured_failure_feedback():
 
     assert result["hard"] == 0
     assert result["profile_id"] == "vue_landing_page_v1"
+    assert result["contract_status"] == "failed"
+    assert result["quality_status"] == "not_run"
+    assert result["human_feedback_alignment"]["required_improvements"] == ["make the layout responsive"]
     assert result["dimension_scores"]["artifact_contract"] == 0
     assert result["failure"]["primary_reason"] == "missing_required_artifact"
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required Vue")
@@ -129,10 +138,16 @@ def test_unscored_evaluation_preserves_structured_failure_feedback_from_metadata
                 "primary_reason": "render_smoke_failed",
                 "optimizer_hint": "Fix the runtime error before sending the page to the visual judge.",
             },
+            "contract_status": "failed",
+            "quality_status": "not_run",
+            "human_feedback_alignment": {"status": "feedback_available"},
             "stage_status": [{"stage": "render_smoke", "status": "failed"}],
         },
     )
 
     assert result["hard"] is None
     assert result["failure"]["primary_reason"] == "render_smoke_failed"
+    assert result["contract_status"] == "failed"
+    assert result["quality_status"] == "not_run"
+    assert result["human_feedback_alignment"]["status"] == "feedback_available"
     assert result["metadata"]["stage_status"][0]["stage"] == "render_smoke"
