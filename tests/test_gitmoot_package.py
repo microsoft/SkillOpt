@@ -139,6 +139,7 @@ def training_package_dict() -> dict[str, object]:
                 "promote": "no",
                 "useful_traits": {"d": ["cleanest hero"]},
                 "rejected_traits": {"c": ["overlapping text"]},
+                "required_improvements": ["better mobile layout", "stronger product visuals"],
                 "reasoning": "D is the cleanest option.",
                 "reviewer": "alice",
                 "source": "github",
@@ -201,6 +202,7 @@ def test_training_package_loads_and_round_trips(tmp_path):
     assert loaded.ranked_feedback_events[0].quality == "acceptable"
     assert loaded.ranked_feedback_events[0].continue_mode == "refine"
     assert loaded.ranked_feedback_events[0].promote == "no"
+    assert loaded.ranked_feedback_events[0].required_improvements == ["better mobile layout", "stronger product visuals"]
 
 
 def test_training_package_evaluator_profile_round_trips():
