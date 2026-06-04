@@ -49,7 +49,7 @@ def test_optimize_rejects_invalid_package_path(tmp_path):
         )
 
 
-def test_optimize_dry_run_writes_candidate_package_and_artifacts(tmp_path):
+def test_optimize_dry_run_writes_no_candidate_package_and_artifacts(tmp_path, capsys):
     package_path, artifact_root = write_training_package(tmp_path)
     out_root = tmp_path / "out"
     candidate_output = out_root / "candidate.json"
@@ -70,6 +70,9 @@ def test_optimize_dry_run_writes_candidate_package_and_artifacts(tmp_path):
     )
 
     assert result == 0
+    output = capsys.readouterr().out
+    assert "wrote no-candidate package" in output
+    assert "no_candidate_reason: candidate_content_unchanged" in output
     data = json.loads(candidate_output.read_text(encoding="utf-8"))
     loaded = CandidatePackage.from_dict(data)
     assert loaded.kind == CANDIDATE_PACKAGE_KIND
@@ -81,6 +84,11 @@ def test_optimize_dry_run_writes_candidate_package_and_artifacts(tmp_path):
         "run-1/eval-report",
         "run-1/preference-summary",
     }
+    assert loaded.summary.score is None
+    assert loaded.eval_report["promotable"] is False
+    assert loaded.eval_report["no_candidate_reason"] == "candidate_content_unchanged"
+    assert loaded.summary.metadata["promotable"] is False
+    assert loaded.summary.metadata["no_candidate_reason"] == "candidate_content_unchanged"
     for artifact in loaded.artifacts:
         assert (out_root / "artifacts" / artifact.path).is_file()
 
@@ -881,3 +889,33 @@ def test_blocked_summary_writes_non_promotable_candidate_metadata(tmp_path):
     assert loaded.summary.metadata["promotable"] is False
     assert loaded.summary.metadata["gate_blocker"] == "evaluator_not_run"
     assert loaded.summary.metadata["gate_blockers"][0]["items"][0]["id"] == "val-1"
+
+
+def test_initial_skill_best_origin_writes_no_candidate_metadata(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    del artifact_root
+    package = TrainingPackage.load(package_path)
+    candidate_output = tmp_path / "out" / "candidate.json"
+
+    candidate = write_candidate_package(
+        package=package,
+        candidate_content=package.template.content.replace("Plan carefully.", "Plan carefully with a checklist."),
+        summary={
+            "gate_status": "passed",
+            "promotable": True,
+            "best_origin": "initial_skill",
+            "total_accepts": 1,
+            "best_selection_hard": 1,
+            "baseline_selection_hard": 1,
+        },
+        out_root=tmp_path / "out",
+        artifact_dir=tmp_path / "out" / "artifacts",
+        candidate_output=candidate_output,
+        dry_run=False,
+    )
+
+    loaded = CandidatePackage.load(candidate_output)
+    assert candidate.summary.score is None
+    assert loaded.eval_report["promotable"] is False
+    assert loaded.eval_report["no_candidate_reason"] == "best_origin_initial_skill"
+    assert loaded.summary.metadata["no_candidate_triggers"] == ["best_origin_initial_skill"]
