@@ -124,6 +124,41 @@ def test_optimize_dry_run_accepts_explicit_artifact_dir(tmp_path):
     assert not (out_root / "artifacts").exists()
 
 
+def test_no_candidate_package_preserves_noop_retry_attempts(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    out_root = tmp_path / "out"
+    candidate_output = out_root / "candidate.json"
+    retry_attempts = [
+        {
+            "attempt": 0,
+            "reasons": ["no_meaningful_skill_change", "candidate_content_unchanged"],
+            "retry_hints": {"improve": ["better mobile layout"]},
+        }
+    ]
+
+    candidate = write_candidate_package(
+        package=package,
+        candidate_content=package.template.content,
+        summary={
+            "best_origin": "initial_skill",
+            "total_accepts": 0,
+            "no_candidate_triggers": ["no_meaningful_skill_change"],
+            "noop_retry_attempts": retry_attempts,
+        },
+        out_root=out_root,
+        artifact_dir=out_root / "artifacts",
+        candidate_output=candidate_output,
+        dry_run=False,
+    )
+
+    assert candidate.summary.score is None
+    assert candidate.eval_report["no_candidate_reason"] == "no_meaningful_skill_change"
+    assert candidate.eval_report["noop_retry_attempts"] == retry_attempts
+    assert candidate.summary.metadata["noop_retry_attempts"] == retry_attempts
+    assert "candidate_content_unchanged" in candidate.summary.metadata["no_candidate_triggers"]
+
+
 def test_optimize_dry_run_does_not_start_trainer(tmp_path, monkeypatch):
     class FailingTrainer:
         def __init__(self, *args, **kwargs):
