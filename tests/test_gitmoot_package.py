@@ -403,11 +403,39 @@ def test_candidate_package_evaluator_score_and_failure_round_trip():
                 "evidence": ["bundle JSON shape missing"],
                 "stage_status": [{"stage": "artifact_contract", "status": "failed", "duration_ms": 7}],
             },
+            "gate_rejection": {
+                "rejection_type": "candidate_score_regression",
+                "retryable": True,
+                "baseline": {"hard": 1, "soft": 0.78, "gate_score": 0.89},
+                "candidate": {"hard": 1, "soft": 0.68, "gate_score": 0.84},
+                "primary_reason": "candidate_quality_regressed",
+                "human_reason": "The patch did not improve the requested design qualities.",
+                "optimizer_hint": "Add guidance for branding, product visuals, animation, and mobile layout.",
+                "failed_dimensions": ["human_feedback_alignment", "visual_quality"],
+                "evidence": ["Candidate soft score dropped from 0.78 to 0.68."],
+                "attempted_patch": "Hard Artifact Delivery",
+                "retry_attempts": "0/1",
+                "next_action": "Retry once with the gate rejection hint.",
+            },
             "stage_status": [{"stage": "judge", "status": "not_run"}],
         },
         "failure": {
             "primary_reason": "candidate_rejected",
             "optimizer_hint": "Fix hard evaluator blockers before judging visuals.",
+        },
+        "gate_rejection": {
+            "rejection_type": "candidate_score_regression",
+            "retryable": True,
+            "baseline": {"hard": 1, "soft": 0.78, "gate_score": 0.89},
+            "candidate": {"hard": 1, "soft": 0.68, "gate_score": 0.84},
+            "primary_reason": "candidate_quality_regressed",
+            "human_reason": "Candidate lost selection against baseline.",
+            "optimizer_hint": "Do not repeat the previous artifact-delivery-only patch.",
+            "failed_dimensions": ["human_feedback_alignment", "visual_quality"],
+            "evidence": ["candidate gate score 0.84 <= baseline gate score 0.89"],
+            "attempted_patch": "Hard Artifact Delivery",
+            "retry_attempts": "0/1",
+            "next_action": "Retry once or collect more feedback.",
         },
     }
 
@@ -423,8 +451,34 @@ def test_candidate_package_evaluator_score_and_failure_round_trip():
     assert package.summary.evaluator_score.dimension_scores == {"artifact_contract": 0.0, "render_smoke": 0.25}
     assert package.summary.evaluator_score.failure is not None
     assert package.summary.evaluator_score.failure.failed_checks[0].check == "artifact_contract.required_files"
+    assert package.summary.evaluator_score.gate_rejection is not None
+    assert package.summary.evaluator_score.gate_rejection.baseline.gate_score == 0.89
+    assert package.summary.evaluator_score.gate_rejection.failed_dimensions == [
+        "human_feedback_alignment",
+        "visual_quality",
+    ]
     assert package.summary.failure is not None
+    assert package.summary.gate_rejection is not None
+    assert package.summary.gate_rejection.candidate.soft == 0.68
     assert package.to_dict()["summary"]["evaluator_score"]["failure"]["primary_reason"] == "missing_required_artifact"
+    assert (
+        package.to_dict()["summary"]["gate_rejection"]["optimizer_hint"]
+        == "Do not repeat the previous artifact-delivery-only patch."
+    )
+
+
+def test_candidate_package_rejects_invalid_gate_rejection_retryable():
+    data = candidate_package_dict()
+    data["summary"] = {
+        **data["summary"],  # type: ignore[arg-type]
+        "gate_rejection": {
+            "rejection_type": "candidate_score_regression",
+            "retryable": "yes",
+        },
+    }
+
+    with pytest.raises(ContractError, match="gate_rejection.retryable"):
+        CandidatePackage.from_dict(data)
 
 
 def test_candidate_package_rejects_duplicate_artifact_ids():

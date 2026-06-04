@@ -100,6 +100,12 @@ def _optional_dimension_scores(value: Any) -> dict[str, float] | None:
     return scores
 
 
+def _optional_gate_scores(value: Any, label: str) -> "GateRejectionScores":
+    if value is None:
+        return GateRejectionScores()
+    return GateRejectionScores.from_dict(value, label)
+
+
 def _raw_json(value: Any) -> Any:
     if value is None:
         return None
@@ -542,6 +548,101 @@ class EvaluatorFailurePacket:
 
 
 @dataclass(frozen=True)
+class GateRejectionScores:
+    hard: float | None = None
+    soft: float | None = None
+    gate_score: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], label: str = "gate rejection scores") -> GateRejectionScores:
+        data = _require_mapping(data, label)
+        return cls(
+            hard=_optional_number(data.get("hard"), f"{label}.hard"),
+            soft=_optional_number(data.get("soft"), f"{label}.soft"),
+            gate_score=_optional_number(data.get("gate_score"), f"{label}.gate_score"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.hard is not None:
+            data["hard"] = self.hard
+        if self.soft is not None:
+            data["soft"] = self.soft
+        if self.gate_score is not None:
+            data["gate_score"] = self.gate_score
+        return data
+
+
+@dataclass(frozen=True)
+class GateRejectionPacket:
+    rejection_type: str = ""
+    retryable: bool = False
+    baseline: GateRejectionScores = field(default_factory=GateRejectionScores)
+    candidate: GateRejectionScores = field(default_factory=GateRejectionScores)
+    primary_reason: str = ""
+    human_reason: str = ""
+    optimizer_hint: str = ""
+    failed_dimensions: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    attempted_patch: str = ""
+    retry_attempts: str = ""
+    next_action: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> GateRejectionPacket | None:
+        if data is None:
+            return None
+        data = _require_mapping(data, "gate_rejection")
+        retryable = data.get("retryable", False)
+        if not isinstance(retryable, bool):
+            raise ContractError("gate_rejection.retryable must be a boolean")
+        return cls(
+            rejection_type=_optional_string(data.get("rejection_type")),
+            retryable=retryable,
+            baseline=_optional_gate_scores(data.get("baseline"), "gate_rejection.baseline"),
+            candidate=_optional_gate_scores(data.get("candidate"), "gate_rejection.candidate"),
+            primary_reason=_optional_string(data.get("primary_reason")),
+            human_reason=_optional_string(data.get("human_reason")),
+            optimizer_hint=_optional_string(data.get("optimizer_hint")),
+            failed_dimensions=_optional_string_list(data.get("failed_dimensions"), "gate_rejection.failed_dimensions"),
+            evidence=_optional_string_list(data.get("evidence"), "gate_rejection.evidence"),
+            attempted_patch=_optional_string(data.get("attempted_patch")),
+            retry_attempts=_optional_string(data.get("retry_attempts")),
+            next_action=_optional_string(data.get("next_action")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.rejection_type:
+            data["rejection_type"] = self.rejection_type
+        if self.retryable:
+            data["retryable"] = self.retryable
+        baseline = self.baseline.to_dict()
+        if baseline:
+            data["baseline"] = baseline
+        candidate = self.candidate.to_dict()
+        if candidate:
+            data["candidate"] = candidate
+        if self.primary_reason:
+            data["primary_reason"] = self.primary_reason
+        if self.human_reason:
+            data["human_reason"] = self.human_reason
+        if self.optimizer_hint:
+            data["optimizer_hint"] = self.optimizer_hint
+        if self.failed_dimensions:
+            data["failed_dimensions"] = self.failed_dimensions
+        if self.evidence:
+            data["evidence"] = self.evidence
+        if self.attempted_patch:
+            data["attempted_patch"] = self.attempted_patch
+        if self.retry_attempts:
+            data["retry_attempts"] = self.retry_attempts
+        if self.next_action:
+            data["next_action"] = self.next_action
+        return data
+
+
+@dataclass(frozen=True)
 class EvaluatorScore:
     profile_id: str = ""
     task_kind: str = ""
@@ -553,6 +654,7 @@ class EvaluatorScore:
     dimension_scores: dict[str, float] | None = None
     fail_reason: str = ""
     failure: EvaluatorFailurePacket | None = None
+    gate_rejection: GateRejectionPacket | None = None
     stage_status: list[EvaluatorStageStatus] = field(default_factory=list)
     metadata: Any = None
 
@@ -575,6 +677,7 @@ class EvaluatorScore:
             dimension_scores=_optional_dimension_scores(data.get("dimension_scores")),
             fail_reason=_optional_string(data.get("fail_reason")),
             failure=EvaluatorFailurePacket.from_dict(data.get("failure")),
+            gate_rejection=GateRejectionPacket.from_dict(data.get("gate_rejection")),
             stage_status=[EvaluatorStageStatus.from_dict(stage) for stage in stage_status],
             metadata=_raw_json(data.get("metadata")),
         )
@@ -601,6 +704,8 @@ class EvaluatorScore:
             data["fail_reason"] = self.fail_reason
         if self.failure is not None:
             data["failure"] = self.failure.to_dict()
+        if self.gate_rejection is not None:
+            data["gate_rejection"] = self.gate_rejection.to_dict()
         if self.stage_status:
             data["stage_status"] = [stage.to_dict() for stage in self.stage_status]
         if self.metadata is not None:
@@ -1012,6 +1117,7 @@ class CandidateSummary:
     metadata: Any = None
     evaluator_score: EvaluatorScore | None = None
     failure: EvaluatorFailurePacket | None = None
+    gate_rejection: GateRejectionPacket | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> CandidateSummary:
@@ -1028,6 +1134,7 @@ class CandidateSummary:
             metadata=_raw_json(data.get("metadata")),
             evaluator_score=EvaluatorScore.from_dict(data.get("evaluator_score")),
             failure=EvaluatorFailurePacket.from_dict(data.get("failure")),
+            gate_rejection=GateRejectionPacket.from_dict(data.get("gate_rejection")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1043,6 +1150,8 @@ class CandidateSummary:
             data["evaluator_score"] = self.evaluator_score.to_dict()
         if self.failure is not None:
             data["failure"] = self.failure.to_dict()
+        if self.gate_rejection is not None:
+            data["gate_rejection"] = self.gate_rejection.to_dict()
         return data
 
 
