@@ -133,6 +133,21 @@ def _run_optimize(args: argparse.Namespace) -> int:
     if no_candidate_reason:
         print(f"wrote no-candidate package: {args.candidate_output}")
         print(f"no_candidate_reason: {no_candidate_reason}")
+        details = metadata.get("no_candidate_details")
+        if isinstance(details, dict):
+            if attempted_patch := str(details.get("attempted_patch") or "").strip():
+                print(f"attempted_patch: {attempted_patch}")
+            rejection = details.get("rejection")
+            if isinstance(rejection, dict):
+                baseline = rejection.get("baseline") if isinstance(rejection.get("baseline"), dict) else {}
+                candidate_scores = rejection.get("candidate") if isinstance(rejection.get("candidate"), dict) else {}
+                print(
+                    "rejection: "
+                    f"baseline_gate={baseline.get('gate_score')} "
+                    f"candidate_gate={candidate_scores.get('gate_score')}"
+                )
+            if retry_attempts := str(details.get("retry_attempts") or "").strip():
+                print(f"retry_attempts: {retry_attempts}")
         print(f"next_action: {metadata.get('next_action')}")
     else:
         print(f"wrote candidate package: {args.candidate_output}")

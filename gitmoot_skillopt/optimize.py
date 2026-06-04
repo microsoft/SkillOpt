@@ -337,6 +337,7 @@ def _diff_text(base: str, candidate: str) -> str:
 def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_triggers: list[str] | None = None) -> dict[str, Any]:
     gate_status = str(summary.get("gate_status") or "passed")
     no_candidate_triggers = no_candidate_triggers or []
+    no_candidate_details = _no_candidate_details(summary, no_candidate_triggers)
     return {
         "dry_run": dry_run,
         "gate_status": gate_status,
@@ -345,6 +346,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "promotable": _summary_promotable(summary, no_candidate_triggers=no_candidate_triggers),
         "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
         "no_candidate_triggers": no_candidate_triggers,
+        "no_candidate_details": no_candidate_details,
         "next_action": _no_candidate_next_action(no_candidate_triggers),
         "best_selection_hard": summary.get("best_selection_hard"),
         "best_selection_soft": summary.get("best_selection_soft"),
@@ -429,6 +431,7 @@ def _summary_metadata(
     if not isinstance(gate_blockers, list):
         gate_blockers = []
     no_candidate_triggers = no_candidate_triggers or []
+    no_candidate_details = _no_candidate_details(summary, no_candidate_triggers)
     return {
         "artifact_ids": [artifact.id for artifact in artifacts],
         "gate_status": gate_status,
@@ -437,6 +440,7 @@ def _summary_metadata(
         "promotable": _summary_promotable(summary, no_candidate_triggers=no_candidate_triggers),
         "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
         "no_candidate_triggers": no_candidate_triggers,
+        "no_candidate_details": no_candidate_details,
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "gate_reject_retry_attempts": summary.get("gate_reject_retry_attempts", []),
         "gate_rejection": _gate_rejection_dict(summary),
@@ -465,6 +469,8 @@ def _no_candidate_triggers(summary: dict[str, Any], base_content: str, candidate
         for trigger in summary.get("no_candidate_triggers", [])
         if str(trigger).strip()
     ] if isinstance(summary.get("no_candidate_triggers"), list) else []
+    if _gate_rejection_dict(summary) is not None:
+        triggers.append("gate_rejected_best_origin_initial_skill")
     reason = str(summary.get("no_candidate_reason") or "").strip()
     if reason:
         triggers.append(reason)
@@ -502,4 +508,28 @@ def _primary_no_candidate_reason(no_candidate_triggers: list[str] | None) -> str
 def _no_candidate_next_action(no_candidate_triggers: list[str] | None) -> str:
     if not no_candidate_triggers:
         return ""
+    if "gate_rejected_best_origin_initial_skill" in no_candidate_triggers:
+        return (
+            "Do not import or publish a candidate review; collect more feedback, "
+            "rerun with gate-reject retry if budget remains, or inspect the candidate package."
+        )
     return "Do not import or publish a candidate review; continue training with revised feedback or stop the run."
+
+
+def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[str] | None) -> dict[str, Any]:
+    triggers = no_candidate_triggers or []
+    details: dict[str, Any] = {}
+    gate_rejection = _gate_rejection_dict(summary)
+    if gate_rejection is not None and "gate_rejected_best_origin_initial_skill" in triggers:
+        details["attempted_patch"] = str(gate_rejection.get("attempted_patch") or "")
+        details["rejection"] = {
+            "baseline": gate_rejection.get("baseline") or {},
+            "candidate": gate_rejection.get("candidate") or {},
+            "primary_reason": str(gate_rejection.get("primary_reason") or ""),
+            "human_reason": str(gate_rejection.get("human_reason") or ""),
+            "failed_dimensions": gate_rejection.get("failed_dimensions") or [],
+            "evidence": gate_rejection.get("evidence") or [],
+        }
+        details["retry_attempts"] = str(gate_rejection.get("retry_attempts") or "")
+        details["next_action"] = str(gate_rejection.get("next_action") or _no_candidate_next_action(triggers))
+    return {key: value for key, value in details.items() if value not in (None, "", [], {})}

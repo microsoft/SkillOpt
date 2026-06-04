@@ -1000,8 +1000,13 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
     loaded = CandidatePackage.load(candidate_output)
     assert candidate.summary.score is None
     assert loaded.eval_report["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
+    assert loaded.eval_report["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
+    assert loaded.eval_report["no_candidate_details"]["attempted_patch"] == "artifact delivery only"
+    assert loaded.eval_report["no_candidate_details"]["retry_attempts"] == "0/0"
+    assert loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["gate_score"] == 0.84
     assert loaded.eval_report["gate_rejection"]["candidate"]["gate_score"] == 0.84
     assert loaded.summary.metadata["gate_rejection"]["baseline"]["gate_score"] == 0.89
+    assert loaded.summary.metadata["no_candidate_details"]["rejection"]["baseline"]["gate_score"] == 0.89
     assert loaded.summary.gate_rejection is not None
     assert loaded.summary.gate_rejection.primary_reason == "candidate_quality_regressed"
     assert loaded.summary.gate_rejection.attempted_patch == "artifact delivery only"
