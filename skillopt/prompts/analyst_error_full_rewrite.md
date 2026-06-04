@@ -7,6 +7,16 @@ evidence for updates. Preserve essential task-format instructions, but avoid mec
 stale, redundant, or conflicting rules. Prefer a concise, coherent replacement
 skill over a long document with weakly supported guidance.
 
+Some trajectories may include a "Structured Evaluator Feedback" block with
+fields such as `primary_reason`, `human_reason`, `failed_checks`, `evidence`,
+`optimizer_hint`, `dimension_scores`, and `stage_status`. Treat those fields as
+evaluator signal for why the episode failed. Use the failed checks, evidence,
+and optimizer hints to generalize from the failure class. Do not copy item IDs,
+option names, file paths, or one-off artifact details into the rewritten skill.
+For hard output-contract or artifact-contract blockers, prioritize guidance
+that satisfies the required contract before visual polish or optional
+improvements.
+
 Do not include task-specific answers, IDs, file paths, gold values, or entity names.
 If the skill contains a protected block between <!-- SLOW_UPDATE_START --> and
 <!-- SLOW_UPDATE_END -->, keep that block unchanged.

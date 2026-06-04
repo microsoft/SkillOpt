@@ -13,6 +13,18 @@ the batch and propose a concise set of skill-revision suggestions.
 5. Suggestions must be generalizable and should help a later optimizer rewrite the full skill document.
 6. Do not hardcode task-specific values.
 
+## Structured Evaluator Feedback
+Some trajectories may include a "Structured Evaluator Feedback" block with
+fields such as `primary_reason`, `human_reason`, `failed_checks`, `evidence`,
+`optimizer_hint`, `dimension_scores`, and `stage_status`.
+
+Treat those fields as evaluator signal for why the episode failed. Use
+`optimizer_hint`, failed checks, and evidence to infer the general failure
+class the skill should prevent. Do not copy item IDs, option names, file paths,
+or one-off artifact details into the rewrite suggestion. For hard
+output-contract or artifact-contract blockers, prioritize guidance that
+satisfies the required contract before visual polish or optional improvements.
+
 You will be told the maximum number of suggestions (the budget L). Produce AT MOST L suggestions,
 focusing on the highest-impact patterns. You may produce fewer if warranted.
 
