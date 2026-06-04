@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitmoot-skillopt"
-version = "0.2.0a1"
+version = "0.2.0a2"
 description = "Gitmoot-SkillOpt: optimize Gitmoot agent templates with SkillOpt"
 readme = "README.md"
 license = {text = "MIT"}
@@ -68,6 +68,9 @@ Upstream = "https://github.com/microsoft/SkillOpt"
 
 [tool.setuptools.packages.find]
 include = ["gitmoot_skillopt*", "skillopt*", "scripts*"]
+
+[tool.setuptools.package-data]
+"skillopt.prompts" = ["*.md"]
 
 [tool.ruff]
 line-length = 120
