@@ -63,6 +63,12 @@ def test_structured_failure_feedback_reaches_error_analyst_prompt(tmp_path, monk
                 "task_description": "Landing page",
                 "task_type": "gitmoot-skillopt",
                 "fail_reason": "Vue/Vite preview bundle is missing required files.",
+                "contract_status": "failed",
+                "quality_status": "not_run",
+                "human_feedback_alignment": {
+                    "status": "feedback_available",
+                    "required_improvements": ["stronger product visuals"],
+                },
                 "failure": {
                     "primary_reason": "vue_vite_bundle_contract_failed",
                     "human_reason": "The response did not include required bundle files.",
@@ -86,6 +92,9 @@ def test_structured_failure_feedback_reaches_error_analyst_prompt(tmp_path, monk
     assert result is not None
     assert result["source_type"] == "failure"
     assert "Structured Evaluator Feedback" in captured["user"]
+    assert "contract_status" in captured["user"]
+    assert "quality_status" in captured["user"]
+    assert "stronger product visuals" in captured["user"]
     assert "vue_vite_bundle_contract_failed" in captured["user"]
     assert "Return JSON with package.json" in captured["user"]
     assert "vue_vite_bundle.required_files" in captured["user"]

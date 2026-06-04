@@ -326,6 +326,12 @@ def test_structured_evaluator_feedback_reaches_reflection_prompt(tmp_path):
                 "task_description": "Landing page",
                 "task_type": "gitmoot-skillopt",
                 "fail_reason": "missing required artifact",
+                "contract_status": "failed",
+                "quality_status": "not_run",
+                "human_feedback_alignment": {
+                    "status": "feedback_available",
+                    "required_improvements": ["stronger product visuals"],
+                },
                 "failure": {
                     "primary_reason": "missing_required_artifact",
                     "optimizer_hint": "Return the required Vue/Vite preview bundle.",
@@ -337,6 +343,9 @@ def test_structured_evaluator_feedback_reaches_reflection_prompt(tmp_path):
     )
 
     assert "Structured Evaluator Feedback" in text
+    assert "contract_status" in text
+    assert "quality_status" in text
+    assert "stronger product visuals" in text
     assert "missing_required_artifact" in text
     assert "Return the required Vue" in text
 
@@ -603,6 +612,8 @@ def test_landing_page_judge_prompt_includes_render_and_feedback_context(monkeypa
                     "dimension_scores": _landing_dimension_scores(),
                     "rationale": "Render and human feedback context were considered.",
                     "fail_reason": "",
+                    "contract_status": "failed",
+                    "quality_status": "failed",
                 }
             ),
             {},
@@ -624,6 +635,11 @@ def test_landing_page_judge_prompt_includes_render_and_feedback_context(monkeypa
     )
 
     assert score["hard"] == 1
+    assert score["contract_status"] == "passed"
+    assert score["quality_status"] == "passed"
+    assert score["human_feedback_alignment"]["status"] == "feedback_available"
+    assert score["human_feedback_alignment"]["rankings"] == ["D > B > C > A"]
+    assert score["human_feedback_alignment"]["reasoning"] == ["D has the cleanest hero."]
     assert score["stage_status"][0] == {"stage": "render_smoke", "status": "passed"}
     assert score["stage_status"][-1] == {"stage": "llm_judge", "status": "passed"}
     assert '"status": "passed"' in captured["user"]
@@ -683,6 +699,8 @@ def test_landing_page_judge_rejection_returns_optimizer_failure_packet(monkeypat
                     },
                     "rationale": "The page is not mobile responsive and has no meaningful motion.",
                     "fail_reason": "mobile layout and hero motion are below promotion quality",
+                    "contract_status": "failed",
+                    "quality_status": "passed",
                     "failure": {
                         "primary_reason": "mobile_responsiveness_failed",
                         "human_reason": "Mobile layout overflows and hero motion is missing.",
@@ -704,13 +722,26 @@ def test_landing_page_judge_rejection_returns_optimizer_failure_packet(monkeypat
     monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
 
     score = evaluate_response(
-        {"id": "landing-page-rejected", "prompt": "Build a Vue landing page."},
+        {
+            "id": "landing-page-rejected",
+            "prompt": "Build a Vue landing page.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["D", "B", "C", "A"],
+                    "reasoning": "D had the best structure but still needed mobile polish.",
+                    "required_improvements": ["better mobile layout", "purposeful animation"],
+                }
+            ],
+        },
         _valid_vue_bundle_response(),
         {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
     )
 
     assert score["hard"] == 0
     assert score["soft"] == 0.31
+    assert score["contract_status"] == "passed"
+    assert score["quality_status"] == "failed"
+    assert score["human_feedback_alignment"]["required_improvements"] == ["better mobile layout", "purposeful animation"]
     assert score["failure"]["primary_reason"] == "mobile_responsiveness_failed"
     assert score["failure"]["optimizer_hint"].startswith("Make the hero responsive")
     assert score["failure"]["failed_checks"][0]["check"] == "landing_page_v1.mobile_responsiveness"
@@ -866,13 +897,28 @@ def test_landing_page_evaluator_rejects_missing_vue_bundle_file_before_judge(mon
     monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
 
     score = evaluate_response(
-        {"prompt": "Build a Vue landing page."},
+        {
+            "prompt": "Build a Vue landing page.",
+            "ranked_feedback_events": [],
+            "metadata": {
+                "ranked_feedback_events": [
+                    {
+                        "ranking": ["D", "B", "C", "A"],
+                        "reasoning": "D had the clearest direction.",
+                        "required_improvements": ["stronger product visuals"],
+                    }
+                ],
+            },
+        },
         _valid_vue_bundle_response(files=[("package.json", '{"scripts":{"build":"vite build"}}')]),
         {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
     )
 
     assert score["hard"] == 0
     assert score["soft"] == 0.0
+    assert score["contract_status"] == "failed"
+    assert score["quality_status"] == "not_run"
+    assert score["human_feedback_alignment"]["required_improvements"] == ["stronger product visuals"]
     assert score["evaluator_id"] == "landing_page_v1"
     assert score["failure"]["primary_reason"] == "vue_vite_bundle_contract_failed"
     assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.required_files"
@@ -1372,6 +1418,7 @@ def test_landing_page_evaluator_optional_render_smoke_failure_reaches_judge(monk
                     "dimension_scores": _landing_dimension_scores(),
                     "rationale": "Optional render smoke failed, but the visual judge still ran.",
                     "fail_reason": "",
+                    "contract_status": "passed",
                 }
             ),
             {},
@@ -1392,6 +1439,8 @@ def test_landing_page_evaluator_optional_render_smoke_failure_reaches_judge(monk
 
     assert called is True
     assert score["hard"] == 1
+    assert score["contract_status"] == "failed"
+    assert score["quality_status"] == "passed"
     assert score["metadata"]["dimension_scores"]["render_smoke"] == 0.0
     assert score["metadata"]["render_smoke"]["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.horizontal_overflow"
     assert score["stage_status"][0] == {"stage": "render_smoke", "status": "failed"}

@@ -29,6 +29,11 @@ LANDING_PAGE_DIMENSIONS = (
     "text_overlap_readability",
     "ranked_strength_preservation",
 )
+CONTRACT_PASSED = "passed"
+CONTRACT_FAILED = "failed"
+QUALITY_PASSED = "passed"
+QUALITY_FAILED = "failed"
+QUALITY_NOT_RUN = "not_run"
 LANDING_PAGE_TASK_METADATA_KEYS = (
     "source",
     "run_id",
@@ -193,12 +198,22 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     if requires_vue_bundle:
         artifact_check = _check_vue_vite_bundle(response)
         if artifact_check is not None:
-            return artifact_check
+            return _with_landing_page_signals(
+                artifact_check,
+                item=item,
+                contract_status=CONTRACT_FAILED,
+                quality_status=QUALITY_NOT_RUN,
+            )
         render_enabled, render_required = _vue_render_smoke_policy(config)
         if render_enabled:
             render_result = _run_vue_render_smoke(response, item, {**config, "_render_smoke_required": render_required})
             if render_required and render_result.get("hard") == 0:
-                return render_result
+                return _with_landing_page_signals(
+                    render_result,
+                    item=item,
+                    contract_status=CONTRACT_FAILED,
+                    quality_status=QUALITY_NOT_RUN,
+                )
 
     check_context = _landing_page_check_context(requires_vue_bundle=requires_vue_bundle, render_result=render_result)
     raw, _usage = _chat_evaluator(
@@ -212,10 +227,15 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         raise ValueError("landing_page_v1 judge did not return JSON")
-    score = _normalize_landing_page_score(parsed, raw=raw, check_context=check_context)
+    score = _normalize_landing_page_score(parsed, raw=raw, item=item, check_context=check_context)
     if render_result is not None:
         _attach_render_metadata(score, render_result)
-    return score
+    return _with_landing_page_signals(
+        score,
+        item=item,
+        contract_status=str(score.get("contract_status") or CONTRACT_PASSED),
+        quality_status=str(score.get("quality_status") or (QUALITY_PASSED if score.get("hard") else QUALITY_FAILED)),
+    )
 
 
 def _requires_vue_vite_bundle(item: dict[str, Any], config: dict[str, Any]) -> bool:
@@ -1033,8 +1053,11 @@ def _landing_page_system_prompt() -> str:
     return (
         "You are evaluating a generated landing page for Gitmoot SkillOpt. "
         "Return only JSON with keys evaluator_id, evaluator_version, hard, soft, "
+        "contract_status, quality_status, human_feedback_alignment, "
         "dimension_scores, rationale, fail_reason, and failure. "
         f"dimension_scores must contain exactly these 0-to-1 dimensions: {dimensions}. "
+        "Use contract_status to report artifact/render contract health and quality_status "
+        "to report subjective landing-page quality. "
         "hard must be 1 only when the landing page is suitable to promote after review. "
         "soft must be a 0-to-1 overall quality score. Penalize missing mobile responsiveness, "
         "missing footer, weak hero/CTA, irrelevant or absent visuals, missing requested motion, "
@@ -1165,10 +1188,135 @@ def _last_stage_status(stage_status: list[Any], *, default: str) -> str:
     return default
 
 
+def _contract_status_from_check_context(check_context: dict[str, Any] | None) -> str:
+    context = check_context if isinstance(check_context, dict) else {}
+    artifact_contract = context.get("artifact_contract") if isinstance(context.get("artifact_contract"), dict) else {}
+    render_smoke = context.get("render_smoke") if isinstance(context.get("render_smoke"), dict) else {}
+    if str(artifact_contract.get("status") or "").strip().lower() == "failed":
+        return CONTRACT_FAILED
+    if str(render_smoke.get("status") or "").strip().lower() == "failed":
+        return CONTRACT_FAILED
+    return CONTRACT_PASSED
+
+
+def _with_landing_page_signals(
+    score: dict[str, Any],
+    *,
+    item: dict[str, Any],
+    contract_status: str,
+    quality_status: str,
+) -> dict[str, Any]:
+    score["contract_status"] = _normalized_status(contract_status, default=CONTRACT_PASSED)
+    score["quality_status"] = _normalized_status(quality_status, default=QUALITY_NOT_RUN)
+    alignment = _human_feedback_alignment(item, score.get("human_feedback_alignment"))
+    if alignment:
+        score["human_feedback_alignment"] = alignment
+    metadata = score.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+        score["metadata"] = metadata
+    metadata["contract_status"] = score["contract_status"]
+    metadata["quality_status"] = score["quality_status"]
+    if alignment:
+        metadata["human_feedback_alignment"] = alignment
+    return score
+
+
+def _normalized_status(value: Any, *, default: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return normalized or default
+
+
+def _human_feedback_alignment(item: dict[str, Any], supplied: Any = None) -> dict[str, Any]:
+    alignment = dict(supplied) if isinstance(supplied, dict) else {}
+    events = item.get("ranked_feedback_events")
+    if not isinstance(events, list) or not events:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        metadata_events = metadata.get("ranked_feedback_events")
+        if isinstance(metadata_events, list) and metadata_events:
+            events = metadata_events
+    if not isinstance(events, list) or not events:
+        return alignment
+
+    alignment.setdefault("status", "feedback_available")
+    alignment.setdefault("source", "ranked_feedback_events")
+    alignment.setdefault("event_count", len(events))
+
+    rankings: list[str] = []
+    reasoning: list[str] = []
+    required_improvements: list[str] = []
+    useful_traits: list[str] = []
+    rejected_traits: list[str] = []
+    for event in events[:5]:
+        if not isinstance(event, dict):
+            continue
+        ranking = _alignment_ranking(event.get("ranking"))
+        if ranking:
+            rankings.append(ranking)
+        reason = _alignment_text(event.get("reasoning") or event.get("choice"), limit=500)
+        if reason:
+            reasoning.append(reason)
+        required_improvements.extend(_alignment_text_list(event.get("required_improvements")))
+        useful_traits.extend(_alignment_trait_texts(event.get("useful_traits")))
+        rejected_traits.extend(_alignment_trait_texts(event.get("rejected_traits")))
+
+    if rankings:
+        alignment.setdefault("rankings", rankings)
+    if reasoning:
+        alignment.setdefault("reasoning", reasoning)
+    if required_improvements:
+        alignment.setdefault("required_improvements", required_improvements[:12])
+    if useful_traits:
+        alignment.setdefault("useful_traits", useful_traits[:12])
+    if rejected_traits:
+        alignment.setdefault("rejected_traits", rejected_traits[:12])
+    return alignment
+
+
+def _alignment_ranking(value: Any) -> str:
+    if isinstance(value, list):
+        labels = [_alignment_text(item, limit=80) for item in value]
+        return " > ".join(label for label in labels if label)
+    return _alignment_text(value, limit=240)
+
+
+def _alignment_trait_texts(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        output: list[str] = []
+        for label in sorted(value):
+            label_text = _alignment_text(label, limit=80)
+            for item in _alignment_text_list(value.get(label)):
+                output.append(f"{label_text}: {item}" if label_text else item)
+        return output
+    return _alignment_text_list(value)
+
+
+def _alignment_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        output = [_alignment_text(item, limit=220) for item in value]
+        return [item for item in output if item]
+    text = _alignment_text(value, limit=220)
+    return [text] if text else []
+
+
+def _alignment_text(value: Any, *, limit: int) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, sort_keys=True)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
 def _normalize_landing_page_score(
     parsed: dict[str, Any],
     *,
     raw: str,
+    item: dict[str, Any],
     check_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     hard = _parse_landing_hard(parsed.get("hard"))
@@ -1185,15 +1333,22 @@ def _normalize_landing_page_score(
     judge_stage = {"stage": "llm_judge", "status": "passed" if hard else "failed"}
     stage_status = [judge_stage]
     failure = _landing_page_judge_failure(parsed, fail_reason=fail_reason, rationale=rationale, dimensions=dimensions) if hard == 0 else None
+    contract_status = _contract_status_from_check_context(check_context)
+    quality_status = QUALITY_PASSED if hard else QUALITY_FAILED
+    alignment = _human_feedback_alignment(item, parsed.get("human_feedback_alignment"))
     metadata: dict[str, Any] = {
         "evaluator": LANDING_PAGE_EVALUATOR_ID,
         "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+        "contract_status": contract_status,
+        "quality_status": quality_status,
         "dimension_scores": dimensions,
         "rationale": rationale,
         "raw": raw[:1000],
         "stage_status": stage_status,
         "check_context": check_context or {},
     }
+    if alignment:
+        metadata["human_feedback_alignment"] = alignment
     if failure is not None:
         metadata["failure"] = failure
     return {
@@ -1202,6 +1357,9 @@ def _normalize_landing_page_score(
         "fail_reason": "" if hard else fail_reason,
         "profile_id": "vue_landing_page_v1",
         "task_kind": "vue_landing_page",
+        "contract_status": contract_status,
+        "quality_status": quality_status,
+        **({"human_feedback_alignment": alignment} if alignment else {}),
         "dimension_scores": dimensions,
         "stage_status": stage_status,
         "evaluator_id": LANDING_PAGE_EVALUATOR_ID,

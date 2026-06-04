@@ -17,6 +17,9 @@ DEFAULT_EVALUATOR_VERSION = "v0"
 STRUCTURED_EVALUATOR_FIELDS = (
     "profile_id",
     "task_kind",
+    "contract_status",
+    "quality_status",
+    "human_feedback_alignment",
     "dimension_scores",
     "failure",
     "primary_reason",

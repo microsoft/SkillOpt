@@ -45,6 +45,9 @@ _MAX_TRAJ_CHARS = 12_000
 _STRUCTURED_EVALUATOR_FIELDS = (
     "profile_id",
     "task_kind",
+    "contract_status",
+    "quality_status",
+    "human_feedback_alignment",
     "dimension_scores",
     "failure",
     "primary_reason",
