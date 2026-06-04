@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from gitmoot_skillopt.contracts import TrainingPackage
 from gitmoot_skillopt.optimize import build_trainer_config
 from skillopt.datasets.base import BatchSpec
@@ -531,6 +533,45 @@ def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypa
     assert rejection["baseline"]["gate_score"] == 0.89
     assert rejection["candidate"]["gate_score"] == 0.84
     assert rejection["attempted_patch"] == "artifact delivery only"
+
+
+@pytest.mark.xfail(
+    reason=(
+        "final best-origin-initial-skill selection rejection currently creates a "
+        "gate_rejection packet after the retry opportunity and reports 0/0 retry accounting"
+    ),
+    strict=True,
+)
+def test_final_selection_reject_packet_uses_configured_gate_retry_budget():
+    history = [
+        {
+            "action": "reject",
+            "selection_hard": 1.0,
+            "selection_soft": 0.68,
+            "candidate_gate_score": 0.84,
+            "rewrite_change_summary": ["artifact delivery only"],
+        }
+    ]
+
+    assert _should_skip_final_test_after_selection_reject(
+        history=history,
+        best_origin="initial_skill",
+        best_skill="base skill",
+        skill_init="base skill",
+    )
+    rejection = _selection_reject_gate_rejection(
+        history=history,
+        baseline_scores=(1.0, 0.89),
+        gate_metric="mixed",
+        gate_mixed_weight=0.5,
+    )
+
+    assert rejection is not None
+    assert rejection["retryable"] is True
+    assert rejection["candidate"]["gate_score"] == 0.84
+    assert rejection["baseline"]["gate_score"] == 0.945
+    assert rejection["retry_attempts"] == "0/1"
+    assert "retry" in rejection["next_action"].lower()
 
 
 def test_trainer_retries_actionable_gate_rejection_with_optimizer_hint(tmp_path, monkeypatch):
