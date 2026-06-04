@@ -9,6 +9,7 @@ from skillopt.engine.trainer import (
     ReflACTTrainer,
     _best_selection_scores,
     _detect_no_meaningful_change,
+    _gate_rejection_retry_decision,
     _selection_reject_gate_rejection,
     _should_skip_final_test_after_selection_reject,
 )
@@ -532,6 +533,411 @@ def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypa
     assert rejection["attempted_patch"] == "artifact delivery only"
 
 
+def test_trainer_retries_actionable_gate_rejection_with_optimizer_hint(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        merge_contexts.append(context)
+        if "Gate Rejection Retry" in context:
+            new_skill = skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n"
+            change_summary = ["mobile layout"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nArtifact delivery only.\n"
+            change_summary = ["artifact delivery only"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class GateRetryAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Mobile layout guidance" in skill_content:
+                soft = 0.95
+            elif "Artifact delivery only" in skill_content:
+                soft = 0.84
+            else:
+                soft = 0.89
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": soft,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, GateRetryAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert summary["total_rejects"] == 0
+    assert summary["best_origin"] == "step_0001"
+    assert len(summary["gate_reject_retry_attempts"]) == 1
+    retry_attempt = summary["gate_reject_retry_attempts"][0]
+    assert retry_attempt["action"] == "retry"
+    assert retry_attempt["gate_rejection"]["candidate"]["gate_score"] == 0.84
+    assert retry_attempt["gate_rejection"]["baseline"]["gate_score"] == 0.89
+    assert "Gate Rejection Retry" in merge_contexts[1]
+    assert "Previous patch summary: artifact delivery only" in merge_contexts[1]
+    assert "Do not repeat this failed patch direction" in merge_contexts[1]
+
+
+def test_gate_rejection_retry_preserves_noop_retry_context(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        merge_contexts.append(context)
+        if "Gate Rejection Retry" in context:
+            new_skill = skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n"
+            change_summary = ["mobile layout"]
+        elif "Optimizer No-Op Retry" in context:
+            new_skill = skill_content.rstrip() + "\n\nArtifact delivery only.\n"
+            change_summary = ["artifact delivery only"]
+        else:
+            new_skill = skill_content
+            change_summary = ["same candidate"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class CombinedRetryAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Mobile layout guidance" in skill_content:
+                soft = 0.95
+            elif "Artifact delivery only" in skill_content:
+                soft = 0.84
+            else:
+                soft = 0.89
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": soft,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, CombinedRetryAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert len(summary["noop_retry_attempts"]) == 1
+    assert len(summary["gate_reject_retry_attempts"]) == 1
+    gate_retry_context = merge_contexts[2]
+    assert "Optimizer No-Op Retry" in gate_retry_context
+    assert "Gate Rejection Retry" in gate_retry_context
+
+
+def test_trainer_stops_gate_rejection_after_retry_budget(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "weak candidate",
+                    "change_summary": ["artifact delivery only"],
+                    "new_skill": skill_content.rstrip() + "\n\nArtifact delivery only.\n",
+                }
+            ],
+        }
+
+    class RejectingAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            changed = "Artifact delivery only" in skill_content
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": 0.84 if changed else 0.89,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, RejectingAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 0
+    assert summary["total_rejects"] == 1
+    assert summary["best_origin"] == "initial_skill"
+    assert summary["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
+    assert "budget_exhausted" in summary["no_candidate_triggers"]
+    assert len(summary["gate_reject_retry_attempts"]) == 2
+    assert summary["gate_reject_retry_attempts"][0]["action"] == "retry"
+    assert summary["gate_reject_retry_attempts"][1]["action"] == "stop"
+    assert summary["gate_rejection"]["retry_attempts"] == "1/1"
+
+
+def test_gate_rejection_retry_uses_current_skill_scores_after_accept(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_calls = 0
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        nonlocal merge_calls
+        del failure_patches, success_patches, kwargs
+        merge_calls += 1
+        if merge_calls == 1:
+            new_skill = skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n"
+            change_summary = ["mobile layout"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nArtifact delivery only.\n"
+            change_summary = ["artifact delivery only"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class CurrentScoreAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Artifact delivery only" in skill_content:
+                soft = 0.84
+            elif "Mobile layout guidance" in skill_content:
+                soft = 0.95
+            else:
+                soft = 0.89
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": soft,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["train_size"] = 2
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, CurrentScoreAdapter(_RetryDataLoader(train_size=2))).train()
+
+    assert summary["total_accepts"] == 1
+    assert summary["total_rejects"] == 1
+    assert summary["best_origin"] == "step_0001"
+    rejection = summary["gate_reject_retry_attempts"][0]["gate_rejection"]
+    assert rejection["baseline"]["gate_score"] == 0.95
+    assert rejection["candidate"]["gate_score"] == 0.84
+
+
+def test_gate_rejection_retry_noop_preserves_fail_closed_skip(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    final_test_rollouts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        if "Gate Rejection Retry" in context:
+            new_skill = skill_content
+            change_summary = ["same candidate"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nArtifact delivery only.\n"
+            change_summary = ["artifact delivery only"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class RejectThenNoopAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, kwargs
+            out_dir_text = str(out_dir)
+            if "test_eval" in out_dir_text:
+                final_test_rollouts.append(out_dir_text)
+            changed = "Artifact delivery only" in skill_content
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": 0.84 if changed else 0.89,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["eval_test"] = True
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, RejectThenNoopAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 0
+    assert summary["total_rejects"] == 1
+    assert summary["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
+    assert summary["baseline_test_hard"] is None
+    assert summary["test_hard"] is None
+    assert final_test_rollouts == []
+    assert summary["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
+    assert "gate_retry_no_meaningful_change" in summary["no_candidate_triggers"]
+
+
+def test_gate_rejection_retry_block_preserves_fail_closed_skip(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    final_test_rollouts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        if "Gate Rejection Retry" in context:
+            new_skill = skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n"
+            change_summary = ["mobile layout"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nArtifact delivery only.\n"
+            change_summary = ["artifact delivery only"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class RejectThenBlockAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, kwargs
+            out_dir_text = str(out_dir)
+            if "test_eval" in out_dir_text:
+                final_test_rollouts.append(out_dir_text)
+            if "selection_eval_gate_retry" in out_dir_text:
+                return [
+                    {
+                        "id": "val-1",
+                        "hard": None,
+                        "soft": None,
+                        "score_status": "unscored",
+                        "target_status": "passed",
+                        "evaluator_status": "failed",
+                    }
+                ]
+            changed = "Artifact delivery only" in skill_content
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1,
+                    "soft": 0.84 if changed else 0.89,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["eval_test"] = True
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, RejectThenBlockAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 0
+    assert summary["total_rejects"] == 1
+    assert summary["total_blocks"] == 1
+    assert summary["gate_status"] == "blocked"
+    assert summary["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
+    assert final_test_rollouts == []
+    assert summary["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
+    assert "gate_retry_blocked:evaluator_failed" in summary["no_candidate_triggers"]
+
+
 def test_selection_reject_skip_requires_unchanged_best_skill():
     history = [{"action": "reject"}]
 
@@ -567,6 +973,40 @@ def test_gate_rejection_packet_handles_malformed_change_summary():
 
     assert rejection is not None
     assert rejection["attempted_patch"] == "selection-gated candidate update"
+
+
+def test_gate_rejection_retry_decision_requires_actionable_new_information():
+    packet = {
+        "rejection_type": "candidate_score_regression",
+        "retryable": True,
+        "primary_reason": "candidate_quality_regressed",
+        "optimizer_hint": "Change direction.",
+    }
+
+    assert _gate_rejection_retry_decision(
+        packet,
+        attempt=0,
+        budget=1,
+        seen_reasons=set(),
+    ) == (True, "retryable")
+    assert _gate_rejection_retry_decision(
+        {**packet, "optimizer_hint": ""},
+        attempt=0,
+        budget=1,
+        seen_reasons=set(),
+    ) == (False, "missing_optimizer_hint")
+    assert _gate_rejection_retry_decision(
+        packet,
+        attempt=0,
+        budget=2,
+        seen_reasons={"candidate_quality_regressed"},
+    ) == (False, "repeated_rejection_reason")
+    assert _gate_rejection_retry_decision(
+        packet,
+        attempt=1,
+        budget=1,
+        seen_reasons=set(),
+    ) == (False, "budget_exhausted")
 
 
 def test_trainer_noop_skip_after_accept_does_not_poison_final_candidate(tmp_path, monkeypatch):

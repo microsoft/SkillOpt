@@ -286,6 +286,92 @@ def _format_noop_retry_context(check: NoMeaningfulChangeCheck, attempt: int) -> 
     return "\n".join(lines)
 
 
+def _fmt_score(value: float | None) -> str:
+    return "unknown" if value is None else f"{float(value):.4f}"
+
+
+def _score_delta(before: float | None, after: float | None) -> str:
+    if before is None or after is None:
+        return "unknown"
+    return f"{float(after) - float(before):+.4f}"
+
+
+def _gate_rejection_retry_decision(
+    packet: dict | None,
+    *,
+    attempt: int,
+    budget: int,
+    seen_reasons: set[str],
+) -> tuple[bool, str]:
+    if attempt >= budget:
+        return False, "budget_exhausted"
+    if not isinstance(packet, dict):
+        return False, "missing_structured_gate_rejection"
+    if not packet.get("retryable", False):
+        return False, "non_retryable_gate_rejection"
+    if not str(packet.get("optimizer_hint") or "").strip():
+        return False, "missing_optimizer_hint"
+    reason = str(packet.get("primary_reason") or packet.get("rejection_type") or "").strip()
+    if not reason:
+        return False, "missing_rejection_reason"
+    if reason in seen_reasons:
+        return False, "repeated_rejection_reason"
+    return True, "retryable"
+
+
+def _gate_rejection_with_retry_attempts(packet: dict | None, *, used: int, budget: int) -> dict | None:
+    if not isinstance(packet, dict):
+        return None
+    enriched = dict(packet)
+    enriched["retry_attempts"] = f"{used}/{budget}"
+    if used >= budget:
+        enriched["next_action"] = (
+            "Stop this pass without final test eval; collect more feedback or rerun with a larger "
+            "gate-reject retry budget."
+        )
+    else:
+        enriched["next_action"] = (
+            "Retry the optimizer with this gate-rejection packet before spending final test-eval budget."
+        )
+    return enriched
+
+
+def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -> str:
+    baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
+    candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
+    failed_dimensions = packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []
+    evidence = packet.get("evidence") if isinstance(packet.get("evidence"), list) else []
+    attempted_patch = str(packet.get("attempted_patch") or "selection-gated candidate update").strip()
+    lines = [
+        "## Gate Rejection Retry",
+        f"Attempt {attempt}/{budget} was rejected by baseline-vs-candidate selection.",
+        f"Rejection type: {packet.get('rejection_type', 'unknown')}",
+        f"Primary reason: {packet.get('primary_reason', 'unknown')}",
+        f"Human reason: {packet.get('human_reason', '')}",
+        f"Previous patch summary: {attempted_patch}",
+        "Baseline scores: "
+        f"hard={_fmt_score(baseline.get('hard'))}, "
+        f"soft={_fmt_score(baseline.get('soft'))}, "
+        f"gate={_fmt_score(baseline.get('gate_score'))}",
+        "Candidate scores: "
+        f"hard={_fmt_score(candidate.get('hard'))}, "
+        f"soft={_fmt_score(candidate.get('soft'))}, "
+        f"gate={_fmt_score(candidate.get('gate_score'))}",
+        "Score deltas candidate-baseline: "
+        f"hard={_score_delta(baseline.get('hard'), candidate.get('hard'))}, "
+        f"soft={_score_delta(baseline.get('soft'), candidate.get('soft'))}, "
+        f"gate={_score_delta(baseline.get('gate_score'), candidate.get('gate_score'))}",
+        f"Optimizer hint: {packet.get('optimizer_hint', '')}",
+        "Do not repeat this failed patch direction. Make a different, meaningful skill update "
+        "that addresses the failed dimensions and imported human feedback.",
+    ]
+    if failed_dimensions:
+        lines.append("Failed dimensions: " + ", ".join(str(item) for item in failed_dimensions[:8]))
+    if evidence:
+        lines.append("Evidence: " + "; ".join(str(item) for item in evidence[:8]))
+    return "\n".join(line for line in lines if str(line).strip())
+
+
 def _join_optimizer_context(*parts: str) -> str:
     return "\n\n".join(part.strip() for part in parts if str(part or "").strip())
 
@@ -697,6 +783,17 @@ def _selection_reject_gate_rejection(
     if not evidence:
         evidence.append("Candidate selection gate action was reject.")
 
+    existing_gate_rejection = (
+        rejected.get("gate_rejection")
+        if isinstance(rejected.get("gate_rejection"), dict)
+        else {}
+    )
+    retry_attempts = str(existing_gate_rejection.get("retry_attempts") or "0/0")
+    next_action = str(
+        existing_gate_rejection.get("next_action")
+        or "Stop this pass without final test eval; retry only when gate-rejection retry is enabled or collect more feedback."
+    )
+
     return {
         "rejection_type": "candidate_score_regression",
         "retryable": True,
@@ -716,8 +813,8 @@ def _selection_reject_gate_rejection(
         "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
         "evidence": evidence,
         "attempted_patch": attempted_patch,
-        "retry_attempts": "0/0",
-        "next_action": "Stop this pass without final test eval; retry only when gate-rejection retry is enabled or collect more feedback.",
+        "retry_attempts": retry_attempts,
+        "next_action": next_action,
     }
 
 
@@ -1482,6 +1579,9 @@ class ReflACTTrainer:
                     print("    [skip] no usable patches — skill unchanged")
                     continue
 
+                gate_reject_retry_budget = max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0))
+                gate_reject_retry_attempts: list[dict] = []
+                seen_gate_rejection_reasons: set[str] = set()
                 noop_retry_budget = max(0, int(cfg.get("noop_retry_budget", 1) or 0))
                 noop_retry_attempts: list[dict] = []
                 noop_retry_context = ""
@@ -1834,6 +1934,379 @@ class ReflACTTrainer:
                             f"    [6/6 EVALUATE] REJECT "
                             f"{score_label} <= current={current_score:.4f}"
                         )
+                        while True:
+                            baseline_scores = sel_cache.get(
+                                skill_hash(current_skill),
+                                sel_cache.get(skill_hash(skill_init), (None, None)),
+                            )
+                            gate_rejection = _selection_reject_gate_rejection(
+                                history=[step_rec],
+                                baseline_scores=baseline_scores,
+                                gate_metric=gate_metric,
+                                gate_mixed_weight=gate_mixed_weight,
+                            )
+                            retry_count = sum(
+                                1
+                                for attempt in gate_reject_retry_attempts
+                                if attempt.get("action") == "retry"
+                            )
+                            gate_rejection = _gate_rejection_with_retry_attempts(
+                                gate_rejection,
+                                used=retry_count,
+                                budget=gate_reject_retry_budget,
+                            )
+                            can_retry_gate_reject, gate_reject_stop_reason = _gate_rejection_retry_decision(
+                                gate_rejection,
+                                attempt=retry_count,
+                                budget=gate_reject_retry_budget,
+                                seen_reasons=seen_gate_rejection_reasons,
+                            )
+                            gate_retry_record = {
+                                "attempt": retry_count,
+                                "candidate_hash": cand_hash,
+                                "action": "retry" if can_retry_gate_reject else "stop",
+                                "stop_reason": gate_reject_stop_reason,
+                                "gate_rejection": gate_rejection,
+                            }
+                            gate_reject_retry_attempts.append(gate_retry_record)
+                            step_rec["gate_rejection"] = gate_rejection
+                            step_rec["gate_reject_retry_attempts"] = gate_reject_retry_attempts
+                            with open(
+                                os.path.join(step_dir, f"gate_reject_retry_{retry_count:02d}.json"),
+                                "w",
+                            ) as f:
+                                json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                            if not can_retry_gate_reject or gate_rejection is None:
+                                step_rec["no_candidate_triggers"] = _dedupe_texts(
+                                    step_rec.get("no_candidate_triggers", [])
+                                    + ["gate_rejected_best_origin_initial_skill", gate_reject_stop_reason]
+                                )
+                                step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
+                                break
+
+                            reason = str(
+                                gate_rejection.get("primary_reason")
+                                or gate_rejection.get("rejection_type")
+                                or ""
+                            ).strip()
+                            if reason:
+                                seen_gate_rejection_reasons.add(reason)
+                            gate_retry_context = _format_gate_reject_retry_context(
+                                gate_rejection,
+                                retry_count + 1,
+                                gate_reject_retry_budget,
+                            )
+                            gate_retry_suffix = f"_gate_retry_{retry_count + 1:02d}"
+                            print(
+                                f"    [gate retry {retry_count + 1}/{gate_reject_retry_budget}] "
+                                "rerunning aggregate/select/update with gate-rejection feedback"
+                            )
+
+                            retry_optimizer_context = _join_optimizer_context(
+                                active_meta_skill,
+                                noop_retry_context,
+                                gate_retry_context,
+                            )
+                            retry_rewrite_context = _join_optimizer_context(
+                                step_buffer_context,
+                                noop_retry_context,
+                                gate_retry_context,
+                            )
+
+                            t_retry_phase = time.time()
+                            merged_patch = merge_patches(
+                                current_skill,
+                                all_failure_patches,
+                                all_success_patches,
+                                batch_size=merge_bs,
+                                verbose=True,
+                                workers=cfg["analyst_workers"],
+                                update_mode=update_mode,
+                                meta_skill_context=retry_optimizer_context,
+                            )
+                            with open(os.path.join(step_dir, f"merged_patch{gate_retry_suffix}.json"), "w") as f:
+                                json.dump(merged_patch, f, ensure_ascii=False, indent=2)
+                            merged_items = get_payload_items(merged_patch, update_mode)
+                            n_edits_merged = len(merged_items)
+                            step_rec["n_edits_merged"] = n_edits_merged
+                            step_rec["timing"]["aggregate_s"] = round(
+                                step_rec["timing"].get("aggregate_s", 0) + time.time() - t_retry_phase,
+                                1,
+                            )
+
+                            t_retry_phase = time.time()
+                            lr_decision = None
+                            if is_full_rewrite_minibatch_mode(update_mode):
+                                edit_budget = None
+                                ranked_patch = merged_patch
+                                ranked_items = merged_items
+                                n_edits_ranked = len(ranked_items)
+                                step_rec["n_edits_ranked"] = n_edits_ranked
+                                step_rec["edit_budget"] = None
+                                step_rec["lr_control_mode"] = "none"
+                                with open(os.path.join(step_dir, f"ranked_edits{gate_retry_suffix}.json"), "w") as f:
+                                    json.dump(ranked_patch, f, ensure_ascii=False, indent=2)
+                            else:
+                                if lr_control_mode == "autonomous":
+                                    lr_decision = decide_autonomous_learning_rate(
+                                        skill_content=current_skill,
+                                        merged_patch=merged_patch,
+                                        update_mode=update_mode,
+                                        rollout_hard=agg_hard,
+                                        rollout_soft=agg_soft,
+                                        rollout_n=total_n,
+                                        step_buffer_context=retry_rewrite_context,
+                                        meta_skill_context=retry_optimizer_context,
+                                    )
+                                    edit_budget = int(lr_decision["learning_rate"])
+                                    with open(os.path.join(step_dir, f"lr_decision{gate_retry_suffix}.json"), "w") as f:
+                                        json.dump(lr_decision, f, ensure_ascii=False, indent=2)
+                                    with open(os.path.join(out_root, "lr_history.jsonl"), "a") as f:
+                                        f.write(json.dumps({
+                                            "step": global_step,
+                                            "epoch": epoch,
+                                            "gate_reject_retry_attempt": retry_count + 1,
+                                            **lr_decision,
+                                        }, ensure_ascii=False) + "\n")
+                                else:
+                                    edit_budget = int(step_rec.get("edit_budget") or cfg["edit_budget"])
+                                ranked_patch = rank_and_select(
+                                    current_skill,
+                                    merged_patch,
+                                    max_edits=edit_budget,
+                                    update_mode=update_mode,
+                                    meta_skill_context=retry_optimizer_context,
+                                )
+                                with open(os.path.join(step_dir, f"ranked_edits{gate_retry_suffix}.json"), "w") as f:
+                                    json.dump(ranked_patch, f, ensure_ascii=False, indent=2)
+                                ranked_items = get_payload_items(ranked_patch, update_mode)
+                                n_edits_ranked = len(ranked_items)
+                                step_rec["n_edits_ranked"] = n_edits_ranked
+                                step_rec["edit_budget"] = edit_budget
+                                step_rec["lr_control_mode"] = lr_control_mode
+                                if lr_decision is not None:
+                                    step_rec["lr_decision"] = lr_decision
+                            step_rec["timing"]["select_s"] = round(
+                                step_rec["timing"].get("select_s", 0) + time.time() - t_retry_phase,
+                                1,
+                            )
+                            step_rec["support_counts"] = [
+                                item.get("support_count", 0)
+                                for item in ranked_items
+                                if isinstance(item, dict)
+                            ]
+
+                            t_retry_phase = time.time()
+                            rewrite_result = None
+                            if update_mode == "rewrite_from_suggestions":
+                                rewrite_result = rewrite_skill_from_suggestions(
+                                    current_skill,
+                                    ranked_patch,
+                                    step_buffer_context=retry_rewrite_context,
+                                    env=cfg.get("env"),
+                                    reasoning_effort=rewrite_reasoning_effort,
+                                    max_completion_tokens=rewrite_max_completion_tokens,
+                                )
+                                if rewrite_result and rewrite_result.get("new_skill"):
+                                    candidate_skill = rewrite_result["new_skill"]
+                                    apply_report = []
+                                    with open(os.path.join(step_dir, f"rewrite_result{gate_retry_suffix}.json"), "w") as f:
+                                        json.dump(rewrite_result, f, ensure_ascii=False, indent=2)
+                                else:
+                                    candidate_skill = current_skill
+                                    apply_report = []
+                            elif is_full_rewrite_minibatch_mode(update_mode):
+                                skill_candidates = get_payload_items(ranked_patch, update_mode)
+                                selected_candidate = next(
+                                    (
+                                        item for item in skill_candidates
+                                        if isinstance(item, dict) and str(item.get("new_skill", "")).strip()
+                                    ),
+                                    None,
+                                )
+                                if selected_candidate:
+                                    candidate_skill = str(selected_candidate["new_skill"]).rstrip() + "\n"
+                                    apply_report = []
+                                    rewrite_result = {
+                                        "reasoning": ranked_patch.get("reasoning", ""),
+                                        "change_summary": selected_candidate.get("change_summary", []),
+                                        "title": selected_candidate.get("title", ""),
+                                        "source_type": selected_candidate.get("source_type", ""),
+                                    }
+                                    with open(os.path.join(step_dir, f"full_rewrite_result{gate_retry_suffix}.json"), "w") as f:
+                                        json.dump(
+                                            {
+                                                "selected_candidate": selected_candidate,
+                                                "merged_patch": ranked_patch,
+                                            },
+                                            f,
+                                            ensure_ascii=False,
+                                            indent=2,
+                                        )
+                                else:
+                                    candidate_skill = current_skill
+                                    apply_report = []
+                            else:
+                                candidate_skill, apply_report = apply_patch_with_report(
+                                    current_skill,
+                                    ranked_patch,
+                                )
+                            candidate_skill_path = os.path.join(
+                                step_dir,
+                                f"candidate_skill{gate_retry_suffix}.md",
+                            )
+                            with open(candidate_skill_path, "w") as f:
+                                f.write(candidate_skill)
+                            with open(os.path.join(step_dir, "candidate_skill.md"), "w") as f:
+                                f.write(candidate_skill)
+                            if apply_report:
+                                with open(os.path.join(step_dir, f"edit_apply_report{gate_retry_suffix}.json"), "w") as f:
+                                    json.dump(apply_report, f, indent=2, ensure_ascii=False)
+
+                            cand_hash = skill_hash(candidate_skill)
+                            step_rec["candidate_hash"] = cand_hash
+                            step_rec["candidate_skill_len"] = len(candidate_skill)
+                            if rewrite_result:
+                                step_rec["rewrite_change_summary"] = rewrite_result.get("change_summary", [])
+                            step_rec["timing"]["update_s"] = round(
+                                step_rec["timing"].get("update_s", 0) + time.time() - t_retry_phase,
+                                1,
+                            )
+
+                            retry_change_check = _detect_no_meaningful_change(
+                                current_skill=current_skill,
+                                candidate_skill=candidate_skill,
+                                ranked_items=ranked_items,
+                                apply_report=apply_report,
+                                update_mode=update_mode,
+                                dataloader=dataloader,
+                                rollout_results=all_rollout_results,
+                            )
+                            if retry_change_check.reasons:
+                                step_rec["action"] = "reject"
+                                step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
+                                step_rec["no_candidate_triggers"] = _dedupe_texts(
+                                    [
+                                        "gate_rejected_best_origin_initial_skill",
+                                        "gate_retry_no_meaningful_change",
+                                    ]
+                                    + retry_change_check.reasons
+                                )
+                                gate_retry_record["action"] = "stop"
+                                gate_retry_record["stop_reason"] = "gate_retry_no_meaningful_change"
+                                gate_retry_record["noop_reasons"] = retry_change_check.reasons
+                                with open(
+                                    os.path.join(step_dir, f"gate_reject_retry_{retry_count:02d}.json"),
+                                    "w",
+                                ) as f:
+                                    json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                                break
+
+                            t_retry_phase = time.time()
+                            if cand_hash in sel_cache:
+                                cand_hard, cand_soft = sel_cache[cand_hash]
+                            else:
+                                sel_env, sel_n = _build_eval_env(
+                                    split="valid_seen",
+                                    env_num=cfg["sel_env_num"],
+                                    seed=seed,
+                                )
+                                print(f"    [6/6 EVALUATE] gate retry selection items={sel_n}")
+                                sel_eval_dir = os.path.join(
+                                    step_dir,
+                                    f"selection_eval{gate_retry_suffix}",
+                                )
+                                sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
+                                gate_block = find_gate_block(sel_results)
+                                if gate_block is not None:
+                                    block = gate_block.to_dict()
+                                    _write_gate_block(sel_eval_dir, block)
+                                    cand_hard = None
+                                    cand_soft = None
+                                    cand_gate_score = None
+                                    step_rec["selection_hard"] = None
+                                    step_rec["selection_soft"] = None
+                                    step_rec["gate_metric"] = gate_metric
+                                    step_rec["candidate_gate_score"] = None
+                                    step_rec["action"] = "reject"
+                                    step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
+                                    step_rec["no_candidate_triggers"] = _dedupe_texts(
+                                        [
+                                            "gate_rejected_best_origin_initial_skill",
+                                            f"gate_retry_blocked:{block['blocker']}",
+                                        ]
+                                    )
+                                    step_rec["gate_status"] = "blocked"
+                                    step_rec["gate_blocker"] = block["blocker"]
+                                    step_rec["gate_block"] = block
+                                    gate_retry_record["action"] = "stop"
+                                    gate_retry_record["stop_reason"] = f"gate_retry_blocked:{block['blocker']}"
+                                    gate_retry_record["gate_block"] = block
+                                    with open(
+                                        os.path.join(step_dir, f"gate_reject_retry_{retry_count:02d}.json"),
+                                        "w",
+                                    ) as f:
+                                        json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                                    break
+                                cand_hard, cand_soft = compute_score(sel_results)
+                                sel_cache[cand_hash] = (cand_hard, cand_soft)
+
+                            step_rec["selection_hard"] = cand_hard
+                            step_rec["selection_soft"] = cand_soft
+                            gate = evaluate_gate(
+                                candidate_skill=candidate_skill,
+                                cand_hard=cand_hard,
+                                current_skill=current_skill,
+                                current_score=current_score,
+                                best_skill=best_skill,
+                                best_score=best_score,
+                                best_step=best_step,
+                                global_step=global_step,
+                                cand_soft=cand_soft,
+                                metric=gate_metric,
+                                mixed_weight=gate_mixed_weight,
+                            )
+                            cand_gate_score = select_gate_score(
+                                cand_hard,
+                                cand_soft,
+                                gate_metric,
+                                gate_mixed_weight,
+                            )
+                            step_rec["gate_metric"] = gate_metric
+                            step_rec["candidate_gate_score"] = cand_gate_score
+                            step_rec["action"] = gate.action
+                            prev_current = current_score
+                            prev_best = best_score
+                            current_skill = gate.current_skill
+                            current_score = gate.current_score
+                            best_skill = gate.best_skill
+                            best_score = gate.best_score
+                            best_step = gate.best_step
+                            if gate.action in {"accept", "accept_new_best"}:
+                                current_origin = f"step_{global_step:04d}"
+                            if gate.action == "accept_new_best":
+                                best_origin = current_origin
+                                selection_scores_by_origin[best_origin] = (cand_hard, cand_soft)
+                            step_rec["timing"]["evaluate_s"] = round(
+                                step_rec["timing"].get("evaluate_s", 0) + time.time() - t_retry_phase,
+                                1,
+                            )
+                            if gate.action == "accept_new_best":
+                                print(
+                                    f"    [6/6 EVALUATE] GATE RETRY ACCEPT (new best) "
+                                    f"{cand_gate_score:.4f} > prev best {prev_best:.4f}"
+                                )
+                                break
+                            if gate.action == "accept":
+                                print(
+                                    f"    [6/6 EVALUATE] GATE RETRY ACCEPT "
+                                    f"{cand_gate_score:.4f} > current={prev_current:.4f}"
+                                )
+                                break
+                            print(
+                                f"    [6/6 EVALUATE] GATE RETRY REJECT "
+                                f"{cand_gate_score:.4f} <= current={current_score:.4f}"
+                            )
                 else:
                     cand_gate_score = None
 
@@ -2514,6 +2987,12 @@ class ReflACTTrainer:
             for attempt in h.get("noop_retry_attempts", [])
             if isinstance(attempt, dict)
         ]
+        gate_reject_retry_attempts = [
+            attempt
+            for h in history
+            for attempt in h.get("gate_reject_retry_attempts", [])
+            if isinstance(attempt, dict)
+        ]
         final_has_candidate = n_accept > 0 or best_origin != "initial_skill"
         no_candidate_triggers = [] if final_has_candidate else _dedupe_texts([
             trigger
@@ -2575,6 +3054,7 @@ class ReflACTTrainer:
             "total_blocks": n_block,
             "total_skips": n_skip,
             "noop_retry_attempts": noop_retry_attempts,
+            "gate_reject_retry_attempts": gate_reject_retry_attempts,
             "no_candidate_triggers": no_candidate_triggers,
             "no_candidate_reason": no_candidate_triggers[0] if no_candidate_triggers else "",
             "gate_rejection": selection_reject_gate_rejection,
