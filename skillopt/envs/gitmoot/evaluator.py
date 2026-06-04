@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from skillopt.model import chat_optimizer, get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
 from skillopt.model.common import default_model_for_backend
@@ -29,6 +35,15 @@ VUE_BUNDLE_REQUIRED_FILES = (
     "src/main.js",
     "src/App.vue",
 )
+TRUSTED_VUE_RENDER_PACKAGE_JSON = (
+    '{"type":"module",'
+    '"dependencies":{"@vitejs/plugin-vue":"5.2.1","vite":"5.4.11","vue":"3.5.13"}}'
+)
+TRUSTED_VITE_CONFIG = (
+    "import { defineConfig } from 'vite';\n"
+    "import vue from '@vitejs/plugin-vue';\n\n"
+    "export default defineConfig({ base: './', plugins: [vue()] });\n"
+)
 _APP_VUE_FORBIDDEN_PATTERNS = (
     ("script_tag", re.compile(r"<\s*script\b", re.IGNORECASE)),
     (
@@ -44,6 +59,21 @@ _APP_VUE_FORBIDDEN_PATTERNS = (
 _VITE_BUILD_COMMAND_RE = re.compile(r"(?:^|[;&|]\s*)(?:npx\s+)?vite\s+build(?:\s|$)")
 _A_TAG_RE = re.compile(r"<a\b[^>]*>", re.IGNORECASE)
 _HREF_RE = re.compile(r"(?:^|[\s<])(?:v-bind:|:)?href\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))", re.IGNORECASE)
+_JS_IMPORT_SPEC_RE = re.compile(
+    r"(?:\b(?:import|export)\s*(?:[^'\"\n;]*?\s*from\s*)?['\"]([^'\"]+)['\"]|"
+    r"\bimport\s*\(\s*['\"`]([^'\"`]+)['\"`]\s*\)|"
+    r"\brequire\s*\(\s*['\"`]([^'\"`]+)['\"`]\s*\)|"
+    r"\bimport\.meta\.glob\s*\(\s*['\"`]([^'\"`]+)['\"`])"
+)
+_CSS_IMPORT_SPEC_RE = re.compile(r"@import\s+(?:url\()?['\"]?([^'\"\s)]+)", re.IGNORECASE)
+_CSS_URL_SPEC_RE = re.compile(r"\burl\s*\(\s*['\"]?([^'\"\s)]+)", re.IGNORECASE)
+_HTML_SCRIPT_RE = re.compile(r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_MODULE_TYPE_RE = re.compile(r"\btype\s*=\s*(?:['\"]module['\"]|module(?:\s|$))", re.IGNORECASE)
+_ALLOWED_RENDER_BARE_IMPORTS = {"vue"}
+
+
+class VueRenderEnvironmentError(RuntimeError):
+    """Local render tooling is unavailable before the candidate can be scored."""
 
 
 def evaluate_response(item: dict[str, Any], response: str, evaluator_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -147,10 +177,16 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
 
 
 def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
+    render_result: dict[str, Any] | None = None
     if _requires_vue_vite_bundle(item, config):
         artifact_check = _check_vue_vite_bundle(response)
         if artifact_check is not None:
             return artifact_check
+        render_enabled, render_required = _vue_render_smoke_policy(config)
+        if render_enabled:
+            render_result = _run_vue_render_smoke(response, item, {**config, "_render_smoke_required": render_required})
+            if render_required and render_result.get("hard") == 0:
+                return render_result
 
     raw, _usage = _chat_evaluator(
         config,
@@ -163,11 +199,16 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         raise ValueError("landing_page_v1 judge did not return JSON")
-    return _normalize_landing_page_score(parsed, raw=raw)
+    score = _normalize_landing_page_score(parsed, raw=raw)
+    if render_result is not None:
+        _attach_render_metadata(score, render_result)
+    return score
 
 
 def _requires_vue_vite_bundle(item: dict[str, Any], config: dict[str, Any]) -> bool:
     if bool(config.get("require_vue_vite_bundle")):
+        return True
+    if _vue_render_smoke_policy(config)[0]:
         return True
     for source in (config, item.get("metadata") if isinstance(item.get("metadata"), dict) else {}):
         artifact_contract = str(source.get("artifact_contract") or source.get("output_contract") or "").strip().lower()
@@ -177,6 +218,25 @@ def _requires_vue_vite_bundle(item: dict[str, Any], config: dict[str, Any]) -> b
         if output_type in {"vue_vite_bundle", "vue-vite-bundle"}:
             return True
     return False
+
+
+def _vue_render_smoke_policy(config: dict[str, Any]) -> tuple[bool, bool]:
+    if bool(config.get("require_vue_render_smoke")):
+        return True, True
+    checks = config.get("checks")
+    if not isinstance(checks, list):
+        return False, False
+    render_enabled = False
+    render_required = False
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        check_id = str(check.get("id") or "").strip().lower().replace("-", "_")
+        check_type = str(check.get("type") or "").strip().lower().replace("-", "_")
+        if check_id == "render_smoke" or check_type == "render_smoke":
+            render_enabled = True
+            render_required = render_required or bool(check.get("required", False))
+    return render_enabled, render_required
 
 
 def _check_vue_vite_bundle(response: str) -> dict[str, Any] | None:
@@ -227,6 +287,15 @@ def _check_vue_vite_bundle(response: str) -> dict[str, Any] | None:
                 )
             )
             continue
+        if not _is_safe_vue_bundle_path(path):
+            failures.append(
+                _failed_check(
+                    "vue_vite_bundle.file_path",
+                    "Vue/Vite preview bundle file paths must be relative safe paths.",
+                    [f"files[{index - 1}].path is unsafe: {path!r}"],
+                )
+            )
+            continue
         content = file_entry["content"]
         if not isinstance(content, str):
             failures.append(
@@ -265,6 +334,552 @@ def _check_vue_vite_bundle(response: str) -> dict[str, Any] | None:
             evidence.extend(str(item) for item in failure.get("evidence", []))
         return _vue_bundle_failure(failures, evidence=evidence)
     return None
+
+
+def _run_vue_render_smoke(response: str, item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    parsed = extract_json(response)
+    file_map = _vue_bundle_file_map(parsed if isinstance(parsed, dict) else {})
+    if "src/App.vue" not in file_map:
+        return _vue_render_failure(
+            "vue_render_smoke.bundle_unavailable",
+            "Vue/Vite render smoke requires a validated bundle with src/App.vue.",
+            ["src/App.vue missing after artifact validation"],
+        )
+    import_safety_failure = _check_vue_render_source_imports(file_map)
+    if import_safety_failure is not None:
+        return import_safety_failure
+    sync_playwright = _import_sync_playwright()
+    if sync_playwright is None:
+        return _vue_render_environment_unavailable(
+            "python package playwright is unavailable",
+            required=bool(config.get("_render_smoke_required")),
+        )
+
+    render_config = {**config, "_render_smoke_response_hash": _response_fingerprint(response)}
+    artifact_dir = _render_artifact_dir(item, render_config)
+    timeout = int(config.get("render_smoke_timeout_seconds") or 120)
+    with tempfile.TemporaryDirectory(prefix="gitmoot-vue-render-") as work_dir:
+        work_path = Path(work_dir)
+        try:
+            _write_vue_render_workspace(work_path, file_map)
+            vite_bin = _prepare_trusted_vue_render_deps(work_path, timeout)
+            _run_render_command([str(vite_bin), "build", "--config", str(work_path / "vite.config.mjs")], work_path, timeout)
+            dist_index = work_path / "dist" / "index.html"
+            if not dist_index.is_file():
+                return _vue_render_failure(
+                    "vue_render_smoke.build_output",
+                    "Vue/Vite build output is missing dist/index.html.",
+                    ["dist/index.html missing after trusted Vite build"],
+                )
+            return _smoke_check_dist(sync_playwright, dist_index, artifact_dir)
+        except VueRenderEnvironmentError as exc:
+            return _vue_render_environment_unavailable(str(exc), required=bool(config.get("_render_smoke_required")))
+        except Exception as exc:
+            return _vue_render_failure(
+                "vue_render_smoke.build_failed",
+                "Vue/Vite render smoke build failed.",
+                [str(exc)],
+            )
+
+
+def _vue_bundle_file_map(parsed: dict[str, Any]) -> dict[str, str]:
+    files = parsed.get("files")
+    if not isinstance(files, list):
+        return {}
+    file_map: dict[str, str] = {}
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            continue
+        path = str(file_entry.get("path") or "").strip()
+        content = file_entry.get("content")
+        if path and isinstance(content, str):
+            file_map[path] = content
+    return file_map
+
+
+def _check_vue_render_source_imports(file_map: dict[str, str]) -> dict[str, Any] | None:
+    failed_checks: list[dict[str, Any]] = []
+    for path, content in file_map.items():
+        if not _is_safe_vue_render_workspace_path(path):
+            continue
+        if path.endswith((".js", ".mjs", ".ts", ".vue")):
+            for specifier in _iter_js_import_specifiers(content):
+                if not _is_safe_vue_render_import_specifier(path, specifier):
+                    failed_checks.append(
+                        _failed_check(
+                            "vue_render_smoke.import_safety",
+                            "Vue render smoke source imports must stay inside the submitted runtime bundle.",
+                            [f"{path} imports unsafe specifier {specifier!r}"],
+                        )
+                    )
+        if path.endswith(".html"):
+            for specifier in _iter_html_module_import_specifiers(content):
+                if not _is_safe_vue_render_import_specifier(path, specifier):
+                    failed_checks.append(
+                        _failed_check(
+                            "vue_render_smoke.import_safety",
+                            "Vue render smoke HTML module imports must stay inside the submitted runtime bundle.",
+                            [f"{path} imports unsafe specifier {specifier!r}"],
+                        )
+                    )
+        if path.endswith((".css", ".vue")):
+            for specifier in _iter_css_resource_specifiers(content):
+                if not _is_safe_vue_render_resource_specifier(path, specifier):
+                    failed_checks.append(
+                        _failed_check(
+                            "vue_render_smoke.import_safety",
+                            "Vue render smoke CSS resources must stay inside the submitted runtime bundle.",
+                            [f"{path} references unsafe resource {specifier!r}"],
+                        )
+                    )
+    if not failed_checks:
+        return None
+    evidence = [item for failure in failed_checks for item in failure.get("evidence", [])]
+    return _vue_render_failure(
+        failed_checks[0]["check"],
+        failed_checks[0]["reason"],
+        evidence,
+        failed_checks=failed_checks,
+        optimizer_hint="Keep imports and CSS resources relative to src/ or public/, and do not import host files, external URLs, or arbitrary packages.",
+    )
+
+
+def _iter_js_import_specifiers(content: str) -> list[str]:
+    specifiers: list[str] = []
+    for match in _JS_IMPORT_SPEC_RE.finditer(content):
+        specifier = next((group for group in match.groups() if group), "")
+        if specifier:
+            specifiers.append(specifier)
+    return specifiers
+
+
+def _iter_html_module_import_specifiers(content: str) -> list[str]:
+    specifiers: list[str] = []
+    for match in _HTML_SCRIPT_RE.finditer(content):
+        attrs = match.group("attrs") or ""
+        if _HTML_MODULE_TYPE_RE.search(attrs):
+            specifiers.extend(_iter_js_import_specifiers(match.group("body") or ""))
+    return specifiers
+
+
+def _iter_css_resource_specifiers(content: str) -> list[str]:
+    specifiers: list[str] = []
+    for pattern in (_CSS_IMPORT_SPEC_RE, _CSS_URL_SPEC_RE):
+        for match in pattern.finditer(content):
+            specifier = match.group(1).strip()
+            if specifier:
+                specifiers.append(specifier)
+    return specifiers
+
+
+def _is_safe_vue_render_import_specifier(source_path: str, specifier: str) -> bool:
+    specifier = specifier.strip()
+    if not specifier:
+        return False
+    lowered = specifier.lower()
+    if lowered.startswith(("http:", "https:", "ws:", "wss:", "data:", "file:", "blob:")):
+        return False
+    clean_specifier = re.split(r"[?#]", specifier, maxsplit=1)[0]
+    if not clean_specifier:
+        return False
+    if clean_specifier in _ALLOWED_RENDER_BARE_IMPORTS:
+        return True
+    if clean_specifier.startswith("/"):
+        public_path = clean_specifier.lstrip("/")
+        return _is_safe_vue_render_workspace_path(public_path) or _is_safe_vue_render_workspace_path(
+            f"public/{public_path}"
+        )
+    if clean_specifier.startswith("."):
+        source_parts = source_path.strip().replace("\\", "/").split("/")[:-1]
+        target_parts: list[str] = []
+        for part in [*source_parts, *clean_specifier.split("/")]:
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if not target_parts:
+                    return False
+                target_parts.pop()
+                continue
+            target_parts.append(part)
+        return _is_safe_vue_render_workspace_path("/".join(target_parts))
+    return False
+
+
+def _is_safe_vue_render_resource_specifier(source_path: str, specifier: str) -> bool:
+    specifier = specifier.strip()
+    if not specifier:
+        return False
+    lowered = specifier.lower()
+    if lowered.startswith(("http:", "https:", "ws:", "wss:", "data:", "file:", "blob:")):
+        return False
+    clean_specifier = re.split(r"[?#]", specifier, maxsplit=1)[0]
+    if not clean_specifier:
+        return False
+    if clean_specifier.startswith(("/", ".")):
+        return _is_safe_vue_render_import_specifier(source_path, clean_specifier)
+    return _is_safe_vue_render_import_specifier(source_path, f"./{clean_specifier}")
+
+
+def _write_vue_render_workspace(work_path: Path, file_map: dict[str, str]) -> None:
+    for relative_path, content in file_map.items():
+        if not _is_safe_vue_render_workspace_path(relative_path):
+            continue
+        target = work_path / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (work_path / "package.json").write_text(TRUSTED_VUE_RENDER_PACKAGE_JSON, encoding="utf-8")
+    (work_path / "vite.config.mjs").write_text(TRUSTED_VITE_CONFIG, encoding="utf-8")
+
+
+def _prepare_trusted_vue_render_deps(work_path: Path, timeout: int) -> Path:
+    deps_path = _trusted_vue_render_deps_cache_dir()
+    _ensure_private_render_cache_dir(deps_path.parent)
+    _ensure_private_render_cache_dir(deps_path)
+    ready_path = deps_path / ".gitmoot-ready"
+    package_path = deps_path / "package.json"
+    if not ready_path.is_file():
+        package_path.write_text(TRUSTED_VUE_RENDER_PACKAGE_JSON, encoding="utf-8")
+        try:
+            _run_render_command(["npm", "install", "--ignore-scripts"], deps_path, timeout)
+        except subprocess.SubprocessError as exc:
+            raise VueRenderEnvironmentError(f"trusted Vue render dependencies could not be installed: {exc}") from exc
+    node_modules = deps_path / "node_modules"
+    vite_bin = node_modules / ".bin" / "vite"
+    if not vite_bin.is_file():
+        raise VueRenderEnvironmentError("trusted Vite binary was not installed")
+    ready_path.write_text("ok\n", encoding="utf-8")
+    (work_path / "node_modules").symlink_to(node_modules, target_is_directory=True)
+    return vite_bin
+
+
+def _trusted_vue_render_deps_cache_dir() -> Path:
+    configured = str(os.environ.get("GITMOOT_RENDER_DEPS_CACHE") or "").strip()
+    if configured:
+        cache_root = Path(configured).expanduser()
+    else:
+        cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser()
+        cache_root = cache_home / "gitmoot-skillopt" / "vue-render-deps"
+    package_hash = hashlib.sha256(TRUSTED_VUE_RENDER_PACKAGE_JSON.encode("utf-8")).hexdigest()[:16]
+    return cache_root / package_hash
+
+
+def _ensure_private_render_cache_dir(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not hasattr(os, "getuid"):
+        return
+    try:
+        stat_result = path.stat()
+    except OSError as exc:
+        raise VueRenderEnvironmentError(f"render dependency cache is unavailable: {path}") from exc
+    if stat_result.st_uid != os.getuid():
+        raise VueRenderEnvironmentError(f"render dependency cache is not owned by the current user: {path}")
+    if stat_result.st_mode & 0o077:
+        path.chmod(stat_result.st_mode & ~0o077)
+
+
+def _run_render_command(command: list[str], cwd: Path, timeout: int) -> None:
+    executable = shutil.which(command[0])
+    if executable is None:
+        raise VueRenderEnvironmentError(f"{command[0]} is not available")
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if completed.returncode != 0:
+        output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)
+        raise subprocess.SubprocessError(output or f"{' '.join(command)} failed with exit code {completed.returncode}")
+
+
+def _smoke_check_dist(sync_playwright: Any, dist_index: Path, artifact_dir: Path) -> dict[str, Any]:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    screenshots: list[dict[str, Any]] = []
+    stage_status = [{"stage": "render_smoke", "status": "passed"}]
+    viewports = (
+        ("desktop", {"width": 1366, "height": 768}),
+        ("mobile", {"width": 390, "height": 844}),
+    )
+    failed_checks: list[dict[str, Any]] = []
+    evidence: list[str] = []
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch()
+        except Exception as exc:
+            raise VueRenderEnvironmentError(f"Playwright Chromium is not available: {exc}") from exc
+        try:
+            for label, viewport in viewports:
+                context = browser.new_context(viewport=viewport)
+                _block_external_browser_requests(context, dist_index.parent)
+                page = context.new_page()
+                try:
+                    page.goto(dist_index.as_uri(), wait_until="networkidle")
+                    page.screenshot(path=str(artifact_dir / f"{label}.png"), full_page=True)
+                    screenshots.append(
+                        {
+                            "label": label,
+                            "path": str(artifact_dir / f"{label}.png"),
+                            "viewport": viewport,
+                        }
+                    )
+                    failed_checks.extend(_page_render_failures(page, label))
+                finally:
+                    context.close()
+        finally:
+            browser.close()
+    if failed_checks:
+        for failure in failed_checks:
+            evidence.extend(str(item) for item in failure.get("evidence", []))
+        return _vue_render_failure(
+            failed_checks[0]["check"],
+            failed_checks[0]["reason"],
+            evidence,
+            failed_checks=failed_checks,
+            screenshots=screenshots,
+        )
+    return {
+        "hard": 1,
+        "soft": 1.0,
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "dimension_scores": {"render_smoke": 1.0},
+        "stage_status": stage_status,
+        "metadata": {
+            "render_smoke": {"screenshots": screenshots},
+            "stage_status": stage_status,
+            "dimension_scores": {"render_smoke": 1.0},
+        },
+    }
+
+
+def _page_render_failures(page: Any, label: str) -> list[dict[str, Any]]:
+    checks = page.evaluate(
+        """() => {
+            const doc = document.documentElement;
+            const body = document.body;
+            const visible = Array.from(document.querySelectorAll('body *')).some((el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            });
+            const hero = document.querySelector('main, header, section, h1, h2');
+            const heroRect = hero ? hero.getBoundingClientRect() : null;
+            const footer = document.querySelector('footer');
+            if (footer) {
+                footer.scrollIntoView({block: 'end'});
+            }
+            const footerRect = footer ? footer.getBoundingClientRect() : null;
+            return {
+                nonblank: Boolean(body && body.children.length > 0 && visible),
+                horizontalOverflow: doc.scrollWidth > window.innerWidth + 2,
+                heroVisible: Boolean(heroRect && heroRect.width > 0 && heroRect.height > 0 && heroRect.bottom > 0 && heroRect.top < window.innerHeight),
+                footerReachable: Boolean(footerRect && footerRect.width > 0 && footerRect.height > 0),
+                scrollWidth: doc.scrollWidth,
+                viewportWidth: window.innerWidth
+            };
+        }"""
+    )
+    failures: list[dict[str, Any]] = []
+    if not checks.get("nonblank"):
+        failures.append(_failed_check("vue_render_smoke.nonblank", f"{label} render is blank.", [f"{label} page has no visible body content"]))
+    if checks.get("horizontalOverflow"):
+        failures.append(
+            _failed_check(
+                "vue_render_smoke.horizontal_overflow",
+                f"{label} render has horizontal overflow.",
+                [f"{label} scrollWidth={checks.get('scrollWidth')} viewportWidth={checks.get('viewportWidth')}"],
+            )
+        )
+    if not checks.get("heroVisible"):
+        failures.append(_failed_check("vue_render_smoke.hero_visible", f"{label} render does not show a hero/main section.", [f"{label} hero/main section not visible"]))
+    if not checks.get("footerReachable"):
+        failures.append(_failed_check("vue_render_smoke.footer_reachable", f"{label} render has no reachable footer.", [f"{label} footer not found or not reachable"]))
+    return failures
+
+
+def _render_artifact_dir(item: dict[str, Any], config: dict[str, Any]) -> Path:
+    configured = str(config.get("render_artifact_dir") or config.get("artifact_dir") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    item_id = _safe_render_artifact_segment(str(item.get("id") or "item"))
+    response_hash = str(config.get("_render_smoke_response_hash") or "unknown").strip() or "unknown"
+    return Path(tempfile.gettempdir()) / "gitmoot-render-smoke" / item_id / response_hash
+
+
+def _response_fingerprint(response: str) -> str:
+    return hashlib.sha256(response.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _block_external_browser_requests(context: Any, allowed_file_root: Path) -> None:
+    allowed_root = allowed_file_root.resolve()
+    if hasattr(context, "add_init_script"):
+        context.add_init_script(
+            """
+            (() => {
+              const BlockedWebSocket = function () {
+                throw new Error('WebSocket connections are blocked during Gitmoot render smoke checks');
+              };
+              BlockedWebSocket.CLOSED = 3;
+              BlockedWebSocket.CLOSING = 2;
+              BlockedWebSocket.CONNECTING = 0;
+              BlockedWebSocket.OPEN = 1;
+              Object.defineProperty(window, 'WebSocket', { configurable: false, writable: false, value: BlockedWebSocket });
+            })();
+            """
+        )
+
+    def handle_route(route: Any) -> None:
+        url = str(route.request.url)
+        if url.startswith(("data:", "blob:", "about:")):
+            route.continue_()
+            return
+        if url.startswith("file:") and _file_url_within_root(url, allowed_root):
+            route.continue_()
+            return
+        route.abort()
+
+    context.route("**/*", handle_route)
+
+
+def _file_url_within_root(url: str, allowed_root: Path) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        return False
+    try:
+        path = Path(unquote(parsed.path)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return path == allowed_root or allowed_root in path.parents
+
+
+def _is_safe_vue_bundle_path(path: str) -> bool:
+    normalized = path.strip().replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
+        return False
+    parts = tuple(normalized.split("/"))
+    if not parts:
+        return False
+    blocked_parts = {"", ".", "..", "node_modules", ".gitmoot-render-deps"}
+    return not any(part in blocked_parts for part in parts)
+
+
+def _is_safe_vue_render_workspace_path(path: str) -> bool:
+    if not _is_safe_vue_bundle_path(path):
+        return False
+    normalized = path.strip().replace("\\", "/")
+    if normalized == "index.html":
+        return True
+    if normalized == "package.json":
+        return False
+    parts = tuple(normalized.split("/"))
+    return len(parts) > 1 and parts[0] in {"src", "public"}
+
+
+def _safe_render_artifact_segment(value: str) -> str:
+    segment = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip(".-")
+    return segment[:80] or "item"
+
+
+def _import_sync_playwright() -> Any | None:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    return sync_playwright
+
+
+def _vue_render_failure(
+    check: str,
+    reason: str,
+    evidence: list[str],
+    *,
+    optimizer_hint: str = "Fix the Vue/Vite build or rendered layout before sending this landing page to the visual judge.",
+    failed_checks: list[dict[str, Any]] | None = None,
+    screenshots: list[dict[str, Any]] | None = None,
+    primary_reason: str = "vue_render_smoke_failed",
+) -> dict[str, Any]:
+    failed_checks = failed_checks or [_failed_check(check, reason, evidence)]
+    failure = {
+        "primary_reason": primary_reason,
+        "human_reason": reason,
+        "optimizer_hint": optimizer_hint,
+        "failed_checks": failed_checks,
+        "evidence": evidence,
+        "stage_status": [{"stage": "render_smoke", "status": "failed"}],
+    }
+    render_smoke_metadata: dict[str, Any] = {"failure": failure}
+    if screenshots:
+        render_smoke_metadata["screenshots"] = screenshots
+    metadata: dict[str, Any] = {
+        "evaluator": LANDING_PAGE_EVALUATOR_ID,
+        "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+        "dimension_scores": {"render_smoke": 0.0},
+        "failure": failure,
+        "render_smoke": render_smoke_metadata,
+        "stage_status": failure["stage_status"],
+    }
+    return {
+        "hard": 0,
+        "soft": 0.0,
+        "fail_reason": reason,
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "dimension_scores": {"render_smoke": 0.0},
+        "failure": failure,
+        "stage_status": failure["stage_status"],
+        "evaluator_id": LANDING_PAGE_EVALUATOR_ID,
+        "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+        "metadata": metadata,
+    }
+
+
+def _vue_render_environment_unavailable(reason: str, *, required: bool) -> dict[str, Any]:
+    if not required:
+        return _vue_render_skipped(f"Render smoke environment unavailable: {reason}")
+    return _vue_render_failure(
+        "vue_render_smoke.environment_unavailable",
+        "Vue render smoke environment is unavailable.",
+        [reason],
+        optimizer_hint="Install npm, trusted Vue render dependencies, Playwright, and Playwright Chromium before running required render smoke checks.",
+        primary_reason="vue_render_smoke_environment_unavailable",
+    )
+
+
+def _vue_render_skipped(reason: str) -> dict[str, Any]:
+    stage_status = [{"stage": "render_smoke", "status": "skipped", "details": {"reason": reason}}]
+    return {
+        "hard": 1,
+        "soft": 1.0,
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "dimension_scores": {},
+        "stage_status": stage_status,
+        "metadata": {
+            "render_smoke": {"skipped": True, "reason": reason},
+            "stage_status": stage_status,
+            "dimension_scores": {},
+        },
+    }
+
+
+def _attach_render_metadata(score: dict[str, Any], render_result: dict[str, Any]) -> None:
+    render_metadata = render_result.get("metadata") if isinstance(render_result.get("metadata"), dict) else {}
+    metadata = score.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+        score["metadata"] = metadata
+    if "render_smoke" in render_metadata:
+        metadata["render_smoke"] = render_metadata["render_smoke"]
+    stage_status = list(render_metadata.get("stage_status") or [])
+    if stage_status:
+        score["stage_status"] = [*stage_status, *list(score.get("stage_status") or [])]
+        metadata["stage_status"] = score["stage_status"]
+    dimensions = dict(metadata.get("dimension_scores") or {})
+    dimensions.update(render_metadata.get("dimension_scores") or {})
+    metadata["dimension_scores"] = dimensions
+    score["dimension_scores"] = dimensions
 
 
 def _check_package_json(content: str) -> dict[str, Any] | None:

@@ -265,6 +265,7 @@ def test_dataloader_threads_evaluator_profile_contract(tmp_path):
         "task_kind": "vue_landing_page",
         "artifact_contract": "vue_vite_bundle",
         "preview_adapter": "vue_vite",
+        "checks": [{"id": "render_smoke", "type": "playwright", "required": True}],
         "judge": {"type": "screenshot_llm", "model": "gpt-profile-eval"},
     }
     package.pop("evaluator_config")
@@ -278,6 +279,8 @@ def test_dataloader_threads_evaluator_profile_contract(tmp_path):
     assert item["evaluator_config"]["mode"] == "landing_page_v1"
     assert item["evaluator_config"]["artifact_contract"] == "vue_vite_bundle"
     assert item["evaluator_config"]["preview_adapter"] == "vue_vite"
+    assert item["evaluator_config"]["checks"][0]["id"] == "render_smoke"
+    assert item["evaluator_config"]["checks"][0]["required"] is True
     assert item["evaluator_config"]["evaluator_model"] == "gpt-profile-eval"
 
 

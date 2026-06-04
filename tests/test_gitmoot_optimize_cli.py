@@ -13,6 +13,19 @@ from skillopt.envs.gitmoot.evaluator import evaluate_response
 from tests.test_gitmoot_dataloader import write_training_package
 
 
+def _landing_dimension_scores():
+    return {
+        "mobile_responsiveness": 0.9,
+        "footer_presence_clarity": 0.8,
+        "hero_quality": 0.9,
+        "cta_clarity": 0.85,
+        "visual_images_relevance": 0.75,
+        "animation_motion_quality": 0.7,
+        "text_overlap_readability": 0.95,
+        "ranked_strength_preservation": 0.85,
+    }
+
+
 def test_optimize_requires_flags():
     with pytest.raises(SystemExit):
         main(["optimize"])
@@ -286,6 +299,7 @@ def test_preflight_threads_evaluator_profile_contract(tmp_path):
         "task_kind": "vue_landing_page",
         "artifact_contract": "vue_vite_bundle",
         "preview_adapter": "vue_vite",
+        "checks": [{"id": "render_smoke", "type": "playwright", "required": True}],
         "judge": {"type": "screenshot_llm", "model": "gpt-profile-eval"},
     }
     package_path.write_text(json.dumps(package), encoding="utf-8")
@@ -297,6 +311,8 @@ def test_preflight_threads_evaluator_profile_contract(tmp_path):
     assert config["profile_id"] == "vue_landing_page_v1"
     assert config["artifact_contract"] == "vue_vite_bundle"
     assert config["preview_adapter"] == "vue_vite"
+    assert config["checks"][0]["id"] == "render_smoke"
+    assert config["checks"][0]["required"] is True
     assert config["evaluator_model"] == "gpt-profile-eval"
 
 
@@ -430,6 +446,173 @@ def test_preflight_restores_optimizer_deployment_after_evaluator_canary(tmp_path
     assert captured["evaluator_stage"] == "gitmoot_preflight_evaluator"
     assert captured["evaluator_deployment"] == "gpt-eval"
     assert os.environ["OPTIMIZER_DEPLOYMENT"] == "gpt-opt"
+
+
+def test_preflight_blocks_required_render_smoke_when_npm_missing(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package.pop("evaluator_config", None)
+    package["evaluator_profile"] = {
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "artifact_contract": "vue_vite_bundle",
+        "checks": [{"id": "render_smoke", "type": "playwright", "required": True}],
+    }
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    def fake_chat_target(**kwargs):
+        return "gitmoot-target-canary-ok", {}
+
+    def fake_chat_optimizer(**kwargs):
+        if kwargs["stage"] == "gitmoot_preflight_optimizer":
+            return "gitmoot-optimizer-canary-ok", {}
+        return json.dumps(
+            {
+                "hard": 1,
+                "soft": 0.9,
+                "dimension_scores": _landing_dimension_scores(),
+                "rationale": "ok",
+                "fail_reason": "",
+            }
+        ), {}
+
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight.shutil, "which", lambda command: None if command == "npm" else f"/bin/{command}")
+
+    with pytest.raises(ValueError, match="requires npm"):
+        preflight.run_optimizer_preflight(
+            TrainingPackage.load(package_path),
+            optimizer_backend="openai_chat",
+            target_backend="openai_chat",
+            optimizer_model="gpt-opt",
+            target_model="gpt-target",
+        )
+
+
+def test_preflight_blocks_required_render_smoke_when_chromium_missing(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {
+        "mode": "landing_page_v1",
+        "artifact_contract": "vue_vite_bundle",
+        "require_vue_render_smoke": True,
+    }
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    class FakeChromium:
+        def launch(self):
+            raise RuntimeError("Executable doesn't exist")
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    class FakeSyncPlaywright:
+        def __enter__(self):
+            return FakePlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_chat_target(**kwargs):
+        return "gitmoot-target-canary-ok", {}
+
+    def fake_chat_optimizer(**kwargs):
+        if kwargs["stage"] == "gitmoot_preflight_optimizer":
+            return "gitmoot-optimizer-canary-ok", {}
+        return json.dumps(
+            {
+                "hard": 1,
+                "soft": 0.9,
+                "dimension_scores": _landing_dimension_scores(),
+                "rationale": "ok",
+                "fail_reason": "",
+            }
+        ), {}
+
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(preflight, "_import_sync_playwright", lambda: FakeSyncPlaywright)
+
+    with pytest.raises(ValueError, match="requires Playwright Chromium"):
+        preflight.run_optimizer_preflight(
+            TrainingPackage.load(package_path),
+            optimizer_backend="openai_chat",
+            target_backend="openai_chat",
+            optimizer_model="gpt-opt",
+            target_model="gpt-target",
+        )
+
+
+def test_preflight_blocks_required_render_smoke_when_trusted_deps_missing(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {
+        "mode": "landing_page_v1",
+        "artifact_contract": "vue_vite_bundle",
+        "require_vue_render_smoke": True,
+    }
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    class FakeBrowser:
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch(self):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    class FakeSyncPlaywright:
+        def __enter__(self):
+            return FakePlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_chat_target(**kwargs):
+        return "gitmoot-target-canary-ok", {}
+
+    def fake_chat_optimizer(**kwargs):
+        if kwargs["stage"] == "gitmoot_preflight_optimizer":
+            return "gitmoot-optimizer-canary-ok", {}
+        return json.dumps(
+            {
+                "hard": 1,
+                "soft": 0.9,
+                "dimension_scores": _landing_dimension_scores(),
+                "rationale": "ok",
+                "fail_reason": "",
+            }
+        ), {}
+
+    def fail_prepare_trusted_deps(work_path, timeout):
+        del work_path, timeout
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(preflight, "chat_target", fake_chat_target)
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight.shutil, "which", lambda command: f"/bin/{command}")
+    monkeypatch.setattr(preflight, "_import_sync_playwright", lambda: FakeSyncPlaywright)
+    monkeypatch.setattr(preflight, "_prepare_trusted_vue_render_deps", fail_prepare_trusted_deps)
+
+    with pytest.raises(ValueError, match="trusted Vue render dependencies"):
+        preflight.run_optimizer_preflight(
+            TrainingPackage.load(package_path),
+            optimizer_backend="openai_chat",
+            target_backend="openai_chat",
+            optimizer_model="gpt-opt",
+            target_model="gpt-target",
+        )
 
 
 def test_preflight_requires_exact_target_canary(tmp_path, monkeypatch):

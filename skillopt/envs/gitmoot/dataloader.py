@@ -399,6 +399,8 @@ def _evaluator_profile_config(package: TrainingPackage) -> dict[str, Any]:
         config["task_kind"] = profile.task_kind
     if profile.profile_id:
         config["profile_id"] = profile.profile_id
+    if profile.checks:
+        config["checks"] = [check.to_dict() for check in profile.checks]
     if profile.judge is not None and profile.judge.model:
         config["evaluator_model"] = profile.judge.model
     if _profile_requires_landing_page_mode(config):

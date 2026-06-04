@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from gitmoot_skillopt.contracts import TrainingPackage
-from skillopt.envs.gitmoot.evaluator import LANDING_PAGE_DIMENSIONS, LANDING_PAGE_EVALUATOR_ID
+from skillopt.envs.gitmoot.evaluator import (
+    LANDING_PAGE_DIMENSIONS,
+    LANDING_PAGE_EVALUATOR_ID,
+    _prepare_trusted_vue_render_deps,
+)
 from skillopt.model import (
     chat_optimizer,
     chat_target,
@@ -107,6 +113,7 @@ def run_optimizer_preflight(
     _run_optimizer_canary()
     _run_target_canary(resolved_target_backend, resolved_target_model)
     _run_evaluator_canary(evaluator_config, resolved_evaluator_backend, resolved_evaluator_model)
+    _run_required_render_smoke_canary(evaluator_config)
     return PreflightResult(
         optimizer_backend=resolved_optimizer_backend,
         target_backend=resolved_target_backend,
@@ -181,6 +188,8 @@ def _evaluator_profile_config(package: TrainingPackage) -> dict[str, Any]:
         config["task_kind"] = profile.task_kind
     if profile.profile_id:
         config["profile_id"] = profile.profile_id
+    if profile.checks:
+        config["checks"] = [check.to_dict() for check in profile.checks]
     if profile.judge is not None and profile.judge.model:
         config["evaluator_model"] = profile.judge.model
     if _profile_requires_landing_page_mode(config):
@@ -324,3 +333,48 @@ def _validate_evaluator_canary_json(evaluator_id: str, parsed: dict[str, Any]) -
         raise ValueError(f"landing_page_v1 evaluator canary missing dimension scores: {', '.join(missing)}")
     if not str(parsed.get("rationale") or "").strip():
         raise ValueError("landing_page_v1 evaluator canary missing rationale")
+
+
+def _run_required_render_smoke_canary(evaluator_config: dict[str, Any]) -> None:
+    if not _requires_required_render_smoke(evaluator_config):
+        return
+    if shutil.which("npm") is None:
+        raise ValueError("required render_smoke check requires npm to be installed")
+    sync_playwright = _import_sync_playwright()
+    if sync_playwright is None:
+        raise ValueError("required render_smoke check requires the Python Playwright package")
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            browser.close()
+    except Exception as exc:
+        raise ValueError("required render_smoke check requires Playwright Chromium to launch") from exc
+    try:
+        with tempfile.TemporaryDirectory(prefix="gitmoot-render-preflight-") as work_dir:
+            _prepare_trusted_vue_render_deps(Path(work_dir), timeout=120)
+    except Exception as exc:
+        raise ValueError("required render_smoke check requires trusted Vue render dependencies") from exc
+
+
+def _requires_required_render_smoke(evaluator_config: dict[str, Any]) -> bool:
+    if bool(evaluator_config.get("require_vue_render_smoke")):
+        return True
+    checks = evaluator_config.get("checks")
+    if not isinstance(checks, list):
+        return False
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        check_id = str(check.get("id") or "").strip().lower().replace("-", "_")
+        check_type = str(check.get("type") or "").strip().lower().replace("-", "_")
+        if (check_id == "render_smoke" or check_type == "render_smoke") and bool(check.get("required", False)):
+            return True
+    return False
+
+
+def _import_sync_playwright() -> Any | None:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    return sync_playwright

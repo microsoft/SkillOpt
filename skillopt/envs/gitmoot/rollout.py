@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any
@@ -83,7 +84,7 @@ def process_one(
     else:
         config = evaluator_config if evaluator_config is not None else item.get("evaluator_config")
         try:
-            raw_score = evaluate_response(item, response, config if isinstance(config, dict) else {})
+            raw_score = evaluate_response(item, response, _evaluator_config_for_result(config, pred_dir, response))
             score = normalize_scored_evaluation(
                 raw_score,
                 target_trace_path=target_trace_path,
@@ -130,6 +131,17 @@ def process_one(
             result[key] = score[key]
     _write_prediction(pred_dir, result)
     return result
+
+
+def _evaluator_config_for_result(config: Any, pred_dir: str, response: str) -> dict[str, Any]:
+    configured = dict(config) if isinstance(config, dict) else {}
+    configured.pop("artifact_dir", None)
+    configured["render_artifact_dir"] = os.path.join(
+        pred_dir,
+        "render-smoke",
+        hashlib.sha256(response.encode("utf-8", errors="replace")).hexdigest()[:12],
+    )
+    return configured
 
 
 def _run_agent(

@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+from pathlib import Path
 
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
-from skillopt.envs.gitmoot.evaluator import evaluate_response
+from skillopt.envs.gitmoot.evaluator import (
+    TRUSTED_VUE_RENDER_PACKAGE_JSON,
+    _block_external_browser_requests,
+    _prepare_trusted_vue_render_deps,
+    _render_artifact_dir,
+    _run_vue_render_smoke,
+    _trusted_vue_render_deps_cache_dir,
+    _write_vue_render_workspace,
+    evaluate_response,
+)
 from skillopt.envs.gitmoot.rollout import process_one
 from skillopt.gradient.reflect import fmt_minibatch_trajectories
 from skillopt.model import get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
@@ -257,6 +268,42 @@ def test_structured_evaluator_feedback_reaches_rollout_result(tmp_path, monkeypa
     assert result["failure"]["primary_reason"] == "missing_required_artifact"
     assert result["stage_status"][0]["stage"] == "artifact_contract"
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required")
+
+
+def test_rollout_sets_prediction_local_render_artifact_dir(tmp_path, monkeypatch):
+    captured = {}
+
+    def pass_agent(*args, **kwargs):
+        return _valid_vue_bundle_response()
+
+    def fake_evaluator(item, response, config):
+        del item, response
+        captured.update(config)
+        return {
+            "hard": 1,
+            "soft": 0.9,
+            "metadata": {"evaluator": "landing_page_v1"},
+        }
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.evaluate_response", fake_evaluator)
+
+    process_one(
+        item={"id": "landing-page-render-dir", "prompt": "Build a Vue landing page."},
+        skill_content="skill",
+        out_root=str(tmp_path),
+        evaluator_config={
+            "mode": "landing_page_v1",
+            "artifact_dir": str(tmp_path / "outside-artifacts"),
+            "render_artifact_dir": str(tmp_path / "outside-render-artifacts"),
+        },
+    )
+
+    render_dir = captured["render_artifact_dir"]
+    expected_root = tmp_path / "predictions" / "landing-page-render-dir" / "render-smoke"
+    assert render_dir.startswith(str(expected_root))
+    assert "outside" not in render_dir
+    assert len(os.path.basename(render_dir)) == 12
 
 
 def test_structured_evaluator_feedback_reaches_reflection_prompt(tmp_path):
@@ -778,6 +825,53 @@ def test_landing_page_evaluator_rejects_non_string_file_content_before_judge(mon
     assert "content is NoneType" in score["failure"]["evidence"][0]
 
 
+def test_landing_page_evaluator_rejects_unsafe_bundle_path_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+            ("../escape.js", "window.escape = true;"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.file_path"
+
+
+def test_landing_page_evaluator_rejects_normalized_unsafe_bundle_paths_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+            ("./src/escape.js", "window.escape = true;"),
+            ("src//double-slash.js", "window.escape = true;"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    failed_paths = " ".join(score["failure"]["evidence"])
+    assert score["hard"] == 0
+    assert "./src/escape.js" in failed_paths
+    assert "src//double-slash.js" in failed_paths
+
+
 def test_landing_page_evaluator_allows_import_copy_and_resource_hrefs(monkeypatch):
     called = False
 
@@ -850,6 +944,756 @@ def test_landing_page_evaluator_keeps_text_scoring_when_bundle_not_required(monk
 
     assert called is True
     assert score["hard"] == 1
+
+
+def test_landing_page_evaluator_render_smoke_failure_skips_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for render smoke failures")
+
+    def fail_render(*args, **kwargs):
+        return {
+            "hard": 0,
+            "soft": 0.0,
+            "fail_reason": "mobile render has horizontal overflow",
+            "failure": {
+                "primary_reason": "vue_render_smoke_failed",
+                "optimizer_hint": "Fix the overflow before visual judging.",
+                "failed_checks": [{"check": "vue_render_smoke.horizontal_overflow"}],
+            },
+            "stage_status": [{"stage": "render_smoke", "status": "failed"}],
+            "metadata": {"evaluator": "landing_page_v1"},
+        }
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", fail_render)
+
+    score = evaluate_response(
+        {"id": "landing-page-render-fail", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "vue_render_smoke_failed"
+    assert score["stage_status"][0]["stage"] == "render_smoke"
+
+
+def test_landing_page_evaluator_required_render_smoke_implies_vue_bundle_contract(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run before required render smoke validation")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-render-contract", "prompt": "Build a Vue landing page."},
+        "This is not a Vue/Vite bundle.",
+        {"mode": "landing_page_v1", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "vue_vite_bundle_contract_failed"
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.json"
+
+
+def test_landing_page_evaluator_rejects_render_imports_outside_bundle_before_build(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for required render smoke failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-unsafe-import", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import secret from '../../../../etc/passwd?raw'; window.secret = secret;"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.import_safety"
+    assert "../../../../etc/passwd?raw" in score["failure"]["evidence"][0]
+
+
+def test_landing_page_evaluator_rejects_compact_render_import_syntax_before_build(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for required render smoke failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-compact-import", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import{readFileSync}from'fs'; window.secret = readFileSync('/etc/passwd', 'utf8');"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.import_safety"
+    assert "fs" in score["failure"]["evidence"][0]
+
+
+def test_landing_page_evaluator_rejects_template_literal_dynamic_import_before_build(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for required render smoke failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-template-import", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "const secret = await import(`../../../../etc/passwd?raw`); window.secret = secret;"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.import_safety"
+    assert "../../../../etc/passwd?raw" in score["failure"]["evidence"][0]
+
+
+def test_landing_page_evaluator_rejects_import_meta_glob_before_build(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for required render smoke failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-import-meta-glob", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "const secrets = import.meta.glob(`../../../../etc/*`, { query: '?raw' }); window.secrets = secrets;"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.import_safety"
+    assert "../../../../etc/*" in score["failure"]["evidence"][0]
+
+
+def test_landing_page_evaluator_rejects_inline_html_module_imports_before_build(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for required render smoke failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-html-import", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            (
+                "index.html",
+                "<div id=\"app\"></div><script type=\"module\">import secret from '../../../../etc/passwd?raw';</script>",
+            ),
+            ("src/main.js", "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+        ]),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.import_safety"
+    assert "../../../../etc/passwd?raw" in score["failure"]["evidence"][0]
+
+
+def test_vue_render_smoke_allows_public_asset_root_urls(tmp_path, monkeypatch):
+    def fake_prepare_deps(work_path, timeout):
+        del timeout
+        vite_bin = work_path / "node_modules" / ".bin" / "vite"
+        vite_bin.parent.mkdir(parents=True)
+        vite_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        return vite_bin
+
+    def fake_run_render_command(command, cwd, timeout):
+        del command, timeout
+        dist_index = cwd / "dist" / "index.html"
+        dist_index.parent.mkdir(parents=True, exist_ok=True)
+        dist_index.write_text("<div id=\"app\"></div>", encoding="utf-8")
+
+    def fake_smoke_check_dist(sync_playwright, dist_index, artifact_dir):
+        del sync_playwright, dist_index, artifact_dir
+        return {"hard": 1, "soft": 1.0, "metadata": {}}
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: object())
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._prepare_trusted_vue_render_deps", fake_prepare_deps)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_render_command", fake_run_render_command)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._smoke_check_dist", fake_smoke_check_dist)
+
+    score = _run_vue_render_smoke(
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import './style.css'; import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+            ("src/style.css", "main { background-image: url('/logo.svg'); }"),
+            ("public/logo.svg", "<svg></svg>"),
+        ]),
+        {"id": "public-asset"},
+        {"_render_smoke_required": True, "render_artifact_dir": str(tmp_path / "artifacts")},
+    )
+
+    assert score["hard"] == 1
+
+
+def test_vue_render_smoke_allows_relative_css_asset_urls(tmp_path, monkeypatch):
+    def fake_prepare_deps(work_path, timeout):
+        del timeout
+        vite_bin = work_path / "node_modules" / ".bin" / "vite"
+        vite_bin.parent.mkdir(parents=True)
+        vite_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        return vite_bin
+
+    def fake_run_render_command(command, cwd, timeout):
+        del command, timeout
+        dist_index = cwd / "dist" / "index.html"
+        dist_index.parent.mkdir(parents=True, exist_ok=True)
+        dist_index.write_text("<div id=\"app\"></div>", encoding="utf-8")
+
+    def fake_smoke_check_dist(sync_playwright, dist_index, artifact_dir):
+        del sync_playwright, dist_index, artifact_dir
+        return {"hard": 1, "soft": 1.0, "metadata": {}}
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: object())
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._prepare_trusted_vue_render_deps", fake_prepare_deps)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_render_command", fake_run_render_command)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._smoke_check_dist", fake_smoke_check_dist)
+
+    score = _run_vue_render_smoke(
+        _valid_vue_bundle_response(files=[
+            ("package.json", '{"scripts":{"build":"vite build"}}'),
+            ("index.html", '<div id="app"></div><script type="module" src="/src/main.js"></script>'),
+            ("src/main.js", "import './style.css'; import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');"),
+            ("src/App.vue", "<template><main><footer>Footer</footer></main></template>"),
+            ("src/style.css", 'main { background-image: url("hero.svg"); }'),
+            ("src/hero.svg", "<svg></svg>"),
+        ]),
+        {"id": "relative-css-asset"},
+        {"_render_smoke_required": True, "render_artifact_dir": str(tmp_path / "artifacts")},
+    )
+
+    assert score["hard"] == 1
+
+
+def test_landing_page_evaluator_optional_render_smoke_failure_reaches_judge(monkeypatch):
+    called = False
+
+    def fail_render(*args, **kwargs):
+        assert kwargs == {}
+        config = args[2]
+        assert config["_render_smoke_required"] is False
+        return {
+            "hard": 0,
+            "soft": 0.0,
+            "fail_reason": "mobile render has horizontal overflow",
+            "dimension_scores": {"render_smoke": 0.0},
+            "failure": {
+                "primary_reason": "vue_render_smoke_failed",
+                "optimizer_hint": "Fix the overflow before visual judging.",
+                "failed_checks": [{"check": "vue_render_smoke.horizontal_overflow"}],
+            },
+            "stage_status": [{"stage": "render_smoke", "status": "failed"}],
+            "metadata": {
+                "dimension_scores": {"render_smoke": 0.0},
+                "render_smoke": {
+                    "failure": {
+                        "failed_checks": [{"check": "vue_render_smoke.horizontal_overflow"}],
+                    }
+                },
+                "stage_status": [{"stage": "render_smoke", "status": "failed"}],
+            },
+        }
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal called
+        called = True
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.84,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Optional render smoke failed, but the visual judge still ran.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", fail_render)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-optional-render-fail", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {
+            "mode": "landing_page_v1",
+            "artifact_contract": "vue_vite_bundle",
+            "checks": [{"id": "render_smoke", "type": "playwright", "required": False}],
+        },
+    )
+
+    assert called is True
+    assert score["hard"] == 1
+    assert score["metadata"]["dimension_scores"]["render_smoke"] == 0.0
+    assert score["metadata"]["render_smoke"]["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.horizontal_overflow"
+    assert score["stage_status"][0] == {"stage": "render_smoke", "status": "failed"}
+
+
+def test_landing_page_evaluator_ignores_non_render_playwright_check(monkeypatch):
+    called_render = False
+    called_judge = False
+
+    def fail_render(*args, **kwargs):
+        nonlocal called_render
+        called_render = True
+        raise AssertionError("preview_capture should not enable render_smoke")
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal called_judge
+        called_judge = True
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.84,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The non-render playwright check did not run render smoke.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", fail_render)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-preview-only", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {
+            "mode": "landing_page_v1",
+            "artifact_contract": "vue_vite_bundle",
+            "checks": [{"id": "preview_capture", "type": "playwright", "required": True}],
+        },
+    )
+
+    assert called_render is False
+    assert called_judge is True
+    assert score["hard"] == 1
+
+
+def test_landing_page_evaluator_required_render_smoke_wins_over_earlier_optional(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for required render smoke failures")
+
+    def fail_render(*args, **kwargs):
+        config = args[2]
+        assert config["_render_smoke_required"] is True
+        return {
+            "hard": 0,
+            "soft": 0.0,
+            "fail_reason": "render smoke failed",
+            "failure": {"primary_reason": "vue_render_smoke_failed"},
+            "stage_status": [{"stage": "render_smoke", "status": "failed"}],
+            "metadata": {"stage_status": [{"stage": "render_smoke", "status": "failed"}]},
+        }
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", fail_render)
+
+    score = evaluate_response(
+        {"id": "landing-page-required-render-after-optional", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {
+            "mode": "landing_page_v1",
+            "artifact_contract": "vue_vite_bundle",
+            "checks": [
+                {"id": "preview_capture", "type": "playwright", "required": False},
+                {"id": "render_smoke", "type": "playwright", "required": True},
+            ],
+        },
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "vue_render_smoke_failed"
+
+
+def test_landing_page_evaluator_render_smoke_success_attaches_screenshots(monkeypatch):
+    def pass_render(*args, **kwargs):
+        return {
+            "hard": 1,
+            "soft": 1.0,
+            "dimension_scores": {"render_smoke": 1.0},
+            "stage_status": [{"stage": "render_smoke", "status": "passed"}],
+            "metadata": {
+                "dimension_scores": {"render_smoke": 1.0},
+                "stage_status": [{"stage": "render_smoke", "status": "passed"}],
+                "render_smoke": {"screenshots": [{"label": "desktop", "path": "/tmp/desktop.png"}]},
+            },
+        }
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.9,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Render passed before visual judging.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", pass_render)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-render-pass", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 1
+    assert score["metadata"]["render_smoke"]["screenshots"][0]["label"] == "desktop"
+    assert score["metadata"]["dimension_scores"]["render_smoke"] == 1.0
+    assert score["stage_status"][0] == {"stage": "render_smoke", "status": "passed"}
+
+
+def test_landing_page_evaluator_required_render_smoke_fails_when_playwright_missing(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run when required Playwright is missing")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: None)
+
+    score = evaluate_response(
+        {"id": "landing-page-render-unavailable", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "vue_render_smoke_environment_unavailable"
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.environment_unavailable"
+    assert "environment is unavailable" in score["fail_reason"]
+
+
+def test_landing_page_evaluator_optional_render_smoke_skips_when_playwright_missing(monkeypatch):
+    called = False
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal called
+        called = True
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.9,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Optional render smoke was skipped, judge still ran.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: None)
+
+    score = evaluate_response(
+        {"id": "landing-page-render-optional", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {
+            "mode": "landing_page_v1",
+            "artifact_contract": "vue_vite_bundle",
+            "checks": [{"id": "render_smoke", "type": "playwright", "required": False}],
+        },
+    )
+
+    assert called is True
+    assert score["hard"] == 1
+    assert score["metadata"]["render_smoke"]["skipped"] is True
+    assert "playwright is unavailable" in score["metadata"]["render_smoke"]["reason"]
+    assert score["stage_status"][0]["status"] == "skipped"
+
+
+def test_vue_render_smoke_required_reports_environment_failure_when_npm_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITMOOT_RENDER_DEPS_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: object())
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.shutil.which", lambda command: None if command == "npm" else f"/bin/{command}")
+
+    score = _run_vue_render_smoke(
+        _valid_vue_bundle_response(),
+        {"id": "missing-npm"},
+        {"_render_smoke_required": True, "render_artifact_dir": str(tmp_path / "artifacts")},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "vue_render_smoke_environment_unavailable"
+    assert score["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.environment_unavailable"
+    assert "npm is not available" in score["failure"]["evidence"][0]
+
+
+def test_vue_render_smoke_optional_skips_when_npm_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITMOOT_RENDER_DEPS_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: object())
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.shutil.which", lambda command: None if command == "npm" else f"/bin/{command}")
+
+    score = _run_vue_render_smoke(
+        _valid_vue_bundle_response(),
+        {"id": "missing-npm-optional"},
+        {"_render_smoke_required": False, "render_artifact_dir": str(tmp_path / "artifacts")},
+    )
+
+    assert score["hard"] == 1
+    assert score["metadata"]["render_smoke"]["skipped"] is True
+    assert "npm is not available" in score["metadata"]["render_smoke"]["reason"]
+
+
+def test_vue_render_smoke_required_reports_environment_failure_when_chromium_missing(tmp_path, monkeypatch):
+    class FakeChromium:
+        def launch(self):
+            raise RuntimeError("Executable doesn't exist")
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    class FakeSyncPlaywright:
+        def __enter__(self):
+            return FakePlaywright()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_run_render_command(command, cwd, timeout):
+        del command, timeout
+        dist_index = cwd / "dist" / "index.html"
+        dist_index.parent.mkdir(parents=True, exist_ok=True)
+        dist_index.write_text("<div id=\"app\"></div>", encoding="utf-8")
+
+    trusted_vite = tmp_path / "node_modules" / ".bin" / "vite"
+    trusted_vite.parent.mkdir(parents=True)
+    trusted_vite.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: FakeSyncPlaywright)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._prepare_trusted_vue_render_deps", lambda work_path, timeout: trusted_vite)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_render_command", fake_run_render_command)
+
+    score = _run_vue_render_smoke(
+        _valid_vue_bundle_response(),
+        {"id": "missing-chromium"},
+        {"_render_smoke_required": True, "render_artifact_dir": str(tmp_path / "artifacts")},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "vue_render_smoke_environment_unavailable"
+    assert "Playwright Chromium is not available" in score["failure"]["evidence"][0]
+
+
+def test_vue_render_workspace_uses_submitted_runtime_bundle_files(tmp_path):
+    file_map = {
+        "package.json": '{"scripts":{"build":"vite build --emptyOutDir"}}',
+        "index.html": '<main id="submitted"></main><script type="module" src="/src/main.js"></script>',
+        "src/main.js": "import './style.css'; import Hero from './components/Hero.vue'; window.__submittedMain = Hero;",
+        "src/App.vue": "<template><footer>Submitted app</footer></template>",
+        "src/style.css": "body { margin: 0; }",
+        "src/components/Hero.vue": "<template><h1>Hero</h1></template>",
+        "public/logo.svg": "<svg></svg>",
+    }
+
+    _write_vue_render_workspace(tmp_path, file_map)
+
+    assert '"@vitejs/plugin-vue"' in (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert (tmp_path / "index.html").read_text(encoding="utf-8") == file_map["index.html"]
+    assert (tmp_path / "src" / "main.js").read_text(encoding="utf-8") == file_map["src/main.js"]
+    assert (tmp_path / "src" / "App.vue").read_text(encoding="utf-8") == file_map["src/App.vue"]
+    assert (tmp_path / "src" / "style.css").read_text(encoding="utf-8") == file_map["src/style.css"]
+    assert (tmp_path / "src" / "components" / "Hero.vue").read_text(encoding="utf-8") == file_map["src/components/Hero.vue"]
+    assert (tmp_path / "public" / "logo.svg").read_text(encoding="utf-8") == file_map["public/logo.svg"]
+    assert "plugins: [vue()]" in (tmp_path / "vite.config.mjs").read_text(encoding="utf-8")
+
+
+def test_vue_render_workspace_blocks_submitted_build_tool_configs(tmp_path):
+    file_map = {
+        "package.json": '{"scripts":{"build":"vite build && curl https://example.com/pwn"}}',
+        "index.html": '<div id="app"></div><script type="module" src="/src/main.js"></script>',
+        "src/main.js": "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');",
+        "src/App.vue": "<template><main>App</main></template>",
+        "postcss.config.cjs": "throw new Error('must not run')",
+        "tailwind.config.js": "throw new Error('must not run')",
+        "vite.config.js": "throw new Error('must not run')",
+        ".babelrc": '{"plugins":["must-not-load"]}',
+    }
+
+    _write_vue_render_workspace(tmp_path, file_map)
+
+    assert '"@vitejs/plugin-vue"' in (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert not (tmp_path / "postcss.config.cjs").exists()
+    assert not (tmp_path / "tailwind.config.js").exists()
+    assert not (tmp_path / "vite.config.js").exists()
+    assert not (tmp_path / ".babelrc").exists()
+
+
+def test_trusted_vue_render_dependencies_are_pinned():
+    package = json.loads(TRUSTED_VUE_RENDER_PACKAGE_JSON)
+
+    assert package["dependencies"] == {
+        "@vitejs/plugin-vue": "5.2.1",
+        "vite": "5.4.11",
+        "vue": "3.5.13",
+    }
+
+
+def test_trusted_vue_render_dependencies_are_reused_across_workspaces(tmp_path, monkeypatch):
+    commands: list[Path] = []
+    monkeypatch.setenv("GITMOOT_RENDER_DEPS_CACHE", str(tmp_path / "cache"))
+
+    def fake_run_render_command(command, cwd, timeout):
+        del command, timeout
+        commands.append(cwd)
+        vite_bin = cwd / "node_modules" / ".bin" / "vite"
+        vite_bin.parent.mkdir(parents=True, exist_ok=True)
+        vite_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_render_command", fake_run_render_command)
+
+    first_work = tmp_path / "first"
+    second_work = tmp_path / "second"
+    first_work.mkdir()
+    second_work.mkdir()
+
+    first_vite = _prepare_trusted_vue_render_deps(first_work, timeout=30)
+    second_vite = _prepare_trusted_vue_render_deps(second_work, timeout=30)
+
+    assert first_vite == second_vite
+    assert len(commands) == 1
+    assert (first_work / "node_modules").is_symlink()
+    assert (second_work / "node_modules").is_symlink()
+
+
+def test_trusted_vue_render_dependency_cache_defaults_to_user_cache(tmp_path, monkeypatch):
+    monkeypatch.delenv("GITMOOT_RENDER_DEPS_CACHE", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+
+    deps_dir = _trusted_vue_render_deps_cache_dir()
+
+    assert str(deps_dir).startswith(str(tmp_path / "xdg-cache" / "gitmoot-skillopt" / "vue-render-deps"))
+
+
+def test_vue_render_smoke_uses_trusted_vite_command_not_submitted_build_script(tmp_path, monkeypatch):
+    commands: list[list[str]] = []
+    monkeypatch.setenv("GITMOOT_RENDER_DEPS_CACHE", str(tmp_path / "cache"))
+
+    def fake_run_render_command(command, cwd, timeout):
+        del timeout
+        commands.append([str(part) for part in command])
+        if command[0] == "npm":
+            vite_bin = cwd / "node_modules" / ".bin" / "vite"
+            vite_bin.parent.mkdir(parents=True)
+            vite_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        else:
+            dist_index = cwd / "dist" / "index.html"
+            dist_index.parent.mkdir(parents=True)
+            dist_index.write_text("<div id=\"app\"></div>", encoding="utf-8")
+
+    def fake_smoke_check_dist(sync_playwright, dist_index, artifact_dir):
+        del sync_playwright, dist_index, artifact_dir
+        return {"hard": 1, "soft": 1.0, "metadata": {}}
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_render_command", fake_run_render_command)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._smoke_check_dist", fake_smoke_check_dist)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._import_sync_playwright", lambda: object())
+
+    score = _run_vue_render_smoke(
+        _valid_vue_bundle_response(package_json='{"scripts":{"build":"vite build && curl https://example.com/pwn"}}'),
+        {"id": "trusted-command"},
+        {"_render_smoke_required": True, "render_artifact_dir": str(tmp_path / "artifacts")},
+    )
+
+    assert score["hard"] == 1
+    assert commands[0][:3] == ["npm", "install", "--ignore-scripts"]
+    assert "npm run build" not in repr(commands)
+    assert "curl" not in repr(commands)
+    assert commands[1][0].endswith("node_modules/.bin/vite")
+    assert commands[1][1] == "build"
+    assert commands[1][2] == "--config"
+    assert commands[1][3].endswith("vite.config.mjs")
+
+
+def test_render_smoke_blocks_external_browser_requests():
+    class FakeRequest:
+        def __init__(self, url):
+            self.url = url
+
+    class FakeRoute:
+        def __init__(self, url):
+            self.request = FakeRequest(url)
+            self.action = ""
+
+        def continue_(self):
+            self.action = "continue"
+
+        def abort(self):
+            self.action = "abort"
+
+    class FakeContext:
+        def __init__(self):
+            self.pattern = ""
+            self.handler = None
+            self.init_script = ""
+
+        def route(self, pattern, handler):
+            self.pattern = pattern
+            self.handler = handler
+
+        def add_init_script(self, script):
+            self.init_script = script
+
+    context = FakeContext()
+    _block_external_browser_requests(context, Path("/tmp/dist"))
+
+    file_route = FakeRoute("file:///tmp/dist/index.html")
+    outside_file_route = FakeRoute("file:///etc/passwd")
+    https_route = FakeRoute("https://example.com/image.png")
+    internal_route = FakeRoute("http://127.0.0.1:8080/secret")
+    assert context.pattern == "**/*"
+    assert context.handler is not None
+    assert "WebSocket connections are blocked" in context.init_script
+    context.handler(file_route)
+    context.handler(outside_file_route)
+    context.handler(https_route)
+    context.handler(internal_route)
+
+    assert file_route.action == "continue"
+    assert outside_file_route.action == "abort"
+    assert https_route.action == "abort"
+    assert internal_route.action == "abort"
+
+
+def test_render_smoke_fallback_artifact_dir_sanitizes_item_id():
+    artifact_dir = _render_artifact_dir(
+        {"id": "../../outside/item"},
+        {"_render_smoke_response_hash": "abc123"},
+    )
+
+    expected_root = os.path.join(tempfile.gettempdir(), "gitmoot-render-smoke")
+    assert str(artifact_dir).startswith(expected_root)
+    assert ".." not in artifact_dir.parts
+    assert artifact_dir.name == "abc123"
 
 
 def _landing_dimension_scores():
