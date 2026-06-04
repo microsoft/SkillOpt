@@ -564,12 +564,74 @@ def test_landing_page_evaluator_returns_structured_score(tmp_path, monkeypatch):
     assert result["score_status"] == "scored"
     assert result["evaluator_id"] == "landing_page_v1"
     assert result["evaluator_version"] == "v1"
+    assert result["dimension_scores"]["mobile_responsiveness"] == 0.9
+    assert result["stage_status"] == [{"stage": "llm_judge", "status": "passed"}]
     assert result["metadata"]["dimension_scores"]["mobile_responsiveness"] == 0.9
     assert result["metadata"]["rationale"] == "Clear hero, CTA, footer, and responsive layout."
+    assert result["metadata"]["check_context"]["artifact_contract"]["status"] == "not_required"
     assert captured["stage"] == "gitmoot_landing_page_judge"
     assert "Human ranking: D > B > C > A" in captured["user"]
+    assert "Deterministic And Render Check Context" in captured["user"]
+    assert "Structured Task Context" in captured["user"]
     assert "Generated Landing Page Response" in captured["user"]
     assert "mobile_responsiveness" in captured["system"]
+
+
+def test_landing_page_judge_prompt_includes_render_and_feedback_context(monkeypatch):
+    captured = {}
+
+    def pass_render(*args, **kwargs):
+        return {
+            "hard": 1,
+            "soft": 1.0,
+            "dimension_scores": {"render_smoke": 1.0},
+            "stage_status": [{"stage": "render_smoke", "status": "passed"}],
+            "metadata": {
+                "dimension_scores": {"render_smoke": 1.0},
+                "stage_status": [{"stage": "render_smoke", "status": "passed"}],
+                "render_smoke": {"screenshots": [{"label": "mobile", "path": "/tmp/mobile.png"}]},
+            },
+        }
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.91,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "Render and human feedback context were considered.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", pass_render)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "landing-page-context",
+            "prompt": "Build a Vue landing page.",
+            "artifacts": [{"id": "option-d", "role": "winner", "path": "D.vue"}],
+            "ranked_feedback_events": [{"ranking": ["D > B > C > A"], "choice": "D has the cleanest hero."}],
+            "metadata": {"source": "github_issue_109", "secret_token": "do-not-send-this"},
+        },
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
+    )
+
+    assert score["hard"] == 1
+    assert score["stage_status"][0] == {"stage": "render_smoke", "status": "passed"}
+    assert score["stage_status"][-1] == {"stage": "llm_judge", "status": "passed"}
+    assert '"status": "passed"' in captured["user"]
+    assert "/tmp/mobile.png" in captured["user"]
+    assert "github_issue_109" in captured["user"]
+    assert "D has the cleanest hero" in captured["user"]
+    assert "do-not-send-this" not in captured["user"]
+    assert "secret_token" not in captured["user"]
 
 
 def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatch):
@@ -604,6 +666,90 @@ def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatc
     assert result["soft"] == 0.82
     assert result["score_status"] == "scored"
     assert result["evaluator_status"] == "passed"
+
+
+def test_landing_page_judge_rejection_returns_optimizer_failure_packet(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 0,
+                    "soft": 0.31,
+                    "dimension_scores": {
+                        **_landing_dimension_scores(),
+                        "hero_quality": 0.2,
+                        "mobile_responsiveness": 0.1,
+                        "animation_motion_quality": 0.0,
+                    },
+                    "rationale": "The page is not mobile responsive and has no meaningful motion.",
+                    "fail_reason": "mobile layout and hero motion are below promotion quality",
+                    "failure": {
+                        "primary_reason": "mobile_responsiveness_failed",
+                        "human_reason": "Mobile layout overflows and hero motion is missing.",
+                        "optimizer_hint": "Make the hero responsive, remove overflow, and add purposeful motion.",
+                        "failed_checks": [
+                            {
+                                "check": "landing_page_v1.mobile_responsiveness",
+                                "reason": "mobile overflow",
+                                "evidence": ["mobile layout overflows"],
+                            }
+                        ],
+                        "evidence": ["mobile layout overflows", "no meaningful motion"],
+                    },
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-rejected", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.31
+    assert score["failure"]["primary_reason"] == "mobile_responsiveness_failed"
+    assert score["failure"]["optimizer_hint"].startswith("Make the hero responsive")
+    assert score["failure"]["failed_checks"][0]["check"] == "landing_page_v1.mobile_responsiveness"
+    assert score["stage_status"] == [{"stage": "llm_judge", "status": "failed"}]
+    assert score["metadata"]["failure"]["human_reason"].startswith("Mobile layout")
+
+
+def test_landing_page_judge_rejection_normalizes_malformed_failure_packet(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 0,
+                    "soft": 0.4,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The judge rejected the page.",
+                    "fail_reason": "judge rejection",
+                    "failure": {
+                        "primary_reason": "judge_rejected",
+                        "failed_checks": ["not a failed check", {"check": 12, "evidence": "single evidence"}],
+                        "evidence": "top-level evidence",
+                    },
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {"id": "landing-page-malformed-failure", "prompt": "Build a Vue landing page."},
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["failed_checks"][0]["check"] == "12"
+    assert score["failure"]["failed_checks"][0]["evidence"] == ["single evidence"]
+    assert score["failure"]["evidence"] == ["top-level evidence"]
 
 
 def test_landing_page_evaluator_uses_configured_evaluator_model(monkeypatch):

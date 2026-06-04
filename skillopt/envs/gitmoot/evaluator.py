@@ -29,6 +29,17 @@ LANDING_PAGE_DIMENSIONS = (
     "text_overlap_readability",
     "ranked_strength_preservation",
 )
+LANDING_PAGE_TASK_METADATA_KEYS = (
+    "source",
+    "run_id",
+    "review_id",
+    "issue_number",
+    "target_repo",
+    "profile_id",
+    "task_kind",
+    "item_id",
+    "option_id",
+)
 VUE_BUNDLE_REQUIRED_FILES = (
     "package.json",
     "index.html",
@@ -178,7 +189,8 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
 
 def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
     render_result: dict[str, Any] | None = None
-    if _requires_vue_vite_bundle(item, config):
+    requires_vue_bundle = _requires_vue_vite_bundle(item, config)
+    if requires_vue_bundle:
         artifact_check = _check_vue_vite_bundle(response)
         if artifact_check is not None:
             return artifact_check
@@ -188,10 +200,11 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
             if render_required and render_result.get("hard") == 0:
                 return render_result
 
+    check_context = _landing_page_check_context(requires_vue_bundle=requires_vue_bundle, render_result=render_result)
     raw, _usage = _chat_evaluator(
         config,
         system=_landing_page_system_prompt(),
-        user=_landing_page_user_prompt(item, response, config),
+        user=_landing_page_user_prompt(item, response, config, check_context),
         max_completion_tokens=4096,
         retries=2,
         stage="gitmoot_landing_page_judge",
@@ -199,7 +212,7 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         raise ValueError("landing_page_v1 judge did not return JSON")
-    score = _normalize_landing_page_score(parsed, raw=raw)
+    score = _normalize_landing_page_score(parsed, raw=raw, check_context=check_context)
     if render_result is not None:
         _attach_render_metadata(score, render_result)
     return score
@@ -1020,20 +1033,29 @@ def _landing_page_system_prompt() -> str:
     return (
         "You are evaluating a generated landing page for Gitmoot SkillOpt. "
         "Return only JSON with keys evaluator_id, evaluator_version, hard, soft, "
-        "dimension_scores, rationale, and fail_reason. "
+        "dimension_scores, rationale, fail_reason, and failure. "
         f"dimension_scores must contain exactly these 0-to-1 dimensions: {dimensions}. "
         "hard must be 1 only when the landing page is suitable to promote after review. "
         "soft must be a 0-to-1 overall quality score. Penalize missing mobile responsiveness, "
         "missing footer, weak hero/CTA, irrelevant or absent visuals, missing requested motion, "
-        "text overlap/readability problems, and failure to preserve human-ranked strengths."
+        "text overlap/readability problems, and failure to preserve human-ranked strengths. "
+        "When hard is 0, failure must include primary_reason, human_reason, optimizer_hint, "
+        "failed_checks, and evidence so the optimizer can reuse the rejection."
     )
 
 
-def _landing_page_user_prompt(item: dict[str, Any], response: str, config: dict[str, Any]) -> str:
+def _landing_page_user_prompt(
+    item: dict[str, Any],
+    response: str,
+    config: dict[str, Any],
+    check_context: dict[str, Any] | None = None,
+) -> str:
     return "\n\n".join(
         [
             "## Landing Page Evaluation Config",
             json.dumps(config, indent=2, sort_keys=True),
+            "## Deterministic And Render Check Context",
+            _json_for_prompt(check_context or {}),
             "## Rubric",
             "\n".join(
                 [
@@ -1049,13 +1071,106 @@ def _landing_page_user_prompt(item: dict[str, Any], response: str, config: dict[
             ),
             "## Task Prompt, Artifacts, And Human Feedback",
             str(item.get("prompt") or ""),
+            "## Structured Task Context",
+            _json_for_prompt(_landing_page_task_context(item)),
             "## Generated Landing Page Response",
             response,
         ]
     )
 
 
-def _normalize_landing_page_score(parsed: dict[str, Any], *, raw: str) -> dict[str, Any]:
+def _landing_page_check_context(*, requires_vue_bundle: bool, render_result: dict[str, Any] | None) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "artifact_contract": {
+            "stage": "artifact_contract",
+            "status": "passed" if requires_vue_bundle else "not_required",
+            "contract": "vue_vite_bundle",
+            "required_files": list(VUE_BUNDLE_REQUIRED_FILES) if requires_vue_bundle else [],
+        },
+        "render_smoke": {"stage": "render_smoke", "status": "not_enabled"},
+        "stage_status": [],
+        "dimension_scores": {},
+    }
+    if render_result is None:
+        return context
+    render_metadata = render_result.get("metadata") if isinstance(render_result.get("metadata"), dict) else {}
+    render_smoke = render_metadata.get("render_smoke") if isinstance(render_metadata.get("render_smoke"), dict) else {}
+    stage_status = list(render_result.get("stage_status") or render_metadata.get("stage_status") or [])
+    dimensions = dict(render_result.get("dimension_scores") or render_metadata.get("dimension_scores") or {})
+    context["render_smoke"] = {
+        "stage": "render_smoke",
+        "status": _last_stage_status(stage_status, default="passed" if render_result.get("hard") else "failed"),
+        "soft": render_result.get("soft"),
+        "fail_reason": str(render_result.get("fail_reason") or ""),
+        "failure": render_result.get("failure") or render_smoke.get("failure"),
+        "screenshots": render_smoke.get("screenshots") or [],
+        "skipped": bool(render_smoke.get("skipped", False)),
+        "reason": render_smoke.get("reason"),
+    }
+    context["stage_status"] = stage_status
+    context["dimension_scores"] = dimensions
+    return context
+
+
+def _landing_page_task_context(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    safe_metadata = {key: metadata[key] for key in LANDING_PAGE_TASK_METADATA_KEYS if key in metadata}
+    return {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "task_type": item.get("task_type"),
+        "task_description": item.get("task_description"),
+        "source": item.get("source") or metadata.get("source"),
+        "metadata": safe_metadata,
+        "artifacts": item.get("artifacts") or metadata.get("artifacts"),
+        "feedback_events": item.get("feedback_events") or metadata.get("feedback_events"),
+        "ranked_feedback_events": item.get("ranked_feedback_events") or metadata.get("ranked_feedback_events"),
+        "ranked_artifacts": item.get("ranked_artifacts") or metadata.get("ranked_artifacts"),
+    }
+
+
+def _json_for_prompt(value: Any) -> str:
+    return json.dumps(_clip_for_prompt(value), indent=2, sort_keys=True)
+
+
+def _clip_for_prompt(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 5:
+        return "[truncated nested value]"
+    if isinstance(value, dict):
+        clipped: dict[str, Any] = {}
+        items = list(value.items())
+        for key, nested in items[:24]:
+            clipped[str(key)] = _clip_for_prompt(nested, depth=depth + 1)
+        if len(items) > 24:
+            clipped["__truncated_keys__"] = len(items) - 24
+        return clipped
+    if isinstance(value, list):
+        clipped_items = [_clip_for_prompt(item, depth=depth + 1) for item in value[:24]]
+        if len(value) > 24:
+            clipped_items.append({"__truncated_items__": len(value) - 24})
+        return clipped_items
+    if isinstance(value, str):
+        limit = 4000 if depth <= 2 else 1200
+        if len(value) > limit:
+            return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
+    return value
+
+
+def _last_stage_status(stage_status: list[Any], *, default: str) -> str:
+    for entry in reversed(stage_status):
+        if isinstance(entry, dict) and entry.get("stage") == "render_smoke":
+            status = str(entry.get("status") or "").strip()
+            if status:
+                return status
+    return default
+
+
+def _normalize_landing_page_score(
+    parsed: dict[str, Any],
+    *,
+    raw: str,
+    check_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     hard = _parse_landing_hard(parsed.get("hard"))
     soft = _parse_score(parsed.get("soft"), "soft")
     dimensions = _parse_dimension_scores(parsed.get("dimension_scores"))
@@ -1067,20 +1182,116 @@ def _normalize_landing_page_score(parsed: dict[str, Any], *, raw: str) -> dict[s
         raise ValueError("landing_page_v1 rationale is required")
     if hard == 0 and not fail_reason:
         fail_reason = "landing_page_v1 judge marked this landing page below promotion quality"
+    judge_stage = {"stage": "llm_judge", "status": "passed" if hard else "failed"}
+    stage_status = [judge_stage]
+    failure = _landing_page_judge_failure(parsed, fail_reason=fail_reason, rationale=rationale, dimensions=dimensions) if hard == 0 else None
+    metadata: dict[str, Any] = {
+        "evaluator": LANDING_PAGE_EVALUATOR_ID,
+        "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+        "dimension_scores": dimensions,
+        "rationale": rationale,
+        "raw": raw[:1000],
+        "stage_status": stage_status,
+        "check_context": check_context or {},
+    }
+    if failure is not None:
+        metadata["failure"] = failure
     return {
         "hard": hard,
         "soft": soft,
         "fail_reason": "" if hard else fail_reason,
+        "profile_id": "vue_landing_page_v1",
+        "task_kind": "vue_landing_page",
+        "dimension_scores": dimensions,
+        "stage_status": stage_status,
         "evaluator_id": LANDING_PAGE_EVALUATOR_ID,
         "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
-        "metadata": {
-            "evaluator": LANDING_PAGE_EVALUATOR_ID,
-            "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
-            "dimension_scores": dimensions,
-            "rationale": rationale,
-            "raw": raw[:1000],
-        },
+        **({"failure": failure} if failure is not None else {}),
+        "metadata": metadata,
     }
+
+
+def _landing_page_judge_failure(
+    parsed: dict[str, Any],
+    *,
+    fail_reason: str,
+    rationale: str,
+    dimensions: dict[str, float],
+) -> dict[str, Any]:
+    supplied = parsed.get("failure") if isinstance(parsed.get("failure"), dict) else {}
+    low_dimensions = [
+        {"check": f"landing_page_v1.{dimension}", "score": score}
+        for dimension, score in dimensions.items()
+        if score < 0.7
+    ]
+    primary_reason = str(
+        supplied.get("primary_reason")
+        or parsed.get("primary_reason")
+        or (low_dimensions[0]["check"].replace("landing_page_v1.", "") if low_dimensions else "")
+        or "landing_page_judge_rejected"
+    )
+    human_reason = str(supplied.get("human_reason") or fail_reason or rationale).strip()
+    optimizer_hint = str(supplied.get("optimizer_hint") or parsed.get("optimizer_hint") or "").strip()
+    if not optimizer_hint:
+        if low_dimensions:
+            weak = ", ".join(item["check"].replace("landing_page_v1.", "") for item in low_dimensions[:4])
+            optimizer_hint = f"Improve the rejected landing page dimensions before trying again: {weak}."
+        else:
+            optimizer_hint = "Use the judge rationale and human feedback to revise the landing page before trying again."
+    fallback_check = {
+        "check": "landing_page_v1.llm_judge",
+        "severity": "soft_quality_rejection",
+        "reason": human_reason,
+        "evidence": [rationale],
+        "metadata": {"dimension_scores": low_dimensions},
+    }
+    failed_checks = _normalize_landing_page_failed_checks(supplied.get("failed_checks"), fallback_check)
+    evidence = _normalize_string_list(supplied.get("evidence")) or [item for item in (fail_reason, rationale) if item]
+    return {
+        "primary_reason": primary_reason,
+        "human_reason": human_reason,
+        "optimizer_hint": optimizer_hint,
+        "failed_checks": failed_checks,
+        "evidence": evidence,
+        "stage_status": [{"stage": "llm_judge", "status": "failed"}],
+    }
+
+
+def _normalize_landing_page_failed_checks(value: Any, fallback_check: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return [fallback_check]
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        check = str(item.get("check") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not check and not reason:
+            continue
+        failed_check: dict[str, Any] = {
+            "check": check or str(fallback_check.get("check")),
+            "severity": str(item.get("severity") or fallback_check.get("severity") or "soft_quality_rejection"),
+            "reason": reason or str(fallback_check.get("reason") or ""),
+            "evidence": _normalize_string_list(item.get("evidence")),
+        }
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            failed_check["metadata"] = metadata
+        normalized.append(failed_check)
+    return normalized or [fallback_check]
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
 
 
 def _parse_score(value: Any, label: str) -> float:
