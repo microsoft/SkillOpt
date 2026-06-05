@@ -371,6 +371,43 @@ def _feedback_resolution_proven(parsed: dict[str, Any], *, require_top_level_unr
     return False
 
 
+def _feedback_source(item: dict[str, Any]) -> str:
+    return "old_review" if _feedback_signals(item) else ""
+
+
+def _candidate_specific_feedback_failure(parsed: dict[str, Any], *, hard: int) -> bool:
+    if hard == 0:
+        return True
+    if str(parsed.get("fail_reason") or "").strip():
+        return True
+    for status_key in ("contract_status", "quality_status"):
+        status = str(parsed.get(status_key) or "").strip().lower().replace("-", "_")
+        if status == "failed":
+            return True
+    if _normalize_string_list(parsed.get("unresolved_feedback")):
+        return True
+    alignment = parsed.get("human_feedback_alignment")
+    if isinstance(alignment, dict):
+        if _normalize_string_list(alignment.get("unresolved")):
+            return True
+        status = str(alignment.get("status") or "").strip().lower()
+        if status in {"failed", "rejected", "unresolved", "not_resolved"}:
+            return True
+    failure = parsed.get("failure")
+    if isinstance(failure, dict):
+        failed_checks = failure.get("failed_checks")
+        evidence = failure.get("evidence")
+        if _normalize_string_list(failure.get("failed_dimensions")):
+            return True
+        if isinstance(failed_checks, list) and failed_checks:
+            return True
+        if _normalize_string_list(evidence):
+            return True
+        if str(failure.get("primary_reason") or failure.get("human_reason") or "").strip():
+            return True
+    return False
+
+
 def _apply_feedback_stop_readiness_cap(item: dict[str, Any], soft: float, *, resolved: bool = False) -> float:
     cap = None if resolved else _feedback_stop_readiness_cap(item)
     if cap is None:
@@ -494,8 +531,12 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
         soft = float(hard)
     soft = max(0.0, min(1.0, soft))
     feedback_resolved = _feedback_resolution_proven(parsed, require_top_level_unresolved=True)
-    soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=feedback_resolved)
-    if _feedback_requests_more_optimization(item) and not feedback_resolved:
+    feedback_source = _feedback_source(item)
+    candidate_specific_failure = _candidate_specific_feedback_failure(parsed, hard=hard)
+    needs_more_optimization = _feedback_requests_more_optimization(item)
+    should_apply_stop_cap = needs_more_optimization and candidate_specific_failure and not feedback_resolved
+    soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=not should_apply_stop_cap)
+    if should_apply_stop_cap:
         hard = 0
     fail_reason = str(parsed.get("fail_reason") or "")
     score = {
@@ -506,8 +547,11 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             "evaluator": "llm_judge",
             "judge_derived": True,
             "reasoning": str(parsed.get("reasoning") or ""),
+            "candidate_specific_failure": candidate_specific_failure,
         },
     }
+    if feedback_source:
+        score["metadata"]["feedback_source"] = feedback_source
     if has_feedback:
         alignment = _human_feedback_alignment(item, parsed.get("human_feedback_alignment"))
         score.update(
@@ -1765,8 +1809,12 @@ def _normalize_landing_page_score(
     hard = _parse_landing_hard(parsed.get("hard"))
     soft = _parse_score(parsed.get("soft"), "soft")
     feedback_resolved = _feedback_resolution_proven(parsed)
-    soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=feedback_resolved)
-    if _feedback_requests_more_optimization(item) and not feedback_resolved:
+    feedback_source = _feedback_source(item)
+    candidate_specific_failure = _candidate_specific_feedback_failure(parsed, hard=hard)
+    needs_more_optimization = _feedback_requests_more_optimization(item)
+    should_apply_stop_cap = needs_more_optimization and candidate_specific_failure and not feedback_resolved
+    soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=not should_apply_stop_cap)
+    if should_apply_stop_cap:
         hard = 0
     dimensions = _parse_dimension_scores(parsed.get("dimension_scores"))
     rationale = str(parsed.get("rationale") or parsed.get("reasoning") or "").strip()
@@ -1796,7 +1844,10 @@ def _normalize_landing_page_score(
         "raw": raw[:1000],
         "stage_status": stage_status,
         "check_context": check_context or {},
+        "candidate_specific_failure": candidate_specific_failure,
     }
+    if feedback_source:
+        metadata["feedback_source"] = feedback_source
     if alignment:
         metadata["human_feedback_alignment"] = alignment
     if failure is not None:

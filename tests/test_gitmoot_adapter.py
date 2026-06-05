@@ -5,8 +5,6 @@ import os
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import (
     TRUSTED_VUE_RENDER_PACKAGE_JSON,
@@ -1558,13 +1556,6 @@ def test_landing_page_judge_rejection_returns_optimizer_failure_packet(monkeypat
     assert score["metadata"]["failure"]["human_reason"].startswith("Mobile layout")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Issue #147: old review promote=no/refine/poor is currently treated as "
-        "a permanent veto even when the new candidate judge says the feedback was resolved."
-    ),
-)
 def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypatch):
     def fake_chat_optimizer(**kwargs):
         return (
