@@ -98,10 +98,10 @@ class VueRenderEnvironmentError(RuntimeError):
 
 
 def _has_human_feedback(item: dict[str, Any]) -> bool:
-    if item.get("feedback_events") or item.get("ranked_feedback_events"):
+    if item.get("feedback_events") or item.get("ranked_feedback_events") or item.get("feedback_context"):
         return True
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    return bool(metadata.get("feedback_events") or metadata.get("ranked_feedback_events"))
+    return bool(metadata.get("feedback_events") or metadata.get("ranked_feedback_events") or metadata.get("feedback_context"))
 
 
 def _landing_page_inference_config(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any] | None:
@@ -205,13 +205,17 @@ def _human_feedback_judge_system_prompt() -> str:
     return (
         "You are evaluating a Gitmoot SkillOpt candidate response against imported human review feedback. "
         "The score is stop-readiness against the human feedback, not generic output quality. "
+        "When feedback_target=baseline_review_outputs, the review describes known issues in previous/baseline "
+        "outputs. Judge whether the new candidate resolves those baseline issues; do not penalize the candidate "
+        "as if the old quality/promote labels were written about the unseen candidate. "
         "If review feedback exists, assume the human is asking for optimization unless promote=yes or "
         "continue_mode explicitly indicates stopping/validation approval. "
         "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
         "continue_mode=refine/explore/distill or promote=no means the candidate may be good but is not ready to stop "
         "unless you can prove all named feedback themes were resolved. "
         "Return only JSON with keys hard, soft, fail_reason, reasoning, human_feedback_alignment, "
-        "dimension_scores, unresolved_feedback, rejection_reason, and optimizer_hint. "
+        "dimension_scores, unresolved_feedback, rejection_reason, optimizer_hint, baseline_known_issues, "
+        "candidate_resolution, baseline_resolution, selection_decision, and score_delta_reason. "
         "hard must be 1 only when the candidate is ready to stop optimizing and promote. "
         "soft must be a 0-to-1 readiness-to-stop score. "
         "dimension_scores must include human_feedback_resolution, artifact_validity, and task_completeness."
@@ -304,7 +308,55 @@ def _feedback_signals(item: dict[str, Any]) -> list[dict[str, Any]]:
         value = metadata.get(key)
         if isinstance(value, list):
             signals.extend(event for event in value if isinstance(event, dict))
+    for feedback_context in (item.get("feedback_context"), metadata.get("feedback_context")):
+        signal = _feedback_context_signal(feedback_context)
+        if signal and signal not in signals:
+            signals.append(signal)
     return signals
+
+
+def _feedback_context_signal(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        return {}
+    signal = dict(value)
+    scalar_fields = (
+        "feedback_source",
+        "feedback_target",
+        "review_issue",
+        "review_run_id",
+        "reviewed_skill_version",
+        "quality",
+        "continue_mode",
+        "promote",
+        "reasoning",
+        "choice",
+    )
+    for field in scalar_fields:
+        values = _normalize_string_list(signal.get(field))
+        if values:
+            signal[field] = values[0]
+        else:
+            signal.pop(field, None)
+    if "reasoning" not in signal:
+        reviewer_reasoning = _normalize_string_list(signal.get("reviewer_reasoning"))
+        if reviewer_reasoning:
+            signal["reasoning"] = reviewer_reasoning[0]
+    if "required_improvements" not in signal and signal.get("improve") is not None:
+        signal["required_improvements"] = signal.get("improve")
+    if "useful_traits" not in signal and signal.get("preserve") is not None:
+        signal["useful_traits"] = signal.get("preserve")
+    if "rejected_traits" not in signal and signal.get("avoid") is not None:
+        signal["rejected_traits"] = signal.get("avoid")
+    return signal
+
+
+def _feedback_target(item: dict[str, Any]) -> str:
+    targets: list[str] = []
+    for signal in _feedback_signals(item):
+        target = str(signal.get("feedback_target") or "").strip()
+        if target:
+            targets.append(target)
+    return targets[0] if targets else ""
 
 
 def _feedback_requests_more_optimization(item: dict[str, Any]) -> bool:
@@ -433,6 +485,27 @@ def _generic_feedback_dimension_scores(parsed: dict[str, Any]) -> dict[str, floa
     return {**_FEEDBACK_DIMENSION_DEFAULTS, **parsed_scores}
 
 
+def _comparative_feedback_fields(parsed: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key in (
+        "baseline_known_issues",
+        "candidate_resolution",
+        "baseline_resolution",
+        "selection_decision",
+        "score_delta_reason",
+    ):
+        value = parsed.get(key)
+        if isinstance(value, list):
+            normalized = _normalize_string_list(value)
+            if normalized:
+                fields[key] = normalized
+        elif isinstance(value, dict):
+            fields[key] = value
+        elif isinstance(value, str) and value.strip():
+            fields[key] = value.strip()
+    return fields
+
+
 def _feedback_judge_failure(parsed: dict[str, Any], *, item: dict[str, Any], fail_reason: str) -> dict[str, Any]:
     unresolved = parsed.get("unresolved_feedback")
     unresolved_items = _normalize_string_list(unresolved)
@@ -451,7 +524,7 @@ def _feedback_judge_failure(parsed: dict[str, Any], *, item: dict[str, Any], fai
         else:
             optimizer_hint = "Update the skill using the imported human feedback before trying again."
     human_reason = fail_reason or rejection_reason or "Human feedback is not fully resolved."
-    return {
+    failure = {
         "primary_reason": rejection_reason or "human_feedback_not_resolved",
         "human_reason": human_reason,
         "optimizer_hint": optimizer_hint,
@@ -467,6 +540,8 @@ def _feedback_judge_failure(parsed: dict[str, Any], *, item: dict[str, Any], fai
         "evidence": unresolved_items or [str(parsed.get("reasoning") or "")],
         "stage_status": [{"stage": "llm_judge", "status": "failed" if fail_reason else "passed"}],
     }
+    failure.update(_comparative_feedback_fields(parsed))
+    return failure
 
 
 def _generic_feedback_task_context(item: dict[str, Any]) -> dict[str, Any]:
@@ -476,6 +551,8 @@ def _generic_feedback_task_context(item: dict[str, Any]) -> dict[str, Any]:
         "title": item.get("title"),
         "task_type": item.get("task_type"),
         "task_description": item.get("task_description"),
+        "feedback_context": item.get("feedback_context") or metadata.get("feedback_context"),
+        "feedback_target": _feedback_target(item),
         "feedback_events": item.get("feedback_events") or metadata.get("feedback_events"),
         "ranked_feedback_events": item.get("ranked_feedback_events") or metadata.get("ranked_feedback_events"),
     }
@@ -552,6 +629,13 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
     }
     if feedback_source:
         score["metadata"]["feedback_source"] = feedback_source
+    feedback_target = _feedback_target(item)
+    if feedback_target:
+        score["metadata"]["feedback_target"] = feedback_target
+    comparative_fields = _comparative_feedback_fields(parsed)
+    if comparative_fields:
+        score.update(comparative_fields)
+        score["metadata"].update(comparative_fields)
     if has_feedback:
         alignment = _human_feedback_alignment(item, parsed.get("human_feedback_alignment"))
         score.update(
@@ -1540,6 +1624,9 @@ def _landing_page_system_prompt() -> str:
         f"dimension_scores must contain exactly these 0-to-1 dimensions: {dimensions}. "
         "Use contract_status to report artifact/render contract health and quality_status "
         "to report subjective landing-page quality. "
+        "When feedback_target=baseline_review_outputs, the review describes known issues in previous/baseline "
+        "landing-page outputs. Compare the generated candidate against those baseline issues and score whether "
+        "the candidate resolves them; do not treat old poor/refine/promote=no labels as candidate labels. "
         "hard must be 1 only when the landing page is suitable to stop optimizing and promote after review. "
         "soft must be a 0-to-1 readiness-to-stop score against the human feedback, not generic prettiness. "
         "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
@@ -1549,6 +1636,8 @@ def _landing_page_system_prompt() -> str:
         "text overlap/readability problems, and failure to preserve human-ranked strengths. "
         "When hard is 0, failure must include primary_reason, human_reason, optimizer_hint, "
         "failed_checks, and evidence so the optimizer can reuse the rejection."
+        "Also return baseline_known_issues, candidate_resolution, baseline_resolution, selection_decision, "
+        "and score_delta_reason when human feedback is present."
     )
 
 
@@ -1633,6 +1722,8 @@ def _landing_page_task_context(item: dict[str, Any]) -> dict[str, Any]:
         "source": item.get("source") or metadata.get("source"),
         "metadata": safe_metadata,
         "artifacts": item.get("artifacts") or metadata.get("artifacts"),
+        "feedback_context": item.get("feedback_context") or metadata.get("feedback_context"),
+        "feedback_target": _feedback_target(item),
         "feedback_events": item.get("feedback_events") or metadata.get("feedback_events"),
         "ranked_feedback_events": item.get("ranked_feedback_events") or metadata.get("ranked_feedback_events"),
         "ranked_artifacts": item.get("ranked_artifacts") or metadata.get("ranked_artifacts"),
@@ -1716,41 +1807,56 @@ def _normalized_status(value: Any, *, default: str) -> str:
 
 def _human_feedback_alignment(item: dict[str, Any], supplied: Any = None) -> dict[str, Any]:
     alignment = dict(supplied) if isinstance(supplied, dict) else {}
-    events = item.get("ranked_feedback_events")
-    if not isinstance(events, list) or not events:
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        metadata_events = metadata.get("ranked_feedback_events")
-        if isinstance(metadata_events, list) and metadata_events:
-            events = metadata_events
-    if not isinstance(events, list) or not events:
+    events = _feedback_signals(item)
+    if not events:
         return alignment
 
     alignment.setdefault("status", "feedback_available")
-    alignment.setdefault("source", "ranked_feedback_events")
+    alignment.setdefault("source", "imported_human_feedback")
     alignment.setdefault("event_count", len(events))
 
+    feedback_targets: list[str] = []
+    feedback_sources: list[str] = []
+    review_issues: list[str] = []
+    review_runs: list[str] = []
     rankings: list[str] = []
     reasoning: list[str] = []
+    themes: list[str] = []
     required_improvements: list[str] = []
     useful_traits: list[str] = []
     rejected_traits: list[str] = []
     for event in events[:5]:
         if not isinstance(event, dict):
             continue
+        feedback_targets.extend(_alignment_text_list(event.get("feedback_target")))
+        feedback_sources.extend(_alignment_text_list(event.get("feedback_source")))
+        review_issues.extend(_alignment_text_list(event.get("review_issue")))
+        review_runs.extend(_alignment_text_list(event.get("review_run_id")))
         ranking = _alignment_ranking(event.get("ranking"))
         if ranking:
             rankings.append(ranking)
         reason = _alignment_text(event.get("reasoning") or event.get("choice"), limit=500)
         if reason:
             reasoning.append(reason)
+        themes.extend(_alignment_text_list(event.get("themes")))
         required_improvements.extend(_alignment_text_list(event.get("required_improvements")))
         useful_traits.extend(_alignment_trait_texts(event.get("useful_traits")))
         rejected_traits.extend(_alignment_trait_texts(event.get("rejected_traits")))
 
+    if feedback_targets:
+        alignment.setdefault("feedback_target", list(dict.fromkeys(feedback_targets))[:8])
+    if feedback_sources:
+        alignment.setdefault("feedback_source", list(dict.fromkeys(feedback_sources))[:8])
+    if review_issues:
+        alignment.setdefault("review_issue", list(dict.fromkeys(review_issues))[:8])
+    if review_runs:
+        alignment.setdefault("review_run_id", list(dict.fromkeys(review_runs))[:8])
     if rankings:
         alignment.setdefault("rankings", rankings)
     if reasoning:
         alignment.setdefault("reasoning", reasoning)
+    if themes:
+        alignment.setdefault("themes", list(dict.fromkeys(themes))[:12])
     if required_improvements:
         alignment.setdefault("required_improvements", required_improvements[:12])
     if useful_traits:
@@ -1848,6 +1954,12 @@ def _normalize_landing_page_score(
     }
     if feedback_source:
         metadata["feedback_source"] = feedback_source
+    feedback_target = _feedback_target(item)
+    if feedback_target:
+        metadata["feedback_target"] = feedback_target
+    comparative_fields = _comparative_feedback_fields(parsed)
+    if comparative_fields:
+        metadata.update(comparative_fields)
     if alignment:
         metadata["human_feedback_alignment"] = alignment
     if failure is not None:
@@ -1865,6 +1977,7 @@ def _normalize_landing_page_score(
         "stage_status": stage_status,
         "evaluator_id": LANDING_PAGE_EVALUATOR_ID,
         "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
+        **comparative_fields,
         **({"failure": failure} if failure is not None else {}),
         "metadata": metadata,
     }
@@ -1920,7 +2033,7 @@ def _landing_page_judge_failure(
         or unresolved_feedback
         or [item for item in (fail_reason, rationale) if item]
     )
-    return {
+    failure = {
         "primary_reason": primary_reason,
         "human_reason": human_reason,
         "optimizer_hint": optimizer_hint,
@@ -1928,6 +2041,8 @@ def _landing_page_judge_failure(
         "evidence": evidence,
         "stage_status": [{"stage": "llm_judge", "status": "failed"}],
     }
+    failure.update(_comparative_feedback_fields(parsed))
+    return failure
 
 
 def _normalize_landing_page_failed_checks(value: Any, fallback_check: dict[str, Any]) -> list[dict[str, Any]]:

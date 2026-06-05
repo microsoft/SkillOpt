@@ -1242,6 +1242,62 @@ def test_generic_judge_with_resolved_feedback_does_not_emit_failure_hint(monkeyp
     assert "B is ready" in captured["user"]
 
 
+def test_generic_judge_uses_top_level_feedback_context(monkeypatch):
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.9,
+                    "reasoning": "The candidate resolves the top-level feedback context.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {"status": "resolved", "unresolved": []},
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.91,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                    "selection_decision": "candidate_resolves_baseline_feedback",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-top-level-feedback-context",
+            "prompt": "Write a concise launch post.",
+            "feedback_context": {
+                "feedback_source": ["imported_human_review"],
+                "feedback_target": ["baseline_review_outputs"],
+                "review_issue": ["owner/repo#21"],
+                "quality": ["poor"],
+                "continue_mode": ["refine"],
+                "promote": ["no"],
+                "themes": ["stronger launch hook"],
+            },
+        },
+        "A concise launch post with a stronger hook.",
+        {},
+    )
+
+    assert score["hard"] == 1
+    assert score["metadata"]["feedback_target"] == "baseline_review_outputs"
+    assert score["human_feedback_alignment"]["feedback_target"] == ["baseline_review_outputs"]
+    assert score["human_feedback_alignment"]["themes"] == ["stronger launch hook"]
+    assert score["soft"] == 0.9
+    assert "Human Feedback Context" in captured["user"]
+    assert "owner/repo#21" in captured["user"]
+
+
 def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypatch):
     def fake_chat_optimizer(**kwargs):
         return (
@@ -1264,6 +1320,11 @@ def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypa
                     "unresolved_feedback": [],
                     "rejection_reason": "",
                     "optimizer_hint": "",
+                    "baseline_known_issues": ["old hook was weak"],
+                    "candidate_resolution": ["hook is now sharper", "tone is clearer"],
+                    "baseline_resolution": "old feedback is used as the target, not as a candidate veto",
+                    "selection_decision": "candidate_resolves_baseline_feedback",
+                    "score_delta_reason": "candidate resolves the prior feedback themes",
                 }
             ),
             {},
@@ -1282,6 +1343,7 @@ def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypa
                     "quality": "strong",
                     "continue_mode": "refine",
                     "promote": "no",
+                    "feedback_target": "baseline_review_outputs",
                     "required_improvements": ["sharper hook", "clearer tone"],
                 }
             ],
@@ -1293,6 +1355,10 @@ def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypa
     assert score["hard"] == 1
     assert score["soft"] == 0.91
     assert score["quality_status"] == "passed"
+    assert score["metadata"]["feedback_target"] == "baseline_review_outputs"
+    assert score["human_feedback_alignment"]["feedback_target"] == ["baseline_review_outputs"]
+    assert score["selection_decision"] == "candidate_resolves_baseline_feedback"
+    assert score["candidate_resolution"] == ["hook is now sharper", "tone is clearer"]
     assert "failure" not in score
 
 
@@ -1570,6 +1636,17 @@ def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypa
                         "direction, adds MoonAI-level dark premium art direction, stronger branding, "
                         "product-relevant graphics, meaningful motion, proof sections, and mobile-safe layout."
                     ),
+                    "baseline_known_issues": [
+                        "old options lacked memorable branding",
+                        "old options lacked product-relevant graphics",
+                    ],
+                    "candidate_resolution": {
+                        "branding": "resolved with a darker premium direction",
+                        "visuals": "resolved with product-relevant graphics",
+                    },
+                    "baseline_resolution": "baseline review issues were treated as prior-output defects",
+                    "selection_decision": "candidate_resolves_baseline_feedback",
+                    "score_delta_reason": "candidate improves the old reviewed outputs rather than inheriting their poor label",
                     "dimension_scores": {
                         **_landing_dimension_scores(),
                         "brand_identity": 0.93,
@@ -1601,6 +1678,9 @@ def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypa
                     "quality": "poor",
                     "continue_mode": "refine",
                     "promote": "no",
+                    "feedback_target": "baseline_review_outputs",
+                    "feedback_source": "imported_human_review",
+                    "themes": ["MoonAI-level branding", "product graphics", "mobile polish"],
                 }
             ],
         },
@@ -1614,6 +1694,12 @@ def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypa
     assert score["quality_status"] == "passed"
     assert score["fail_reason"] == ""
     assert score["metadata"]["feedback_source"] == "old_review"
+    assert score["metadata"]["feedback_target"] == "baseline_review_outputs"
+    assert score["human_feedback_alignment"]["feedback_target"] == ["baseline_review_outputs"]
+    assert score["human_feedback_alignment"]["themes"] == ["MoonAI-level branding", "product graphics", "mobile polish"]
+    assert score["selection_decision"] == "candidate_resolves_baseline_feedback"
+    assert score["candidate_resolution"]["branding"] == "resolved with a darker premium direction"
+    assert score["metadata"]["score_delta_reason"].startswith("candidate improves")
     assert score["metadata"]["candidate_specific_failure"] is False
 
 
