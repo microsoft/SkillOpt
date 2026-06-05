@@ -705,6 +705,7 @@ def test_trainer_retries_actionable_gate_rejection_with_optimizer_hint(tmp_path,
     )
     cfg["gate_metric"] = "soft"
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
 
     summary = ReflACTTrainer(cfg, GateRetryAdapter(_RetryDataLoader())).train()
 
@@ -779,6 +780,7 @@ def test_gate_rejection_retry_preserves_noop_retry_context(tmp_path, monkeypatch
     )
     cfg["gate_metric"] = "soft"
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
 
     summary = ReflACTTrainer(cfg, CombinedRetryAdapter(_RetryDataLoader())).train()
 
@@ -1006,6 +1008,7 @@ def test_wrong_artifact_retry_does_not_consume_generic_gate_budget(tmp_path, mon
     cfg["gate_metric"] = "soft"
     cfg["wrong_artifact_retry_budget"] = 1
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
 
     summary = ReflACTTrainer(cfg, MixedRetryAdapter(_RetryDataLoader())).train()
 
@@ -1067,6 +1070,7 @@ def test_trainer_stops_gate_rejection_after_retry_budget(tmp_path, monkeypatch):
     )
     cfg["gate_metric"] = "soft"
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
 
     summary = ReflACTTrainer(cfg, RejectingAdapter(_RetryDataLoader())).train()
 
@@ -1137,6 +1141,7 @@ def test_gate_rejection_retry_uses_current_skill_scores_after_accept(tmp_path, m
     cfg["train_size"] = 2
     cfg["gate_metric"] = "soft"
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.2
 
     summary = ReflACTTrainer(cfg, CurrentScoreAdapter(_RetryDataLoader(train_size=2))).train()
 
@@ -1201,6 +1206,7 @@ def test_gate_rejection_retry_noop_preserves_fail_closed_skip(tmp_path, monkeypa
     cfg["eval_test"] = True
     cfg["gate_metric"] = "soft"
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
 
     summary = ReflACTTrainer(cfg, RejectThenNoopAdapter(_RetryDataLoader())).train()
 
@@ -1278,6 +1284,7 @@ def test_gate_rejection_retry_block_preserves_fail_closed_skip(tmp_path, monkeyp
     cfg["eval_test"] = True
     cfg["gate_metric"] = "soft"
     cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
 
     summary = ReflACTTrainer(cfg, RejectThenBlockAdapter(_RetryDataLoader())).train()
 
@@ -1332,7 +1339,10 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
     packet = {
         "rejection_type": "candidate_score_regression",
         "retryable": True,
+        "baseline": {"hard": 1.0, "soft": 0.89, "gate_score": 0.89},
+        "candidate": {"hard": 1.0, "soft": 0.87, "gate_score": 0.87},
         "primary_reason": "candidate_quality_regressed",
+        "attempted_patch": "visual polish",
         "optimizer_hint": "Change direction.",
     }
 
@@ -1341,19 +1351,43 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         attempt=0,
         budget=1,
         seen_reasons=set(),
+        close_gap=0.03,
     ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {**packet, "optimizer_hint": ""},
         attempt=0,
         budget=1,
         seen_reasons=set(),
-    ) == (False, "missing_optimizer_hint")
+        close_gap=0.03,
+    ) == (False, "missing_actionable_rationale")
     assert _gate_rejection_retry_decision(
         packet,
         attempt=0,
         budget=2,
-        seen_reasons={"candidate_quality_regressed"},
+        seen_reasons={"candidate_quality_regressed|visual polish|Change direction."},
+        close_gap=0.03,
     ) == (False, "repeated_rejection_reason")
+    assert _gate_rejection_retry_decision(
+        {**packet, "attempted_patch": "different direction"},
+        attempt=0,
+        budget=2,
+        seen_reasons={"candidate_quality_regressed|visual polish|Change direction."},
+        close_gap=0.03,
+    ) == (True, "retryable")
+    assert _gate_rejection_retry_decision(
+        {**packet, "candidate": {"hard": 1.0, "soft": 0.7, "gate_score": 0.7}},
+        attempt=0,
+        budget=2,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (False, "gate_score_gap_too_large")
+    assert _gate_rejection_retry_decision(
+        {**packet, "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87}},
+        attempt=0,
+        budget=2,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (False, "candidate_hard_score_failed")
     assert _gate_rejection_retry_decision(
         packet,
         attempt=1,

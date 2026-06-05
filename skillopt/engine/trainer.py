@@ -302,6 +302,7 @@ def _gate_rejection_retry_decision(
     attempt: int,
     budget: int,
     seen_reasons: set[str],
+    close_gap: float | None = None,
 ) -> tuple[bool, str]:
     if attempt >= budget:
         return False, "budget_exhausted"
@@ -309,12 +310,48 @@ def _gate_rejection_retry_decision(
         return False, "missing_structured_gate_rejection"
     if not packet.get("retryable", False):
         return False, "non_retryable_gate_rejection"
-    if not str(packet.get("optimizer_hint") or "").strip():
-        return False, "missing_optimizer_hint"
+    baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
+    candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
+    if close_gap is not None:
+        candidate_hard = candidate.get("hard")
+        if isinstance(candidate_hard, bool) or not isinstance(candidate_hard, int | float):
+            return False, "missing_candidate_hard_score"
+        if float(candidate_hard) < 1.0:
+            return False, "candidate_hard_score_failed"
+        baseline_gate = baseline.get("gate_score")
+        candidate_gate = candidate.get("gate_score")
+        if (
+            isinstance(baseline_gate, bool)
+            or isinstance(candidate_gate, bool)
+            or not isinstance(baseline_gate, int | float)
+            or not isinstance(candidate_gate, int | float)
+        ):
+            return False, "missing_gate_score_delta"
+        if float(baseline_gate) - float(candidate_gate) > max(0.0, float(close_gap)):
+            return False, "gate_score_gap_too_large"
+    has_actionable_context = any(
+        str(value or "").strip()
+        for value in (
+            packet.get("optimizer_hint"),
+            packet.get("human_reason"),
+            baseline.get("evaluator_reasoning"),
+            candidate.get("evaluator_reasoning"),
+        )
+    )
+    if not has_actionable_context:
+        return False, "missing_actionable_rationale"
     reason = str(packet.get("primary_reason") or packet.get("rejection_type") or "").strip()
     if not reason:
         return False, "missing_rejection_reason"
-    if reason in seen_reasons:
+    signature = "|".join(
+        str(value or "").strip()
+        for value in (
+            reason,
+            packet.get("attempted_patch"),
+            packet.get("optimizer_hint"),
+        )
+    )
+    if signature in seen_reasons:
         return False, "repeated_rejection_reason"
     return True, "retryable"
 
@@ -1813,7 +1850,8 @@ class ReflACTTrainer:
                     print("    [skip] no usable patches — skill unchanged")
                     continue
 
-                gate_reject_retry_budget = max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0))
+                gate_reject_retry_budget = max(0, int(cfg.get("gate_reject_retry_budget", 3) or 0))
+                gate_reject_retry_close_gap = max(0.0, float(cfg.get("gate_reject_retry_close_gap", 0.03) or 0.0))
                 gate_reject_retry_attempts: list[dict] = []
                 seen_gate_rejection_reasons: set[str] = set()
                 wrong_artifact_retry_budget = max(0, int(cfg.get("wrong_artifact_retry_budget", 1) or 0))
@@ -2218,6 +2256,7 @@ class ReflACTTrainer:
                                 attempt=retry_count,
                                 budget=active_retry_budget,
                                 seen_reasons=active_seen_reasons,
+                                close_gap=None if wrong_artifact_retry else gate_reject_retry_close_gap,
                             )
                             gate_retry_record = {
                                 "attempt": retry_count,
@@ -2261,7 +2300,16 @@ class ReflACTTrainer:
                                 or ""
                             ).strip()
                             if reason:
-                                active_seen_reasons.add(reason)
+                                active_seen_reasons.add(
+                                    "|".join(
+                                        str(value or "").strip()
+                                        for value in (
+                                            reason,
+                                            gate_rejection.get("attempted_patch"),
+                                            gate_rejection.get("optimizer_hint"),
+                                        )
+                                    )
+                                )
                             gate_retry_context = _format_gate_reject_retry_context(
                                 gate_rejection,
                                 retry_count + 1,
@@ -3194,7 +3242,7 @@ class ReflACTTrainer:
                         for attempt in record.get("gate_reject_retry_attempts", [])
                         if isinstance(attempt, dict) and attempt.get("action") == "retry"
                     ),
-                    retry_budget=max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0)),
+                    retry_budget=max(0, int(cfg.get("gate_reject_retry_budget", 3) or 0)),
                 )
             if selection_reject_gate_rejection is not None:
                 skip_final_test_reason = "selection_gate_rejected_candidate"

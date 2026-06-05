@@ -102,6 +102,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["patch", "rewrite_from_suggestions", "full_rewrite_minibatch"],
         help="SkillOpt update mode",
     )
+    optimize.add_argument(
+        "--noop-retry-budget",
+        type=int,
+        default=1,
+        help="number of no-op optimizer retries before skipping a step",
+    )
+    optimize.add_argument(
+        "--gate-reject-retry-budget",
+        type=int,
+        default=3,
+        help="maximum adaptive retries after a near-miss selection gate rejection",
+    )
+    optimize.add_argument(
+        "--wrong-artifact-retry-budget",
+        type=int,
+        default=1,
+        help="number of retries for wrong-artifact evaluator rejections",
+    )
+    optimize.add_argument(
+        "--gate-reject-retry-close-gap",
+        type=float,
+        default=0.03,
+        help="maximum baseline-minus-candidate gate score gap eligible for gate-reject retry",
+    )
     optimize.set_defaults(func=_run_optimize)
 
     return parser
@@ -130,6 +154,10 @@ def _run_optimize(args: argparse.Namespace) -> int:
         gate_metric=args.gate_metric,
         reasoning_effort=args.reasoning_effort,
         skill_update_mode=args.skill_update_mode,
+        noop_retry_budget=args.noop_retry_budget,
+        gate_reject_retry_budget=args.gate_reject_retry_budget,
+        wrong_artifact_retry_budget=args.wrong_artifact_retry_budget,
+        gate_reject_retry_close_gap=args.gate_reject_retry_close_gap,
     )
     summary = getattr(candidate, "summary", None)
     metadata = summary.metadata if summary is not None and isinstance(summary.metadata, dict) else {}

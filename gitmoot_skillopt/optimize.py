@@ -43,6 +43,10 @@ def run_optimize(
     gate_metric: str = "hard",
     reasoning_effort: str = "",
     skill_update_mode: str = "patch",
+    noop_retry_budget: int = 1,
+    gate_reject_retry_budget: int = 3,
+    wrong_artifact_retry_budget: int = 1,
+    gate_reject_retry_close_gap: float = 0.03,
 ) -> CandidatePackage:
     package_path = _require_file(training_package, "training package")
     artifact_root_path = _require_dir(artifact_root, "artifact root")
@@ -93,6 +97,10 @@ def run_optimize(
         gate_metric=gate_metric,
         reasoning_effort=reasoning_effort,
         skill_update_mode=skill_update_mode,
+        noop_retry_budget=noop_retry_budget,
+        gate_reject_retry_budget=gate_reject_retry_budget,
+        wrong_artifact_retry_budget=wrong_artifact_retry_budget,
+        gate_reject_retry_close_gap=gate_reject_retry_close_gap,
     )
     adapter = GitmootAdapter(
         training_package=str(package_path),
@@ -134,6 +142,10 @@ def build_trainer_config(
     gate_metric: str,
     reasoning_effort: str,
     skill_update_mode: str,
+    noop_retry_budget: int = 1,
+    gate_reject_retry_budget: int = 3,
+    wrong_artifact_retry_budget: int = 1,
+    gate_reject_retry_close_gap: float = 0.03,
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
     normalized_gate_metric = str(gate_metric or "hard").strip().lower()
@@ -224,9 +236,10 @@ def build_trainer_config(
         "sel_env_num": 0,
         "test_env_num": 0,
         "eval_test": False if dry_run else True,
-        "noop_retry_budget": 1,
-        "gate_reject_retry_budget": 1,
-        "wrong_artifact_retry_budget": 1,
+        "noop_retry_budget": max(0, int(noop_retry_budget)),
+        "gate_reject_retry_budget": max(0, int(gate_reject_retry_budget)),
+        "wrong_artifact_retry_budget": max(0, int(wrong_artifact_retry_budget)),
+        "gate_reject_retry_close_gap": max(0.0, float(gate_reject_retry_close_gap)),
     }
 
 

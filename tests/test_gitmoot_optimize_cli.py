@@ -7,7 +7,7 @@ import pytest
 
 from gitmoot_skillopt.cli import main
 from gitmoot_skillopt.contracts import CANDIDATE_PACKAGE_KIND, CandidatePackage, TrainingPackage
-from gitmoot_skillopt.optimize import write_candidate_package
+from gitmoot_skillopt.optimize import build_trainer_config, write_candidate_package
 from gitmoot_skillopt.preflight import PreflightResult, resolve_evaluator_config
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from tests.test_gitmoot_dataloader import write_training_package
@@ -283,6 +283,69 @@ def test_optimize_threads_gate_metric(tmp_path, monkeypatch):
 
     assert result == 0
     assert captured["gate_metric"] == "soft"
+
+
+def test_optimize_threads_retry_budget_options(monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--noop-retry-budget",
+            "2",
+            "--gate-reject-retry-budget",
+            "5",
+            "--wrong-artifact-retry-budget",
+            "4",
+            "--gate-reject-retry-close-gap",
+            "0.07",
+        ]
+    )
+
+    assert result == 0
+    assert captured["noop_retry_budget"] == 2
+    assert captured["gate_reject_retry_budget"] == 5
+    assert captured["wrong_artifact_retry_budget"] == 4
+    assert captured["gate_reject_retry_close_gap"] == 0.07
+
+
+def test_build_trainer_config_uses_adaptive_gate_retry_defaults(tmp_path):
+    cfg = build_trainer_config(
+        package_path=tmp_path / "training.json",
+        artifact_root=tmp_path / "blobs",
+        out_root=tmp_path / "out",
+        initial_skill_path=tmp_path / "skill.md",
+        dry_run=False,
+        num_epochs=1,
+        batch_size=1,
+        seed=1,
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        optimizer_backend="codex",
+        target_backend="codex_exec",
+        evaluator_config={"mode": "fixture"},
+        gate_metric="mixed",
+        reasoning_effort="",
+        skill_update_mode="full_rewrite_minibatch",
+    )
+
+    assert cfg["gate_reject_retry_budget"] == 3
+    assert cfg["noop_retry_budget"] == 1
+    assert cfg["wrong_artifact_retry_budget"] == 1
+    assert cfg["gate_reject_retry_close_gap"] == 0.03
 
 
 def test_optimize_threads_evaluator_options(monkeypatch):
