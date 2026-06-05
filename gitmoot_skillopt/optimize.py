@@ -788,7 +788,9 @@ def _feedback_themes(context: Any) -> list[str]:
     if not isinstance(context, dict):
         return []
     themes: list[str] = []
-    for key in ("improve", "preserve", "avoid", "required_improvements", "reasoning", "rankings"):
+    if isinstance(context.get("themes"), list):
+        themes.extend(_string_list(context.get("themes")))
+    for key in ("improve", "preserve", "avoid", "required_improvements", "reasoning", "reviewer_reasoning"):
         themes.extend(_string_list(context.get(key)))
     return _dedupe_triggers(themes)[:12]
 

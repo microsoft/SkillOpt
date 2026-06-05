@@ -217,6 +217,16 @@ def write_training_package(tmp_path, *, artifact_driver: str = "text"):
                 "created_at": "2026-06-03T00:00:00Z",
             }
         ],
+        "feedback_context": {
+            "feedback_source": "imported_human_review",
+            "feedback_target": "baseline_review_outputs",
+            "review_issue": "owner/repo#1",
+            "review_run_id": "run-1",
+            "reviewed_skill_version": "planner@v1",
+            "reasoning": "package-level context must not replace per-event notes",
+            "continue_mode": "package-level mode must not replace per-event mode",
+            "themes": ["MoonAI-like premium branding", "product-relevant graphics"],
+        },
         "evaluator_config": {"mode": "fixture"},
     }
     package_path = tmp_path / "training.json"
@@ -251,6 +261,9 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     assert "review_1 (alice, github):" in prompt
     assert "preferred_option: d" in prompt
     assert "ranking: d > b > c > a" in prompt
+    assert "feedback_target: baseline_review_outputs" in prompt
+    assert "review_issue: owner/repo#1" in prompt
+    assert "themes: MoonAI-like premium branding; product-relevant graphics" in prompt
     assert "quality: acceptable" in prompt
     assert "continue_mode: refine" in prompt
     assert "promote: no" in prompt
@@ -268,7 +281,13 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     assert "cleanest hero" in prompt
     assert "Option D landing page" in train_batch.payload[0]["artifacts"]["option:d"]["text"]
     assert train_batch.payload[0]["feedback_events"][0]["reasoning"] == "Candidate is clearer."
+    assert train_batch.payload[0]["feedback_events"][0]["continue_mode"] == "refine"
+    assert train_batch.payload[0]["feedback_events"][0]["feedback_target"] == "baseline_review_outputs"
+    assert train_batch.payload[0]["feedback_context"]["review_issue"] == "owner/repo#1"
     assert train_batch.payload[0]["ranked_feedback_events"][0]["winner"] == "d"
+    assert train_batch.payload[0]["ranked_feedback_events"][0]["reasoning"] == "D is the cleanest option."
+    assert train_batch.payload[0]["ranked_feedback_events"][0]["continue_mode"] == "refine"
+    assert train_batch.payload[0]["ranked_feedback_events"][0]["feedback_target"] == "baseline_review_outputs"
     assert train_batch.payload[0]["ranked_feedback_events"][0]["required_improvements"] == ["better mobile layout", "stronger product visuals"]
 
 
@@ -285,9 +304,32 @@ def test_dataloader_uses_compact_feedback_without_ranked_feedback(tmp_path):
     assert "## Human Feedback" in prompt
     assert "preferred_option: b" in prompt
     assert "notes: Candidate is clearer." in prompt
+    assert "feedback_target: baseline_review_outputs" in prompt
+    assert "review_issue: owner/repo#1" in prompt
+    assert "themes: MoonAI-like premium branding; product-relevant graphics" in prompt
     assert "ranking:" not in prompt
     assert "Ranked Human Feedback Events" not in prompt
     assert "Baseline Artifact" in prompt
+
+
+def test_dataloader_surfaces_context_only_feedback(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["feedback_events"] = []
+    package["ranked_feedback_events"] = []
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+    prompt = item["prompt"]
+
+    assert "## Human Feedback" in prompt
+    assert "feedback_target: baseline_review_outputs" in prompt
+    assert "review_issue: owner/repo#1" in prompt
+    assert "themes: MoonAI-like premium branding; product-relevant graphics" in prompt
+    assert item["feedback_events"][0]["feedback_target"] == "baseline_review_outputs"
+    assert item["ranked_feedback_events"] == []
 
 
 def test_dataloader_threads_evaluator_profile_contract(tmp_path):

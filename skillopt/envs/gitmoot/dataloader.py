@@ -177,22 +177,38 @@ class GitmootDataLoader(BaseDataLoader):
         assert self.package is not None
         safe_item_path_segment(item.id)
         metadata = json_safe_metadata(item.metadata)
+        package_feedback_context = json_safe_metadata(self.package.feedback_context)
+        if package_feedback_context:
+            metadata = {**metadata, "feedback_context": package_feedback_context}
         artifact_refs = artifact_refs_by_id(self.package)
         artifacts = self._resolve_item_artifacts(item, artifact_refs, resolver)
         feedback_events = feedback_events_for_item(self.package, item.id)
         ranked_feedback_events = ranked_feedback_events_for_item(self.package, item.id)
+        feedback_event_contexts = [
+            _feedback_event_prompt_context(event)
+            for event in feedback_events
+        ]
+        ranked_feedback_event_contexts = [
+            _ranked_feedback_event_prompt_context(event)
+            for event in ranked_feedback_events
+        ]
+        if package_feedback_context:
+            feedback_event_contexts = [
+                {**package_feedback_context, **event}
+                for event in feedback_event_contexts
+            ]
+            ranked_feedback_event_contexts = [
+                {**package_feedback_context, **event}
+                for event in ranked_feedback_event_contexts
+            ]
+            if not feedback_event_contexts and not ranked_feedback_event_contexts:
+                feedback_event_contexts = [package_feedback_context]
         prompt = build_task_prompt(
             package=self.package,
             item=item,
             artifacts=artifacts,
-            feedback_events=[
-                _feedback_event_prompt_context(event)
-                for event in feedback_events
-            ],
-            ranked_feedback_events=[
-                _ranked_feedback_event_prompt_context(event)
-                for event in ranked_feedback_events
-            ],
+            feedback_events=feedback_event_contexts,
+            ranked_feedback_events=ranked_feedback_event_contexts,
         )
         return {
             "id": item.id,
@@ -203,8 +219,9 @@ class GitmootDataLoader(BaseDataLoader):
             "split": self._item_split(metadata),
             "prompt": prompt,
             "artifacts": artifacts,
-            "feedback_events": [event.to_dict() for event in feedback_events],
-            "ranked_feedback_events": [event.to_dict() for event in ranked_feedback_events],
+            "feedback_events": feedback_event_contexts,
+            "ranked_feedback_events": ranked_feedback_event_contexts,
+            "feedback_context": package_feedback_context,
             "evaluator_config": self.evaluator_config,
         }
 
@@ -500,6 +517,13 @@ def _ranked_human_feedback_summary(ranked_feedback_events: list[dict[str, Any]])
             lines.append(f"  preferred_option: {winner or _first_ranked_label(event.get('ranking'))}")
         if ranking:
             lines.append(f"  ranking: {ranking}")
+        for field in ("feedback_source", "feedback_target", "review_issue", "review_run_id", "reviewed_skill_version"):
+            value = _summary_text(event.get(field))
+            if value:
+                lines.append(f"  {field}: {value}")
+        themes = _summary_list(event.get("themes"))
+        if themes:
+            lines.append(f"  themes: {themes}")
         reasoning = _summary_text(event.get("reasoning"), limit=700)
         if reasoning:
             lines.append(f"  notes: {reasoning}")
@@ -530,6 +554,13 @@ def _feedback_events_summary(feedback_events: list[dict[str, Any]], *, start_ind
         reasoning = _summary_text(event.get("reasoning"), limit=700)
         if reasoning:
             lines.append(f"  notes: {reasoning}")
+        for field in ("feedback_source", "feedback_target", "review_issue", "review_run_id", "reviewed_skill_version"):
+            value = _summary_text(event.get(field))
+            if value:
+                lines.append(f"  {field}: {value}")
+        themes = _summary_list(event.get("themes"))
+        if themes:
+            lines.append(f"  themes: {themes}")
         for field in ("quality", "continue_mode", "promote"):
             value = _summary_text(event.get(field))
             if value:

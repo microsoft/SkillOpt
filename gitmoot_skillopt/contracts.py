@@ -1032,6 +1032,7 @@ class TrainingPackage:
     artifacts: list[ArtifactRef] = field(default_factory=list)
     feedback_events: list[FeedbackEvent] = field(default_factory=list)
     ranked_feedback_events: list[RankedFeedbackEvent] = field(default_factory=list)
+    feedback_context: Any = None
     evaluator_config: Any = None
     evaluator_profile: EvaluatorProfile | None = None
 
@@ -1052,6 +1053,7 @@ class TrainingPackage:
             ranked_feedback_events=[
                 RankedFeedbackEvent.from_dict(event) for event in data.get("ranked_feedback_events", [])
             ],
+            feedback_context=_raw_json(data.get("feedback_context")),
             evaluator_config=_raw_json(data.get("evaluator_config")),
             evaluator_profile=EvaluatorProfile.from_dict(data.get("evaluator_profile")),
         )
@@ -1117,6 +1119,8 @@ class TrainingPackage:
         }
         if self.ranked_feedback_events:
             data["ranked_feedback_events"] = [event.to_dict() for event in self.ranked_feedback_events]
+        if self.feedback_context is not None:
+            data["feedback_context"] = self.feedback_context
         if self.evaluator_config is not None:
             data["evaluator_config"] = self.evaluator_config
         if self.evaluator_profile is not None:

@@ -163,6 +163,43 @@ def _flatten_trait_values(value) -> list[str]:
     return []
 
 
+def _flatten_feedback_theme_values(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            out.extend(_flatten_feedback_theme_values(item))
+        return out
+    if isinstance(value, dict):
+        out: list[str] = []
+        for item in value.values():
+            out.extend(_flatten_feedback_theme_values(item))
+        return out
+    return []
+
+
+def _event_feedback_themes(event: dict) -> list[str]:
+    themes: list[str] = []
+    for key in (
+        "reasoning",
+        "reviewer_reasoning",
+        "choice",
+        "themes",
+        "useful_traits",
+        "winning_traits",
+        "preserve",
+        "required_improvements",
+        "improvements",
+        "required_improvement_themes",
+        "rejected_traits",
+        "losing_traits",
+        "avoid",
+    ):
+        themes.extend(_flatten_feedback_theme_values(event.get(key)))
+    return _dedupe_texts(themes, limit=20)
+
+
 def _feedback_retry_hints(dataloader, result_ids: set[str]) -> dict[str, list[str]]:
     hints = {
         "preserve": [],
@@ -210,6 +247,19 @@ def _ranked_feedback_context_from_events(events_with_item: list[tuple[str, dict]
     reasoning = _event_strings("choice", "reasoning", "reviewer_reasoning")
     packet = {
         "source_item_ids": _dedupe_texts([item_id for item_id, _event in events_with_item if item_id], limit=12),
+        "feedback_source": _event_strings("feedback_source"),
+        "feedback_target": _event_strings("feedback_target"),
+        "review_issue": _event_strings("review_issue"),
+        "review_run_id": _event_strings("review_run_id"),
+        "reviewed_skill_version": _event_strings("reviewed_skill_version"),
+        "themes": _dedupe_texts(
+            [
+                theme
+                for _item_id, event in events_with_item
+                for theme in _event_feedback_themes(event)
+            ],
+            limit=20,
+        ),
         "preserve": _event_strings("useful_traits", "winning_traits", "preserve"),
         "improve": _event_strings("required_improvements", "improvements", "required_improvement_themes"),
         "avoid": _event_strings("rejected_traits", "losing_traits", "avoid"),
@@ -265,6 +315,12 @@ def _format_ranked_feedback_packet(packet: dict | None) -> str:
         return ""
     labels = {
         "source_item_ids": "Feedback source items",
+        "feedback_source": "Feedback source",
+        "feedback_target": "Feedback target",
+        "review_issue": "Review issue",
+        "review_run_id": "Review run",
+        "reviewed_skill_version": "Reviewed skill version",
+        "themes": "Full human feedback themes",
         "rankings": "Rankings / pairwise preferences",
         "preserve": "Preserve winning traits",
         "improve": "Required improvements",
@@ -288,7 +344,8 @@ def _human_feedback_hint_suffix(packet: dict | None) -> str:
     themes = _dedupe_texts(
         (packet.get("improve") if isinstance(packet.get("improve"), list) else [])
         + (packet.get("preserve") if isinstance(packet.get("preserve"), list) else [])
-        + (packet.get("avoid") if isinstance(packet.get("avoid"), list) else []),
+        + (packet.get("avoid") if isinstance(packet.get("avoid"), list) else [])
+        + (packet.get("themes") if isinstance(packet.get("themes"), list) else []),
         limit=8,
     )
     if not themes:
@@ -1684,6 +1741,7 @@ def _no_candidate_diagnostics(
     wrong_artifact_retry_attempts: list[dict],
 ) -> dict:
     categories: list[str] = []
+    feedback_themes: list[str] = []
     stop_reason_values = [
         str(attempt.get("stop_reason") or "").strip()
         for attempt in [*gate_reject_retry_attempts, *wrong_artifact_retry_attempts]
@@ -1710,6 +1768,7 @@ def _no_candidate_diagnostics(
             categories.append("artifact_contract_failure")
         if gate_rejection.get("human_feedback_context"):
             categories.append("old_review_training_signal")
+            feedback_themes = _feedback_context_themes(gate_rejection.get("human_feedback_context"))
         if _diagnostic_contains(fields, ("human_feedback_not_resolved", "human_feedback_resolution", "unresolved_feedback")):
             categories.append("candidate_feedback_unresolved")
         if _diagnostic_contains(
@@ -1736,12 +1795,28 @@ def _no_candidate_diagnostics(
             categories.append("selection_gate_tie")
     else:
         relation = "unknown"
-    return {
+    diagnostics = {
         "categories": _dedupe_texts(categories + no_candidate_triggers, limit=16),
         "selection_gate_relation": relation,
         "retry_budget_exhausted": "budget_exhausted" in stop_reasons or "noop_retry_budget_exhausted" in stop_reasons,
         "retry_stop_reasons": stop_reasons,
     }
+    if feedback_themes:
+        diagnostics["feedback_themes"] = feedback_themes
+    return diagnostics
+
+
+def _feedback_context_themes(context) -> list[str]:
+    if not isinstance(context, dict):
+        return []
+    themes: list[str] = []
+    for key in ("themes", "improve", "preserve", "avoid", "required_improvements", "reviewer_reasoning"):
+        value = context.get(key)
+        if isinstance(value, list):
+            themes.extend(str(item) for item in value)
+        elif isinstance(value, str):
+            themes.append(value)
+    return _dedupe_texts(themes, limit=12)
 
 
 def _gate_rejection_diagnostic_fields(gate_rejection: dict) -> list[str]:

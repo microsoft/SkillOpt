@@ -367,6 +367,41 @@ def test_ranked_feedback_context_empty_filter_does_not_fallback_when_disabled():
     ]
 
 
+def test_ranked_feedback_context_preserves_full_text_themes_without_ranking_labels():
+    dataloader = _RetryDataLoader()
+    dataloader.train_items[0]["ranked_feedback_events"][0].update(
+        {
+            "feedback_source": "imported_human_review",
+            "feedback_target": "baseline_review_outputs",
+            "review_issue": "owner/previews#21",
+            "review_run_id": "landing-page-preview-trial-005-review-004",
+            "reviewed_skill_version": "landing-page-builder@v12",
+            "ranking": ["D > B > C > A"],
+            "themes": ["premium hero visual system"],
+            "reasoning": (
+                "The page needs MoonAI-like premium branding, stronger product-relevant graphics, "
+                "trust logos, scroll animations, and better mobile responsiveness."
+            ),
+            "required_improvements": [
+                "dark high-contrast visual identity",
+                "less generic SaaS layout",
+            ],
+        }
+    )
+
+    packet = _ranked_feedback_context_packet(dataloader)
+
+    assert packet["feedback_target"] == ["baseline_review_outputs"]
+    assert packet["review_issue"] == ["owner/previews#21"]
+    assert "D > B > C > A" in packet["rankings"]
+    assert "premium hero visual system" in packet["themes"]
+    assert any("MoonAI-like premium branding" in theme for theme in packet["themes"])
+    assert "dark high-contrast visual identity" in packet["themes"]
+    assert "less generic SaaS layout" in packet["themes"]
+    assert "D > B > C > A" not in packet["themes"]
+    assert "D" not in packet["themes"]
+
+
 class _NoPatchAdapter(_RetryAdapter):
     def reflect(self, results, skill_content, out_dir, **kwargs):
         del results, skill_content, out_dir, kwargs
