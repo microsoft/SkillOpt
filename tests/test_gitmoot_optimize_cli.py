@@ -155,7 +155,12 @@ def test_no_candidate_package_preserves_noop_retry_attempts(tmp_path):
     assert candidate.summary.score is None
     assert candidate.eval_report["no_candidate_reason"] == "no_meaningful_skill_change"
     assert candidate.eval_report["noop_retry_attempts"] == retry_attempts
+    assert candidate.eval_report["no_candidate_diagnostics"]["retry_budget_exhausted"] is True
+    assert candidate.eval_report["no_candidate_diagnostics"]["retry_stop_reasons"] == [
+        "noop_retry_budget_exhausted"
+    ]
     assert candidate.summary.metadata["noop_retry_attempts"] == retry_attempts
+    assert candidate.summary.metadata["no_candidate_diagnostics"]["retry_budget_exhausted"] is True
     assert "candidate_content_unchanged" in candidate.summary.metadata["no_candidate_triggers"]
 
 
@@ -1249,6 +1254,11 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
                     "attempt": 0,
                     "action": "retry",
                     "retry_produced_duplicate_candidate": True,
+                },
+                {
+                    "attempt": 1,
+                    "action": "stop",
+                    "stop_reason": "budget_exhausted",
                 }
             ],
             "gate_rejection": {
@@ -1273,10 +1283,14 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
                 "primary_reason": "candidate_quality_regressed",
                 "human_reason": "The candidate lost selection evaluation against the baseline skill.",
                 "optimizer_hint": "Use gate rejection evidence before spending final test budget.",
-                "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
+                "failed_dimensions": ["human_feedback_resolution", "visual_quality"],
                 "evidence": ["Candidate gate score 0.8400 <= baseline gate score 0.8900."],
+                "human_feedback_context": {
+                    "improve": ["stronger product visuals", "better mobile layout"],
+                    "preserve": ["complete footer"],
+                },
                 "attempted_patch": "artifact delivery only",
-                "retry_attempts": "0/0",
+                "retry_attempts": "1/1",
                 "next_action": "Stop without final test eval.",
             },
         },
@@ -1301,7 +1315,7 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
         "rerun with higher retry budget",
         "manually revise skill direction",
     ]
-    assert loaded.eval_report["no_candidate_details"]["retry_attempts"] == "0/0"
+    assert loaded.eval_report["no_candidate_details"]["retry_attempts"] == "1/1"
     assert loaded.eval_report["no_candidate_details"]["baseline_gate"] == 0.89
     assert loaded.eval_report["no_candidate_details"]["candidate_gate"] == 0.84
     assert loaded.eval_report["no_candidate_details"]["duplicate_retry_detected"] is True
@@ -1309,6 +1323,19 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
         "Candidate was valid but had weaker imagery."
     )
     assert loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["gate_score"] == 0.84
+    assert loaded.eval_report["diagnostic_categories"] == [
+        "old_review_training_signal",
+        "candidate_feedback_unresolved",
+        "candidate_specific_quality_failure",
+        "retry_budget_exhausted",
+    ]
+    assert loaded.eval_report["selection_gate_relation"] == "candidate_below_baseline"
+    assert loaded.eval_report["retry_budget_exhausted"] is True
+    assert loaded.eval_report["feedback_themes"] == [
+        "stronger product visuals",
+        "better mobile layout",
+        "complete footer",
+    ]
     assert (
         loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["evaluator_reasoning"]
         == "Candidate was valid but had weaker imagery."
@@ -1326,6 +1353,9 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
         "collect more feedback",
         "rerun with higher retry budget",
         "manually revise skill direction",
+    ]
+    assert loaded.summary.metadata["no_candidate_details"]["diagnostics"]["retry_stop_reasons"] == [
+        "budget_exhausted"
     ]
     assert (
         loaded.summary.metadata["gate_rejection"]["baseline"]["evaluator_reasoning"]

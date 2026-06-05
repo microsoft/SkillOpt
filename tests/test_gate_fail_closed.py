@@ -915,6 +915,9 @@ def test_trainer_stops_repeated_noop_candidate_without_fake_candidate(tmp_path, 
     assert summary["epoch_stats"][0]["skips"] == 1
     assert len(summary["noop_retry_attempts"]) == 2
     assert summary["noop_retry_attempts"][1]["attempt"] == 1
+    assert "retry_budget_exhausted" in summary["no_candidate_diagnostics"]["categories"]
+    assert summary["no_candidate_diagnostics"]["retry_budget_exhausted"] is True
+    assert summary["no_candidate_diagnostics"]["retry_stop_reasons"] == ["noop_retry_budget_exhausted"]
 
 
 def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypatch):
@@ -1802,6 +1805,10 @@ def test_trainer_stops_gate_rejection_after_retry_budget(tmp_path, monkeypatch):
     assert summary["gate_reject_retry_attempts"][0]["action"] == "retry"
     assert summary["gate_reject_retry_attempts"][1]["action"] == "stop"
     assert summary["gate_rejection"]["retry_attempts"] == "1/1"
+    assert "retry_budget_exhausted" in summary["no_candidate_diagnostics"]["categories"]
+    assert summary["no_candidate_diagnostics"]["retry_budget_exhausted"] is True
+    assert summary["no_candidate_diagnostics"]["retry_stop_reasons"] == ["budget_exhausted"]
+    assert summary["no_candidate_diagnostics"]["selection_gate_relation"] == "candidate_below_baseline"
 
 
 def test_gate_rejection_duplicate_retry_forces_stronger_context(tmp_path, monkeypatch):

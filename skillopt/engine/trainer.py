@@ -1675,6 +1675,104 @@ def _should_skip_final_test_after_selection_reject(
     )
 
 
+def _no_candidate_diagnostics(
+    *,
+    no_candidate_triggers: list[str],
+    gate_rejection: dict | None,
+    noop_retry_attempts: list[dict],
+    gate_reject_retry_attempts: list[dict],
+    wrong_artifact_retry_attempts: list[dict],
+) -> dict:
+    categories: list[str] = []
+    stop_reason_values = [
+        str(attempt.get("stop_reason") or "").strip()
+        for attempt in [*gate_reject_retry_attempts, *wrong_artifact_retry_attempts]
+        if (
+            isinstance(attempt, dict)
+            and str(attempt.get("action") or "").strip() == "stop"
+            and str(attempt.get("stop_reason") or "").strip()
+        )
+    ]
+    if noop_retry_attempts and any(
+        trigger in no_candidate_triggers
+        for trigger in ("no_meaningful_skill_change", "candidate_content_unchanged", "human_feedback_not_incorporated")
+    ):
+        stop_reason_values.append("noop_retry_budget_exhausted")
+    stop_reasons = _dedupe_texts(
+        stop_reason_values,
+        limit=12,
+    )
+    if "budget_exhausted" in stop_reasons or "noop_retry_budget_exhausted" in stop_reasons:
+        categories.append("retry_budget_exhausted")
+    if isinstance(gate_rejection, dict):
+        fields = _gate_rejection_diagnostic_fields(gate_rejection)
+        if _diagnostic_contains(fields, ("artifact_contract", "artifact_contract_failure", "wrong_artifact_type")):
+            categories.append("artifact_contract_failure")
+        if gate_rejection.get("human_feedback_context"):
+            categories.append("old_review_training_signal")
+        if _diagnostic_contains(fields, ("human_feedback_not_resolved", "human_feedback_resolution", "unresolved_feedback")):
+            categories.append("candidate_feedback_unresolved")
+        if _diagnostic_contains(
+            fields,
+            (
+                "animation_motion_quality",
+                "brand_identity",
+                "cta_clarity",
+                "footer_presence_clarity",
+                "hero_quality",
+                "mobile_responsiveness",
+                "proof_trust_content",
+                "ranked_strength_preservation",
+                "text_overlap_readability",
+                "visual_images_relevance",
+                "visual_quality",
+            ),
+        ):
+            categories.append("candidate_specific_quality_failure")
+        baseline = gate_rejection.get("baseline") if isinstance(gate_rejection.get("baseline"), dict) else {}
+        candidate = gate_rejection.get("candidate") if isinstance(gate_rejection.get("candidate"), dict) else {}
+        relation = _gate_relation(baseline.get("gate_score"), candidate.get("gate_score"))
+        if relation == "tie":
+            categories.append("selection_gate_tie")
+    else:
+        relation = "unknown"
+    return {
+        "categories": _dedupe_texts(categories + no_candidate_triggers, limit=16),
+        "selection_gate_relation": relation,
+        "retry_budget_exhausted": "budget_exhausted" in stop_reasons or "noop_retry_budget_exhausted" in stop_reasons,
+        "retry_stop_reasons": stop_reasons,
+    }
+
+
+def _gate_rejection_diagnostic_fields(gate_rejection: dict) -> list[str]:
+    failed_dimensions = gate_rejection.get("failed_dimensions") if isinstance(gate_rejection.get("failed_dimensions"), list) else []
+    failed_checks = gate_rejection.get("failed_checks") if isinstance(gate_rejection.get("failed_checks"), list) else []
+    fields: list[Any] = [
+        gate_rejection.get("primary_reason"),
+        gate_rejection.get("rejection_type"),
+        gate_rejection.get("human_reason"),
+        *failed_dimensions,
+    ]
+    for check in failed_checks:
+        if isinstance(check, dict):
+            fields.extend([check.get("check"), check.get("reason"), check.get("severity")])
+    return [str(field or "").strip().lower().replace("-", "_").replace(".", "_") for field in fields if str(field or "").strip()]
+
+
+def _diagnostic_contains(fields: list[str], tokens: tuple[str, ...]) -> bool:
+    return any(token in field for field in fields for token in tokens)
+
+
+def _gate_relation(baseline_gate: Any, candidate_gate: Any) -> str:
+    if isinstance(baseline_gate, bool) or isinstance(candidate_gate, bool):
+        return "unknown"
+    if not isinstance(baseline_gate, int | float) or not isinstance(candidate_gate, int | float):
+        return "unknown"
+    if abs(float(candidate_gate) - float(baseline_gate)) <= 1e-9:
+        return "tie"
+    return "candidate_below_baseline" if float(candidate_gate) < float(baseline_gate) else "candidate_above_baseline"
+
+
 def _format_rejection_buffer(buffer: list[dict]) -> str:
     """**DEPRECATED** — kept for backward compat; use _format_step_buffer."""
     return _format_step_buffer(buffer)
@@ -4166,6 +4264,13 @@ class ReflACTTrainer:
             (h.get("feedback_retry_hints") for h in history if isinstance(h.get("feedback_retry_hints"), dict)),
             {},
         ) if not final_has_candidate else {}
+        no_candidate_diagnostics = {} if final_has_candidate else _no_candidate_diagnostics(
+            no_candidate_triggers=no_candidate_triggers,
+            gate_rejection=selection_reject_gate_rejection,
+            noop_retry_attempts=noop_retry_attempts,
+            gate_reject_retry_attempts=gate_reject_retry_attempts,
+            wrong_artifact_retry_attempts=wrong_artifact_retry_attempts,
+        )
         gate_blockers = [
             h["gate_block"]
             for h in history
@@ -4224,6 +4329,7 @@ class ReflACTTrainer:
             "wrong_artifact_retry_attempts": wrong_artifact_retry_attempts,
             "no_candidate_triggers": no_candidate_triggers,
             "no_candidate_reason": no_candidate_triggers[0] if no_candidate_triggers else "",
+            "no_candidate_diagnostics": no_candidate_diagnostics,
             "failure": no_candidate_failure,
             "optimizer_hint": no_candidate_optimizer_hint,
             "feedback_retry_hints": no_candidate_feedback_retry_hints,

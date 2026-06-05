@@ -371,6 +371,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
     gate_status = str(summary.get("gate_status") or "passed")
     no_candidate_triggers = no_candidate_triggers or []
     no_candidate_details = _no_candidate_details(summary, no_candidate_triggers)
+    no_candidate_diagnostics = _summary_no_candidate_diagnostics(summary, no_candidate_triggers)
     report = {
         "dry_run": dry_run,
         "gate_status": gate_status,
@@ -380,6 +381,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
         "no_candidate_triggers": no_candidate_triggers,
         "no_candidate_details": no_candidate_details,
+        "no_candidate_diagnostics": no_candidate_diagnostics,
         "next_action": _no_candidate_next_action(no_candidate_triggers),
         "best_selection_hard": summary.get("best_selection_hard"),
         "best_selection_soft": summary.get("best_selection_soft"),
@@ -468,6 +470,7 @@ def _summary_metadata(
         gate_blockers = []
     no_candidate_triggers = no_candidate_triggers or []
     no_candidate_details = _no_candidate_details(summary, no_candidate_triggers)
+    no_candidate_diagnostics = _summary_no_candidate_diagnostics(summary, no_candidate_triggers)
     return {
         "artifact_ids": [artifact.id for artifact in artifacts],
         "gate_status": gate_status,
@@ -477,6 +480,7 @@ def _summary_metadata(
         "no_candidate_reason": _primary_no_candidate_reason(no_candidate_triggers),
         "no_candidate_triggers": no_candidate_triggers,
         "no_candidate_details": no_candidate_details,
+        "no_candidate_diagnostics": no_candidate_diagnostics,
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "gate_reject_retry_attempts": summary.get("gate_reject_retry_attempts", []),
         "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
@@ -587,11 +591,18 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
     if gate_rejection is not None and "gate_rejected_best_origin_initial_skill" in triggers:
         baseline = gate_rejection.get("baseline") if isinstance(gate_rejection.get("baseline"), dict) else {}
         candidate = gate_rejection.get("candidate") if isinstance(gate_rejection.get("candidate"), dict) else {}
+        diagnostics = _gate_rejection_diagnostics(summary, gate_rejection)
         details["attempted_patch"] = str(gate_rejection.get("attempted_patch") or "")
         details["baseline_gate"] = _gate_score(baseline)
         details["candidate_gate"] = _gate_score(candidate)
         details["duplicate_retry_detected"] = _duplicate_retry_detected(summary)
         details["evaluator_reason"] = _gate_evaluator_reason(gate_rejection, candidate)
+        details["diagnostics"] = diagnostics
+        details["diagnostic_categories"] = diagnostics.get("categories", [])
+        details["selection_gate_relation"] = diagnostics.get("selection_gate_relation", "")
+        details["retry_budget_exhausted"] = diagnostics.get("retry_budget_exhausted", False)
+        details["feedback_themes"] = diagnostics.get("feedback_themes", [])
+        details["stop_reason"] = diagnostics.get("stop_reason", "")
         details["rejection"] = {
             "baseline": baseline,
             "candidate": candidate,
@@ -632,10 +643,15 @@ def _no_candidate_report_fields(details: dict[str, Any]) -> dict[str, Any]:
         "candidate_gate",
         "retry_attempts",
         "duplicate_retry_detected",
+        "diagnostic_categories",
         "evaluator_reason",
+        "feedback_themes",
         "optimizer_hint",
         "failed_dimensions",
         "human_feedback_context",
+        "retry_budget_exhausted",
+        "selection_gate_relation",
+        "stop_reason",
         "next_actions",
     ):
         if key in details and details[key] not in (None, "", [], {}):
@@ -648,6 +664,141 @@ def _gate_score(scores: dict[str, Any]) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value)
+
+
+def _gate_rejection_diagnostics(summary: dict[str, Any], gate_rejection: dict[str, Any]) -> dict[str, Any]:
+    baseline = gate_rejection.get("baseline") if isinstance(gate_rejection.get("baseline"), dict) else {}
+    candidate = gate_rejection.get("candidate") if isinstance(gate_rejection.get("candidate"), dict) else {}
+    failed_dimensions = _string_list(gate_rejection.get("failed_dimensions"))
+    failed_checks = gate_rejection.get("failed_checks") if isinstance(gate_rejection.get("failed_checks"), list) else []
+    fields = _diagnostic_fields(gate_rejection, failed_dimensions, failed_checks)
+    categories: list[str] = []
+    if _contains_any(fields, ("artifact_contract", "artifact_contract_failure", "wrong_artifact_type")):
+        categories.append("artifact_contract_failure")
+    if gate_rejection.get("human_feedback_context"):
+        categories.append("old_review_training_signal")
+    if _contains_any(fields, ("human_feedback_not_resolved", "human_feedback_resolution", "unresolved_feedback")):
+        categories.append("candidate_feedback_unresolved")
+    if _contains_any(
+        fields,
+        (
+            "animation_motion_quality",
+            "brand_identity",
+            "cta_clarity",
+            "footer_presence_clarity",
+            "hero_quality",
+            "mobile_responsiveness",
+            "proof_trust_content",
+            "ranked_strength_preservation",
+            "text_overlap_readability",
+            "visual_images_relevance",
+            "visual_quality",
+        ),
+    ):
+        categories.append("candidate_specific_quality_failure")
+
+    relation = _selection_gate_relation(_gate_score(baseline), _gate_score(candidate))
+    if relation == "tie":
+        categories.append("selection_gate_tie")
+
+    retry_stop_reasons = _retry_stop_reasons(summary)
+    retry_budget_exhausted = _has_retry_budget_exhausted(retry_stop_reasons)
+    if retry_budget_exhausted:
+        categories.append("retry_budget_exhausted")
+
+    return {
+        "categories": _dedupe_triggers(categories),
+        "selection_gate_relation": relation,
+        "retry_budget_exhausted": retry_budget_exhausted,
+        "retry_stop_reasons": retry_stop_reasons,
+        "stop_reason": retry_stop_reasons[-1] if retry_stop_reasons else "",
+        "feedback_themes": _feedback_themes(gate_rejection.get("human_feedback_context")),
+    }
+
+
+def _diagnostic_fields(gate_rejection: dict[str, Any], failed_dimensions: list[str], failed_checks: list[Any]) -> list[str]:
+    values: list[Any] = [
+        gate_rejection.get("primary_reason"),
+        gate_rejection.get("rejection_type"),
+        gate_rejection.get("human_reason"),
+        *failed_dimensions,
+    ]
+    for check in failed_checks:
+        if isinstance(check, dict):
+            values.extend([check.get("check"), check.get("reason"), check.get("severity")])
+    return [str(value or "").strip().lower().replace("-", "_").replace(".", "_") for value in values if str(value or "").strip()]
+
+
+def _contains_any(fields: list[str], tokens: tuple[str, ...]) -> bool:
+    return any(token in field for field in fields for token in tokens)
+
+
+def _selection_gate_relation(baseline_gate: float | None, candidate_gate: float | None) -> str:
+    if baseline_gate is None or candidate_gate is None:
+        return "unknown"
+    if abs(candidate_gate - baseline_gate) <= 1e-9:
+        return "tie"
+    return "candidate_below_baseline" if candidate_gate < baseline_gate else "candidate_above_baseline"
+
+
+def _retry_stop_reasons(summary: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    for key in ("gate_reject_retry_attempts", "wrong_artifact_retry_attempts", "noop_retry_attempts"):
+        attempts = summary.get(key)
+        if not isinstance(attempts, list):
+            continue
+        for attempt in attempts:
+            if isinstance(attempt, dict):
+                if str(attempt.get("action") or "").strip() != "stop":
+                    continue
+                reason = str(attempt.get("stop_reason") or "").strip()
+                if reason:
+                    reasons.append(reason)
+    triggers = _string_list(summary.get("no_candidate_triggers"))
+    if isinstance(summary.get("noop_retry_attempts"), list) and any(
+        trigger in triggers
+        for trigger in ("no_meaningful_skill_change", "candidate_content_unchanged", "human_feedback_not_incorporated")
+    ):
+        reasons.append("noop_retry_budget_exhausted")
+    return _dedupe_triggers(reasons)
+
+
+def _summary_no_candidate_diagnostics(summary: dict[str, Any], no_candidate_triggers: list[str]) -> dict[str, Any]:
+    existing = summary.get("no_candidate_diagnostics")
+    if isinstance(existing, dict) and existing:
+        return existing
+    retry_stop_reasons = _retry_stop_reasons(summary)
+    categories: list[str] = []
+    if _has_retry_budget_exhausted(retry_stop_reasons):
+        categories.append("retry_budget_exhausted")
+    categories.extend(no_candidate_triggers)
+    return {
+        "categories": _dedupe_triggers(categories),
+        "selection_gate_relation": "unknown",
+        "retry_budget_exhausted": _has_retry_budget_exhausted(retry_stop_reasons),
+        "retry_stop_reasons": retry_stop_reasons,
+    }
+
+
+def _has_retry_budget_exhausted(retry_stop_reasons: list[str]) -> bool:
+    return "budget_exhausted" in retry_stop_reasons or "noop_retry_budget_exhausted" in retry_stop_reasons
+
+
+def _feedback_themes(context: Any) -> list[str]:
+    if not isinstance(context, dict):
+        return []
+    themes: list[str] = []
+    for key in ("improve", "preserve", "avoid", "required_improvements", "reasoning", "rankings"):
+        themes.extend(_string_list(context.get(key)))
+    return _dedupe_triggers(themes)[:12]
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _gate_evaluator_reason(gate_rejection: dict[str, Any], candidate_scores: dict[str, Any]) -> str:
