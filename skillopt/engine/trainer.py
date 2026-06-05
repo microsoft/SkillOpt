@@ -195,6 +195,129 @@ def _ranked_feedback_retry_hints(dataloader, result_ids: set[str] | None = None)
     return _feedback_retry_hints(dataloader, result_ids or set())
 
 
+def _ranked_feedback_context_from_events(events_with_item: list[tuple[str, dict]]) -> dict:
+    if not events_with_item:
+        return {}
+
+    def _event_strings(*keys: str) -> list[str]:
+        values: list[str] = []
+        for _item_id, event in events_with_item:
+            for key in keys:
+                value = event.get(key)
+                values.extend(_flatten_trait_values(value))
+        return _dedupe_texts(values, limit=12)
+
+    reasoning = _event_strings("choice", "reasoning", "reviewer_reasoning")
+    packet = {
+        "source_item_ids": _dedupe_texts([item_id for item_id, _event in events_with_item if item_id], limit=12),
+        "preserve": _event_strings("useful_traits", "winning_traits", "preserve"),
+        "improve": _event_strings("required_improvements", "improvements", "required_improvement_themes"),
+        "avoid": _event_strings("rejected_traits", "losing_traits", "avoid"),
+        "rankings": _event_strings("ranking", "rankings"),
+        "reviewer_reasoning": reasoning[:8],
+        "quality": _event_strings("quality"),
+        "continue_mode": _event_strings("continue_mode"),
+        "promote": _event_strings("promote"),
+    }
+    return {
+        key: value
+        for key, value in packet.items()
+        if value
+    }
+
+
+def _ranked_feedback_context_packet(
+    dataloader,
+    result_ids: set[str] | None = None,
+    *,
+    fallback_to_all: bool = True,
+) -> dict:
+    if dataloader is None or not hasattr(dataloader, "train_items"):
+        return {}
+    try:
+        train_items = [item for item in dataloader.train_items if isinstance(item, dict)]
+    except Exception:  # noqa: BLE001
+        return {}
+    explicit_filter = result_ids is not None
+    ids = {str(item_id or "").strip() for item_id in (result_ids or set()) if str(item_id or "").strip()}
+    if explicit_filter and not ids and not fallback_to_all:
+        return {}
+    selected_items = [
+        item
+        for item in train_items
+        if not ids or str(item.get("id") or "").strip() in ids
+    ]
+    if ids and not selected_items and fallback_to_all:
+        selected_items = train_items
+    if ids and not selected_items:
+        return {}
+
+    events_with_item: list[tuple[str, dict]] = []
+    for item in selected_items:
+        item_id = str(item.get("id") or "").strip()
+        for event in _item_ranked_feedback_events(item):
+            events_with_item.append((item_id, event))
+    return _ranked_feedback_context_from_events(events_with_item)
+
+
+def _format_ranked_feedback_packet(packet: dict | None) -> str:
+    if not isinstance(packet, dict) or not packet:
+        return ""
+    labels = {
+        "source_item_ids": "Feedback source items",
+        "rankings": "Rankings / pairwise preferences",
+        "preserve": "Preserve winning traits",
+        "improve": "Required improvements",
+        "avoid": "Avoid losing traits",
+        "reviewer_reasoning": "Reviewer reasoning",
+        "quality": "Quality labels",
+        "continue_mode": "Continue modes",
+        "promote": "Promote decisions",
+    }
+    lines = ["## Ranked Human Feedback Context"]
+    for key, label in labels.items():
+        values = packet.get(key)
+        if isinstance(values, list) and values:
+            lines.append(f"{label}: " + "; ".join(str(value) for value in values[:8]))
+    return "\n".join(lines)
+
+
+def _human_feedback_hint_suffix(packet: dict | None) -> str:
+    if not isinstance(packet, dict) or not packet:
+        return ""
+    themes = _dedupe_texts(
+        (packet.get("improve") if isinstance(packet.get("improve"), list) else [])
+        + (packet.get("preserve") if isinstance(packet.get("preserve"), list) else [])
+        + (packet.get("avoid") if isinstance(packet.get("avoid"), list) else []),
+        limit=8,
+    )
+    if not themes:
+        return ""
+    return " Preserve and resolve ranked human feedback themes: " + "; ".join(str(theme) for theme in themes) + "."
+
+
+def _with_human_feedback_context(packet: dict | None, feedback_context: dict | None) -> dict | None:
+    if not isinstance(packet, dict):
+        return packet
+    if not isinstance(feedback_context, dict) or not feedback_context:
+        return packet
+    enriched = dict(packet)
+    existing_context = enriched.get("human_feedback_context")
+    if not isinstance(existing_context, dict) or not existing_context:
+        enriched["human_feedback_context"] = feedback_context
+    hint = str(enriched.get("optimizer_hint") or "").strip()
+    suffix = _human_feedback_hint_suffix(feedback_context)
+    if suffix and suffix.strip() not in hint:
+        enriched["optimizer_hint"] = (hint + suffix).strip()
+    failed_dimensions = enriched.get("failed_dimensions") if isinstance(enriched.get("failed_dimensions"), list) else []
+    if "human_feedback_alignment" not in failed_dimensions:
+        enriched["failed_dimensions"] = _dedupe_texts(
+            [str(item) for item in failed_dimensions] + ["human_feedback_alignment"],
+            limit=12,
+        )
+    return enriched
+
+
 def _has_ranked_feedback(dataloader, result_ids: set[str] | None = None) -> bool:
     if dataloader is None or not hasattr(dataloader, "train_items"):
         return False
@@ -358,6 +481,7 @@ def _write_feedback_direct_predictions(
         prompt = str(item.get("prompt") or item.get("task_description") or item_id)
         with open(os.path.join(item_dir, "target_user_prompt.txt"), "w", encoding="utf-8") as f:
             f.write(prompt)
+        feedback_context = _ranked_feedback_context_from_events([(item_id, event) for event in events])
         failure = {
             "primary_reason": "ranked_human_feedback_requires_skill_update",
             "human_reason": (
@@ -393,6 +517,7 @@ def _write_feedback_direct_predictions(
             "failed_dimensions": ["human_feedback_alignment"],
             "evidence": [feedback_json[:2000]],
             "stage_status": [{"stage": "feedback_direct", "status": "failed"}],
+            "human_feedback_context": feedback_context,
         }
         results.append(
             {
@@ -701,6 +826,11 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
         lines.append("Failed checks: " + "; ".join(str(item) for item in failed_checks[:8]))
     if evidence:
         lines.append("Evidence: " + "; ".join(str(item) for item in evidence[:8]))
+    feedback_text = _format_ranked_feedback_packet(
+        packet.get("human_feedback_context") if isinstance(packet.get("human_feedback_context"), dict) else {}
+    )
+    if feedback_text:
+        lines.append(feedback_text)
     return "\n".join(line for line in lines if str(line).strip())
 
 
@@ -777,6 +907,19 @@ def _structured_result_failure(result: dict) -> dict | None:
         if isinstance(source, list)
         for check in source
     ]
+    human_feedback_context = next(
+        (
+            source
+            for source in (
+                result.get("human_feedback_context"),
+                metadata.get("human_feedback_context"),
+                failure.get("human_feedback_context"),
+                metadata.get("human_feedback_alignment"),
+            )
+            if isinstance(source, dict) and source
+        ),
+        {},
+    )
 
     return {
         "primary_reason": primary_reason,
@@ -793,6 +936,7 @@ def _structured_result_failure(result: dict) -> dict | None:
         "failed_checks": failed_checks,
         "evidence": _string_list(result.get("evidence"), metadata.get("evidence"), failure.get("evidence")),
         "stage_status": failure.get("stage_status") if isinstance(failure.get("stage_status"), list) else [],
+        "human_feedback_context": human_feedback_context,
         "expected_artifact": str(
             failure.get("expected_artifact")
             or metadata.get("expected_artifact")
@@ -829,24 +973,37 @@ def _format_unconverted_failure_hints(hints: list[dict]) -> list[dict]:
                 "optimizer_hint": str(hint.get("optimizer_hint") or "").strip(),
                 "failed_checks": hint.get("failed_checks") if isinstance(hint.get("failed_checks"), list) else [],
                 "evidence": hint.get("evidence") if isinstance(hint.get("evidence"), list) else [],
+                "human_feedback_context": (
+                    hint.get("human_feedback_context")
+                    if isinstance(hint.get("human_feedback_context"), dict)
+                    else {}
+                ),
             }
         )
     return records
 
 
-def _format_hard_failure_retry_context(hints: list[dict], *, attempt: int, budget: int) -> str:
-    return "\n".join(
-        [
-            "## Actionable Hard-Failure Retry",
-            f"Retry attempt: {attempt}/{budget}",
-            (
-                "The evaluator produced structured hard-failure guidance, but the previous reflection "
-                "did not produce a usable skill patch. Convert these failure packets into a concrete "
-                "skill update. Do not repeat a no-op response."
-            ),
-            json.dumps(_format_unconverted_failure_hints(hints), indent=2, ensure_ascii=False),
-        ]
-    )
+def _format_hard_failure_retry_context(
+    hints: list[dict],
+    *,
+    attempt: int,
+    budget: int,
+    feedback_context: dict | None = None,
+) -> str:
+    lines = [
+        "## Actionable Hard-Failure Retry",
+        f"Retry attempt: {attempt}/{budget}",
+        (
+            "The evaluator produced structured hard-failure guidance, but the previous reflection "
+            "did not produce a usable skill patch. Convert these failure packets into a concrete "
+            "skill update. Do not repeat a no-op response."
+        ),
+        json.dumps(_format_unconverted_failure_hints(hints), indent=2, ensure_ascii=False),
+    ]
+    feedback_text = _format_ranked_feedback_packet(feedback_context)
+    if feedback_text:
+        lines.append(feedback_text)
+    return "\n".join(lines)
 
 
 def _extract_evaluator_reasoning(result: dict) -> str:
@@ -1302,6 +1459,7 @@ def _selection_reject_gate_rejection(
     rejection_signal: dict | None = None,
     baseline_context: dict | None = None,
     candidate_context: dict | None = None,
+    human_feedback_context: dict | None = None,
 ) -> dict | None:
     reject_steps = [record for record in history if record.get("action") == "reject"]
     if not reject_steps:
@@ -1371,6 +1529,14 @@ def _selection_reject_gate_rejection(
     signal = rejection_signal if isinstance(rejection_signal, dict) else {}
     signal_primary_reason = str(signal.get("primary_reason") or "").strip()
     signal_is_wrong_artifact = _is_wrong_artifact_rejection(signal)
+    signal_feedback_context = signal.get("human_feedback_context")
+    packet_feedback_context = (
+        signal_feedback_context
+        if isinstance(signal_feedback_context, dict) and signal_feedback_context
+        else human_feedback_context
+    )
+    if not isinstance(packet_feedback_context, dict):
+        packet_feedback_context = {}
     signal_optimizer_hint = str(signal.get("optimizer_hint") or "").strip()
     signal_human_reason = str(signal.get("human_reason") or "").strip()
     signal_failed_dimensions = (
@@ -1393,12 +1559,20 @@ def _selection_reject_gate_rejection(
     optimizer_hint = signal_optimizer_hint or (
         "Use the gate rejection evidence and human feedback to change the skill direction before spending final test-eval budget."
     )
+    hint_suffix = _human_feedback_hint_suffix(packet_feedback_context)
+    if hint_suffix and hint_suffix.strip() not in optimizer_hint:
+        optimizer_hint = (optimizer_hint + hint_suffix).strip()
     human_reason = signal_human_reason or (
         "The candidate lost selection evaluation against the baseline skill, so final test evaluation was skipped."
     )
     failed_dimensions = signal_failed_dimensions or ["selection_gate", "human_feedback_alignment"]
+    if packet_feedback_context and "human_feedback_alignment" not in failed_dimensions:
+        failed_dimensions = _dedupe_texts(
+            [str(item) for item in failed_dimensions] + ["human_feedback_alignment"],
+            limit=12,
+        )
 
-    return {
+    packet = {
         "rejection_type": rejection_type,
         "retryable": True,
         "baseline": _gate_score_payload(
@@ -1430,6 +1604,9 @@ def _selection_reject_gate_rejection(
         "retry_attempts": retry_attempts,
         "next_action": next_action,
     }
+    if packet_feedback_context:
+        packet["human_feedback_context"] = packet_feedback_context
+    return packet
 
 
 def _should_skip_final_test_after_selection_reject(
@@ -2201,6 +2378,21 @@ class ReflACTTrainer:
                         update_mode=update_mode,
                     )
                     structured_failure_hints = _structured_failure_hints(rollout_results)
+                    structured_failure_ids = {
+                        str(hint.get("source_item_id") or "").strip()
+                        for hint in structured_failure_hints
+                        if str(hint.get("source_item_id") or "").strip()
+                    }
+                    feedback_failure_context = _ranked_feedback_context_packet(
+                        dataloader,
+                        structured_failure_ids,
+                        fallback_to_all=False,
+                    )
+                    if feedback_failure_context:
+                        structured_failure_hints = [
+                            _with_human_feedback_context(hint, feedback_failure_context) or hint
+                            for hint in structured_failure_hints
+                        ]
                     if structured_failure_hints and not failure_patches:
                         hard_failure_retry_budget = max(0, int(cfg.get("hard_failure_retry_budget", 1) or 0))
                         hard_failure_retry_attempts = list(step_rec.get("hard_failure_retry_attempts") or [])
@@ -2213,6 +2405,7 @@ class ReflACTTrainer:
                                 structured_failure_hints,
                                 attempt=retry_attempt,
                                 budget=hard_failure_retry_budget,
+                                feedback_context=feedback_failure_context,
                             )
                             retry_patches_dir = os.path.join(
                                 patches_dir,
@@ -2734,6 +2927,7 @@ class ReflACTTrainer:
                                 baseline_context=sel_eval_context_cache.get(skill_hash(current_skill))
                                 or sel_eval_context_cache.get(skill_hash(skill_init)),
                                 candidate_context=selection_candidate_context,
+                                human_feedback_context=_ranked_feedback_context_packet(dataloader),
                             )
                             wrong_artifact_retry = _is_wrong_artifact_rejection(gate_rejection)
                             active_retry_attempts = (
@@ -3179,6 +3373,7 @@ class ReflACTTrainer:
                                     baseline_context=sel_eval_context_cache.get(skill_hash(current_skill))
                                     or sel_eval_context_cache.get(skill_hash(skill_init)),
                                     candidate_context=selection_candidate_context,
+                                    human_feedback_context=_ranked_feedback_context_packet(dataloader),
                                 )
                                 print(
                                     f"    [6/6 EVALUATE] GATE RETRY REJECT "
@@ -3783,6 +3978,7 @@ class ReflACTTrainer:
                         if isinstance(attempt, dict) and attempt.get("action") == "retry"
                     ),
                     retry_budget=max(0, int(cfg.get("gate_reject_retry_budget", 3) or 0)),
+                    human_feedback_context=_ranked_feedback_context_packet(dataloader),
                 )
             if selection_reject_gate_rejection is not None:
                 skip_final_test_reason = "selection_gate_rejected_candidate"

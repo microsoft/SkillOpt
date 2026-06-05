@@ -600,7 +600,9 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
             "optimizer_hint": str(gate_rejection.get("optimizer_hint") or ""),
             "failed_dimensions": gate_rejection.get("failed_dimensions") or [],
             "evidence": gate_rejection.get("evidence") or [],
+            "human_feedback_context": gate_rejection.get("human_feedback_context") or {},
         }
+        details["human_feedback_context"] = gate_rejection.get("human_feedback_context") or {}
         details["retry_attempts"] = str(gate_rejection.get("retry_attempts") or "")
         details["next_action"] = str(gate_rejection.get("next_action") or _no_candidate_next_action(triggers))
         details["next_actions"] = _no_candidate_next_actions(triggers)
@@ -616,6 +618,7 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
         details["failed_dimensions"] = failure.get("failed_dimensions") or ["human_feedback_alignment"]
         details["evidence"] = failure.get("evidence") or retry_hints.get("improve") or retry_hints.get("preserve") or []
         details["feedback_retry_hints"] = retry_hints
+        details["human_feedback_context"] = failure.get("human_feedback_context") or {}
         details["next_action"] = _no_candidate_next_action(triggers)
         details["next_actions"] = _no_candidate_next_actions(triggers)
     return {key: value for key, value in details.items() if value not in (None, "", [], {})}
@@ -632,6 +635,7 @@ def _no_candidate_report_fields(details: dict[str, Any]) -> dict[str, Any]:
         "evaluator_reason",
         "optimizer_hint",
         "failed_dimensions",
+        "human_feedback_context",
         "next_actions",
     ):
         if key in details and details[key] not in (None, "", [], {}):

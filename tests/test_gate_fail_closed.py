@@ -11,6 +11,7 @@ from skillopt.engine.trainer import (
     _detect_no_meaningful_change,
     _gate_rejection_retry_decision,
     _non_feedback_direct_items,
+    _ranked_feedback_context_packet,
     _selection_reject_gate_rejection,
     _should_skip_final_test_after_selection_reject,
 )
@@ -353,6 +354,16 @@ class _RetryAdapter:
 
     def get_task_types(self):
         return ["gitmoot-skillopt"]
+
+
+def test_ranked_feedback_context_empty_filter_does_not_fallback_when_disabled():
+    dataloader = _RetryDataLoader()
+
+    assert _ranked_feedback_context_packet(dataloader, set(), fallback_to_all=False) == {}
+    assert _ranked_feedback_context_packet(dataloader, {"missing"}, fallback_to_all=False) == {}
+    assert _ranked_feedback_context_packet(dataloader, {"missing"}, fallback_to_all=True)["improve"] == [
+        "better mobile layout"
+    ]
 
 
 class _NoPatchAdapter(_RetryAdapter):
@@ -1195,6 +1206,18 @@ def test_trainer_retries_actionable_wrong_artifact_rejection(tmp_path, monkeypat
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
     merge_contexts: list[str] = []
+    dataloader = _RetryDataLoader()
+    dataloader.train_items[0]["ranked_feedback_events"][0].update(
+        {
+            "required_improvements": [
+                "MoonAI-style premium branding",
+                "stronger product-relevant graphics",
+                "scroll animations",
+            ],
+            "ranking": ["D > B > C > A"],
+            "choice": "The page needs stronger branding, motion, and mobile polish.",
+        }
+    )
 
     def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
         del failure_patches, success_patches
@@ -1237,7 +1260,7 @@ def test_trainer_retries_actionable_wrong_artifact_rejection(tmp_path, monkeypat
     cfg["wrong_artifact_retry_budget"] = 1
     cfg["gate_reject_retry_budget"] = 0
 
-    summary = ReflACTTrainer(cfg, WrongArtifactAdapter(_RetryDataLoader())).train()
+    summary = ReflACTTrainer(cfg, WrongArtifactAdapter(dataloader)).train()
 
     assert summary["total_accepts"] == 1
     assert summary["best_origin"] == "step_0001"
@@ -1250,11 +1273,19 @@ def test_trainer_retries_actionable_wrong_artifact_rejection(tmp_path, monkeypat
     assert retry_attempt["gate_rejection"]["primary_reason"] == "wrong_artifact_type"
     assert retry_attempt["gate_rejection"]["retry_attempts"] == "0/1"
     assert retry_attempt["gate_rejection"]["failed_checks"][0]["check"] == "vue_vite_bundle.required_files"
+    assert retry_attempt["gate_rejection"]["human_feedback_context"]["improve"] == [
+        "MoonAI-style premium branding",
+        "stronger product-relevant graphics",
+        "scroll animations",
+    ]
+    assert "MoonAI-style premium branding" in retry_attempt["gate_rejection"]["optimizer_hint"]
     assert "Primary reason: wrong_artifact_type" in merge_contexts[1]
     assert "Expected artifact: vue-vite bundle" in merge_contexts[1]
     assert "Actual artifact: skill markdown/template" in merge_contexts[1]
     assert "vue_vite_bundle.required_files" in merge_contexts[1]
     assert "Return a Vue/Vite preview bundle JSON." in merge_contexts[1]
+    assert "Rankings / pairwise preferences: D > B > C > A" in merge_contexts[1]
+    assert "Required improvements: MoonAI-style premium branding" in merge_contexts[1]
 
 
 def test_failure_hint_without_patch_is_recorded(tmp_path):
@@ -1340,6 +1371,29 @@ def test_actionable_hard_failure_retry_converts_hint_to_patch(tmp_path, monkeypa
     package = TrainingPackage.load(package_path)
     reflect_contexts: list[str] = []
     retry_result_ids: list[list[str]] = []
+    dataloader = _RetryDataLoader()
+    dataloader.train_items[0]["ranked_feedback_events"][0].update(
+        {
+            "required_improvements": [
+                "MoonAI-style premium branding",
+                "mobile polish",
+                "Tailwind-style UI polish",
+            ],
+            "ranking": ["C > D > B > A"],
+            "choice": "The candidate needs premium branding, mobile polish, and better UI details.",
+        }
+    )
+    dataloader.train_items.append(
+        {
+            "id": "train-2",
+            "ranked_feedback_events": [
+                {
+                    "required_improvements": ["unrelated successful item theme"],
+                    "ranking": ["A > B > C > D"],
+                }
+            ],
+        }
+    )
 
     class HardFailureRetryAdapter(_RetryAdapter):
         def rollout(self, env_manager, skill_content, out_dir, **kwargs):
@@ -1367,7 +1421,7 @@ def test_actionable_hard_failure_retry_converts_hint_to_patch(tmp_path, monkeypa
                     },
                 },
                 {
-                    "id": "already-good",
+                    "id": "train-2",
                     "hard": 1,
                     "soft": 0.8,
                     "score_status": "scored",
@@ -1420,12 +1474,23 @@ def test_actionable_hard_failure_retry_converts_hint_to_patch(tmp_path, monkeypa
     )
     cfg["feedback_direct_mode"] = "off"
 
-    summary = ReflACTTrainer(cfg, HardFailureRetryAdapter(_RetryDataLoader())).train()
+    summary = ReflACTTrainer(cfg, HardFailureRetryAdapter(dataloader)).train()
 
     assert summary["total_accepts"] == 1
     assert any("Actionable Hard-Failure Retry" in context for context in reflect_contexts)
+    retry_context = next(context for context in reflect_contexts if "Actionable Hard-Failure Retry" in context)
+    assert "vue_vite_bundle.required_files" in retry_context
+    assert "Required improvements: MoonAI-style premium branding" in retry_context
+    assert "Rankings / pairwise preferences: C > D > B > A" in retry_context
+    assert "unrelated successful item theme" not in retry_context
     history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
     assert history[0]["hard_failure_retry_attempts"][0]["status"] == "converted_to_patch"
+    feedback_context = history[0]["hard_failure_retry_attempts"][0]["failure_hints"][0]["human_feedback_context"]
+    assert feedback_context["improve"] == [
+        "MoonAI-style premium branding",
+        "mobile polish",
+        "Tailwind-style UI polish",
+    ]
     assert "failure_hint_not_converted_to_patch" not in history[0]
     assert retry_result_ids == [["train-1"]]
 
@@ -2092,6 +2157,42 @@ def test_gate_rejection_packet_handles_malformed_change_summary():
 
     assert rejection is not None
     assert rejection["attempted_patch"] == "selection-gated candidate update"
+
+
+def test_gate_rejection_prefers_signal_specific_human_feedback_context():
+    rejection = _selection_reject_gate_rejection(
+        history=[
+            {
+                "action": "reject",
+                "selection_hard": 0,
+                "selection_soft": 0.0,
+                "candidate_gate_score": 0.0,
+                "rewrite_change_summary": ["wrong artifact patch"],
+            }
+        ],
+        baseline_scores=(1.0, 0.9),
+        gate_metric="hard",
+        gate_mixed_weight=0.5,
+        rejection_signal={
+            "primary_reason": "wrong_artifact_type",
+            "optimizer_hint": "Return the Vue/Vite bundle.",
+            "failed_dimensions": ["wrong_artifact_type"],
+            "human_feedback_context": {
+                "improve": ["signal-specific product graphics"],
+                "rankings": ["C > A > B > D"],
+            },
+        },
+        human_feedback_context={
+            "improve": ["broad unrelated training theme"],
+            "rankings": ["A > B > C > D"],
+        },
+    )
+
+    assert rejection is not None
+    assert rejection["human_feedback_context"]["improve"] == ["signal-specific product graphics"]
+    assert "signal-specific product graphics" in rejection["optimizer_hint"]
+    assert "broad unrelated training theme" not in rejection["optimizer_hint"]
+    assert "human_feedback_alignment" in rejection["failed_dimensions"]
 
 
 def test_gate_rejection_retry_decision_requires_actionable_new_information():
