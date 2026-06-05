@@ -25,6 +25,7 @@ STRUCTURED_EVALUATOR_FIELDS = (
     "primary_reason",
     "human_reason",
     "optimizer_hint",
+    "failed_dimensions",
     "failed_checks",
     "evidence",
     "stage_status",

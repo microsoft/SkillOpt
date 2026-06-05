@@ -282,21 +282,33 @@ def _check_vue_vite_bundle(response: str) -> dict[str, Any] | None:
                 _failed_check(
                     "vue_vite_bundle.json",
                     "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
-                    ["response did not contain a parseable JSON object"],
+                    _wrong_artifact_type_evidence(response),
                 )
-            ]
+            ],
+            primary_reason="wrong_artifact_type",
+            optimizer_hint=(
+                "Generate the actual Vue/Vite preview bundle as JSON. Return renderer, build_command, "
+                "dist_dir, and the required files; do not return a skill, template, YAML/frontmatter, or prose."
+            ),
         )
+
+    top_level_failures = _check_vue_bundle_top_level(parsed)
+    failures.extend(top_level_failures)
 
     files = parsed.get("files")
     if not isinstance(files, list) or not files:
+        failures.append(
+            _failed_check(
+                "vue_vite_bundle.files",
+                "Vue/Vite preview bundle must include a non-empty files array.",
+                ["files missing or empty"],
+            )
+        )
+        evidence = [str(item) for failure in failures for item in failure.get("evidence", [])]
         return _vue_bundle_failure(
-            [
-                _failed_check(
-                    "vue_vite_bundle.files",
-                    "Vue/Vite preview bundle must include a non-empty files array.",
-                    ["files missing or empty"],
-                )
-            ]
+            failures,
+            evidence=evidence,
+            primary_reason="artifact_contract_failure",
         )
 
     file_map: dict[str, str] = {}
@@ -365,7 +377,7 @@ def _check_vue_vite_bundle(response: str) -> dict[str, Any] | None:
     if failures:
         for failure in failures:
             evidence.extend(str(item) for item in failure.get("evidence", []))
-        return _vue_bundle_failure(failures, evidence=evidence)
+        return _vue_bundle_failure(failures, evidence=evidence, primary_reason="artifact_contract_failure")
     return None
 
 
@@ -994,16 +1006,70 @@ def _failed_check(check: str, reason: str, evidence: list[str]) -> dict[str, Any
     }
 
 
-def _vue_bundle_failure(failed_checks: list[dict[str, Any]], *, evidence: list[str] | None = None) -> dict[str, Any]:
+def _check_vue_bundle_top_level(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    renderer = str(parsed.get("renderer") or "").strip()
+    if renderer != "vue-vite":
+        failures.append(
+            _failed_check(
+                "vue_vite_bundle.renderer",
+                "Vue/Vite preview bundle must declare renderer: vue-vite.",
+                [f"renderer was {renderer!r}" if renderer else "renderer missing"],
+            )
+        )
+    build_command = str(parsed.get("build_command") or "").strip()
+    if build_command != "npm run build":
+        failures.append(
+            _failed_check(
+                "vue_vite_bundle.build_command",
+                "Vue/Vite preview bundle must declare build_command: npm run build.",
+                [f"build_command was {build_command!r}" if build_command else "build_command missing"],
+            )
+        )
+    dist_dir = str(parsed.get("dist_dir") or "").strip()
+    if dist_dir != "dist":
+        failures.append(
+            _failed_check(
+                "vue_vite_bundle.dist_dir",
+                "Vue/Vite preview bundle must declare dist_dir: dist.",
+                [f"dist_dir was {dist_dir!r}" if dist_dir else "dist_dir missing"],
+            )
+        )
+    return failures
+
+
+def _wrong_artifact_type_evidence(response: str) -> list[str]:
+    stripped = response.strip()
+    if not stripped:
+        return ["response was empty"]
+    evidence = ["response did not contain a parseable JSON object"]
+    lowered = stripped[:1000].lower()
+    if stripped.startswith("---") or "kind: agent-template" in lowered or "skillopt_target" in lowered:
+        evidence.append("response appears to be a skill/template document instead of a Vue/Vite bundle")
+    elif stripped.startswith("#") or "## update format" in lowered or "## skill" in lowered:
+        evidence.append("response appears to be markdown/prose instead of a Vue/Vite bundle")
+    return evidence
+
+
+def _vue_bundle_failure(
+    failed_checks: list[dict[str, Any]],
+    *,
+    evidence: list[str] | None = None,
+    primary_reason: str = "artifact_contract_failure",
+    optimizer_hint: str | None = None,
+) -> dict[str, Any]:
     first_reason = failed_checks[0]["reason"] if failed_checks else "Vue/Vite preview bundle failed validation."
     evidence = evidence or [item for check in failed_checks for item in check.get("evidence", [])]
+    hint = optimizer_hint or (
+        "Return a JSON Vue/Vite preview bundle with renderer: vue-vite, build_command: npm run build, "
+        "dist_dir: dist, package.json, index.html, src/main.js, and src/App.vue. Keep src/App.vue "
+        "template/style-only, use vite build, and make links local # anchors."
+    )
     failure = {
-        "primary_reason": "vue_vite_bundle_contract_failed",
+        "primary_reason": primary_reason,
         "human_reason": first_reason,
-        "optimizer_hint": (
-            "Return a JSON Vue/Vite preview bundle with package.json, index.html, src/main.js, "
-            "and src/App.vue. Keep src/App.vue template/style-only, use vite build, and make links local # anchors."
-        ),
+        "optimizer_hint": hint,
+        "failed_dimensions": ["artifact_contract"],
         "failed_checks": failed_checks,
         "evidence": evidence,
         "stage_status": [{"stage": "artifact_contract", "status": "failed"}],
@@ -1016,6 +1082,12 @@ def _vue_bundle_failure(failed_checks: list[dict[str, Any]], *, evidence: list[s
         "task_kind": "vue_landing_page",
         "dimension_scores": {"artifact_contract": 0.0},
         "failure": failure,
+        "primary_reason": primary_reason,
+        "human_reason": first_reason,
+        "optimizer_hint": hint,
+        "failed_dimensions": ["artifact_contract"],
+        "failed_checks": failed_checks,
+        "evidence": evidence,
         "stage_status": failure["stage_status"],
         "evaluator_id": LANDING_PAGE_EVALUATOR_ID,
         "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
@@ -1024,6 +1096,12 @@ def _vue_bundle_failure(failed_checks: list[dict[str, Any]], *, evidence: list[s
             "evaluator_version": LANDING_PAGE_EVALUATOR_VERSION,
             "dimension_scores": {"artifact_contract": 0.0},
             "failure": failure,
+            "primary_reason": primary_reason,
+            "human_reason": first_reason,
+            "optimizer_hint": hint,
+            "failed_dimensions": ["artifact_contract"],
+            "failed_checks": failed_checks,
+            "evidence": evidence,
             "stage_status": failure["stage_status"],
         },
     }
