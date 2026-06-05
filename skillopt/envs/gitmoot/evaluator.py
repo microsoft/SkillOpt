@@ -86,10 +86,67 @@ _CSS_URL_SPEC_RE = re.compile(r"\burl\s*\(\s*['\"]?([^'\"\s)]+)", re.IGNORECASE)
 _HTML_SCRIPT_RE = re.compile(r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
 _HTML_MODULE_TYPE_RE = re.compile(r"\btype\s*=\s*(?:['\"]module['\"]|module(?:\s|$))", re.IGNORECASE)
 _ALLOWED_RENDER_BARE_IMPORTS = {"vue"}
+_FEEDBACK_DIMENSION_DEFAULTS = {
+    "human_feedback_resolution": 0.0,
+    "artifact_validity": 1.0,
+    "task_completeness": 0.5,
+}
 
 
 class VueRenderEnvironmentError(RuntimeError):
     """Local render tooling is unavailable before the candidate can be scored."""
+
+
+def _has_human_feedback(item: dict[str, Any]) -> bool:
+    if item.get("feedback_events") or item.get("ranked_feedback_events"):
+        return True
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    return bool(metadata.get("feedback_events") or metadata.get("ranked_feedback_events"))
+
+
+def _landing_page_inference_config(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any] | None:
+    """Fail toward the specialized judge when a feedback package is clearly a Vue preview.
+
+    This prevents legacy training packages that lost `evaluator_profile` from
+    silently falling back to generic completeness scoring.
+    """
+    if not _has_human_feedback(item):
+        return None
+    sources: list[dict[str, Any]] = [config]
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    sources.append(metadata)
+    inferred_config: dict[str, Any] = {}
+    for artifact in (item.get("artifacts") or {}).values() if isinstance(item.get("artifacts"), dict) else []:
+        if isinstance(artifact, dict):
+            sources.append(artifact)
+    for source in sources:
+        profile_id = str(source.get("profile_id") or "").strip().lower()
+        task_kind = str(source.get("task_kind") or "").strip().lower()
+        artifact_contract = str(source.get("artifact_contract") or source.get("output_contract") or "").strip().lower()
+        output_type = str(source.get("output_type") or "").strip().lower()
+        driver = str(source.get("driver") or "").strip().lower()
+        if profile_id in {"landing_page_v1", "vue_landing_page_v1"}:
+            inferred_config.setdefault("artifact_contract", "vue_vite_bundle")
+            return inferred_config
+        if task_kind in {"landing_page", "vue_landing_page"}:
+            inferred_config.setdefault("artifact_contract", "vue_vite_bundle")
+            return inferred_config
+        if artifact_contract in {"vue_vite_bundle", "vue-vite-bundle"}:
+            inferred_config.setdefault("artifact_contract", "vue_vite_bundle")
+            return inferred_config
+        if output_type in {"vue_vite_bundle", "vue-vite-bundle"}:
+            inferred_config.setdefault("artifact_contract", "vue_vite_bundle")
+            return inferred_config
+        if driver == "vue-vite":
+            inferred_config.setdefault("artifact_contract", "vue_vite_bundle")
+            return inferred_config
+    prompt = str(item.get("prompt") or "").lower()
+    if "vue/vite" in prompt or "vue-vite" in prompt:
+        inferred_config.setdefault("artifact_contract", "vue_vite_bundle")
+        return inferred_config
+    if "landing page" in prompt and "preview" in prompt:
+        return inferred_config
+    return None
 
 
 def evaluate_response(item: dict[str, Any], response: str, evaluator_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -105,7 +162,10 @@ def evaluate_response(item: dict[str, Any], response: str, evaluator_config: dic
         return _fixture_score(item)
     if mode in {"contains", "substring"}:
         return _contains_score(item, response, config)
-    if mode in {LANDING_PAGE_EVALUATOR_ID, "landing-page-v1", "landing_page"}:
+    inference_config = _landing_page_inference_config(item, config)
+    if mode in {LANDING_PAGE_EVALUATOR_ID, "landing-page-v1", "landing_page"} or inference_config is not None:
+        if inference_config:
+            config = {**inference_config, **config}
         return _landing_page_score(item, response, config)
     return _judge_score(item, response, config)
 
@@ -141,8 +201,252 @@ def _contains_score(item: dict[str, Any], response: str, config: dict[str, Any])
     }
 
 
+def _human_feedback_judge_system_prompt() -> str:
+    return (
+        "You are evaluating a Gitmoot SkillOpt candidate response against imported human review feedback. "
+        "The score is stop-readiness against the human feedback, not generic output quality. "
+        "If review feedback exists, assume the human is asking for optimization unless promote=yes or "
+        "continue_mode explicitly indicates stopping/validation approval. "
+        "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
+        "continue_mode=refine/explore/distill or promote=no means the candidate may be good but is not ready to stop "
+        "unless you can prove all named feedback themes were resolved. "
+        "Return only JSON with keys hard, soft, fail_reason, reasoning, human_feedback_alignment, "
+        "dimension_scores, unresolved_feedback, rejection_reason, and optimizer_hint. "
+        "hard must be 1 only when the candidate is ready to stop optimizing and promote. "
+        "soft must be a 0-to-1 readiness-to-stop score. "
+        "dimension_scores must include human_feedback_resolution, artifact_validity, and task_completeness."
+    )
+
+
+def _missing_human_feedback_dimensions(parsed: dict[str, Any]) -> bool:
+    if not isinstance(parsed.get("human_feedback_alignment"), dict):
+        return True
+    dimensions = parsed.get("dimension_scores")
+    if not isinstance(dimensions, dict):
+        return True
+    if "unresolved_feedback" not in parsed or not isinstance(parsed.get("unresolved_feedback"), list):
+        return True
+    required = {"human_feedback_resolution", "artifact_validity", "task_completeness"}
+    if not required.issubset({str(key) for key in dimensions}):
+        return True
+    for dimension in required:
+        try:
+            float(dimensions[dimension])
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def _missing_feedback_dimensions_failure(item: dict[str, Any], *, raw: str) -> dict[str, Any]:
+    alignment = _human_feedback_alignment(item)
+    failure = {
+        "primary_reason": "evaluator_missing_human_feedback_dimensions",
+        "human_reason": (
+            "Human feedback exists, but the judge did not return structured feedback alignment "
+            "and readiness dimensions."
+        ),
+        "optimizer_hint": (
+            "Retry evaluation or optimizer flow with explicit human-feedback dimensions: "
+            "human_feedback_resolution, unresolved_feedback, rejection_reason, and optimizer_hint."
+        ),
+        "failed_checks": [
+            {
+                "check": "llm_judge.human_feedback_dimensions",
+                "severity": "evaluator_contract_failure",
+                "reason": "judge output omitted required human-feedback readiness fields",
+                "evidence": [raw[:500]],
+            }
+        ],
+        "failed_dimensions": ["human_feedback_alignment"],
+        "evidence": [raw[:500]],
+        "stage_status": [{"stage": "llm_judge", "status": "failed"}],
+    }
+    return {
+        "hard": 0,
+        "soft": 0.0,
+        "fail_reason": "evaluator_missing_human_feedback_dimensions",
+        "human_feedback_alignment": alignment,
+        "dimension_scores": {"human_feedback_resolution": 0.0, "artifact_validity": 0.0, "task_completeness": 0.0},
+        "failure": failure,
+        "primary_reason": failure["primary_reason"],
+        "human_reason": failure["human_reason"],
+        "optimizer_hint": failure["optimizer_hint"],
+        "failed_dimensions": failure["failed_dimensions"],
+        "failed_checks": failure["failed_checks"],
+        "evidence": failure["evidence"],
+        "stage_status": failure["stage_status"],
+        "metadata": {
+            "evaluator": "llm_judge",
+            "judge_derived": True,
+            "human_feedback_alignment": alignment,
+            "dimension_scores": {"human_feedback_resolution": 0.0, "artifact_validity": 0.0, "task_completeness": 0.0},
+            "failure": failure,
+            "primary_reason": failure["primary_reason"],
+            "human_reason": failure["human_reason"],
+            "optimizer_hint": failure["optimizer_hint"],
+            "failed_dimensions": failure["failed_dimensions"],
+            "failed_checks": failure["failed_checks"],
+            "evidence": failure["evidence"],
+            "stage_status": failure["stage_status"],
+            "raw": raw[:1000],
+        },
+    }
+
+
+def _feedback_signals(item: dict[str, Any]) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    for key in ("ranked_feedback_events", "feedback_events"):
+        value = item.get(key)
+        if isinstance(value, list):
+            signals.extend(event for event in value if isinstance(event, dict))
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    for key in ("ranked_feedback_events", "feedback_events"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            signals.extend(event for event in value if isinstance(event, dict))
+    return signals
+
+
+def _feedback_requests_more_optimization(item: dict[str, Any]) -> bool:
+    signals = _feedback_signals(item)
+    if not signals:
+        return False
+    for event in signals:
+        promote = str(event.get("promote") or "").strip().lower()
+        continue_mode = str(event.get("continue_mode") or "").strip().lower()
+        required_improvements = _alignment_text_list(event.get("required_improvements"))
+        if promote in {"no", "false", "0"}:
+            return True
+        if continue_mode in {"refine", "explore", "distill"}:
+            return True
+        if required_improvements and not (
+            promote in {"yes", "true", "1"} and continue_mode in {"stop", "validate"}
+        ):
+            return True
+        if promote not in {"yes", "true", "1"} and continue_mode not in {"stop", "validate"}:
+            return True
+    return False
+
+
+def _feedback_stop_readiness_cap(item: dict[str, Any]) -> float | None:
+    if not _feedback_requests_more_optimization(item):
+        return None
+    cap = 0.75
+    for event in _feedback_signals(item):
+        quality = str(event.get("quality") or "").strip().lower()
+        if quality == "poor":
+            cap = min(cap, 0.45)
+        elif quality in {"acceptable", "ok"}:
+            cap = min(cap, 0.65)
+        elif quality in {"high", "strong"}:
+            cap = min(cap, 0.75)
+        if str(event.get("promote") or "").strip().lower() in {"no", "false", "0"}:
+            cap = min(cap, 0.75)
+    return cap
+
+
+def _feedback_resolution_proven(parsed: dict[str, Any], *, require_top_level_unresolved: bool = False) -> bool:
+    alignment = parsed.get("human_feedback_alignment")
+    unresolved_feedback = parsed.get("unresolved_feedback")
+    if require_top_level_unresolved and not isinstance(unresolved_feedback, list):
+        return False
+    if _normalize_string_list(unresolved_feedback):
+        return False
+    if isinstance(alignment, dict):
+        alignment_unresolved = alignment.get("unresolved")
+        if _normalize_string_list(alignment_unresolved):
+            return False
+        status = str(alignment.get("status") or "").strip().lower()
+        if status in {"resolved", "fully_resolved", "all_resolved"}:
+            return True
+        resolved = alignment.get("resolved") or alignment.get("resolved_feedback")
+        if isinstance(alignment_unresolved, list) and not alignment_unresolved and bool(resolved):
+            return True
+    dimensions = parsed.get("dimension_scores")
+    if isinstance(unresolved_feedback, list) and not _normalize_string_list(unresolved_feedback) and isinstance(dimensions, dict):
+        try:
+            return float(dimensions.get("human_feedback_resolution", 0.0)) >= 0.85
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _apply_feedback_stop_readiness_cap(item: dict[str, Any], soft: float, *, resolved: bool = False) -> float:
+    cap = None if resolved else _feedback_stop_readiness_cap(item)
+    if cap is None:
+        return soft
+    return min(soft, cap)
+
+
+def _feedback_stop_readiness_fail_reason(item: dict[str, Any]) -> str:
+    if not _feedback_requests_more_optimization(item):
+        return ""
+    return "human feedback requested continued optimization; candidate is not ready to stop"
+
+
+def _generic_feedback_dimension_scores(parsed: dict[str, Any]) -> dict[str, float]:
+    dimensions = parsed.get("dimension_scores")
+    parsed_scores: dict[str, float] = {}
+    if isinstance(dimensions, dict):
+        for key, value in dimensions.items():
+            try:
+                parsed_scores[str(key)] = max(0.0, min(1.0, float(value)))
+            except (TypeError, ValueError):
+                continue
+    return {**_FEEDBACK_DIMENSION_DEFAULTS, **parsed_scores}
+
+
+def _feedback_judge_failure(parsed: dict[str, Any], *, item: dict[str, Any], fail_reason: str) -> dict[str, Any]:
+    unresolved = parsed.get("unresolved_feedback")
+    unresolved_items = _normalize_string_list(unresolved)
+    if not unresolved_items:
+        alignment = parsed.get("human_feedback_alignment")
+        if isinstance(alignment, dict):
+            unresolved_items = _normalize_string_list(alignment.get("unresolved"))[:8]
+    if not unresolved_items:
+        alignment = _human_feedback_alignment(item)
+        unresolved_items = _normalize_string_list(alignment.get("required_improvements"))[:8]
+    rejection_reason = str(parsed.get("rejection_reason") or "").strip()
+    optimizer_hint = str(parsed.get("optimizer_hint") or "").strip()
+    if not optimizer_hint:
+        if unresolved_items:
+            optimizer_hint = "Update the skill to resolve human feedback themes: " + "; ".join(unresolved_items[:6])
+        else:
+            optimizer_hint = "Update the skill using the imported human feedback before trying again."
+    human_reason = fail_reason or rejection_reason or "Human feedback is not fully resolved."
+    return {
+        "primary_reason": rejection_reason or "human_feedback_not_resolved",
+        "human_reason": human_reason,
+        "optimizer_hint": optimizer_hint,
+        "failed_dimensions": ["human_feedback_resolution"] if unresolved_items or _feedback_requests_more_optimization(item) else [],
+        "failed_checks": [
+            {
+                "check": "llm_judge.human_feedback_resolution",
+                "severity": "soft_quality_rejection",
+                "reason": human_reason,
+                "evidence": unresolved_items or [str(parsed.get("reasoning") or "")],
+            }
+        ],
+        "evidence": unresolved_items or [str(parsed.get("reasoning") or "")],
+        "stage_status": [{"stage": "llm_judge", "status": "failed" if fail_reason else "passed"}],
+    }
+
+
+def _generic_feedback_task_context(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    return {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "task_type": item.get("task_type"),
+        "task_description": item.get("task_description"),
+        "feedback_events": item.get("feedback_events") or metadata.get("feedback_events"),
+        "ranked_feedback_events": item.get("ranked_feedback_events") or metadata.get("ranked_feedback_events"),
+    }
+
+
 def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
-    system = (
+    has_feedback = _has_human_feedback(item)
+    system = _human_feedback_judge_system_prompt() if has_feedback else (
         "You are evaluating a Gitmoot SkillOpt candidate response. "
         "Return only JSON with keys hard, soft, fail_reason, and reasoning. "
         "hard must be 0 or 1. soft must be a number from 0 to 1."
@@ -153,6 +457,14 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             json.dumps(config, indent=2, sort_keys=True),
             "## Task Prompt",
             str(item.get("prompt") or ""),
+            *(
+                [
+                    "## Human Feedback Context",
+                    _json_for_prompt(_generic_feedback_task_context(item)),
+                ]
+                if has_feedback
+                else []
+            ),
             "## Candidate Response",
             response,
         ]
@@ -173,23 +485,71 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             "fail_reason": "judge did not return JSON",
             "metadata": {"evaluator": "llm_judge", "raw": raw[:1000]},
         }
+    if has_feedback and _missing_human_feedback_dimensions(parsed):
+        return _missing_feedback_dimensions_failure(item, raw=raw)
     hard = _parse_hard(parsed.get("hard"))
     try:
         soft = float(parsed.get("soft", hard))
     except (TypeError, ValueError):
         soft = float(hard)
     soft = max(0.0, min(1.0, soft))
+    feedback_resolved = _feedback_resolution_proven(parsed, require_top_level_unresolved=True)
+    soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=feedback_resolved)
+    if _feedback_requests_more_optimization(item) and not feedback_resolved:
+        hard = 0
     fail_reason = str(parsed.get("fail_reason") or "")
-    return {
+    score = {
         "hard": hard,
         "soft": soft,
-        "fail_reason": "" if hard else fail_reason or "judge marked this item failed",
+        "fail_reason": "" if hard else fail_reason or _feedback_stop_readiness_fail_reason(item) or "judge marked this item failed",
         "metadata": {
             "evaluator": "llm_judge",
             "judge_derived": True,
             "reasoning": str(parsed.get("reasoning") or ""),
         },
     }
+    if has_feedback:
+        alignment = _human_feedback_alignment(item, parsed.get("human_feedback_alignment"))
+        score.update(
+            {
+                "human_feedback_alignment": alignment,
+                "dimension_scores": _generic_feedback_dimension_scores(parsed),
+                "quality_status": QUALITY_PASSED if hard else QUALITY_FAILED,
+                "stage_status": [{"stage": "llm_judge", "status": "passed" if hard else "failed"}],
+            }
+        )
+        score["metadata"].update(
+            {
+                "human_feedback_alignment": alignment,
+                "dimension_scores": score["dimension_scores"],
+                "stage_status": score["stage_status"],
+            }
+        )
+        if hard == 0:
+            failure = _feedback_judge_failure(parsed, item=item, fail_reason=score["fail_reason"])
+            score.update(
+                {
+                    "failure": failure,
+                    "primary_reason": failure["primary_reason"],
+                    "human_reason": failure["human_reason"],
+                    "optimizer_hint": failure["optimizer_hint"],
+                    "failed_dimensions": failure["failed_dimensions"],
+                    "evidence": failure["evidence"],
+                    "stage_status": failure["stage_status"],
+                }
+            )
+            score["metadata"].update(
+                {
+                    "failure": failure,
+                    "primary_reason": failure["primary_reason"],
+                    "human_reason": failure["human_reason"],
+                    "optimizer_hint": failure["optimizer_hint"],
+                    "failed_dimensions": failure["failed_dimensions"],
+                    "evidence": failure["evidence"],
+                    "stage_status": failure["stage_status"],
+                }
+            )
+    return score
 
 
 def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -1136,8 +1496,11 @@ def _landing_page_system_prompt() -> str:
         f"dimension_scores must contain exactly these 0-to-1 dimensions: {dimensions}. "
         "Use contract_status to report artifact/render contract health and quality_status "
         "to report subjective landing-page quality. "
-        "hard must be 1 only when the landing page is suitable to promote after review. "
-        "soft must be a 0-to-1 overall quality score. Penalize missing mobile responsiveness, "
+        "hard must be 1 only when the landing page is suitable to stop optimizing and promote after review. "
+        "soft must be a 0-to-1 readiness-to-stop score against the human feedback, not generic prettiness. "
+        "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
+        "continue_mode=refine/explore/distill or promote=no means the candidate may be good but is not ready to stop "
+        "unless you can prove all named feedback themes were resolved. Penalize missing mobile responsiveness, "
         "missing footer, weak hero/CTA, irrelevant or absent visuals, missing requested motion, "
         "text overlap/readability problems, and failure to preserve human-ranked strengths. "
         "When hard is 0, failure must include primary_reason, human_reason, optimizer_hint, "
@@ -1160,6 +1523,8 @@ def _landing_page_user_prompt(
             "## Rubric",
             "\n".join(
                 [
+                    "- hard/soft: Score readiness to stop optimizing against human feedback.",
+                    "- human_feedback_alignment: Explain which review requests were resolved and which remain unresolved.",
                     "- mobile_responsiveness: Works on mobile without overflow or unusable layout.",
                     "- footer_presence_clarity: Includes a clear footer with useful links or closing context.",
                     "- hero_quality: Hero is clear, polished, product-relevant, and visually strong.",
@@ -1399,6 +1764,10 @@ def _normalize_landing_page_score(
 ) -> dict[str, Any]:
     hard = _parse_landing_hard(parsed.get("hard"))
     soft = _parse_score(parsed.get("soft"), "soft")
+    feedback_resolved = _feedback_resolution_proven(parsed)
+    soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=feedback_resolved)
+    if _feedback_requests_more_optimization(item) and not feedback_resolved:
+        hard = 0
     dimensions = _parse_dimension_scores(parsed.get("dimension_scores"))
     rationale = str(parsed.get("rationale") or parsed.get("reasoning") or "").strip()
     fail_reason = str(parsed.get("fail_reason") or "").strip()
@@ -1407,7 +1776,10 @@ def _normalize_landing_page_score(
     if not rationale:
         raise ValueError("landing_page_v1 rationale is required")
     if hard == 0 and not fail_reason:
-        fail_reason = "landing_page_v1 judge marked this landing page below promotion quality"
+        fail_reason = (
+            _feedback_stop_readiness_fail_reason(item)
+            or "landing_page_v1 judge marked this landing page below promotion quality"
+        )
     judge_stage = {"stage": "llm_judge", "status": "passed" if hard else "failed"}
     stage_status = [judge_stage]
     failure = _landing_page_judge_failure(parsed, fail_reason=fail_reason, rationale=rationale, dimensions=dimensions) if hard == 0 else None
@@ -1460,16 +1832,26 @@ def _landing_page_judge_failure(
         for dimension, score in dimensions.items()
         if score < 0.7
     ]
+    alignment = parsed.get("human_feedback_alignment") if isinstance(parsed.get("human_feedback_alignment"), dict) else {}
+    unresolved_feedback = _normalize_string_list(parsed.get("unresolved_feedback")) + _normalize_string_list(
+        alignment.get("unresolved") if isinstance(alignment, dict) else None
+    )
+    unresolved_feedback = list(dict.fromkeys(unresolved_feedback))
     primary_reason = str(
         supplied.get("primary_reason")
         or parsed.get("primary_reason")
+        or ("human_feedback_not_resolved" if unresolved_feedback else "")
         or (low_dimensions[0]["check"].replace("landing_page_v1.", "") if low_dimensions else "")
         or "landing_page_judge_rejected"
     )
     human_reason = str(supplied.get("human_reason") or fail_reason or rationale).strip()
     optimizer_hint = str(supplied.get("optimizer_hint") or parsed.get("optimizer_hint") or "").strip()
     if not optimizer_hint:
-        if low_dimensions:
+        if unresolved_feedback:
+            optimizer_hint = "Resolve the remaining human feedback themes before trying again: " + "; ".join(
+                unresolved_feedback[:6]
+            )
+        elif low_dimensions:
             weak = ", ".join(item["check"].replace("landing_page_v1.", "") for item in low_dimensions[:4])
             optimizer_hint = f"Improve the rejected landing page dimensions before trying again: {weak}."
         else:
@@ -1482,7 +1864,11 @@ def _landing_page_judge_failure(
         "metadata": {"dimension_scores": low_dimensions},
     }
     failed_checks = _normalize_landing_page_failed_checks(supplied.get("failed_checks"), fallback_check)
-    evidence = _normalize_string_list(supplied.get("evidence")) or [item for item in (fail_reason, rationale) if item]
+    evidence = (
+        _normalize_string_list(supplied.get("evidence"))
+        or unresolved_feedback
+        or [item for item in (fail_reason, rationale) if item]
+    )
     return {
         "primary_reason": primary_reason,
         "human_reason": human_reason,
@@ -1520,13 +1906,20 @@ def _normalize_landing_page_failed_checks(value: Any, fallback_check: dict[str, 
 def _normalize_string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value] if value.strip() else []
-    if not isinstance(value, list):
+    if isinstance(value, dict):
+        normalized: list[str] = []
+        for key, item in value.items():
+            for text in _normalize_string_list(item):
+                normalized.append(f"{key}: {text}" if str(key).strip() else text)
+        return normalized
+    if isinstance(value, bool) or value is None:
         return []
+    if not isinstance(value, list):
+        text = str(value).strip()
+        return [text] if text else []
     normalized: list[str] = []
     for item in value:
-        text = str(item).strip()
-        if text:
-            normalized.append(text)
+        normalized.extend(_normalize_string_list(item))
     return normalized
 
 

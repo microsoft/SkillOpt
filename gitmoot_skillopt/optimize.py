@@ -526,6 +526,11 @@ def _primary_no_candidate_reason(no_candidate_triggers: list[str] | None) -> str
 def _no_candidate_next_action(no_candidate_triggers: list[str] | None) -> str:
     if not no_candidate_triggers:
         return ""
+    if "human_feedback_not_distilled" in no_candidate_triggers:
+        return (
+            "Do not import or publish a candidate review; rerun with stronger optimizer context "
+            "or revise the skill manually using the ranked human feedback themes."
+        )
     if "gate_rejected_best_origin_initial_skill" in no_candidate_triggers:
         return (
             "Do not import or publish a candidate review; collect more feedback, "
@@ -537,6 +542,12 @@ def _no_candidate_next_action(no_candidate_triggers: list[str] | None) -> str:
 def _no_candidate_next_actions(no_candidate_triggers: list[str] | None) -> list[str]:
     if not no_candidate_triggers:
         return []
+    if "human_feedback_not_distilled" in no_candidate_triggers:
+        return [
+            "rerun optimizer with ranked feedback emphasized",
+            "manually revise skill from unresolved feedback themes",
+            "collect clearer feedback if the themes are ambiguous",
+        ]
     if "gate_rejected_best_origin_initial_skill" in no_candidate_triggers:
         return [
             "collect more feedback",
@@ -574,6 +585,20 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
         details["retry_attempts"] = str(gate_rejection.get("retry_attempts") or "")
         details["next_action"] = str(gate_rejection.get("next_action") or _no_candidate_next_action(triggers))
         details["next_actions"] = _no_candidate_next_actions(triggers)
+    if "human_feedback_not_distilled" in triggers:
+        failure = summary.get("failure") if isinstance(summary.get("failure"), dict) else {}
+        retry_hints = summary.get("feedback_retry_hints") if isinstance(summary.get("feedback_retry_hints"), dict) else {}
+        details["primary_reason"] = "human_feedback_not_distilled"
+        details["human_reason"] = str(
+            failure.get("human_reason")
+            or "Ranked human feedback was imported, but the optimizer produced no usable skill changes."
+        )
+        details["optimizer_hint"] = str(failure.get("optimizer_hint") or summary.get("optimizer_hint") or "")
+        details["failed_dimensions"] = failure.get("failed_dimensions") or ["human_feedback_alignment"]
+        details["evidence"] = failure.get("evidence") or retry_hints.get("improve") or retry_hints.get("preserve") or []
+        details["feedback_retry_hints"] = retry_hints
+        details["next_action"] = _no_candidate_next_action(triggers)
+        details["next_actions"] = _no_candidate_next_actions(triggers)
     return {key: value for key, value in details.items() if value not in (None, "", [], {})}
 
 
@@ -586,6 +611,8 @@ def _no_candidate_report_fields(details: dict[str, Any]) -> dict[str, Any]:
         "retry_attempts",
         "duplicate_retry_detected",
         "evaluator_reason",
+        "optimizer_hint",
+        "failed_dimensions",
         "next_actions",
     ):
         if key in details and details[key] not in (None, "", [], {}):

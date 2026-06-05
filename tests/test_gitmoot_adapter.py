@@ -805,20 +805,558 @@ def test_landing_page_judge_prompt_includes_render_and_feedback_context(monkeypa
         {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
     )
 
-    assert score["hard"] == 1
+    assert score["hard"] == 0
+    assert score["soft"] == 0.75
     assert score["contract_status"] == "passed"
-    assert score["quality_status"] == "passed"
+    assert score["quality_status"] == "failed"
     assert score["human_feedback_alignment"]["status"] == "feedback_available"
     assert score["human_feedback_alignment"]["rankings"] == ["D > B > C > A"]
     assert score["human_feedback_alignment"]["reasoning"] == ["D has the cleanest hero."]
     assert score["stage_status"][0] == {"stage": "render_smoke", "status": "passed"}
-    assert score["stage_status"][-1] == {"stage": "llm_judge", "status": "passed"}
+    assert score["stage_status"][-1] == {"stage": "llm_judge", "status": "failed"}
     assert '"status": "passed"' in captured["user"]
     assert "/tmp/mobile.png" in captured["user"]
     assert "github_issue_109" in captured["user"]
     assert "D has the cleanest hero" in captured["user"]
     assert "do-not-send-this" not in captured["user"]
     assert "secret_token" not in captured["user"]
+
+
+def test_landing_page_judge_is_inferred_for_legacy_vue_feedback_package(monkeypatch):
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.92,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The page is strong but the review asked to keep refining.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {"resolved": ["palette"], "unresolved": ["motion"]},
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "legacy-landing-page",
+            "prompt": "Build a Vue/Vite landing page preview.",
+            "metadata": {"output_type": "vue_vite_bundle"},
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["C", "D", "B", "A"],
+                    "reasoning": "C has the best palette, but it still needs animation.",
+                    "quality": "high",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["more motion", "better product graphics"],
+                }
+            ],
+        },
+        _valid_vue_bundle_response(),
+        {},
+    )
+
+    assert captured["stage"] == "gitmoot_landing_page_judge"
+    assert score["hard"] == 0
+    assert score["soft"] == 0.75
+    assert score["fail_reason"] == "human feedback requested continued optimization; candidate is not ready to stop"
+    assert score["human_feedback_alignment"]["required_improvements"] == ["more motion", "better product graphics"]
+    assert score["failure"]["primary_reason"] == "human_feedback_not_resolved"
+    assert "motion" in score["failure"]["optimizer_hint"]
+    assert score["failure"]["evidence"] == ["motion"]
+
+
+def test_landing_page_inference_requires_vue_bundle_for_profile_only_feedback(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run before Vue bundle validation")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "legacy-profile-only-landing-page",
+            "prompt": "Build a landing page preview.",
+            "metadata": {"profile_id": "vue_landing_page_v1"},
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["C", "D", "B", "A"],
+                    "reasoning": "C has the best palette, but it still needs animation.",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["more motion"],
+                }
+            ],
+        },
+        "Here is a prose landing page idea instead of a Vue bundle.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "wrong_artifact_type"
+    assert score["contract_status"] == "failed"
+    assert score["quality_status"] == "not_run"
+
+
+def test_landing_page_judge_allows_resolved_alignment_without_top_level_unresolved(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.92,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The requested palette, motion, graphics, and mobile improvements are resolved.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {
+                        "status": "resolved",
+                        "resolved": ["palette", "motion", "product graphics", "mobile layout"],
+                        "unresolved": [],
+                    },
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "legacy-landing-page-resolved",
+            "prompt": "Build a Vue/Vite landing page preview.",
+            "metadata": {"output_type": "vue_vite_bundle"},
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["C", "D", "B", "A"],
+                    "reasoning": "C has the best palette, but it still needs animation.",
+                    "quality": "high",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["more motion", "better product graphics"],
+                }
+            ],
+        },
+        _valid_vue_bundle_response(),
+        {},
+    )
+
+    assert score["hard"] == 1
+    assert score["soft"] == 0.92
+    assert score["quality_status"] == "passed"
+    assert "failure" not in score
+
+
+def test_generic_judge_with_feedback_fails_closed_without_feedback_dimensions(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.95,
+                    "reasoning": "Looks complete.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-feedback",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is better, but keep refining the hook.",
+                    "quality": "strong",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["sharper hook"],
+                }
+            ],
+        },
+        "A solid post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.0
+    assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert score["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert score["dimension_scores"]["human_feedback_resolution"] == 0.0
+
+
+def test_generic_judge_with_feedback_fails_closed_with_invalid_dimension_values(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.95,
+                    "reasoning": "Claims complete.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {"status": "resolved"},
+                    "dimension_scores": {
+                        "human_feedback_resolution": "n/a",
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-feedback-invalid-dimensions",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is ready.",
+                    "quality": "strong",
+                    "continue_mode": "validate",
+                    "promote": "yes",
+                }
+            ],
+        },
+        "A solid post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.0
+    assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+
+
+def test_generic_judge_with_feedback_requires_explicit_unresolved_feedback_list(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.95,
+                    "reasoning": "Claims complete.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {"status": "resolved"},
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.95,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-feedback-missing-unresolved",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is better but keep refining.",
+                    "quality": "strong",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                }
+            ],
+        },
+        "A solid post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.0
+    assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+
+
+def test_generic_judge_with_resolved_feedback_does_not_emit_failure_hint(monkeypatch):
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.93,
+                    "reasoning": "The feedback is resolved and promotion was requested.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {"status": "resolved"},
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.95,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-promote",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is ready.",
+                    "quality": "strong",
+                    "continue_mode": "validate",
+                    "promote": "yes",
+                }
+            ],
+        },
+        "A strong post.",
+        {},
+    )
+
+    assert score["hard"] == 1
+    assert score["soft"] == 0.93
+    assert "failure" not in score
+    assert "optimizer_hint" not in score
+    assert score["stage_status"] == [{"stage": "llm_judge", "status": "passed"}]
+    assert "Human Feedback Context" in captured["user"]
+    assert "B is ready" in captured["user"]
+
+
+def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.91,
+                    "reasoning": "The requested hook and tone improvements are resolved.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {
+                        "status": "resolved",
+                        "resolved": ["sharper hook", "clearer tone"],
+                        "unresolved": [],
+                    },
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.92,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-refine-resolved",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is better but refine the hook.",
+                    "quality": "strong",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["sharper hook", "clearer tone"],
+                }
+            ],
+        },
+        "A stronger post.",
+        {},
+    )
+
+    assert score["hard"] == 1
+    assert score["soft"] == 0.91
+    assert score["quality_status"] == "passed"
+    assert "failure" not in score
+
+
+def test_generic_judge_rejects_inconsistent_resolved_feedback(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.91,
+                    "reasoning": "Claims resolved but still lists missing graphics.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {
+                        "status": "resolved",
+                        "resolved": ["layout"],
+                        "unresolved": ["better graphics"],
+                    },
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.92,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": ["better graphics"],
+                    "rejection_reason": "visuals_unresolved",
+                    "optimizer_hint": "Add product-relevant graphics.",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-refine-inconsistent",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is better but refine the visuals.",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["better graphics"],
+                }
+            ],
+        },
+        "A stronger post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.75
+    assert score["quality_status"] == "failed"
+    assert score["primary_reason"] == "visuals_unresolved"
+    assert score["optimizer_hint"] == "Add product-relevant graphics."
+
+
+def test_generic_judge_preserves_alignment_only_unresolved_feedback(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.91,
+                    "reasoning": "Claims resolved but alignment lists missing motion.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {
+                        "status": "partial",
+                        "resolved": ["layout"],
+                        "unresolved": ["scroll animation", "product graphics"],
+                    },
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.62,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-refine-alignment-unresolved",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is better but refine the visuals.",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["better graphics"],
+                }
+            ],
+        },
+        "A stronger post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["quality_status"] == "failed"
+    assert score["primary_reason"] == "human_feedback_not_resolved"
+    assert score["evidence"] == ["scroll animation", "product graphics"]
+    assert "scroll animation" in score["optimizer_hint"]
+
+
+def test_generic_judge_rejects_non_list_unresolved_feedback(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.91,
+                    "reasoning": "Claims resolved but unresolved feedback is not a list.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {
+                        "status": "resolved",
+                        "resolved": ["layout"],
+                        "unresolved": {"visuals": "better graphics"},
+                    },
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.92,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": "better graphics",
+                    "rejection_reason": "visuals_unresolved",
+                    "optimizer_hint": "Add product-relevant graphics.",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-refine-string-unresolved",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is better but refine the visuals.",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "required_improvements": ["better graphics"],
+                }
+            ],
+        },
+        "A stronger post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.0
+    assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert score["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
 
 
 def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatch):

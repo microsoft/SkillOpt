@@ -190,6 +190,43 @@ def _feedback_retry_hints(dataloader, result_ids: set[str]) -> dict[str, list[st
     return {key: _dedupe_texts(values) for key, values in hints.items()}
 
 
+def _ranked_feedback_retry_hints(dataloader, result_ids: set[str] | None = None) -> dict[str, list[str]]:
+    return _feedback_retry_hints(dataloader, result_ids or set())
+
+
+def _has_ranked_feedback(dataloader, result_ids: set[str] | None = None) -> bool:
+    if dataloader is None or not hasattr(dataloader, "train_items"):
+        return False
+    try:
+        train_items = dataloader.train_items
+    except Exception:  # noqa: BLE001
+        return False
+    ids = result_ids or set()
+    for item in train_items:
+        if ids and str(item.get("id", "")) not in ids:
+            continue
+        events = item.get("ranked_feedback_events")
+        if isinstance(events, list) and events:
+            return True
+    return False
+
+
+def _human_feedback_not_distilled_hint(retry_hints: dict[str, list[str]]) -> str:
+    themes = _dedupe_texts(
+        (retry_hints.get("improve") or [])
+        + (retry_hints.get("preserve") or [])
+        + (retry_hints.get("avoid") or []),
+        limit=8,
+    )
+    if themes:
+        return "The optimizer ignored ranked human feedback. Update the skill using these requested themes: " + "; ".join(themes)
+    return (
+        "The optimizer ignored ranked human feedback. Update the skill using the requested themes: "
+        "branding, product visuals, animation, mobile responsiveness, spacing, CTA/footer quality, "
+        "and Tailwind-style polish."
+    )
+
+
 def _contains_topic(content: str, topic: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", " ", str(topic or "").lower()).strip()
     if not normalized:
@@ -1921,9 +1958,32 @@ class ReflACTTrainer:
                 # ── No patches? Skip ─────────────────────────────────────
                 if not all_failure_patches and not all_success_patches:
                     step_rec["action"] = "skip_no_patches"
+                    result_ids = {str(row.get("id", "")) for row in all_rollout_results if isinstance(row, dict)}
+                    if _has_ranked_feedback(dataloader, result_ids):
+                        retry_hints = _ranked_feedback_retry_hints(dataloader, result_ids)
+                        optimizer_hint = _human_feedback_not_distilled_hint(retry_hints)
+                        step_rec["no_candidate_reason"] = "human_feedback_not_distilled"
+                        step_rec["no_candidate_triggers"] = _dedupe_texts(
+                            ["human_feedback_not_distilled", "no_usable_patches_from_ranked_feedback"]
+                        )
+                        step_rec["optimizer_hint"] = optimizer_hint
+                        step_rec["feedback_retry_hints"] = retry_hints
+                        step_rec["failure"] = {
+                            "primary_reason": "human_feedback_not_distilled",
+                            "human_reason": (
+                                "Ranked human feedback was imported, but reflection produced no usable skill patches."
+                            ),
+                            "optimizer_hint": optimizer_hint,
+                            "failed_dimensions": ["human_feedback_alignment"],
+                            "evidence": retry_hints.get("improve") or retry_hints.get("preserve") or [],
+                            "stage_status": [{"stage": "reflect", "status": "failed"}],
+                        }
                     if step_rec.get("failure_hint_not_converted_to_patch"):
-                        step_rec["no_candidate_reason"] = "failure_hint_not_converted_to_patch"
-                        step_rec["no_candidate_triggers"] = ["failure_hint_not_converted_to_patch"]
+                        step_rec.setdefault("no_candidate_reason", "failure_hint_not_converted_to_patch")
+                        step_rec["no_candidate_triggers"] = _dedupe_texts(
+                            list(step_rec.get("no_candidate_triggers") or [])
+                            + ["failure_hint_not_converted_to_patch"]
+                        )
                     step_rec["current_score"] = current_score
                     step_rec["best_score"] = best_score
                     step_rec["best_step"] = best_step
@@ -3495,6 +3555,18 @@ class ReflACTTrainer:
             for trigger in h.get("no_candidate_triggers", [])
             if isinstance(trigger, str)
         ])
+        no_candidate_failure = next(
+            (h.get("failure") for h in history if isinstance(h.get("failure"), dict)),
+            {},
+        ) if not final_has_candidate else {}
+        no_candidate_optimizer_hint = next(
+            (str(h.get("optimizer_hint") or "").strip() for h in history if str(h.get("optimizer_hint") or "").strip()),
+            "",
+        ) if not final_has_candidate else ""
+        no_candidate_feedback_retry_hints = next(
+            (h.get("feedback_retry_hints") for h in history if isinstance(h.get("feedback_retry_hints"), dict)),
+            {},
+        ) if not final_has_candidate else {}
         gate_blockers = [
             h["gate_block"]
             for h in history
@@ -3553,6 +3625,9 @@ class ReflACTTrainer:
             "wrong_artifact_retry_attempts": wrong_artifact_retry_attempts,
             "no_candidate_triggers": no_candidate_triggers,
             "no_candidate_reason": no_candidate_triggers[0] if no_candidate_triggers else "",
+            "failure": no_candidate_failure,
+            "optimizer_hint": no_candidate_optimizer_hint,
+            "feedback_retry_hints": no_candidate_feedback_retry_hints,
             "gate_rejection": selection_reject_gate_rejection,
             "final_test_skipped_reason": skip_final_test_reason,
             "epoch_stats": epoch_stats,

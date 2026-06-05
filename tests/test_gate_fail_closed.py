@@ -354,6 +354,12 @@ class _RetryAdapter:
         return ["gitmoot-skillopt"]
 
 
+class _NoPatchAdapter(_RetryAdapter):
+    def reflect(self, results, skill_content, out_dir, **kwargs):
+        del results, skill_content, out_dir, kwargs
+        return []
+
+
 def _retry_trainer_config(tmp_path, *, package_content: str, artifact_root, package_path):
     out_root = tmp_path / "out"
     initial_skill_path = out_root / "initial_skill.md"
@@ -477,6 +483,27 @@ def test_trainer_retries_noop_candidate_with_feedback_hints(tmp_path, monkeypatc
         encoding="utf-8"
     )
     assert "Mobile layout guidance" in canonical_candidate
+
+
+def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+
+    summary = ReflACTTrainer(cfg, _NoPatchAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 0
+    assert summary["best_origin"] == "initial_skill"
+    assert summary["no_candidate_reason"] == "human_feedback_not_distilled"
+    assert "human_feedback_not_distilled" in summary["no_candidate_triggers"]
+    assert summary["failure"]["primary_reason"] == "human_feedback_not_distilled"
+    assert "ranked human feedback" in summary["optimizer_hint"].lower()
+    assert summary["feedback_retry_hints"]["improve"] == ["better mobile layout"]
 
 
 def test_trainer_stops_repeated_noop_candidate_without_fake_candidate(tmp_path, monkeypatch):
