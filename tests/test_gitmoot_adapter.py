@@ -5,6 +5,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import (
     TRUSTED_VUE_RENDER_PACKAGE_JSON,
@@ -1554,6 +1556,74 @@ def test_landing_page_judge_rejection_returns_optimizer_failure_packet(monkeypat
     assert score["failure"]["failed_checks"][0]["check"] == "landing_page_v1.mobile_responsiveness"
     assert score["stage_status"] == [{"stage": "llm_judge", "status": "failed"}]
     assert score["metadata"]["failure"]["human_reason"].startswith("Mobile layout")
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Issue #147: old review promote=no/refine/poor is currently treated as "
+        "a permanent veto even when the new candidate judge says the feedback was resolved."
+    ),
+)
+def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.92,
+                    "contract_status": "passed",
+                    "quality_status": "strong",
+                    "human_feedback_alignment": (
+                        "The new candidate resolves the old review themes: it keeps the strongest ranked "
+                        "direction, adds MoonAI-level dark premium art direction, stronger branding, "
+                        "product-relevant graphics, meaningful motion, proof sections, and mobile-safe layout."
+                    ),
+                    "dimension_scores": {
+                        **_landing_dimension_scores(),
+                        "brand_identity": 0.93,
+                        "proof_trust_content": 0.9,
+                    },
+                    "rationale": (
+                        "The Vue/Vite bundle passes contract checks and the candidate addresses the old "
+                        "poor/refine/promote=no review feedback with a visibly stronger landing-page direction."
+                    ),
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "old-review-feedback-candidate",
+            "prompt": "Build a Vue landing page using the old review feedback as the target.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["C > D > A > B"],
+                    "choice": (
+                        "All old options were poor. Preserve only the clearest direction and push much harder "
+                        "toward MoonAI-level branding, product graphics, motion, proof, and mobile polish."
+                    ),
+                    "quality": "poor",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                }
+            ],
+        },
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["contract_status"] == "passed"
+    assert score["hard"] == 1
+    assert score["soft"] == 0.92
+    assert score["quality_status"] == "passed"
+    assert score["fail_reason"] == ""
+    assert score["metadata"]["feedback_source"] == "old_review"
+    assert score["metadata"]["candidate_specific_failure"] is False
 
 
 def test_landing_page_judge_rejection_normalizes_malformed_failure_packet(monkeypatch):
