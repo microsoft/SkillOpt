@@ -352,7 +352,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
     gate_status = str(summary.get("gate_status") or "passed")
     no_candidate_triggers = no_candidate_triggers or []
     no_candidate_details = _no_candidate_details(summary, no_candidate_triggers)
-    return {
+    report = {
         "dry_run": dry_run,
         "gate_status": gate_status,
         "gate_blocker": summary.get("gate_blocker", ""),
@@ -379,6 +379,8 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
         "token_summary": summary.get("token_summary", {}),
     }
+    report.update(_no_candidate_report_fields(no_candidate_details))
+    return report
 
 
 def _dry_run_summary(package: TrainingPackage) -> dict[str, Any]:
@@ -532,20 +534,98 @@ def _no_candidate_next_action(no_candidate_triggers: list[str] | None) -> str:
     return "Do not import or publish a candidate review; continue training with revised feedback or stop the run."
 
 
+def _no_candidate_next_actions(no_candidate_triggers: list[str] | None) -> list[str]:
+    if not no_candidate_triggers:
+        return []
+    if "gate_rejected_best_origin_initial_skill" in no_candidate_triggers:
+        return [
+            "collect more feedback",
+            "rerun with higher retry budget",
+            "manually revise skill direction",
+        ]
+    return [
+        "revise feedback and continue training",
+        "inspect the candidate package",
+        "stop the run",
+    ]
+
+
 def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[str] | None) -> dict[str, Any]:
     triggers = no_candidate_triggers or []
     details: dict[str, Any] = {}
     gate_rejection = _gate_rejection_dict(summary)
     if gate_rejection is not None and "gate_rejected_best_origin_initial_skill" in triggers:
+        baseline = gate_rejection.get("baseline") if isinstance(gate_rejection.get("baseline"), dict) else {}
+        candidate = gate_rejection.get("candidate") if isinstance(gate_rejection.get("candidate"), dict) else {}
         details["attempted_patch"] = str(gate_rejection.get("attempted_patch") or "")
+        details["baseline_gate"] = _gate_score(baseline)
+        details["candidate_gate"] = _gate_score(candidate)
+        details["duplicate_retry_detected"] = _duplicate_retry_detected(summary)
+        details["evaluator_reason"] = _gate_evaluator_reason(gate_rejection, candidate)
         details["rejection"] = {
-            "baseline": gate_rejection.get("baseline") or {},
-            "candidate": gate_rejection.get("candidate") or {},
+            "baseline": baseline,
+            "candidate": candidate,
             "primary_reason": str(gate_rejection.get("primary_reason") or ""),
             "human_reason": str(gate_rejection.get("human_reason") or ""),
+            "optimizer_hint": str(gate_rejection.get("optimizer_hint") or ""),
             "failed_dimensions": gate_rejection.get("failed_dimensions") or [],
             "evidence": gate_rejection.get("evidence") or [],
         }
         details["retry_attempts"] = str(gate_rejection.get("retry_attempts") or "")
         details["next_action"] = str(gate_rejection.get("next_action") or _no_candidate_next_action(triggers))
+        details["next_actions"] = _no_candidate_next_actions(triggers)
     return {key: value for key, value in details.items() if value not in (None, "", [], {})}
+
+
+def _no_candidate_report_fields(details: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key in (
+        "attempted_patch",
+        "baseline_gate",
+        "candidate_gate",
+        "retry_attempts",
+        "duplicate_retry_detected",
+        "evaluator_reason",
+        "next_actions",
+    ):
+        if key in details and details[key] not in (None, "", [], {}):
+            fields[key] = details[key]
+    return fields
+
+
+def _gate_score(scores: dict[str, Any]) -> float | None:
+    value = scores.get("gate_score")
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def _gate_evaluator_reason(gate_rejection: dict[str, Any], candidate_scores: dict[str, Any]) -> str:
+    for source, key in (
+        (candidate_scores, "evaluator_reasoning"),
+        (candidate_scores, "reasoning"),
+        (gate_rejection, "human_reason"),
+        (gate_rejection, "optimizer_hint"),
+        (gate_rejection, "primary_reason"),
+    ):
+        reason = str(source.get(key) or "").strip()
+        if reason:
+            return reason
+    return ""
+
+
+def _duplicate_retry_detected(summary: dict[str, Any]) -> bool:
+    attempts: list[Any] = []
+    for key in ("gate_reject_retry_attempts", "wrong_artifact_retry_attempts", "noop_retry_attempts"):
+        value = summary.get(key)
+        if isinstance(value, list):
+            attempts.extend(value)
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        if attempt.get("retry_produced_duplicate_candidate") is True or attempt.get("duplicate_retry_detected") is True:
+            return True
+        stop_reason = str(attempt.get("stop_reason") or "")
+        if "duplicate" in stop_reason:
+            return True
+    return False

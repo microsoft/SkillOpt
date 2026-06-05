@@ -169,6 +169,14 @@ def _run_optimize(args: argparse.Namespace) -> int:
         if isinstance(details, dict):
             if attempted_patch := str(details.get("attempted_patch") or "").strip():
                 print(f"attempted_patch: {attempted_patch}")
+            if baseline_gate := _optional_detail(details, "baseline_gate"):
+                print(f"baseline_gate: {baseline_gate}")
+            if candidate_gate := _optional_detail(details, "candidate_gate"):
+                print(f"candidate_gate: {candidate_gate}")
+            if "duplicate_retry_detected" in details:
+                print(f"duplicate_retry_detected: {bool(details.get('duplicate_retry_detected'))}")
+            if evaluator_reason := str(details.get("evaluator_reason") or "").strip():
+                print(f"evaluator_reason: {evaluator_reason}")
             rejection = details.get("rejection")
             if isinstance(rejection, dict):
                 baseline = rejection.get("baseline") if isinstance(rejection.get("baseline"), dict) else {}
@@ -180,10 +188,23 @@ def _run_optimize(args: argparse.Namespace) -> int:
                 )
             if retry_attempts := str(details.get("retry_attempts") or "").strip():
                 print(f"retry_attempts: {retry_attempts}")
+            next_actions = details.get("next_actions")
+            if isinstance(next_actions, list):
+                for action in next_actions:
+                    text = str(action or "").strip()
+                    if text:
+                        print(f"next_action_option: {text}")
         print(f"next_action: {metadata.get('next_action')}")
     else:
         print(f"wrote candidate package: {args.candidate_output}")
     return 0
+
+
+def _optional_detail(details: dict[str, object], key: str) -> str:
+    value = details.get(key)
+    if value is None or value == "":
+        return ""
+    return str(value)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

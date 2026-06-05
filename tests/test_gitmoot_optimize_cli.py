@@ -1160,6 +1160,13 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
             "baseline_selection_hard": 1.0,
             "baseline_selection_soft": 0.89,
             "final_test_skipped_reason": "selection_gate_rejected_candidate",
+            "gate_reject_retry_attempts": [
+                {
+                    "attempt": 0,
+                    "action": "retry",
+                    "retry_produced_duplicate_candidate": True,
+                }
+            ],
             "gate_rejection": {
                 "rejection_type": "candidate_score_regression",
                 "retryable": True,
@@ -1200,7 +1207,23 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
     assert loaded.eval_report["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
     assert loaded.eval_report["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
     assert loaded.eval_report["no_candidate_details"]["attempted_patch"] == "artifact delivery only"
+    assert loaded.eval_report["attempted_patch"] == "artifact delivery only"
+    assert loaded.eval_report["baseline_gate"] == 0.89
+    assert loaded.eval_report["candidate_gate"] == 0.84
+    assert loaded.eval_report["duplicate_retry_detected"] is True
+    assert loaded.eval_report["evaluator_reason"] == "Candidate was valid but had weaker imagery."
+    assert loaded.eval_report["next_actions"] == [
+        "collect more feedback",
+        "rerun with higher retry budget",
+        "manually revise skill direction",
+    ]
     assert loaded.eval_report["no_candidate_details"]["retry_attempts"] == "0/0"
+    assert loaded.eval_report["no_candidate_details"]["baseline_gate"] == 0.89
+    assert loaded.eval_report["no_candidate_details"]["candidate_gate"] == 0.84
+    assert loaded.eval_report["no_candidate_details"]["duplicate_retry_detected"] is True
+    assert loaded.eval_report["no_candidate_details"]["evaluator_reason"] == (
+        "Candidate was valid but had weaker imagery."
+    )
     assert loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["gate_score"] == 0.84
     assert (
         loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["evaluator_reasoning"]
@@ -1212,6 +1235,14 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
     ]
     assert loaded.eval_report["gate_rejection"]["candidate"]["gate_score"] == 0.84
     assert loaded.summary.metadata["gate_rejection"]["baseline"]["gate_score"] == 0.89
+    assert loaded.summary.metadata["no_candidate_details"]["baseline_gate"] == 0.89
+    assert loaded.summary.metadata["no_candidate_details"]["candidate_gate"] == 0.84
+    assert loaded.summary.metadata["no_candidate_details"]["duplicate_retry_detected"] is True
+    assert loaded.summary.metadata["no_candidate_details"]["next_actions"] == [
+        "collect more feedback",
+        "rerun with higher retry budget",
+        "manually revise skill direction",
+    ]
     assert (
         loaded.summary.metadata["gate_rejection"]["baseline"]["evaluator_reasoning"]
         == "Baseline kept the stronger product visual."
