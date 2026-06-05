@@ -26,6 +26,7 @@ from skillopt.model import (
     set_target_backend,
     set_target_deployment,
 )
+from skillopt.model.backend_config import normalize_target_backend_name
 from skillopt.model.codex_harness import prepare_workspace, run_target_exec
 from skillopt.model.common import default_model_for_backend, normalize_backend_name
 from skillopt.utils import extract_json
@@ -87,7 +88,7 @@ def run_optimizer_preflight(
     evaluator_model: str = "",
 ) -> PreflightResult:
     resolved_optimizer_backend = _runtime_backend_name(optimizer_backend or "openai_chat")
-    resolved_target_backend = _runtime_backend_name(target_backend or "openai_chat")
+    resolved_target_backend = _runtime_target_backend_name(target_backend or "openai_chat")
     resolved_optimizer_model = str(optimizer_model or default_model_for_backend(resolved_optimizer_backend)).strip()
     resolved_target_model = str(target_model or default_model_for_backend(resolved_target_backend)).strip()
     evaluator_config = resolve_evaluator_config(
@@ -140,6 +141,13 @@ def _normal_evaluator_id(value: str) -> str:
 
 def _runtime_backend_name(value: str | None) -> str:
     normalized = normalize_backend_name(value)
+    if normalized == "azure_openai":
+        return "openai_chat"
+    return normalized
+
+
+def _runtime_target_backend_name(value: str | None) -> str:
+    normalized = normalize_target_backend_name(value)
     if normalized == "azure_openai":
         return "openai_chat"
     return normalized

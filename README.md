@@ -371,7 +371,9 @@ were obtained with the default settings, not these.
 ### Adding a new backend
 
 A backend = a chat / exec target (e.g. `openai_chat`, `claude_chat`,
-`qwen_chat`, `minimax_chat`, `codex_exec`, `claude_code_exec`). See
+`qwen_chat`, `minimax_chat`, `codex`, `claude_code_exec`). For target
+execution, `codex` is the public spelling and resolves to the internal
+`codex_exec` adapter. See
 [`docs/guide/new-backend.md`](docs/guide/new-backend.md) for the full
 contract; in short you add a `skillopt/model/<name>_backend.py` module,
 register it in `skillopt/model/common.py` + `backend_config.py`, and wire

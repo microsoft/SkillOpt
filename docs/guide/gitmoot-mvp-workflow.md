@@ -78,7 +78,7 @@ gitmoot-skillopt optimize \
   --out-root outputs/landing-page-train \
   --candidate-output outputs/landing-page-train/candidate.json \
   --optimizer-backend openai_chat \
-  --target-backend codex_exec \
+  --target-backend codex \
   --evaluator-id landing_page_v1 \
   --evaluator-backend openai_chat \
   --optimizer-model gpt-5.5 \

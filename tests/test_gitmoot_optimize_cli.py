@@ -776,6 +776,52 @@ def test_preflight_accepts_azure_openai_backend_aliases(tmp_path, monkeypatch):
     assert captured["evaluator_backend"] == "openai_chat"
 
 
+def test_preflight_accepts_codex_target_backend_alias(tmp_path, monkeypatch):
+    from gitmoot_skillopt import preflight
+    from skillopt.model import get_target_backend
+
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"mode": "fixture"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        captured["optimizer_stage"] = kwargs["stage"]
+        return "gitmoot-optimizer-canary-ok", {}
+
+    def fake_prepare_workspace(**kwargs):
+        captured["prepared_skill"] = kwargs["skill_md"]
+
+    def fake_run_target_exec(**kwargs):
+        captured["target_backend"] = get_target_backend()
+        captured["target_prompt"] = kwargs["prompt"]
+        captured["target_model"] = kwargs["model"]
+        return "gitmoot-target-canary-ok", {}
+
+    monkeypatch.setattr(preflight, "chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr(preflight, "prepare_workspace", fake_prepare_workspace)
+    monkeypatch.setattr(preflight, "run_target_exec", fake_run_target_exec)
+
+    result = preflight.run_optimizer_preflight(
+        TrainingPackage.load(package_path),
+        optimizer_backend="codex",
+        target_backend="codex",
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        evaluator_backend="codex",
+        evaluator_model="gpt-eval",
+    )
+
+    assert result.optimizer_backend == "codex"
+    assert result.target_backend == "codex_exec"
+    assert result.evaluator_backend == "codex"
+    assert captured["optimizer_stage"] == "gitmoot_preflight_optimizer"
+    assert captured["target_backend"] == "codex_exec"
+    assert captured["target_prompt"].endswith("gitmoot-target-canary-ok")
+    assert captured["target_model"] == "gpt-target"
+
+
 def test_optimize_runs_preflight_before_real_trainer(tmp_path, monkeypatch):
     package_path, artifact_root = write_training_package(tmp_path)
     out_root = tmp_path / "out"
@@ -847,6 +893,81 @@ def test_optimize_runs_preflight_before_real_trainer(tmp_path, monkeypatch):
     assert captured["cfg"]["optimizer_model"] == "gpt-resolved-opt"
     assert captured["cfg"]["target_model"] == "gpt-resolved-target"
     assert captured["cfg"]["evaluator_config"]["mode"] == "landing_page_v1"
+    assert (out_root / "candidate.json").is_file()
+
+
+def test_optimize_cli_accepts_codex_target_backend_alias(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    out_root = tmp_path / "out"
+    captured = {}
+
+    def fake_preflight(package, **kwargs):
+        captured["preflight"] = kwargs
+        return PreflightResult(
+            optimizer_backend="codex",
+            target_backend="codex_exec",
+            evaluator_backend="codex",
+            optimizer_model="gpt-opt",
+            target_model="gpt-target",
+            evaluator_model="gpt-eval",
+            evaluator_config={
+                "mode": "landing_page_v1",
+                "evaluator_id": "landing_page_v1",
+                "evaluator_backend": "codex",
+            },
+        )
+
+    class FakeTrainer:
+        def __init__(self, cfg, adapter):
+            captured["cfg"] = cfg
+            captured["adapter"] = adapter
+
+        def train(self):
+            return {
+                "gate_status": "passed",
+                "promotable": True,
+                "best_selection_hard": 1.0,
+                "baseline_selection_hard": 0.0,
+                "best_step": 1,
+                "total_steps": 1,
+            }
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimizer_preflight", fake_preflight)
+    monkeypatch.setattr("gitmoot_skillopt.optimize.ReflACTTrainer", FakeTrainer)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            str(package_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--out-root",
+            str(out_root),
+            "--candidate-output",
+            str(out_root / "candidate.json"),
+            "--optimizer-backend",
+            "codex",
+            "--target-backend",
+            "codex",
+            "--evaluator-backend",
+            "codex",
+            "--optimizer-model",
+            "gpt-opt",
+            "--target-model",
+            "gpt-target",
+            "--evaluator-model",
+            "gpt-eval",
+        ]
+    )
+
+    assert result == 0
+    assert captured["preflight"]["optimizer_backend"] == "codex"
+    assert captured["preflight"]["target_backend"] == "codex"
+    assert captured["preflight"]["evaluator_backend"] == "codex"
+    assert captured["cfg"]["optimizer_backend"] == "codex"
+    assert captured["cfg"]["target_backend"] == "codex_exec"
+    assert captured["cfg"]["evaluator_config"]["evaluator_backend"] == "codex"
     assert (out_root / "candidate.json").is_file()
 
 

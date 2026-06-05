@@ -69,7 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--optimizer-model", default="gpt-5.5", help="optimizer model name")
     optimize.add_argument("--target-model", default="gpt-5.5", help="target model name")
     optimize.add_argument("--optimizer-backend", default="openai_chat", help="optimizer backend")
-    optimize.add_argument("--target-backend", default="openai_chat", help="target backend")
+    optimize.add_argument(
+        "--target-backend",
+        default="openai_chat",
+        help="target backend; use 'codex' for the Codex execution target",
+    )
     optimize.add_argument("--evaluator-id", default="", help="evaluator id, such as landing_page_v1")
     optimize.add_argument(
         "--evaluator-model",

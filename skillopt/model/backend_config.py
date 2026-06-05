@@ -13,7 +13,11 @@ def _parse_bool(value: str | None, default: bool) -> bool:
 
 
 OPTIMIZER_BACKEND = normalize_backend_name(os.environ.get("OPTIMIZER_BACKEND", "openai_chat"))
-TARGET_BACKEND = normalize_backend_name(os.environ.get("TARGET_BACKEND", "openai_chat"))
+TARGET_BACKEND_ALIASES = {
+    "codex": "codex_exec",
+}
+_RAW_TARGET_BACKEND = normalize_backend_name(os.environ.get("TARGET_BACKEND", "openai_chat"))
+TARGET_BACKEND = TARGET_BACKEND_ALIASES.get(_RAW_TARGET_BACKEND, _RAW_TARGET_BACKEND)
 
 CODEX_EXEC_PATH = os.environ.get("CODEX_EXEC_PATH", "codex")
 CODEX_EXEC_SANDBOX = os.environ.get("CODEX_EXEC_SANDBOX", "workspace-write")
@@ -63,13 +67,18 @@ def get_optimizer_backend() -> str:
 
 def set_target_backend(backend: str) -> None:
     global TARGET_BACKEND
-    TARGET_BACKEND = normalize_backend_name(backend or "openai_chat")
+    TARGET_BACKEND = normalize_target_backend_name(backend or "openai_chat")
     if TARGET_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "codex_exec", "claude_code_exec"}:
         raise ValueError(
             f"Unsupported target backend: {TARGET_BACKEND!r}. "
-            "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', 'codex_exec', and 'claude_code_exec'."
+            "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', 'codex', 'codex_exec', and 'claude_code_exec'."
         )
     os.environ["TARGET_BACKEND"] = TARGET_BACKEND
+
+
+def normalize_target_backend_name(backend: str | None) -> str:
+    normalized = normalize_backend_name(backend)
+    return TARGET_BACKEND_ALIASES.get(normalized, normalized)
 
 
 def get_target_backend() -> str:
