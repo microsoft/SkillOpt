@@ -396,6 +396,7 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
     candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
     delta_summary = packet.get("delta_summary") if isinstance(packet.get("delta_summary"), dict) else {}
     failed_dimensions = packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []
+    failed_checks = packet.get("failed_checks") if isinstance(packet.get("failed_checks"), list) else []
     evidence = packet.get("evidence") if isinstance(packet.get("evidence"), list) else []
     attempted_patch = str(packet.get("attempted_patch") or "selection-gated candidate update").strip()
     lines = [
@@ -423,6 +424,12 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
         "Do not repeat this failed patch direction. Make a different, meaningful skill update "
         "that addresses the failed dimensions and imported human feedback.",
     ]
+    expected_artifact = str(packet.get("expected_artifact") or "").strip()
+    actual_artifact = str(packet.get("actual_artifact") or "").strip()
+    if expected_artifact:
+        lines.append(f"Expected artifact: {expected_artifact}")
+    if actual_artifact:
+        lines.append(f"Actual artifact: {actual_artifact}")
     strengths = delta_summary.get("strengths") if isinstance(delta_summary.get("strengths"), list) else []
     weaknesses = delta_summary.get("weaknesses") if isinstance(delta_summary.get("weaknesses"), list) else []
     if strengths:
@@ -431,6 +438,8 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
         lines.append("Candidate weaknesses to fix: " + "; ".join(str(item) for item in weaknesses[:8]))
     if failed_dimensions:
         lines.append("Failed dimensions: " + ", ".join(str(item) for item in failed_dimensions[:8]))
+    if failed_checks:
+        lines.append("Failed checks: " + "; ".join(str(item) for item in failed_checks[:8]))
     if evidence:
         lines.append("Evidence: " + "; ".join(str(item) for item in evidence[:8]))
     return "\n".join(line for line in lines if str(line).strip())
@@ -503,6 +512,13 @@ def _structured_result_failure(result: dict) -> dict | None:
     if not primary_reason and not optimizer_hint and not rejection_type and not failed_dimensions:
         return None
 
+    failed_checks = [
+        check
+        for source in (result.get("failed_checks"), metadata.get("failed_checks"), failure.get("failed_checks"))
+        if isinstance(source, list)
+        for check in source
+    ]
+
     return {
         "primary_reason": primary_reason,
         "rejection_type": rejection_type,
@@ -515,11 +531,48 @@ def _structured_result_failure(result: dict) -> dict | None:
         ).strip(),
         "optimizer_hint": optimizer_hint,
         "failed_dimensions": failed_dimensions,
-        "failed_checks": failure.get("failed_checks") if isinstance(failure.get("failed_checks"), list) else [],
+        "failed_checks": failed_checks,
         "evidence": _string_list(result.get("evidence"), metadata.get("evidence"), failure.get("evidence")),
         "stage_status": failure.get("stage_status") if isinstance(failure.get("stage_status"), list) else [],
+        "expected_artifact": str(
+            failure.get("expected_artifact")
+            or metadata.get("expected_artifact")
+            or ("vue-vite bundle" if _is_wrong_artifact_rejection(failure) else "")
+        ).strip(),
+        "actual_artifact": str(
+            failure.get("actual_artifact")
+            or metadata.get("actual_artifact")
+            or ("skill markdown/template" if _is_wrong_artifact_rejection(failure) else "")
+        ).strip(),
         "source_item_id": str(result.get("id") or "").strip(),
     }
+
+
+def _structured_failure_hints(results: list[dict] | None) -> list[dict]:
+    hints: list[dict] = []
+    for result in results or []:
+        if not isinstance(result, dict):
+            continue
+        signal = _structured_result_failure(result)
+        if not signal or not str(signal.get("optimizer_hint") or "").strip():
+            continue
+        hints.append(signal)
+    return hints
+
+
+def _format_unconverted_failure_hints(hints: list[dict]) -> list[dict]:
+    records: list[dict] = []
+    for hint in hints[:8]:
+        records.append(
+            {
+                "source_item_id": str(hint.get("source_item_id") or "").strip(),
+                "primary_reason": str(hint.get("primary_reason") or hint.get("rejection_type") or "").strip(),
+                "optimizer_hint": str(hint.get("optimizer_hint") or "").strip(),
+                "failed_checks": hint.get("failed_checks") if isinstance(hint.get("failed_checks"), list) else [],
+                "evidence": hint.get("evidence") if isinstance(hint.get("evidence"), list) else [],
+            }
+        )
+    return records
 
 
 def _extract_evaluator_reasoning(result: dict) -> str:
@@ -1050,6 +1103,9 @@ def _selection_reject_gate_rejection(
         signal.get("failed_dimensions") if isinstance(signal.get("failed_dimensions"), list) else []
     )
     signal_evidence = signal.get("evidence") if isinstance(signal.get("evidence"), list) else []
+    signal_failed_checks = signal.get("failed_checks") if isinstance(signal.get("failed_checks"), list) else []
+    expected_artifact = str(signal.get("expected_artifact") or "").strip()
+    actual_artifact = str(signal.get("actual_artifact") or "").strip()
     if signal_evidence:
         evidence.extend(str(item) for item in signal_evidence if str(item).strip())
     source_item_id = str(signal.get("source_item_id") or "").strip()
@@ -1092,7 +1148,10 @@ def _selection_reject_gate_rejection(
         "human_reason": human_reason,
         "optimizer_hint": optimizer_hint,
         "failed_dimensions": failed_dimensions,
+        "failed_checks": signal_failed_checks,
         "evidence": _dedupe_texts(evidence, limit=12),
+        "expected_artifact": expected_artifact,
+        "actual_artifact": actual_artifact,
         "attempted_patch": attempted_patch,
         "retry_attempts": retry_attempts,
         "next_action": next_action,
@@ -1805,6 +1864,13 @@ class ReflACTTrainer:
                         raw_patches,
                         update_mode=update_mode,
                     )
+                    structured_failure_hints = _structured_failure_hints(rollout_results)
+                    if structured_failure_hints and not failure_patches:
+                        step_rec["failure_hint_not_converted_to_patch"] = True
+                        step_rec["unconverted_failure_hints"] = (
+                            step_rec.get("unconverted_failure_hints", [])
+                            + _format_unconverted_failure_hints(structured_failure_hints)
+                        )
                     all_failure_patches.extend(failure_patches)
                     all_success_patches.extend(success_patches)
                     all_raw_patches.extend(raw_patches)
@@ -1855,6 +1921,9 @@ class ReflACTTrainer:
                 # ── No patches? Skip ─────────────────────────────────────
                 if not all_failure_patches and not all_success_patches:
                     step_rec["action"] = "skip_no_patches"
+                    if step_rec.get("failure_hint_not_converted_to_patch"):
+                        step_rec["no_candidate_reason"] = "failure_hint_not_converted_to_patch"
+                        step_rec["no_candidate_triggers"] = ["failure_hint_not_converted_to_patch"]
                     step_rec["current_score"] = current_score
                     step_rec["best_score"] = best_score
                     step_rec["best_step"] = best_step
@@ -2287,6 +2356,13 @@ class ReflACTTrainer:
                                 "stop_reason": gate_reject_stop_reason,
                                 "gate_rejection": gate_rejection,
                             }
+                            if wrong_artifact_retry and isinstance(gate_rejection, dict):
+                                gate_retry_record["expected_artifact"] = str(
+                                    gate_rejection.get("expected_artifact") or "vue-vite bundle"
+                                )
+                                gate_retry_record["actual_artifact"] = str(
+                                    gate_rejection.get("actual_artifact") or "skill markdown/template"
+                                )
                             if wrong_artifact_retry:
                                 wrong_artifact_retry_attempts.append(gate_retry_record)
                                 retry_file_prefix = "wrong_artifact_retry"

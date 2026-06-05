@@ -407,7 +407,16 @@ def _wrong_artifact_result() -> dict:
             "human_reason": "The candidate returned a skill/template instead of the landing-page bundle.",
             "optimizer_hint": "Return a Vue/Vite preview bundle JSON.",
             "failed_dimensions": ["wrong_artifact_type", "artifact_contract"],
+            "failed_checks": [
+                {
+                    "check": "vue_vite_bundle.required_files",
+                    "reason": "The required Vue/Vite files are missing.",
+                    "evidence": ["missing src/App.vue"],
+                }
+            ],
             "evidence": ["response appears to be a skill/template document"],
+            "expected_artifact": "vue-vite bundle",
+            "actual_artifact": "skill markdown/template",
         },
     }
 
@@ -847,11 +856,94 @@ def test_trainer_retries_actionable_wrong_artifact_rejection(tmp_path, monkeypat
     assert len(summary["wrong_artifact_retry_attempts"]) == 1
     retry_attempt = summary["wrong_artifact_retry_attempts"][0]
     assert retry_attempt["retry_class"] == "wrong_artifact_type"
+    assert retry_attempt["expected_artifact"] == "vue-vite bundle"
+    assert retry_attempt["actual_artifact"] == "skill markdown/template"
     assert retry_attempt["action"] == "retry"
     assert retry_attempt["gate_rejection"]["primary_reason"] == "wrong_artifact_type"
     assert retry_attempt["gate_rejection"]["retry_attempts"] == "0/1"
+    assert retry_attempt["gate_rejection"]["failed_checks"][0]["check"] == "vue_vite_bundle.required_files"
     assert "Primary reason: wrong_artifact_type" in merge_contexts[1]
+    assert "Expected artifact: vue-vite bundle" in merge_contexts[1]
+    assert "Actual artifact: skill markdown/template" in merge_contexts[1]
+    assert "vue_vite_bundle.required_files" in merge_contexts[1]
     assert "Return a Vue/Vite preview bundle JSON." in merge_contexts[1]
+
+
+def test_failure_hint_without_patch_is_recorded(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+
+    class HintNoPatchAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, skill_content, kwargs
+            return [
+                {
+                    "id": str(out_dir).rsplit("/", 1)[-1],
+                    "hard": 0,
+                    "soft": 0.0,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                    "failed_checks": [
+                        {
+                            "check": "top_level.required_files",
+                            "reason": "Top-level failed check should be preserved.",
+                            "evidence": ["top-level evidence"],
+                        }
+                    ],
+                    "failure": {
+                        "primary_reason": "artifact_contract_failure",
+                        "optimizer_hint": "Return the required Vue/Vite preview bundle.",
+                        "failed_checks": [
+                            {
+                                "check": "vue_vite_bundle.required_files",
+                                "reason": "src/App.vue is missing.",
+                                "evidence": ["missing src/App.vue"],
+                            }
+                        ],
+                        "evidence": ["missing src/App.vue"],
+                    },
+                    "metadata": {
+                        "failed_checks": [
+                            {
+                                "check": "metadata.required_files",
+                                "reason": "Metadata failed check should be preserved.",
+                                "evidence": ["metadata evidence"],
+                            }
+                        ]
+                    },
+                }
+            ]
+
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del results, skill_content, out_dir, kwargs
+            return []
+
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["accumulation"] = 2
+    cfg["train_size"] = 2
+
+    summary = ReflACTTrainer(cfg, HintNoPatchAdapter(_RetryDataLoader(train_size=2))).train()
+
+    assert summary["total_skips"] == 1
+    assert summary["no_candidate_reason"] == "failure_hint_not_converted_to_patch"
+    assert "failure_hint_not_converted_to_patch" in summary["no_candidate_triggers"]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["failure_hint_not_converted_to_patch"] is True
+    assert len(history[0]["unconverted_failure_hints"]) == 2
+    first_hint = history[0]["unconverted_failure_hints"][0]
+    assert first_hint["optimizer_hint"].startswith("Return the required")
+    checks = [check["check"] for check in first_hint["failed_checks"]]
+    assert checks == [
+        "top_level.required_files",
+        "metadata.required_files",
+        "vue_vite_bundle.required_files",
+    ]
 
 
 def test_trainer_detects_wrong_artifact_from_failed_dimensions(tmp_path, monkeypatch):
