@@ -808,6 +808,27 @@ def _candidate_hard_score_allows_gate_retry(packet: dict) -> bool:
         for field in fields
         if str(field or "").strip()
     }
+    primary_reason = (
+        str(packet.get("primary_reason") or "").strip().lower().replace("-", "_").replace(".", "_")
+    )
+    rejection_type = (
+        str(packet.get("rejection_type") or "").strip().lower().replace("-", "_").replace(".", "_")
+    )
+    baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
+    baseline_hard = baseline.get("hard")
+    if (
+        isinstance(packet.get("human_feedback_context"), dict)
+        and not isinstance(baseline_hard, bool)
+        and isinstance(baseline_hard, int | float)
+        and float(baseline_hard) <= 0.0
+        and primary_reason in {"candidate_quality_regressed", "candidate_score_regression"}
+        and rejection_type in {"", "candidate_score_regression"}
+        and any(
+            _matches_retryable_hard_zero_token(field, "human_feedback_alignment")
+            for field in normalized
+        )
+    ):
+        return True
     retryable_hard_zero_tokens = {
         "animation_motion_quality",
         "brand_identity",
@@ -941,15 +962,49 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
 
 
 def _format_duplicate_gate_retry_context(*, duplicate_of: str, attempt: int) -> str:
-    return "\n".join(
-        [
-            "## Duplicate Gate Retry Candidate",
-            f"The previous gate retry attempt {attempt} produced the same candidate hash: {duplicate_of}.",
-            "Do not repeat the same structural update or patch direction.",
-            "Preserve useful candidate strengths, but make a different skill change using evaluator rationale.",
-            "Specifically address the candidate weaknesses from delta_summary before retrying.",
-        ]
+    return _format_duplicate_gate_retry_context_from_packet(
+        duplicate_of=duplicate_of,
+        attempt=attempt,
+        packet=None,
     )
+
+
+def _format_duplicate_gate_retry_context_from_packet(
+    *,
+    duplicate_of: str,
+    attempt: int,
+    packet: dict | None,
+) -> str:
+    attempted_patch = ""
+    feedback_themes: list[str] = []
+    optimizer_hint = ""
+    failed_dimensions: list[str] = []
+    if isinstance(packet, dict):
+        attempted_patch = str(packet.get("attempted_patch") or "").strip()
+        optimizer_hint = str(packet.get("optimizer_hint") or "").strip()
+        failed_dimensions = [
+            str(item)
+            for item in (packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else [])
+            if str(item).strip()
+        ]
+        feedback_themes = _feedback_context_themes(packet.get("human_feedback_context"))
+
+    lines = [
+        "## Duplicate Gate Retry Candidate",
+        f"The previous gate retry attempt {attempt} produced the same candidate hash: {duplicate_of}.",
+        "Do not repeat the same structural update or patch direction.",
+        "Preserve useful candidate strengths, but make a different skill change using evaluator rationale.",
+        "Specifically address the candidate weaknesses from delta_summary before retrying.",
+    ]
+    if attempted_patch:
+        lines.append(f"Repeated patch direction: {attempted_patch}")
+    if optimizer_hint:
+        lines.append(f"Optimizer hint still unresolved: {optimizer_hint}")
+    if failed_dimensions:
+        lines.append("Still failed dimensions: " + ", ".join(failed_dimensions[:8]))
+    if feedback_themes:
+        lines.append("Unresolved human feedback themes: " + "; ".join(feedback_themes[:8]))
+    return "\n".join(lines)
 
 
 def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
@@ -3440,9 +3495,10 @@ class ReflACTTrainer:
                                         json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
                                     break
                                 duplicate_gate_retry_hashes.add(cand_hash)
-                                duplicate_gate_retry_context = _format_duplicate_gate_retry_context(
+                                duplicate_gate_retry_context = _format_duplicate_gate_retry_context_from_packet(
                                     duplicate_of=cand_hash,
                                     attempt=retry_count + 1,
+                                    packet=gate_rejection,
                                 )
                                 with open(
                                     gate_retry_record_path,

@@ -9,6 +9,7 @@ from skillopt.engine.trainer import (
     ReflACTTrainer,
     _best_selection_scores,
     _detect_no_meaningful_change,
+    _format_duplicate_gate_retry_context_from_packet,
     _gate_rejection_retry_decision,
     _non_feedback_direct_items,
     _ranked_feedback_context_packet,
@@ -1902,6 +1903,32 @@ def test_gate_rejection_duplicate_retry_forces_stronger_context(tmp_path, monkey
     assert duplicate_attempt["duplicate_of"] == duplicate_attempt["duplicate_candidate_hash"]
     assert "Duplicate Gate Retry Candidate" in merge_contexts[2]
     assert "Do not repeat the same structural update" in merge_contexts[2]
+    assert "Repeated patch direction: artifact delivery only" in merge_contexts[2]
+    assert "Unresolved human feedback themes:" in merge_contexts[2]
+    assert "better mobile layout" in merge_contexts[2]
+
+
+def test_duplicate_gate_retry_context_includes_unresolved_feedback_themes():
+    context = _format_duplicate_gate_retry_context_from_packet(
+        duplicate_of="abc123",
+        attempt=1,
+        packet={
+            "attempted_patch": "artifact delivery only",
+            "optimizer_hint": "Address the visual quality gap.",
+            "failed_dimensions": ["human_feedback_alignment", "visual_quality"],
+            "human_feedback_context": {
+                "themes": ["MoonAI-like premium branding"],
+                "improve": ["product-relevant graphics"],
+            },
+        },
+    )
+
+    assert "Duplicate Gate Retry Candidate" in context
+    assert "Repeated patch direction: artifact delivery only" in context
+    assert "Optimizer hint still unresolved: Address the visual quality gap." in context
+    assert "Still failed dimensions: human_feedback_alignment, visual_quality" in context
+    assert "MoonAI-like premium branding" in context
+    assert "product-relevant graphics" in context
 
 
 def test_gate_rejection_repeated_duplicate_retry_stops(tmp_path, monkeypatch):
@@ -2366,9 +2393,48 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
     assert _gate_rejection_retry_decision(
         {
             **packet,
+            "baseline": {"hard": 0.0, "soft": 0.45, "gate_score": 0.225},
+            "candidate": {"hard": 0.0, "soft": 0.45, "gate_score": 0.225},
+            "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
+            "human_feedback_context": {"feedback_target": "baseline_review_outputs"},
+        },
+        attempt=0,
+        budget=3,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (True, "retryable")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
+            "baseline": {"hard": 1.0, "soft": 0.45, "gate_score": 0.725},
+            "candidate": {"hard": 0.0, "soft": 0.45, "gate_score": 0.225},
+            "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
+            "human_feedback_context": {"feedback_target": "baseline_review_outputs"},
+        },
+        attempt=0,
+        budget=3,
+        seen_reasons=set(),
+        close_gap=1.0,
+    ) == (False, "candidate_hard_score_failed")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
+            "baseline": {"hard": 0.0, "soft": 0.45, "gate_score": 0.225},
+            "candidate": {"hard": 0.0, "soft": 0.45, "gate_score": 0.225},
+            "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
+        },
+        attempt=0,
+        budget=3,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (False, "candidate_hard_score_failed")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
             "primary_reason": "new_unclassified_hard_failure",
             "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87},
-            "failed_dimensions": ["new_unclassified_hard_failure"],
+            "failed_dimensions": ["new_unclassified_hard_failure", "human_feedback_alignment"],
+            "human_feedback_context": {"feedback_target": "baseline_review_outputs"},
         },
         attempt=0,
         budget=2,
