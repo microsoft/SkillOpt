@@ -1071,10 +1071,11 @@ def test_landing_page_evaluator_rejects_missing_vue_bundle_file_before_judge(mon
     assert score["quality_status"] == "not_run"
     assert score["human_feedback_alignment"]["required_improvements"] == ["stronger product visuals"]
     assert score["evaluator_id"] == "landing_page_v1"
-    assert score["failure"]["primary_reason"] == "vue_vite_bundle_contract_failed"
+    assert score["failure"]["primary_reason"] == "artifact_contract_failure"
     assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.required_files"
     assert "src/App.vue" in score["failure"]["evidence"][-1]
     assert score["failure"]["optimizer_hint"].startswith("Return a JSON Vue/Vite preview bundle")
+    assert score["failure"]["failed_dimensions"] == ["artifact_contract"]
     assert score["stage_status"] == [{"stage": "artifact_contract", "status": "failed"}]
 
 
@@ -1334,8 +1335,84 @@ def test_landing_page_evaluator_required_render_smoke_implies_vue_bundle_contrac
     )
 
     assert score["hard"] == 0
-    assert score["failure"]["primary_reason"] == "vue_vite_bundle_contract_failed"
+    assert score["failure"]["primary_reason"] == "wrong_artifact_type"
     assert score["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.json"
+    assert score["failure"]["failed_dimensions"] == ["artifact_contract"]
+
+
+def test_landing_page_evaluator_rejects_skill_template_output_as_wrong_artifact_type(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for wrong artifact type")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    response = """---
+id: landing-page-builder
+kind: agent-template
+---
+
+# Landing Page Builder
+
+## Update Format
+Return a complete replacement skill.
+"""
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        response,
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["failure"]["primary_reason"] == "wrong_artifact_type"
+    assert "skill/template document" in " ".join(score["failure"]["evidence"])
+    assert score["quality_status"] == "not_run"
+
+
+def test_landing_page_evaluator_rejects_missing_top_level_bundle_metadata_before_judge(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    bundle = json.loads(_valid_vue_bundle_response())
+    bundle.pop("renderer")
+    bundle["build_command"] = "vite build"
+    bundle["dist_dir"] = "build"
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        json.dumps(bundle),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["hard"] == 0
+    assert score["quality_status"] == "not_run"
+    assert score["failure"]["primary_reason"] == "artifact_contract_failure"
+    checks = [check["check"] for check in score["failure"]["failed_checks"]]
+    assert "vue_vite_bundle.renderer" in checks
+    assert "vue_vite_bundle.build_command" in checks
+    assert "vue_vite_bundle.dist_dir" in checks
+
+
+def test_landing_page_evaluator_reports_top_level_failures_when_files_missing(monkeypatch):
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+
+    score = evaluate_response(
+        {"prompt": "Build a Vue landing page."},
+        json.dumps({}),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    checks = [check["check"] for check in score["failure"]["failed_checks"]]
+    assert score["failure"]["primary_reason"] == "artifact_contract_failure"
+    assert "vue_vite_bundle.renderer" in checks
+    assert "vue_vite_bundle.build_command" in checks
+    assert "vue_vite_bundle.dist_dir" in checks
+    assert "vue_vite_bundle.files" in checks
 
 
 def test_landing_page_evaluator_rejects_render_imports_outside_bundle_before_build(monkeypatch):

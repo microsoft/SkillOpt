@@ -90,6 +90,7 @@ def test_scored_evaluation_preserves_structured_failure_feedback():
                 "required_improvements": ["make the layout responsive"],
             },
             "dimension_scores": {"artifact_contract": 0, "visual": 0.2},
+            "failed_dimensions": ["artifact_contract"],
             "failure": {
                 "primary_reason": "missing_required_artifact",
                 "optimizer_hint": "Return the required Vue/Vite preview bundle before optimizing visual polish.",
@@ -104,7 +105,9 @@ def test_scored_evaluation_preserves_structured_failure_feedback():
     assert result["quality_status"] == "not_run"
     assert result["human_feedback_alignment"]["required_improvements"] == ["make the layout responsive"]
     assert result["dimension_scores"]["artifact_contract"] == 0
+    assert result["failed_dimensions"] == ["artifact_contract"]
     assert result["failure"]["primary_reason"] == "missing_required_artifact"
+    assert result["metadata"]["failed_dimensions"] == ["artifact_contract"]
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required Vue")
 
 
