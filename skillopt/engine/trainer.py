@@ -350,6 +350,7 @@ def _gate_rejection_with_retry_attempts(packet: dict | None, *, used: int, budge
 def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -> str:
     baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
     candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
+    delta_summary = packet.get("delta_summary") if isinstance(packet.get("delta_summary"), dict) else {}
     failed_dimensions = packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []
     evidence = packet.get("evidence") if isinstance(packet.get("evidence"), list) else []
     attempted_patch = str(packet.get("attempted_patch") or "selection-gated candidate update").strip()
@@ -372,10 +373,18 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
         f"hard={_score_delta(baseline.get('hard'), candidate.get('hard'))}, "
         f"soft={_score_delta(baseline.get('soft'), candidate.get('soft'))}, "
         f"gate={_score_delta(baseline.get('gate_score'), candidate.get('gate_score'))}",
+        f"Baseline evaluator reasoning: {baseline.get('evaluator_reasoning', '')}",
+        f"Candidate evaluator reasoning: {candidate.get('evaluator_reasoning', '')}",
         f"Optimizer hint: {packet.get('optimizer_hint', '')}",
         "Do not repeat this failed patch direction. Make a different, meaningful skill update "
         "that addresses the failed dimensions and imported human feedback.",
     ]
+    strengths = delta_summary.get("strengths") if isinstance(delta_summary.get("strengths"), list) else []
+    weaknesses = delta_summary.get("weaknesses") if isinstance(delta_summary.get("weaknesses"), list) else []
+    if strengths:
+        lines.append("Candidate strengths to preserve: " + "; ".join(str(item) for item in strengths[:8]))
+    if weaknesses:
+        lines.append("Candidate weaknesses to fix: " + "; ".join(str(item) for item in weaknesses[:8]))
     if failed_dimensions:
         lines.append("Failed dimensions: " + ", ".join(str(item) for item in failed_dimensions[:8]))
     if evidence:
@@ -454,6 +463,93 @@ def _structured_result_failure(result: dict) -> dict | None:
         "evidence": _string_list(result.get("evidence"), metadata.get("evidence"), failure.get("evidence")),
         "stage_status": failure.get("stage_status") if isinstance(failure.get("stage_status"), list) else [],
         "source_item_id": str(result.get("id") or "").strip(),
+    }
+
+
+def _extract_evaluator_reasoning(result: dict) -> str:
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    failure = result.get("failure")
+    if not isinstance(failure, dict):
+        failure = metadata.get("failure") if isinstance(metadata.get("failure"), dict) else {}
+    values = [
+        result.get("reasoning"),
+        metadata.get("reasoning"),
+        result.get("rationale"),
+        metadata.get("rationale"),
+        failure.get("human_reason"),
+        failure.get("primary_reason"),
+        failure.get("optimizer_hint"),
+        result.get("fail_reason"),
+    ]
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _selection_eval_context(results: list[dict] | None) -> dict:
+    if not results:
+        return {}
+    reasoning: list[str] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        item_id = str(result.get("id") or "").strip()
+        text = _extract_evaluator_reasoning(result)
+        if not text:
+            continue
+        if item_id:
+            text = f"{item_id}: {text}"
+        reasoning.append(text)
+    return {"evaluator_reasoning": " | ".join(_dedupe_texts(reasoning, limit=4))}
+
+
+def _gate_score_payload(
+    *,
+    hard: float | None,
+    soft: float | None,
+    gate_score: float | None,
+    context: dict | None,
+) -> dict:
+    payload = {
+        "hard": hard,
+        "soft": soft,
+        "gate_score": gate_score,
+    }
+    if isinstance(context, dict):
+        evaluator_reasoning = str(context.get("evaluator_reasoning") or "").strip()
+        if evaluator_reasoning:
+            payload["evaluator_reasoning"] = evaluator_reasoning
+    return payload
+
+
+def _selection_delta_summary(
+    *,
+    baseline_context: dict | None,
+    candidate_context: dict | None,
+    rejection_signal: dict | None,
+) -> dict:
+    signal = rejection_signal if isinstance(rejection_signal, dict) else {}
+    raw_summary = signal.get("delta_summary")
+    if isinstance(raw_summary, dict):
+        strengths = raw_summary.get("strengths") if isinstance(raw_summary.get("strengths"), list) else []
+        weaknesses = raw_summary.get("weaknesses") if isinstance(raw_summary.get("weaknesses"), list) else []
+        return {
+            "strengths": _dedupe_texts([str(item) for item in strengths if str(item).strip()], limit=8),
+            "weaknesses": _dedupe_texts([str(item) for item in weaknesses if str(item).strip()], limit=8),
+        }
+    strengths: list[str] = []
+    weaknesses: list[str] = []
+    candidate_reasoning = str((candidate_context or {}).get("evaluator_reasoning") or "").strip()
+    baseline_reasoning = str((baseline_context or {}).get("evaluator_reasoning") or "").strip()
+    if candidate_reasoning:
+        strengths.append(f"Candidate evaluator rationale: {candidate_reasoning}")
+    if baseline_reasoning:
+        weaknesses.append(f"Baseline evaluator rationale to beat: {baseline_reasoning}")
+    return {
+        "strengths": _dedupe_texts(strengths, limit=4),
+        "weaknesses": _dedupe_texts(weaknesses, limit=4),
     }
 
 
@@ -821,11 +917,15 @@ def _selection_reject_gate_rejection(
     retry_used: int = 0,
     retry_budget: int = 0,
     rejection_signal: dict | None = None,
+    baseline_context: dict | None = None,
+    candidate_context: dict | None = None,
 ) -> dict | None:
     reject_steps = [record for record in history if record.get("action") == "reject"]
     if not reject_steps:
         return None
     rejected = reject_steps[-1]
+    if candidate_context is None and isinstance(rejected.get("selection_eval_context"), dict):
+        candidate_context = rejected.get("selection_eval_context")
     baseline_hard, baseline_soft = baseline_scores
     candidate_hard = rejected.get("selection_hard")
     candidate_soft = rejected.get("selection_soft")
@@ -915,16 +1015,23 @@ def _selection_reject_gate_rejection(
     return {
         "rejection_type": rejection_type,
         "retryable": True,
-        "baseline": {
-            "hard": baseline_hard,
-            "soft": baseline_soft,
-            "gate_score": baseline_gate_score,
-        },
-        "candidate": {
-            "hard": candidate_hard,
-            "soft": candidate_soft,
-            "gate_score": candidate_gate_score,
-        },
+        "baseline": _gate_score_payload(
+            hard=baseline_hard,
+            soft=baseline_soft,
+            gate_score=baseline_gate_score,
+            context=baseline_context,
+        ),
+        "candidate": _gate_score_payload(
+            hard=candidate_hard,
+            soft=candidate_soft,
+            gate_score=candidate_gate_score,
+            context=candidate_context,
+        ),
+        "delta_summary": _selection_delta_summary(
+            baseline_context=baseline_context,
+            candidate_context=candidate_context,
+            rejection_signal=rejection_signal,
+        ),
         "primary_reason": primary_reason,
         "human_reason": human_reason,
         "optimizer_hint": optimizer_hint,
@@ -1416,10 +1523,14 @@ class ReflACTTrainer:
         # ── Selection cache ──────────────────────────────────────────────
         sel_cache: dict[str, tuple[float, float]] = {}
         sel_rejection_signal_cache: dict[str, dict] = {}
+        sel_eval_context_cache: dict[str, dict] = {}
         for rec in history:
             sh = rec.get("candidate_hash", "")
             if sh and rec.get("selection_hard") is not None:
                 sel_cache[sh] = (rec["selection_hard"], rec["selection_soft"])
+                selection_eval_context = rec.get("selection_eval_context")
+                if isinstance(selection_eval_context, dict):
+                    sel_eval_context_cache[sh] = selection_eval_context
                 gate_rejection = rec.get("gate_rejection") if isinstance(rec.get("gate_rejection"), dict) else {}
                 if _is_wrong_artifact_rejection(gate_rejection):
                     sel_rejection_signal_cache[sh] = dict(gate_rejection)
@@ -1496,6 +1607,7 @@ class ReflACTTrainer:
             best_score = current_score
             sh = skill_hash(skill_init)
             sel_cache[sh] = (baseline_hard, baseline_soft)
+            sel_eval_context_cache[sh] = _selection_eval_context(baseline_results)
             current_origin = "initial_skill"
             best_origin = "initial_skill"
             selection_scores_by_origin[best_origin] = (baseline_hard, baseline_soft)
@@ -1962,9 +2074,11 @@ class ReflACTTrainer:
                 # ⑥ EVALUATE ───────────────────────────────────────────────
                 t_phase = time.time()
                 selection_rejection_signal = None
+                selection_candidate_context = None
                 if cand_hash in sel_cache:
                     cand_hard, cand_soft = sel_cache[cand_hash]
                     selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
+                    selection_candidate_context = sel_eval_context_cache.get(cand_hash)
                     print(
                         f"    [6/6 EVALUATE] "
                         f"cache hit {cand_hash}: hard={cand_hard:.4f}"
@@ -1979,6 +2093,8 @@ class ReflACTTrainer:
                     sel_eval_dir = os.path.join(step_dir, "selection_eval")
                     sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
                     selection_rejection_signal = _selection_rejection_signal(sel_results)
+                    selection_candidate_context = _selection_eval_context(sel_results)
+                    sel_eval_context_cache[cand_hash] = selection_candidate_context
                     if selection_rejection_signal:
                         sel_rejection_signal_cache[cand_hash] = selection_rejection_signal
                     gate_block = find_gate_block(sel_results)
@@ -2007,6 +2123,8 @@ class ReflACTTrainer:
                 if step_rec.get("gate_status") != "blocked":
                     step_rec["selection_hard"] = cand_hard
                     step_rec["selection_soft"] = cand_soft
+                    if selection_candidate_context:
+                        step_rec["selection_eval_context"] = selection_candidate_context
 
                     gate = evaluate_gate(
                         candidate_skill=candidate_skill,
@@ -2075,6 +2193,9 @@ class ReflACTTrainer:
                                 gate_metric=gate_metric,
                                 gate_mixed_weight=gate_mixed_weight,
                                 rejection_signal=selection_rejection_signal,
+                                baseline_context=sel_eval_context_cache.get(skill_hash(current_skill))
+                                or sel_eval_context_cache.get(skill_hash(skill_init)),
+                                candidate_context=selection_candidate_context,
                             )
                             wrong_artifact_retry = _is_wrong_artifact_rejection(gate_rejection)
                             active_retry_attempts = (
@@ -2354,9 +2475,11 @@ class ReflACTTrainer:
 
                             t_retry_phase = time.time()
                             selection_rejection_signal = None
+                            selection_candidate_context = None
                             if cand_hash in sel_cache:
                                 cand_hard, cand_soft = sel_cache[cand_hash]
                                 selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
+                                selection_candidate_context = sel_eval_context_cache.get(cand_hash)
                             else:
                                 sel_env, sel_n = _build_eval_env(
                                     split="valid_seen",
@@ -2370,6 +2493,8 @@ class ReflACTTrainer:
                                 )
                                 sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
                                 selection_rejection_signal = _selection_rejection_signal(sel_results)
+                                selection_candidate_context = _selection_eval_context(sel_results)
+                                sel_eval_context_cache[cand_hash] = selection_candidate_context
                                 if selection_rejection_signal:
                                     sel_rejection_signal_cache[cand_hash] = selection_rejection_signal
                                 gate_block = find_gate_block(sel_results)
@@ -2408,6 +2533,8 @@ class ReflACTTrainer:
 
                             step_rec["selection_hard"] = cand_hard
                             step_rec["selection_soft"] = cand_soft
+                            if selection_candidate_context:
+                                step_rec["selection_eval_context"] = selection_candidate_context
                             gate = evaluate_gate(
                                 candidate_skill=candidate_skill,
                                 cand_hard=cand_hard,
@@ -2461,6 +2588,9 @@ class ReflACTTrainer:
                                     retry_used=retry_count + 1,
                                     retry_budget=active_retry_budget,
                                     rejection_signal=selection_rejection_signal,
+                                    baseline_context=sel_eval_context_cache.get(skill_hash(current_skill))
+                                    or sel_eval_context_cache.get(skill_hash(skill_init)),
+                                    candidate_context=selection_candidate_context,
                                 )
                                 print(
                                     f"    [6/6 EVALUATE] GATE RETRY REJECT "

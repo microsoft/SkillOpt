@@ -106,6 +106,12 @@ def _optional_gate_scores(value: Any, label: str) -> "GateRejectionScores":
     return GateRejectionScores.from_dict(value, label)
 
 
+def _optional_gate_delta_summary(value: Any, label: str = "gate_rejection.delta_summary") -> "GateRejectionDeltaSummary":
+    if value is None:
+        return GateRejectionDeltaSummary()
+    return GateRejectionDeltaSummary.from_dict(value, label)
+
+
 def _raw_json(value: Any) -> Any:
     if value is None:
         return None
@@ -552,6 +558,7 @@ class GateRejectionScores:
     hard: float | None = None
     soft: float | None = None
     gate_score: float | None = None
+    evaluator_reasoning: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], label: str = "gate rejection scores") -> GateRejectionScores:
@@ -560,6 +567,7 @@ class GateRejectionScores:
             hard=_optional_number(data.get("hard"), f"{label}.hard"),
             soft=_optional_number(data.get("soft"), f"{label}.soft"),
             gate_score=_optional_number(data.get("gate_score"), f"{label}.gate_score"),
+            evaluator_reasoning=_optional_string(data.get("evaluator_reasoning")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -570,6 +578,30 @@ class GateRejectionScores:
             data["soft"] = self.soft
         if self.gate_score is not None:
             data["gate_score"] = self.gate_score
+        if self.evaluator_reasoning:
+            data["evaluator_reasoning"] = self.evaluator_reasoning
+        return data
+
+
+@dataclass(frozen=True)
+class GateRejectionDeltaSummary:
+    strengths: list[str] = field(default_factory=list)
+    weaknesses: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], label: str = "gate rejection delta summary") -> GateRejectionDeltaSummary:
+        data = _require_mapping(data, label)
+        return cls(
+            strengths=_optional_string_list(data.get("strengths"), f"{label}.strengths"),
+            weaknesses=_optional_string_list(data.get("weaknesses"), f"{label}.weaknesses"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.strengths:
+            data["strengths"] = self.strengths
+        if self.weaknesses:
+            data["weaknesses"] = self.weaknesses
         return data
 
 
@@ -579,6 +611,7 @@ class GateRejectionPacket:
     retryable: bool = False
     baseline: GateRejectionScores = field(default_factory=GateRejectionScores)
     candidate: GateRejectionScores = field(default_factory=GateRejectionScores)
+    delta_summary: GateRejectionDeltaSummary = field(default_factory=GateRejectionDeltaSummary)
     primary_reason: str = ""
     human_reason: str = ""
     optimizer_hint: str = ""
@@ -601,6 +634,7 @@ class GateRejectionPacket:
             retryable=retryable,
             baseline=_optional_gate_scores(data.get("baseline"), "gate_rejection.baseline"),
             candidate=_optional_gate_scores(data.get("candidate"), "gate_rejection.candidate"),
+            delta_summary=_optional_gate_delta_summary(data.get("delta_summary")),
             primary_reason=_optional_string(data.get("primary_reason")),
             human_reason=_optional_string(data.get("human_reason")),
             optimizer_hint=_optional_string(data.get("optimizer_hint")),
@@ -623,6 +657,9 @@ class GateRejectionPacket:
         candidate = self.candidate.to_dict()
         if candidate:
             data["candidate"] = candidate
+        delta_summary = self.delta_summary.to_dict()
+        if delta_summary:
+            data["delta_summary"] = delta_summary
         if self.primary_reason:
             data["primary_reason"] = self.primary_reason
         if self.human_reason:

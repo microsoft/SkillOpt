@@ -609,6 +609,47 @@ def test_final_selection_reject_packet_uses_configured_gate_retry_budget():
     assert "retry" in rejection["next_action"].lower()
 
 
+def test_selection_reject_packet_includes_evaluator_reasoning_and_delta_summary():
+    history = [
+        {
+            "action": "reject",
+            "selection_hard": 1.0,
+            "selection_soft": 0.88,
+            "candidate_gate_score": 0.94,
+            "rewrite_change_summary": ["artifact-first rewrite"],
+        }
+    ]
+
+    rejection = _selection_reject_gate_rejection(
+        history=history,
+        baseline_scores=(1.0, 0.9),
+        gate_metric="mixed",
+        gate_mixed_weight=0.5,
+        retry_used=0,
+        retry_budget=3,
+        baseline_context={
+            "evaluator_reasoning": "Baseline had a strong full-screen hero and complete footer."
+        },
+        candidate_context={
+            "evaluator_reasoning": "Candidate was valid but still CSS-dashboard-only and structurally close."
+        },
+    )
+
+    assert rejection is not None
+    assert rejection["baseline"]["evaluator_reasoning"] == (
+        "Baseline had a strong full-screen hero and complete footer."
+    )
+    assert rejection["candidate"]["evaluator_reasoning"] == (
+        "Candidate was valid but still CSS-dashboard-only and structurally close."
+    )
+    assert rejection["delta_summary"]["strengths"] == [
+        "Candidate evaluator rationale: Candidate was valid but still CSS-dashboard-only and structurally close."
+    ]
+    assert rejection["delta_summary"]["weaknesses"] == [
+        "Baseline evaluator rationale to beat: Baseline had a strong full-screen hero and complete footer."
+    ]
+
+
 def test_trainer_retries_actionable_gate_rejection_with_optimizer_hint(tmp_path, monkeypatch):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)

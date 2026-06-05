@@ -1100,8 +1100,22 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
             "gate_rejection": {
                 "rejection_type": "candidate_score_regression",
                 "retryable": True,
-                "baseline": {"hard": 1.0, "soft": 0.89, "gate_score": 0.89},
-                "candidate": {"hard": 1.0, "soft": 0.84, "gate_score": 0.84},
+                "baseline": {
+                    "hard": 1.0,
+                    "soft": 0.89,
+                    "gate_score": 0.89,
+                    "evaluator_reasoning": "Baseline kept the stronger product visual.",
+                },
+                "candidate": {
+                    "hard": 1.0,
+                    "soft": 0.84,
+                    "gate_score": 0.84,
+                    "evaluator_reasoning": "Candidate was valid but had weaker imagery.",
+                },
+                "delta_summary": {
+                    "strengths": ["valid artifact", "complete footer"],
+                    "weaknesses": ["weaker imagery", "too close to prior layout"],
+                },
                 "primary_reason": "candidate_quality_regressed",
                 "human_reason": "The candidate lost selection evaluation against the baseline skill.",
                 "optimizer_hint": "Use gate rejection evidence before spending final test budget.",
@@ -1125,9 +1139,28 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
     assert loaded.eval_report["no_candidate_details"]["attempted_patch"] == "artifact delivery only"
     assert loaded.eval_report["no_candidate_details"]["retry_attempts"] == "0/0"
     assert loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["gate_score"] == 0.84
+    assert (
+        loaded.eval_report["no_candidate_details"]["rejection"]["candidate"]["evaluator_reasoning"]
+        == "Candidate was valid but had weaker imagery."
+    )
+    assert loaded.eval_report["gate_rejection"]["delta_summary"]["weaknesses"] == [
+        "weaker imagery",
+        "too close to prior layout",
+    ]
     assert loaded.eval_report["gate_rejection"]["candidate"]["gate_score"] == 0.84
     assert loaded.summary.metadata["gate_rejection"]["baseline"]["gate_score"] == 0.89
+    assert (
+        loaded.summary.metadata["gate_rejection"]["baseline"]["evaluator_reasoning"]
+        == "Baseline kept the stronger product visual."
+    )
     assert loaded.summary.metadata["no_candidate_details"]["rejection"]["baseline"]["gate_score"] == 0.89
     assert loaded.summary.gate_rejection is not None
     assert loaded.summary.gate_rejection.primary_reason == "candidate_quality_regressed"
     assert loaded.summary.gate_rejection.attempted_patch == "artifact delivery only"
+    assert loaded.summary.gate_rejection.candidate.evaluator_reasoning == (
+        "Candidate was valid but had weaker imagery."
+    )
+    assert loaded.summary.gate_rejection.delta_summary.strengths == [
+        "valid artifact",
+        "complete footer",
+    ]
