@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from skillopt.envs.gitmoot.evaluator import evaluate_response
@@ -21,6 +22,17 @@ from skillopt.envs.gitmoot.result_contract import (
 from skillopt.model import chat_target, get_target_backend, is_target_chat_backend, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.model.common import default_model_for_backend
+
+SKILLOPT_TARGET_START = "<!-- SKILLOPT_TARGET_START -->"
+SKILLOPT_TARGET_END = "<!-- SKILLOPT_TARGET_END -->"
+SKILLOPT_OPTIMIZER_START = "<!-- SKILLOPT_OPTIMIZER_START -->"
+SKILLOPT_OPTIMIZER_END = "<!-- SKILLOPT_OPTIMIZER_END -->"
+
+
+@dataclass(frozen=True)
+class TargetSkillContext:
+    content: str
+    metadata: dict[str, Any]
 
 
 def run_batch(
@@ -57,7 +69,8 @@ def process_one(
     os.makedirs(pred_dir, exist_ok=True)
     target_trace_path = _target_trace_path(pred_dir, item)
     evaluator_trace_path = os.path.join(pred_dir, "result.json")
-    system_prompt = _build_system_prompt(skill_content)
+    target_skill = extract_target_skill_content(skill_content)
+    system_prompt = _build_system_prompt(target_skill.content)
     user_prompt = str(item.get("prompt") or "")
     response = ""
     fail_reason = ""
@@ -65,7 +78,14 @@ def process_one(
     agent_failed = False
 
     try:
-        response = _run_agent(item, skill_content, system_prompt, user_prompt, max_completion_tokens, pred_dir)
+        response = _run_agent(
+            item,
+            target_skill.content,
+            system_prompt,
+            user_prompt,
+            max_completion_tokens,
+            pred_dir,
+        )
         agent_ok = True
     except Exception as exc:  # noqa: BLE001 - rollout result records the failure.
         agent_failed = True
@@ -113,6 +133,7 @@ def process_one(
         "task_description": item.get("task_description", item_id),
         "metadata": {
             **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+            "target_skill": target_skill.metadata,
             **(score.get("metadata") if isinstance(score.get("metadata"), dict) else {}),
         },
         "target_status": score.get("target_status"),
@@ -255,6 +276,53 @@ def _build_system_prompt(skill_content: str) -> str:
         "Preserve the intent of the skill and produce only the requested response.\n\n"
         f"## Skill\n{skill_content.strip()}"
     )
+
+
+def extract_target_skill_content(skill_content: str) -> TargetSkillContext:
+    text = skill_content or ""
+    target_bounds = _marker_bounds(text, SKILLOPT_TARGET_START, SKILLOPT_TARGET_END)
+    optimizer_bounds = _marker_bounds(text, SKILLOPT_OPTIMIZER_START, SKILLOPT_OPTIMIZER_END)
+    target_malformed = _marker_pair_is_malformed(text, SKILLOPT_TARGET_START, SKILLOPT_TARGET_END)
+    optimizer_malformed = _marker_pair_is_malformed(text, SKILLOPT_OPTIMIZER_START, SKILLOPT_OPTIMIZER_END)
+    metadata: dict[str, Any] = {
+        "sectioned": False,
+        "target_section_present": target_bounds is not None,
+        "optimizer_section_present": optimizer_bounds is not None,
+        "isolation": "legacy_full_skill",
+    }
+
+    if target_malformed:
+        metadata["warning"] = "malformed_target_section"
+        return TargetSkillContext(content=text, metadata=metadata)
+
+    if target_bounds is None:
+        if optimizer_bounds is not None or optimizer_malformed:
+            metadata["warning"] = "optimizer_section_without_target_section"
+        else:
+            metadata["warning"] = "skillopt_sections_absent"
+        return TargetSkillContext(content=text, metadata=metadata)
+
+    start, end = target_bounds
+    metadata["sectioned"] = True
+    metadata["isolation"] = "target_section"
+    if optimizer_malformed:
+        metadata["warning"] = "malformed_optimizer_section"
+    return TargetSkillContext(content=text[start:end].strip(), metadata=metadata)
+
+
+def _marker_bounds(text: str, start_marker: str, end_marker: str) -> tuple[int, int] | None:
+    start = text.find(start_marker)
+    if start == -1:
+        return None
+    content_start = start + len(start_marker)
+    end = text.find(end_marker, content_start)
+    if end == -1:
+        return None
+    return content_start, end
+
+
+def _marker_pair_is_malformed(text: str, start_marker: str, end_marker: str) -> bool:
+    return (start_marker in text or end_marker in text) and _marker_bounds(text, start_marker, end_marker) is None
 
 
 def _write_prediction(pred_dir: str, result: dict[str, Any]) -> None:

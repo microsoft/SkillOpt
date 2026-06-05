@@ -16,7 +16,7 @@ from skillopt.envs.gitmoot.evaluator import (
     _write_vue_render_workspace,
     evaluate_response,
 )
-from skillopt.envs.gitmoot.rollout import process_one
+from skillopt.envs.gitmoot.rollout import extract_target_skill_content, process_one
 from skillopt.gradient.reflect import fmt_minibatch_trajectories
 from skillopt.model import get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
 from skillopt.model.common import default_model_for_backend
@@ -270,6 +270,132 @@ def test_structured_evaluator_feedback_reaches_rollout_result(tmp_path, monkeypa
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required")
 
 
+def test_extract_target_skill_content_uses_sectioned_target_only():
+    skill = """
+# Landing Page Builder
+
+<!-- SKILLOPT_TARGET_START -->
+Target rules.
+<!-- SKILLOPT_TARGET_END -->
+
+<!-- SKILLOPT_OPTIMIZER_START -->
+Optimizer notes.
+## Update Format
+<!-- SKILLOPT_OPTIMIZER_END -->
+"""
+
+    context = extract_target_skill_content(skill)
+
+    assert context.content == "Target rules."
+    assert context.metadata["sectioned"] is True
+    assert context.metadata["target_section_present"] is True
+    assert context.metadata["optimizer_section_present"] is True
+    assert context.metadata["isolation"] == "target_section"
+
+
+def test_extract_target_skill_content_falls_back_for_legacy_skill():
+    context = extract_target_skill_content("# Planner\n\nUse the full legacy skill.")
+
+    assert context.content == "# Planner\n\nUse the full legacy skill."
+    assert context.metadata["sectioned"] is False
+    assert context.metadata["isolation"] == "legacy_full_skill"
+    assert context.metadata["warning"] == "skillopt_sections_absent"
+
+
+def test_extract_target_skill_content_falls_back_for_malformed_markers():
+    skill = """
+<!-- SKILLOPT_TARGET_START -->
+Target rules without an end marker.
+<!-- SKILLOPT_OPTIMIZER_START -->
+Optimizer notes.
+<!-- SKILLOPT_OPTIMIZER_END -->
+"""
+
+    context = extract_target_skill_content(skill)
+
+    assert "Target rules without an end marker" in context.content
+    assert context.metadata["sectioned"] is False
+    assert context.metadata["warning"] == "malformed_target_section"
+
+
+def test_extract_target_skill_content_keeps_valid_target_when_optimizer_markers_are_malformed():
+    skill = """
+<!-- SKILLOPT_TARGET_START -->
+Target rules remain usable.
+<!-- SKILLOPT_TARGET_END -->
+
+<!-- SKILLOPT_OPTIMIZER_START -->
+Optimizer notes missing the end marker.
+## Update Format
+"""
+
+    context = extract_target_skill_content(skill)
+
+    assert context.content == "Target rules remain usable."
+    assert context.metadata["sectioned"] is True
+    assert context.metadata["isolation"] == "target_section"
+    assert context.metadata["warning"] == "malformed_optimizer_section"
+
+
+def test_extract_target_skill_content_ignores_marker_examples_in_optimizer_section():
+    skill = """
+<!-- SKILLOPT_TARGET_START -->
+Target rules survive marker examples.
+<!-- SKILLOPT_TARGET_END -->
+
+<!-- SKILLOPT_OPTIMIZER_START -->
+When rewriting, preserve literal markers such as:
+<!-- SKILLOPT_TARGET_START -->
+<!-- SKILLOPT_TARGET_END -->
+<!-- SKILLOPT_OPTIMIZER_START -->
+<!-- SKILLOPT_OPTIMIZER_END -->
+<!-- SKILLOPT_OPTIMIZER_END -->
+"""
+
+    context = extract_target_skill_content(skill)
+
+    assert context.content == "Target rules survive marker examples."
+    assert context.metadata["sectioned"] is True
+    assert context.metadata["isolation"] == "target_section"
+    assert context.metadata.get("warning") is None
+
+
+def test_rollout_chat_prompt_uses_target_section_only(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_chat_target(**kwargs):
+        captured.update(kwargs)
+        return "target response", {}
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.chat_target", fake_chat_target)
+    item = {
+        "id": "sectioned-chat",
+        "prompt": "Prompt",
+        "metadata": {"expected_hard": True},
+        "evaluator_config": {"mode": "fixture"},
+    }
+    skill = """
+<!-- SKILLOPT_TARGET_START -->
+Target-only landing page rules.
+<!-- SKILLOPT_TARGET_END -->
+
+<!-- SKILLOPT_OPTIMIZER_START -->
+Optimizer-only notes.
+## Update Format
+<!-- SKILLOPT_OPTIMIZER_END -->
+"""
+
+    result = process_one(item=item, skill_content=skill, out_root=str(tmp_path))
+
+    assert "Target-only landing page rules." in captured["system"]
+    assert "Optimizer-only notes" not in captured["system"]
+    assert "SKILLOPT_OPTIMIZER" not in captured["system"]
+    assert "## Update Format" not in captured["system"]
+    assert result["metadata"]["target_skill"]["isolation"] == "target_section"
+
+
 def test_rollout_sets_prediction_local_render_artifact_dir(tmp_path, monkeypatch):
     captured = {}
 
@@ -388,7 +514,18 @@ def test_exec_target_backend_runs_harness_and_persists_raw_trace(tmp_path, monke
         "evaluator_config": {"mode": "fixture"},
     }
 
-    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+    skill = """
+<!-- SKILLOPT_TARGET_START -->
+Target-only exec rules.
+<!-- SKILLOPT_TARGET_END -->
+
+<!-- SKILLOPT_OPTIMIZER_START -->
+Optimizer-only exec notes.
+## Update Format
+<!-- SKILLOPT_OPTIMIZER_END -->
+"""
+
+    result = process_one(item=item, skill_content=skill, out_root=str(tmp_path))
 
     assert result["response"] == "exec response"
     assert result["hard"] == 1
@@ -397,7 +534,7 @@ def test_exec_target_backend_runs_harness_and_persists_raw_trace(tmp_path, monke
     assert captured["work_dir"].endswith("predictions/exec-item/target_exec")
     assert "## System Instructions" in captured["prompt"]
     assert (tmp_path / "predictions" / "exec-item" / "target_exec" / "task.md").is_file()
-    assert (
+    skill_path = (
         tmp_path
         / "predictions"
         / "exec-item"
@@ -406,7 +543,15 @@ def test_exec_target_backend_runs_harness_and_persists_raw_trace(tmp_path, monke
         / "skills"
         / "skillopt-target"
         / "SKILL.md"
-    ).is_file()
+    )
+    assert skill_path.is_file()
+    workspace_skill = skill_path.read_text(encoding="utf-8")
+    assert "Target-only exec rules." in workspace_skill
+    assert "Optimizer-only exec notes" not in workspace_skill
+    assert "SKILLOPT_OPTIMIZER" not in workspace_skill
+    assert "## Update Format" not in workspace_skill
+    assert "Target-only exec rules." in captured["prompt"]
+    assert "Optimizer-only exec notes" not in captured["prompt"]
     raw_path = tmp_path / "predictions" / "exec-item" / "target_exec_raw.txt"
     assert raw_path.read_text(encoding="utf-8") == "raw exec trace"
     assert result["target_trace_path"] == str(raw_path)
