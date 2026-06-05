@@ -271,10 +271,12 @@ def _target_trace_path(pred_dir: str, item: dict[str, Any]) -> str:
 
 
 def _build_system_prompt(skill_content: str) -> str:
-    return (
-        "Use the following Gitmoot agent-template skill to answer the task. "
-        "Preserve the intent of the skill and produce only the requested response.\n\n"
-        f"## Skill\n{skill_content.strip()}"
+    return "\n\n".join(
+        [
+            "You are solving one Gitmoot task.",
+            f"## Skill\n{skill_content.strip()}",
+            "## Output Contract\nReturn exactly the required deliverable.",
+        ]
     )
 
 

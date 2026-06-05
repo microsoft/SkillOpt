@@ -330,7 +330,7 @@ def build_task_prompt(
     ranked_feedback_events: list[dict[str, Any]] | None = None,
 ) -> str:
     parts = [
-        "# Gitmoot SkillOpt Item",
+        "## Task",
         f"Template: {package.template.id} ({package.template.version_id})",
         f"Eval run: {package.eval_run.id}",
         f"Item: {item.id}",
@@ -338,9 +338,12 @@ def build_task_prompt(
     ]
     if item.metadata is not None:
         parts.extend(["", "## Item Metadata", json.dumps(item.metadata, indent=2, sort_keys=True)])
-    preference_summary = _human_preference_summary(ranked_feedback_events or [])
-    if preference_summary:
-        parts.extend(["", "## Human Preference Summary", preference_summary])
+    feedback_summary = _structured_human_feedback_summary(
+        feedback_events=feedback_events,
+        ranked_feedback_events=ranked_feedback_events or [],
+    )
+    if feedback_summary:
+        parts.extend(["", "## Human Feedback", feedback_summary])
     for role in ("source", "baseline", "candidate", "preview", "diff"):
         artifact = artifacts.get(role)
         if not artifact:
@@ -372,16 +375,6 @@ def build_task_prompt(
         option_parts.append(artifact["text"])
     if option_parts:
         parts.extend(["", "## Ranked Option Artifacts", *option_parts])
-    if feedback_events:
-        parts.extend(["", "## Human Feedback Events", json.dumps(feedback_events, indent=2, sort_keys=True)])
-    if ranked_feedback_events:
-        parts.extend(
-            [
-                "",
-                "## Ranked Human Feedback Events",
-                json.dumps(ranked_feedback_events, indent=2, sort_keys=True),
-            ]
-        )
     parts.append(
         "\nUse the current skill to produce the requested improved response. "
         "Ground the response in the artifacts and feedback above."
@@ -479,7 +472,20 @@ def _ranked_feedback_event_prompt_context(event: Any) -> dict[str, Any]:
     return context
 
 
-def _human_preference_summary(ranked_feedback_events: list[dict[str, Any]]) -> str:
+def _structured_human_feedback_summary(
+    *,
+    feedback_events: list[dict[str, Any]],
+    ranked_feedback_events: list[dict[str, Any]],
+) -> str:
+    blocks: list[str] = []
+    if ranked_feedback_events:
+        blocks.append(_ranked_human_feedback_summary(ranked_feedback_events))
+    if feedback_events:
+        blocks.append(_feedback_events_summary(feedback_events, start_index=len(ranked_feedback_events) + 1))
+    return "\n".join(block for block in blocks if block)
+
+
+def _ranked_human_feedback_summary(ranked_feedback_events: list[dict[str, Any]]) -> str:
     blocks: list[str] = []
     for index, event in enumerate(ranked_feedback_events, start=1):
         lines: list[str] = []
@@ -488,31 +494,54 @@ def _human_preference_summary(ranked_feedback_events: list[dict[str, Any]]) -> s
         label_parts = [part for part in (reviewer, source) if part]
         label = f" ({', '.join(label_parts)})" if label_parts else ""
         ranking = _summary_ranking(event.get("ranking"))
-        headline_parts = [f"ranking {ranking}" if ranking else ""]
         winner = _summary_text(event.get("winner"))
-        if winner:
-            headline_parts.append(f"winner {winner}")
+        lines.append(f"review_{index}{label}:")
+        if winner or ranking:
+            lines.append(f"  preferred_option: {winner or _first_ranked_label(event.get('ranking'))}")
+        if ranking:
+            lines.append(f"  ranking: {ranking}")
+        reasoning = _summary_text(event.get("reasoning"), limit=700)
+        if reasoning:
+            lines.append(f"  notes: {reasoning}")
         for field in ("quality", "continue_mode", "promote"):
             value = _summary_text(event.get(field))
             if value:
-                headline_parts.append(f"{field} {value}")
-        headline = "; ".join(part for part in headline_parts if part) or "ranked feedback"
-        lines.append(f"- Review {index}{label}: {headline}.")
-
-        reasoning = _summary_text(event.get("reasoning"), limit=700)
-        if reasoning:
-            lines.append(f"  Reasoning: {reasoning}")
+                lines.append(f"  {field}: {value}")
         useful_traits = _summary_traits(event.get("useful_traits"))
         if useful_traits:
-            lines.append(f"  Useful traits: {useful_traits}")
+            lines.append(f"  preserve: {useful_traits}")
         rejected_traits = _summary_traits(event.get("rejected_traits"))
         if rejected_traits:
-            lines.append(f"  Rejected traits: {rejected_traits}")
+            lines.append(f"  avoid: {rejected_traits}")
         required_improvements = _summary_list(event.get("required_improvements"))
         if required_improvements:
-            lines.append(f"  Required improvements: {required_improvements}")
+            lines.append(f"  fix: {required_improvements}")
         blocks.append("\n".join(lines))
     return "\n".join(blocks)
+
+
+def _feedback_events_summary(feedback_events: list[dict[str, Any]], *, start_index: int = 1) -> str:
+    blocks: list[str] = []
+    for index, event in enumerate(feedback_events, start=start_index):
+        lines: list[str] = [f"review_{index}:"]
+        choice = _summary_text(event.get("choice"))
+        if choice:
+            lines.append(f"  preferred_option: {choice}")
+        reasoning = _summary_text(event.get("reasoning"), limit=700)
+        if reasoning:
+            lines.append(f"  notes: {reasoning}")
+        for field in ("quality", "continue_mode", "promote"):
+            value = _summary_text(event.get(field))
+            if value:
+                lines.append(f"  {field}: {value}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
+def _first_ranked_label(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return ""
+    return _summary_text(value[0])
 
 
 def _summary_ranking(value: Any) -> str:

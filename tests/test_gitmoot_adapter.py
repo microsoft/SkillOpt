@@ -389,6 +389,10 @@ Optimizer-only notes.
 
     result = process_one(item=item, skill_content=skill, out_root=str(tmp_path))
 
+    assert captured["system"].startswith("You are solving one Gitmoot task.")
+    assert "## Skill" in captured["system"]
+    assert "## Output Contract" in captured["system"]
+    assert "Return exactly the required deliverable." in captured["system"]
     assert "Target-only landing page rules." in captured["system"]
     assert "Optimizer-only notes" not in captured["system"]
     assert "SKILLOPT_OPTIMIZER" not in captured["system"]
@@ -533,6 +537,8 @@ Optimizer-only exec notes.
     assert captured["model"] == "gpt-test"
     assert captured["work_dir"].endswith("predictions/exec-item/target_exec")
     assert "## System Instructions" in captured["prompt"]
+    assert "You are solving one Gitmoot task." in captured["prompt"]
+    assert "Return exactly the required deliverable." in captured["prompt"]
     assert (tmp_path / "predictions" / "exec-item" / "target_exec" / "task.md").is_file()
     skill_path = (
         tmp_path

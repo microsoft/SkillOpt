@@ -239,6 +239,7 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     assert [item["id"] for item in val_batch.payload] == ["val-1"]
     assert [item["id"] for item in test_batch.payload] == ["test-1"]
     prompt = train_batch.payload[0]["prompt"]
+    assert prompt.startswith("## Task")
     assert "Baseline plan" in prompt
     assert "Candidate plan" in prompt
     assert "Ranked Option Artifacts" in prompt
@@ -246,27 +247,32 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     assert "### src/style.css" in prompt
     assert "Option D landing page" in prompt
     assert "https://example.test/d" in prompt
-    assert "Candidate is clearer" in prompt
-    assert '"quality": "acceptable"' in prompt
-    assert '"continue_mode": "refine"' in prompt
-    assert '"promote": "no"' in prompt
-    assert prompt.index("Human Preference Summary") < prompt.index("Baseline Artifact")
-    assert "Review 1 (alice, github): ranking d > b > c > a; winner d; quality acceptable; continue_mode refine; promote no." in prompt
-    assert "Reasoning: D is the cleanest option." in prompt
-    assert "Useful traits: d: cleanest hero" in prompt
-    assert "Rejected traits: c: overlapping text" in prompt
-    assert "Required improvements: better mobile layout; stronger product visuals" in prompt
-    assert "Ranked Human Feedback Events" in prompt
-    assert '"ranking": [' in prompt
-    assert '"d"' in prompt
+    assert prompt.index("Human Feedback") < prompt.index("Baseline Artifact")
+    assert "review_1 (alice, github):" in prompt
+    assert "preferred_option: d" in prompt
+    assert "ranking: d > b > c > a" in prompt
+    assert "quality: acceptable" in prompt
+    assert "continue_mode: refine" in prompt
+    assert "promote: no" in prompt
+    assert "notes: D is the cleanest option." in prompt
+    assert "preserve: d: cleanest hero" in prompt
+    assert "avoid: c: overlapping text" in prompt
+    assert "fix: better mobile layout; stronger product visuals" in prompt
+    assert "review_2:" in prompt
+    assert "preferred_option: b" in prompt
+    assert "notes: Candidate is clearer." in prompt
+    assert "Ranked Human Feedback Events" not in prompt
+    assert "Human Feedback Events" not in prompt
+    assert '"ranking": [' not in prompt
+    assert '"required_improvements": [' not in prompt
     assert "cleanest hero" in prompt
-    assert '"required_improvements": [' in prompt
     assert "Option D landing page" in train_batch.payload[0]["artifacts"]["option:d"]["text"]
+    assert train_batch.payload[0]["feedback_events"][0]["reasoning"] == "Candidate is clearer."
     assert train_batch.payload[0]["ranked_feedback_events"][0]["winner"] == "d"
     assert train_batch.payload[0]["ranked_feedback_events"][0]["required_improvements"] == ["better mobile layout", "stronger product visuals"]
 
 
-def test_dataloader_omits_preference_summary_without_ranked_feedback(tmp_path):
+def test_dataloader_uses_compact_feedback_without_ranked_feedback(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
     package = json.loads(package_path.read_text(encoding="utf-8"))
     package["ranked_feedback_events"] = []
@@ -276,7 +282,11 @@ def test_dataloader_omits_preference_summary_without_ranked_feedback(tmp_path):
     loader.setup({})
     prompt = loader.build_train_batch(batch_size=1, seed=1).payload[0]["prompt"]
 
-    assert "Human Preference Summary" not in prompt
+    assert "## Human Feedback" in prompt
+    assert "preferred_option: b" in prompt
+    assert "notes: Candidate is clearer." in prompt
+    assert "ranking:" not in prompt
+    assert "Ranked Human Feedback Events" not in prompt
     assert "Baseline Artifact" in prompt
 
 
