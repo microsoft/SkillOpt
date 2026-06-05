@@ -270,6 +270,104 @@ def test_structured_evaluator_feedback_reaches_rollout_result(tmp_path, monkeypa
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required")
 
 
+def test_target_artifact_retry_repairs_vue_bundle_before_reflection(tmp_path, monkeypatch):
+    calls: list[str] = []
+    eval_responses: list[str] = []
+
+    def fake_agent(item, skill_content, system_prompt, user_prompt, max_completion_tokens, pred_dir):
+        del item, skill_content, system_prompt, max_completion_tokens, pred_dir
+        calls.append(user_prompt)
+        if len(calls) == 1:
+            return "Here is a prose landing page instead of a bundle."
+        return _valid_vue_bundle_response()
+
+    def fake_evaluator(item, response, evaluator_config):
+        del item, evaluator_config
+        eval_responses.append(response)
+        if len(eval_responses) == 1:
+            return {
+                "hard": 0,
+                "soft": 0.0,
+                "fail_reason": "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
+                "primary_reason": "wrong_artifact_type",
+                "optimizer_hint": "Return a JSON Vue/Vite preview bundle.",
+                "failed_dimensions": ["artifact_contract"],
+                "failed_checks": [
+                    {
+                        "check": "vue_vite_bundle.json",
+                        "reason": "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
+                        "evidence": ["response did not contain a parseable JSON object"],
+                    }
+                ],
+                "stage_status": [{"stage": "artifact_contract", "status": "failed"}],
+            }
+        return {"hard": 1, "soft": 1.0, "fail_reason": "", "metadata": {"evaluator": "fixture"}}
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", fake_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.evaluate_response", fake_evaluator)
+
+    result = process_one(
+        item={
+            "id": "repair-vue",
+            "prompt": "Build a Vue/Vite landing page preview.",
+            "evaluator_config": {"artifact_contract": "vue_vite_bundle"},
+        },
+        skill_content="Return the requested preview.",
+        out_root=str(tmp_path),
+        target_artifact_retry_budget=1,
+    )
+
+    assert result["hard"] == 1
+    assert result.get("primary_reason") != "wrong_artifact_type"
+    assert len(calls) == 2
+    assert "Artifact Contract Repair Attempt 1/1" in calls[1]
+    assert "vue_vite_bundle.json" in calls[1]
+    assert result["metadata"]["target_artifact_repair_attempts"][0]["status"] == "accepted"
+
+
+def test_target_artifact_retry_budget_zero_keeps_first_contract_failure(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_agent(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return "Here is a prose landing page instead of a bundle."
+
+    def fake_evaluator(*args, **kwargs):
+        return {
+            "hard": 0,
+            "soft": 0.0,
+            "fail_reason": "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
+            "primary_reason": "wrong_artifact_type",
+            "failed_dimensions": ["artifact_contract"],
+            "failed_checks": [
+                {
+                    "check": "vue_vite_bundle.json",
+                    "reason": "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
+                    "evidence": ["response did not contain a parseable JSON object"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", fake_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.evaluate_response", fake_evaluator)
+
+    result = process_one(
+        item={
+            "id": "no-repair-vue",
+            "prompt": "Build a Vue/Vite landing page preview.",
+            "evaluator_config": {"artifact_contract": "vue_vite_bundle"},
+        },
+        skill_content="Return the requested preview.",
+        out_root=str(tmp_path),
+        target_artifact_retry_budget=0,
+    )
+
+    assert calls == 1
+    assert result["primary_reason"] == "wrong_artifact_type"
+    assert "target_artifact_repair_attempts" not in result["metadata"]
+
+
 def test_extract_target_skill_content_uses_sectioned_target_only():
     skill = """
 # Landing Page Builder

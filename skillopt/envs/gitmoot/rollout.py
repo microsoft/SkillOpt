@@ -42,6 +42,7 @@ def run_batch(
     out_root: str,
     max_completion_tokens: int = 4096,
     evaluator_config: dict[str, Any] | None = None,
+    target_artifact_retry_budget: int = 1,
 ) -> list[dict[str, Any]]:
     return [
         process_one(
@@ -50,6 +51,7 @@ def run_batch(
             out_root=out_root,
             max_completion_tokens=max_completion_tokens,
             evaluator_config=evaluator_config,
+            target_artifact_retry_budget=target_artifact_retry_budget,
         )
         for item in items
     ]
@@ -62,6 +64,7 @@ def process_one(
     out_root: str,
     max_completion_tokens: int = 4096,
     evaluator_config: dict[str, Any] | None = None,
+    target_artifact_retry_budget: int = 1,
 ) -> dict[str, Any]:
     item_id = str(item["id"])
     prediction_id = safe_item_path_segment(item_id)
@@ -76,6 +79,7 @@ def process_one(
     fail_reason = ""
     agent_ok = False
     agent_failed = False
+    repair_attempts: list[dict[str, Any]] = []
 
     try:
         response = _run_agent(
@@ -104,12 +108,53 @@ def process_one(
     else:
         config = evaluator_config if evaluator_config is not None else item.get("evaluator_config")
         try:
-            raw_score = evaluate_response(item, response, _evaluator_config_for_result(config, pred_dir, response))
-            score = normalize_scored_evaluation(
-                raw_score,
+            score = _evaluate_target_response(
+                item=item,
+                response=response,
+                config=config,
+                pred_dir=pred_dir,
                 target_trace_path=target_trace_path,
                 evaluator_trace_path=evaluator_trace_path,
             )
+            for attempt in range(max(0, int(target_artifact_retry_budget or 0))):
+                if not _is_artifact_contract_failure(score):
+                    break
+                repair_prompt = _build_artifact_repair_prompt(
+                    original_prompt=user_prompt,
+                    score=score,
+                    attempt=attempt + 1,
+                    budget=max(0, int(target_artifact_retry_budget or 0)),
+                )
+                repair_record = _artifact_repair_record(score=score, attempt=attempt + 1)
+                try:
+                    repaired_response = _run_agent(
+                        item,
+                        target_skill.content,
+                        system_prompt,
+                        repair_prompt,
+                        max_completion_tokens,
+                        pred_dir,
+                    )
+                except Exception as repair_exc:  # noqa: BLE001 - keep the last scored artifact failure.
+                    repair_record["status"] = "target_failed"
+                    repair_record["error"] = str(repair_exc) or "artifact repair target failed"
+                    repair_attempts.append(repair_record)
+                    break
+                repaired_score = _evaluate_target_response(
+                    item=item,
+                    response=repaired_response,
+                    config=config,
+                    pred_dir=pred_dir,
+                    target_trace_path=target_trace_path,
+                    evaluator_trace_path=evaluator_trace_path,
+                )
+                repair_record["status"] = "accepted" if not _is_artifact_contract_failure(repaired_score) else "failed"
+                repair_record["after_primary_reason"] = str(repaired_score.get("primary_reason") or "")
+                repair_record["after_fail_reason"] = str(repaired_score.get("fail_reason") or "")
+                repair_attempts.append(repair_record)
+                response = repaired_response
+                user_prompt = repair_prompt
+                score = repaired_score
         except Exception as exc:  # noqa: BLE001 - rollout result records the failure.
             fail_reason = str(exc) or "evaluator execution failed"
             score = make_unscored_evaluation(
@@ -135,6 +180,7 @@ def process_one(
             **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
             "target_skill": target_skill.metadata,
             **(score.get("metadata") if isinstance(score.get("metadata"), dict) else {}),
+            **({"target_artifact_repair_attempts": repair_attempts} if repair_attempts else {}),
         },
         "target_status": score.get("target_status"),
         "evaluator_status": score.get("evaluator_status"),
@@ -152,6 +198,82 @@ def process_one(
             result[key] = score[key]
     _write_prediction(pred_dir, result)
     return result
+
+
+def _evaluate_target_response(
+    *,
+    item: dict[str, Any],
+    response: str,
+    config: Any,
+    pred_dir: str,
+    target_trace_path: str,
+    evaluator_trace_path: str,
+) -> dict[str, Any]:
+    raw_score = evaluate_response(item, response, _evaluator_config_for_result(config, pred_dir, response))
+    return normalize_scored_evaluation(
+        raw_score,
+        target_trace_path=target_trace_path,
+        evaluator_trace_path=evaluator_trace_path,
+    )
+
+
+def _is_artifact_contract_failure(score: dict[str, Any]) -> bool:
+    primary_reason = str(score.get("primary_reason") or "").strip().lower()
+    if primary_reason in {"wrong_artifact_type", "artifact_contract_failure"}:
+        return True
+    failed_dimensions = score.get("failed_dimensions")
+    if isinstance(failed_dimensions, list) and "artifact_contract" in {
+        str(item).strip().lower() for item in failed_dimensions
+    }:
+        return True
+    failure = score.get("failure") if isinstance(score.get("failure"), dict) else {}
+    failure_reason = str(failure.get("primary_reason") or "").strip().lower()
+    if failure_reason in {"wrong_artifact_type", "artifact_contract_failure"}:
+        return True
+    failure_dimensions = failure.get("failed_dimensions")
+    return isinstance(failure_dimensions, list) and "artifact_contract" in {
+        str(item).strip().lower() for item in failure_dimensions
+    }
+
+
+def _artifact_repair_record(*, score: dict[str, Any], attempt: int) -> dict[str, Any]:
+    failed_checks = score.get("failed_checks")
+    if not isinstance(failed_checks, list):
+        failure = score.get("failure") if isinstance(score.get("failure"), dict) else {}
+        failed_checks = failure.get("failed_checks") if isinstance(failure.get("failed_checks"), list) else []
+    return {
+        "attempt": attempt,
+        "before_primary_reason": str(score.get("primary_reason") or ""),
+        "before_fail_reason": str(score.get("fail_reason") or ""),
+        "failed_checks": failed_checks,
+    }
+
+
+def _build_artifact_repair_prompt(*, original_prompt: str, score: dict[str, Any], attempt: int, budget: int) -> str:
+    failed_checks = score.get("failed_checks")
+    if not isinstance(failed_checks, list):
+        failure = score.get("failure") if isinstance(score.get("failure"), dict) else {}
+        failed_checks = failure.get("failed_checks") if isinstance(failure.get("failed_checks"), list) else []
+    optimizer_hint = str(score.get("optimizer_hint") or "")
+    if not optimizer_hint:
+        failure = score.get("failure") if isinstance(score.get("failure"), dict) else {}
+        optimizer_hint = str(failure.get("optimizer_hint") or "")
+    failure_summary = {
+        "primary_reason": str(score.get("primary_reason") or ""),
+        "fail_reason": str(score.get("fail_reason") or ""),
+        "optimizer_hint": optimizer_hint,
+        "failed_checks": failed_checks,
+    }
+    return "\n\n".join(
+        [
+            original_prompt,
+            f"## Artifact Contract Repair Attempt {attempt}/{budget}",
+            "The previous target response failed the required artifact contract.",
+            "Return only the corrected deliverable. Do not return a skill, prompt, YAML, markdown explanation, or prose.",
+            "Use this structured failure packet:",
+            json.dumps(failure_summary, indent=2, ensure_ascii=False),
+        ]
+    )
 
 
 def _evaluator_config_for_result(config: Any, pred_dir: str, response: str) -> dict[str, Any]:

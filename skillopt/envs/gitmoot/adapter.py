@@ -76,11 +76,13 @@ class GitmootAdapter(EnvAdapter):
     ) -> list[dict[str, Any]]:
         del kwargs
         items: list[dict[str, Any]] = list(env_manager or [])
+        cfg = getattr(self, "_cfg", {})
         return run_batch(
             items=items,
             skill_content=skill_content,
             out_root=out_dir,
             max_completion_tokens=self.max_completion_tokens,
+            target_artifact_retry_budget=max(0, int(cfg.get("target_artifact_retry_budget", 1) or 0)),
         )
 
     def reflect(
