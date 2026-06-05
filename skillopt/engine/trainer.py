@@ -834,6 +834,21 @@ def _format_unconverted_failure_hints(hints: list[dict]) -> list[dict]:
     return records
 
 
+def _format_hard_failure_retry_context(hints: list[dict], *, attempt: int, budget: int) -> str:
+    return "\n".join(
+        [
+            "## Actionable Hard-Failure Retry",
+            f"Retry attempt: {attempt}/{budget}",
+            (
+                "The evaluator produced structured hard-failure guidance, but the previous reflection "
+                "did not produce a usable skill patch. Convert these failure packets into a concrete "
+                "skill update. Do not repeat a no-op response."
+            ),
+            json.dumps(_format_unconverted_failure_hints(hints), indent=2, ensure_ascii=False),
+        ]
+    )
+
+
 def _extract_evaluator_reasoning(result: dict) -> str:
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
     failure = result.get("failure")
@@ -2187,11 +2202,56 @@ class ReflACTTrainer:
                     )
                     structured_failure_hints = _structured_failure_hints(rollout_results)
                     if structured_failure_hints and not failure_patches:
-                        step_rec["failure_hint_not_converted_to_patch"] = True
-                        step_rec["unconverted_failure_hints"] = (
-                            step_rec.get("unconverted_failure_hints", [])
-                            + _format_unconverted_failure_hints(structured_failure_hints)
-                        )
+                        hard_failure_retry_budget = max(0, int(cfg.get("hard_failure_retry_budget", 1) or 0))
+                        hard_failure_retry_attempts = list(step_rec.get("hard_failure_retry_attempts") or [])
+                        hard_failure_results = [
+                            result for result in rollout_results
+                            if isinstance(result, dict) and not result.get("hard")
+                        ]
+                        for retry_attempt in range(1, hard_failure_retry_budget + 1):
+                            retry_context = _format_hard_failure_retry_context(
+                                structured_failure_hints,
+                                attempt=retry_attempt,
+                                budget=hard_failure_retry_budget,
+                            )
+                            retry_patches_dir = os.path.join(
+                                patches_dir,
+                                f"hard_failure_retry_{retry_attempt:02d}",
+                            )
+                            raw_retry_patches = adapter.reflect(
+                                hard_failure_results, current_skill, batch_dir,
+                                prediction_dir=pred_dir, patches_dir=retry_patches_dir,
+                                random_seed=batch_seed + retry_attempt,
+                                step_buffer_context=_join_optimizer_context(step_buffer_context, retry_context),
+                                meta_skill_context=active_meta_skill,
+                            )
+                            retry_failure_patches, retry_success_patches = _normalise_patches(
+                                raw_retry_patches,
+                                update_mode=update_mode,
+                            )
+                            if retry_failure_patches:
+                                raw_patches.extend(raw_retry_patches)
+                                failure_patches.extend(retry_failure_patches)
+                                success_patches.extend(retry_success_patches)
+                            hard_failure_retry_attempts.append(
+                                {
+                                    "attempt": retry_attempt,
+                                    "status": "converted_to_patch" if retry_failure_patches else "no_patch",
+                                    "n_failure_patches": len(retry_failure_patches),
+                                    "n_success_patches": len(retry_success_patches),
+                                    "failure_hints": _format_unconverted_failure_hints(structured_failure_hints),
+                                }
+                            )
+                            if retry_failure_patches:
+                                break
+                        if hard_failure_retry_attempts:
+                            step_rec["hard_failure_retry_attempts"] = hard_failure_retry_attempts
+                        if not failure_patches:
+                            step_rec["failure_hint_not_converted_to_patch"] = True
+                            step_rec["unconverted_failure_hints"] = (
+                                step_rec.get("unconverted_failure_hints", [])
+                                + _format_unconverted_failure_hints(structured_failure_hints)
+                            )
                     all_failure_patches.extend(failure_patches)
                     all_success_patches.extend(success_patches)
                     all_raw_patches.extend(raw_patches)

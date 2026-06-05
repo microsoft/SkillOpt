@@ -341,6 +341,34 @@ def test_optimize_threads_target_artifact_retry_budget(tmp_path, monkeypatch):
     assert captured["target_artifact_retry_budget"] == 2
 
 
+def test_optimize_threads_hard_failure_retry_budget(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--hard-failure-retry-budget",
+            "3",
+        ]
+    )
+
+    assert result == 0
+    assert captured["hard_failure_retry_budget"] == 3
+
+
 def test_optimize_threads_retry_budget_options(monkeypatch):
     captured = {}
 

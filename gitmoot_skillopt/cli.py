@@ -138,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="number of target retries for structured artifact-contract failures before optimizer reflection",
     )
+    optimize.add_argument(
+        "--hard-failure-retry-budget",
+        type=int,
+        default=1,
+        help="number of reflection retries when structured evaluator failures produce no usable patch",
+    )
     optimize.set_defaults(func=_run_optimize)
 
     return parser
@@ -172,6 +178,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         gate_reject_retry_close_gap=args.gate_reject_retry_close_gap,
         feedback_direct_mode=args.feedback_direct_mode,
         target_artifact_retry_budget=args.target_artifact_retry_budget,
+        hard_failure_retry_budget=args.hard_failure_retry_budget,
     )
     summary = getattr(candidate, "summary", None)
     metadata = summary.metadata if summary is not None and isinstance(summary.metadata, dict) else {}

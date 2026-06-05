@@ -1335,6 +1335,176 @@ def test_failure_hint_without_patch_is_recorded(tmp_path):
     ]
 
 
+def test_actionable_hard_failure_retry_converts_hint_to_patch(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    reflect_contexts: list[str] = []
+    retry_result_ids: list[list[str]] = []
+
+    class HardFailureRetryAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            changed = "Vue artifact contract guidance" in skill_content
+            return [
+                {
+                    "id": "val-1" if changed else "train-1",
+                    "hard": 1 if changed else 0,
+                    "soft": 0.9 if changed else 0.0,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                    "failure": {
+                        "primary_reason": "artifact_contract_failure",
+                        "optimizer_hint": "Require the target to return the Vue/Vite preview bundle.",
+                        "failed_checks": [
+                            {
+                                "check": "vue_vite_bundle.required_files",
+                                "reason": "src/App.vue is missing.",
+                                "evidence": ["missing src/App.vue"],
+                            }
+                        ],
+                        "failed_dimensions": ["artifact_contract"],
+                    },
+                },
+                {
+                    "id": "already-good",
+                    "hard": 1,
+                    "soft": 0.8,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                },
+            ]
+
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            context = kwargs.get("step_buffer_context", "")
+            reflect_contexts.append(context)
+            if "Actionable Hard-Failure Retry" not in context:
+                return []
+            retry_result_ids.append([str(result.get("id")) for result in results])
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": "artifact contract guidance",
+                                "change_summary": ["Vue artifact contract guidance"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+            ]
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": ["Vue artifact contract guidance"],
+                    "new_skill": skill_content.rstrip() + "\n\nVue artifact contract guidance.\n",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "off"
+
+    summary = ReflACTTrainer(cfg, HardFailureRetryAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert any("Actionable Hard-Failure Retry" in context for context in reflect_contexts)
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["hard_failure_retry_attempts"][0]["status"] == "converted_to_patch"
+    assert "failure_hint_not_converted_to_patch" not in history[0]
+    assert retry_result_ids == [["train-1"]]
+
+
+def test_actionable_hard_failure_retry_ignores_success_only_retry_patch(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    retry_result_ids: list[list[str]] = []
+
+    class SuccessOnlyRetryAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, skill_content, out_dir, kwargs
+            return [
+                {
+                    "id": "train-1",
+                    "hard": 0,
+                    "soft": 0.0,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                    "failure": {
+                        "primary_reason": "artifact_contract_failure",
+                        "optimizer_hint": "Require the target to return the Vue/Vite preview bundle.",
+                        "failed_checks": [
+                            {
+                                "check": "vue_vite_bundle.required_files",
+                                "reason": "src/App.vue is missing.",
+                                "evidence": ["missing src/App.vue"],
+                            }
+                        ],
+                        "failed_dimensions": ["artifact_contract"],
+                    },
+                }
+            ]
+
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            context = kwargs.get("step_buffer_context", "")
+            if "Actionable Hard-Failure Retry" not in context:
+                return []
+            retry_result_ids.append([str(result.get("id")) for result in results])
+            return [
+                {
+                    "source_type": "success",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": "success-only guidance",
+                                "change_summary": ["success-only guidance"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+            ]
+
+    def fail_merge(*args, **kwargs):
+        raise AssertionError("merge should not run without a converted failure patch")
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fail_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "off"
+
+    summary = ReflACTTrainer(cfg, SuccessOnlyRetryAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_skips"] == 1
+    assert "failure_hint_not_converted_to_patch" in summary["no_candidate_triggers"]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["hard_failure_retry_attempts"][0]["status"] == "no_patch"
+    assert history[0]["hard_failure_retry_attempts"][0]["n_success_patches"] == 1
+    assert history[0]["failure_hint_not_converted_to_patch"] is True
+    assert retry_result_ids == [["train-1"]]
+
+
 def test_trainer_detects_wrong_artifact_from_failed_dimensions(tmp_path, monkeypatch):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
