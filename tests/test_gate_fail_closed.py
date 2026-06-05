@@ -382,6 +382,44 @@ def _retry_trainer_config(tmp_path, *, package_content: str, artifact_root, pack
     return cfg
 
 
+def _scored_result(*, soft: float) -> dict:
+    return {
+        "id": "val-1",
+        "hard": 1,
+        "soft": soft,
+        "score_status": "scored",
+        "target_status": "passed",
+        "evaluator_status": "passed",
+    }
+
+
+def _wrong_artifact_result() -> dict:
+    return {
+        "id": "val-1",
+        "hard": 0,
+        "soft": 0.0,
+        "score_status": "scored",
+        "target_status": "passed",
+        "evaluator_status": "passed",
+        "fail_reason": "Generated response must be a JSON object containing a Vue/Vite preview bundle.",
+        "failure": {
+            "primary_reason": "wrong_artifact_type",
+            "human_reason": "The candidate returned a skill/template instead of the landing-page bundle.",
+            "optimizer_hint": "Return a Vue/Vite preview bundle JSON.",
+            "failed_dimensions": ["wrong_artifact_type", "artifact_contract"],
+            "evidence": ["response appears to be a skill/template document"],
+        },
+    }
+
+
+def _wrong_artifact_dimension_only_result() -> dict:
+    result = _wrong_artifact_result()
+    result["failure"] = dict(result["failure"])
+    result["failure"]["primary_reason"] = ""
+    result["failure"]["optimizer_hint"] = ""
+    return result
+
+
 def test_trainer_retries_noop_candidate_with_feedback_hints(tmp_path, monkeypatch):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
@@ -711,6 +749,242 @@ def test_gate_rejection_retry_preserves_noop_retry_context(tmp_path, monkeypatch
     assert "Gate Rejection Retry" in gate_retry_context
 
 
+def test_trainer_retries_actionable_wrong_artifact_rejection(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        merge_contexts.append(context)
+        if "wrong_artifact_type" in context:
+            new_skill = skill_content.rstrip() + "\n\nVue bundle guidance.\n"
+            change_summary = ["vue bundle guidance"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nWrong artifact patch.\n"
+            change_summary = ["wrong artifact patch"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class WrongArtifactAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Vue bundle guidance" in skill_content:
+                return [_scored_result(soft=0.95)]
+            if "Wrong artifact patch" in skill_content:
+                return [_wrong_artifact_result()]
+            return [_scored_result(soft=0.89)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["wrong_artifact_retry_budget"] = 1
+    cfg["gate_reject_retry_budget"] = 0
+
+    summary = ReflACTTrainer(cfg, WrongArtifactAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert summary["best_origin"] == "step_0001"
+    assert len(summary["wrong_artifact_retry_attempts"]) == 1
+    retry_attempt = summary["wrong_artifact_retry_attempts"][0]
+    assert retry_attempt["retry_class"] == "wrong_artifact_type"
+    assert retry_attempt["action"] == "retry"
+    assert retry_attempt["gate_rejection"]["primary_reason"] == "wrong_artifact_type"
+    assert retry_attempt["gate_rejection"]["retry_attempts"] == "0/1"
+    assert "Primary reason: wrong_artifact_type" in merge_contexts[1]
+    assert "Return a Vue/Vite preview bundle JSON." in merge_contexts[1]
+
+
+def test_trainer_detects_wrong_artifact_from_failed_dimensions(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        merge_contexts.append(context)
+        if "wrong_artifact_type" in context:
+            new_skill = skill_content.rstrip() + "\n\nVue bundle guidance.\n"
+            change_summary = ["vue bundle guidance"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nWrong artifact patch.\n"
+            change_summary = ["wrong artifact patch"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class WrongArtifactDimensionAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Vue bundle guidance" in skill_content:
+                return [_scored_result(soft=0.95)]
+            if "Wrong artifact patch" in skill_content:
+                return [_wrong_artifact_dimension_only_result()]
+            return [_scored_result(soft=0.89)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["wrong_artifact_retry_budget"] = 1
+    cfg["gate_reject_retry_budget"] = 0
+
+    summary = ReflACTTrainer(cfg, WrongArtifactDimensionAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert len(summary["wrong_artifact_retry_attempts"]) == 1
+    retry_attempt = summary["wrong_artifact_retry_attempts"][0]
+    assert retry_attempt["retry_class"] == "wrong_artifact_type"
+    assert retry_attempt["gate_rejection"]["primary_reason"] == "wrong_artifact_type"
+    assert "Primary reason: wrong_artifact_type" in merge_contexts[1]
+
+
+def test_trainer_stops_repeated_wrong_artifact_rejection(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_calls = 0
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        nonlocal merge_calls
+        del failure_patches, success_patches, kwargs
+        merge_calls += 1
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": ["wrong artifact patch"],
+                    "new_skill": skill_content.rstrip() + "\n\nWrong artifact patch.\n",
+                }
+            ],
+        }
+
+    class RepeatedWrongArtifactAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Wrong artifact patch" in skill_content:
+                return [_wrong_artifact_result()]
+            return [_scored_result(soft=0.89)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["wrong_artifact_retry_budget"] = 1
+    cfg["gate_reject_retry_budget"] = 0
+
+    summary = ReflACTTrainer(cfg, RepeatedWrongArtifactAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 0
+    assert summary["total_rejects"] == 1
+    assert len(summary["wrong_artifact_retry_attempts"]) == 2
+    assert summary["wrong_artifact_retry_attempts"][0]["action"] == "retry"
+    assert summary["wrong_artifact_retry_attempts"][1]["action"] == "stop"
+    assert summary["wrong_artifact_retry_attempts"][1]["stop_reason"] == "budget_exhausted"
+    assert "budget_exhausted" in summary["no_candidate_triggers"]
+    assert merge_calls == 2
+
+
+def test_wrong_artifact_retry_does_not_consume_generic_gate_budget(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        context = kwargs.get("meta_skill_context", "")
+        merge_contexts.append(context)
+        if "Primary reason: candidate_quality_regressed" in context:
+            new_skill = skill_content.rstrip() + "\n\nStrong visual guidance.\n"
+            change_summary = ["strong visual guidance"]
+        elif "wrong_artifact_type" in context:
+            new_skill = skill_content.rstrip() + "\n\nWeak Vue bundle guidance.\n"
+            change_summary = ["weak vue bundle guidance"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nWrong artifact patch.\n"
+            change_summary = ["wrong artifact patch"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class MixedRetryAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Strong visual guidance" in skill_content:
+                return [_scored_result(soft=0.95)]
+            if "Weak Vue bundle guidance" in skill_content:
+                return [_scored_result(soft=0.84)]
+            if "Wrong artifact patch" in skill_content:
+                return [_wrong_artifact_result()]
+            return [_scored_result(soft=0.89)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["gate_metric"] = "soft"
+    cfg["wrong_artifact_retry_budget"] = 1
+    cfg["gate_reject_retry_budget"] = 1
+
+    summary = ReflACTTrainer(cfg, MixedRetryAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert summary["best_origin"] == "step_0001"
+    assert len(summary["wrong_artifact_retry_attempts"]) == 1
+    assert len(summary["gate_reject_retry_attempts"]) == 1
+    assert summary["wrong_artifact_retry_attempts"][0]["retry_class"] == "wrong_artifact_type"
+    assert summary["gate_reject_retry_attempts"][0]["retry_class"] == "gate_reject"
+    assert summary["gate_reject_retry_attempts"][0]["attempt"] == 0
+    assert len(merge_contexts) == 3
+    step_dir = tmp_path / "out" / "steps" / "step_0001"
+    assert (step_dir / "wrong_artifact_retry_00.json").exists()
+    assert (step_dir / "gate_reject_retry_00.json").exists()
+    assert (step_dir / "merged_patch_wrong_artifact_retry_01.json").exists()
+    assert (step_dir / "merged_patch_gate_reject_retry_01.json").exists()
+    assert (step_dir / "candidate_skill_wrong_artifact_retry_01.md").exists()
+    assert (step_dir / "candidate_skill_gate_reject_retry_01.md").exists()
+
+
 def test_trainer_stops_gate_rejection_after_retry_budget(tmp_path, monkeypatch):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
@@ -930,7 +1204,7 @@ def test_gate_rejection_retry_block_preserves_fail_closed_skip(tmp_path, monkeyp
             out_dir_text = str(out_dir)
             if "test_eval" in out_dir_text:
                 final_test_rollouts.append(out_dir_text)
-            if "selection_eval_gate_retry" in out_dir_text:
+            if "selection_eval_gate_reject_retry" in out_dir_text:
                 return [
                     {
                         "id": "val-1",

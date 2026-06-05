@@ -319,6 +319,17 @@ def _gate_rejection_retry_decision(
     return True, "retryable"
 
 
+def _is_wrong_artifact_rejection(packet: dict | None) -> bool:
+    if not isinstance(packet, dict):
+        return False
+    fields = [
+        packet.get("primary_reason"),
+        packet.get("rejection_type"),
+        *(packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []),
+    ]
+    return any(str(field or "").strip().lower() == "wrong_artifact_type" for field in fields)
+
+
 def _gate_rejection_with_retry_attempts(packet: dict | None, *, used: int, budget: int) -> dict | None:
     if not isinstance(packet, dict):
         return None
@@ -370,6 +381,80 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
     if evidence:
         lines.append("Evidence: " + "; ".join(str(item) for item in evidence[:8]))
     return "\n".join(line for line in lines if str(line).strip())
+
+
+def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
+    if not results:
+        return None
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        signal = _structured_result_failure(result)
+        if not signal:
+            continue
+        if _is_wrong_artifact_rejection(signal):
+            return signal
+    return None
+
+
+def _structured_result_failure(result: dict) -> dict | None:
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    failure = result.get("failure")
+    if not isinstance(failure, dict):
+        failure = metadata.get("failure") if isinstance(metadata.get("failure"), dict) else {}
+    primary_reason = str(
+        result.get("primary_reason")
+        or metadata.get("primary_reason")
+        or failure.get("primary_reason")
+        or ""
+    ).strip()
+    optimizer_hint = str(
+        result.get("optimizer_hint")
+        or metadata.get("optimizer_hint")
+        or failure.get("optimizer_hint")
+        or ""
+    ).strip()
+
+    def _string_list(*values: object) -> list[str]:
+        out: list[str] = []
+        for value in values:
+            if isinstance(value, list):
+                out.extend(str(item).strip() for item in value if str(item).strip())
+            elif isinstance(value, str) and value.strip():
+                out.append(value.strip())
+        return _dedupe_texts(out, limit=12)
+
+    rejection_type = str(
+        result.get("rejection_type")
+        or metadata.get("rejection_type")
+        or failure.get("rejection_type")
+        or ""
+    ).strip()
+    failed_dimensions = _string_list(
+        result.get("failed_dimensions"),
+        metadata.get("failed_dimensions"),
+        failure.get("failed_dimensions"),
+    )
+    if not primary_reason and not optimizer_hint and not rejection_type and not failed_dimensions:
+        return None
+
+    return {
+        "primary_reason": primary_reason,
+        "rejection_type": rejection_type,
+        "human_reason": str(
+            result.get("human_reason")
+            or metadata.get("human_reason")
+            or failure.get("human_reason")
+            or result.get("fail_reason")
+            or ""
+        ).strip(),
+        "optimizer_hint": optimizer_hint,
+        "failed_dimensions": failed_dimensions,
+        "failed_checks": failure.get("failed_checks") if isinstance(failure.get("failed_checks"), list) else [],
+        "evidence": _string_list(result.get("evidence"), metadata.get("evidence"), failure.get("evidence")),
+        "stage_status": failure.get("stage_status") if isinstance(failure.get("stage_status"), list) else [],
+        "source_item_id": str(result.get("id") or "").strip(),
+    }
 
 
 def _join_optimizer_context(*parts: str) -> str:
@@ -735,6 +820,7 @@ def _selection_reject_gate_rejection(
     gate_mixed_weight: float,
     retry_used: int = 0,
     retry_budget: int = 0,
+    rejection_signal: dict | None = None,
 ) -> dict | None:
     reject_steps = [record for record in history if record.get("action") == "reject"]
     if not reject_steps:
@@ -799,8 +885,35 @@ def _selection_reject_gate_rejection(
         or "Stop this pass without final test eval; retry only when gate-rejection retry is enabled or collect more feedback."
     )
 
+    signal = rejection_signal if isinstance(rejection_signal, dict) else {}
+    signal_primary_reason = str(signal.get("primary_reason") or "").strip()
+    signal_is_wrong_artifact = _is_wrong_artifact_rejection(signal)
+    signal_optimizer_hint = str(signal.get("optimizer_hint") or "").strip()
+    signal_human_reason = str(signal.get("human_reason") or "").strip()
+    signal_failed_dimensions = (
+        signal.get("failed_dimensions") if isinstance(signal.get("failed_dimensions"), list) else []
+    )
+    signal_evidence = signal.get("evidence") if isinstance(signal.get("evidence"), list) else []
+    if signal_evidence:
+        evidence.extend(str(item) for item in signal_evidence if str(item).strip())
+    source_item_id = str(signal.get("source_item_id") or "").strip()
+    if source_item_id:
+        evidence.append(f"Structured rejection came from selection item {source_item_id}.")
+
+    primary_reason = signal_primary_reason or (
+        "wrong_artifact_type" if signal_is_wrong_artifact else "candidate_quality_regressed"
+    )
+    rejection_type = "wrong_artifact_type" if signal_is_wrong_artifact else "candidate_score_regression"
+    optimizer_hint = signal_optimizer_hint or (
+        "Use the gate rejection evidence and human feedback to change the skill direction before spending final test-eval budget."
+    )
+    human_reason = signal_human_reason or (
+        "The candidate lost selection evaluation against the baseline skill, so final test evaluation was skipped."
+    )
+    failed_dimensions = signal_failed_dimensions or ["selection_gate", "human_feedback_alignment"]
+
     return {
-        "rejection_type": "candidate_score_regression",
+        "rejection_type": rejection_type,
         "retryable": True,
         "baseline": {
             "hard": baseline_hard,
@@ -812,11 +925,11 @@ def _selection_reject_gate_rejection(
             "soft": candidate_soft,
             "gate_score": candidate_gate_score,
         },
-        "primary_reason": "candidate_quality_regressed",
-        "human_reason": "The candidate lost selection evaluation against the baseline skill, so final test evaluation was skipped.",
-        "optimizer_hint": "Use the gate rejection evidence and human feedback to change the skill direction before spending final test-eval budget.",
-        "failed_dimensions": ["selection_gate", "human_feedback_alignment"],
-        "evidence": evidence,
+        "primary_reason": primary_reason,
+        "human_reason": human_reason,
+        "optimizer_hint": optimizer_hint,
+        "failed_dimensions": failed_dimensions,
+        "evidence": _dedupe_texts(evidence, limit=12),
         "attempted_patch": attempted_patch,
         "retry_attempts": retry_attempts,
         "next_action": next_action,
@@ -1302,10 +1415,14 @@ class ReflACTTrainer:
 
         # ── Selection cache ──────────────────────────────────────────────
         sel_cache: dict[str, tuple[float, float]] = {}
+        sel_rejection_signal_cache: dict[str, dict] = {}
         for rec in history:
             sh = rec.get("candidate_hash", "")
             if sh and rec.get("selection_hard") is not None:
                 sel_cache[sh] = (rec["selection_hard"], rec["selection_soft"])
+                gate_rejection = rec.get("gate_rejection") if isinstance(rec.get("gate_rejection"), dict) else {}
+                if _is_wrong_artifact_rejection(gate_rejection):
+                    sel_rejection_signal_cache[sh] = dict(gate_rejection)
         selection_scores_by_origin: dict[str, tuple[float | None, float | None]] = {}
 
         # ── Baseline evaluation on selection set ─────────────────────────
@@ -1587,6 +1704,9 @@ class ReflACTTrainer:
                 gate_reject_retry_budget = max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0))
                 gate_reject_retry_attempts: list[dict] = []
                 seen_gate_rejection_reasons: set[str] = set()
+                wrong_artifact_retry_budget = max(0, int(cfg.get("wrong_artifact_retry_budget", 1) or 0))
+                wrong_artifact_retry_attempts: list[dict] = []
+                seen_wrong_artifact_rejection_reasons: set[str] = set()
                 noop_retry_budget = max(0, int(cfg.get("noop_retry_budget", 1) or 0))
                 noop_retry_attempts: list[dict] = []
                 noop_retry_context = ""
@@ -1841,8 +1961,10 @@ class ReflACTTrainer:
 
                 # ⑥ EVALUATE ───────────────────────────────────────────────
                 t_phase = time.time()
+                selection_rejection_signal = None
                 if cand_hash in sel_cache:
                     cand_hard, cand_soft = sel_cache[cand_hash]
+                    selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
                     print(
                         f"    [6/6 EVALUATE] "
                         f"cache hit {cand_hash}: hard={cand_hard:.4f}"
@@ -1856,6 +1978,9 @@ class ReflACTTrainer:
                     print(f"    [6/6 EVALUATE] selection items={sel_n}")
                     sel_eval_dir = os.path.join(step_dir, "selection_eval")
                     sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
+                    selection_rejection_signal = _selection_rejection_signal(sel_results)
+                    if selection_rejection_signal:
+                        sel_rejection_signal_cache[cand_hash] = selection_rejection_signal
                     gate_block = find_gate_block(sel_results)
                     if gate_block is not None:
                         block = gate_block.to_dict()
@@ -1949,35 +2074,55 @@ class ReflACTTrainer:
                                 baseline_scores=baseline_scores,
                                 gate_metric=gate_metric,
                                 gate_mixed_weight=gate_mixed_weight,
+                                rejection_signal=selection_rejection_signal,
                             )
-                            retry_count = sum(
-                                1
-                                for attempt in gate_reject_retry_attempts
-                                if attempt.get("action") == "retry"
+                            wrong_artifact_retry = _is_wrong_artifact_rejection(gate_rejection)
+                            active_retry_attempts = (
+                                wrong_artifact_retry_attempts if wrong_artifact_retry else gate_reject_retry_attempts
                             )
+                            active_seen_reasons = (
+                                seen_wrong_artifact_rejection_reasons
+                                if wrong_artifact_retry
+                                else seen_gate_rejection_reasons
+                            )
+                            active_retry_budget = wrong_artifact_retry_budget if wrong_artifact_retry else gate_reject_retry_budget
+                            retry_count = sum(1 for attempt in active_retry_attempts if attempt.get("action") == "retry")
                             gate_rejection = _gate_rejection_with_retry_attempts(
                                 gate_rejection,
                                 used=retry_count,
-                                budget=gate_reject_retry_budget,
+                                budget=active_retry_budget,
                             )
                             can_retry_gate_reject, gate_reject_stop_reason = _gate_rejection_retry_decision(
                                 gate_rejection,
                                 attempt=retry_count,
-                                budget=gate_reject_retry_budget,
-                                seen_reasons=seen_gate_rejection_reasons,
+                                budget=active_retry_budget,
+                                seen_reasons=active_seen_reasons,
                             )
                             gate_retry_record = {
                                 "attempt": retry_count,
                                 "candidate_hash": cand_hash,
+                                "retry_class": "wrong_artifact_type" if wrong_artifact_retry else "gate_reject",
                                 "action": "retry" if can_retry_gate_reject else "stop",
                                 "stop_reason": gate_reject_stop_reason,
                                 "gate_rejection": gate_rejection,
                             }
-                            gate_reject_retry_attempts.append(gate_retry_record)
+                            if wrong_artifact_retry:
+                                wrong_artifact_retry_attempts.append(gate_retry_record)
+                                retry_file_prefix = "wrong_artifact_retry"
+                            else:
+                                gate_reject_retry_attempts.append(gate_retry_record)
+                                retry_file_prefix = "gate_reject_retry"
                             step_rec["gate_rejection"] = gate_rejection
-                            step_rec["gate_reject_retry_attempts"] = gate_reject_retry_attempts
+                            if gate_reject_retry_attempts:
+                                step_rec["gate_reject_retry_attempts"] = gate_reject_retry_attempts
+                            if wrong_artifact_retry_attempts:
+                                step_rec["wrong_artifact_retry_attempts"] = wrong_artifact_retry_attempts
+                            gate_retry_record_path = os.path.join(
+                                step_dir,
+                                f"{retry_file_prefix}_{retry_count:02d}.json",
+                            )
                             with open(
-                                os.path.join(step_dir, f"gate_reject_retry_{retry_count:02d}.json"),
+                                gate_retry_record_path,
                                 "w",
                             ) as f:
                                 json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
@@ -1995,15 +2140,15 @@ class ReflACTTrainer:
                                 or ""
                             ).strip()
                             if reason:
-                                seen_gate_rejection_reasons.add(reason)
+                                active_seen_reasons.add(reason)
                             gate_retry_context = _format_gate_reject_retry_context(
                                 gate_rejection,
                                 retry_count + 1,
-                                gate_reject_retry_budget,
+                                active_retry_budget,
                             )
-                            gate_retry_suffix = f"_gate_retry_{retry_count + 1:02d}"
+                            gate_retry_suffix = f"_{retry_file_prefix}_{retry_count + 1:02d}"
                             print(
-                                f"    [gate retry {retry_count + 1}/{gate_reject_retry_budget}] "
+                                f"    [gate retry {retry_count + 1}/{active_retry_budget}] "
                                 "rerunning aggregate/select/update with gate-rejection feedback"
                             )
 
@@ -2201,15 +2346,17 @@ class ReflACTTrainer:
                                 gate_retry_record["stop_reason"] = "gate_retry_no_meaningful_change"
                                 gate_retry_record["noop_reasons"] = retry_change_check.reasons
                                 with open(
-                                    os.path.join(step_dir, f"gate_reject_retry_{retry_count:02d}.json"),
+                                    gate_retry_record_path,
                                     "w",
                                 ) as f:
                                     json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
                                 break
 
                             t_retry_phase = time.time()
+                            selection_rejection_signal = None
                             if cand_hash in sel_cache:
                                 cand_hard, cand_soft = sel_cache[cand_hash]
+                                selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
                             else:
                                 sel_env, sel_n = _build_eval_env(
                                     split="valid_seen",
@@ -2222,6 +2369,9 @@ class ReflACTTrainer:
                                     f"selection_eval{gate_retry_suffix}",
                                 )
                                 sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
+                                selection_rejection_signal = _selection_rejection_signal(sel_results)
+                                if selection_rejection_signal:
+                                    sel_rejection_signal_cache[cand_hash] = selection_rejection_signal
                                 gate_block = find_gate_block(sel_results)
                                 if gate_block is not None:
                                     block = gate_block.to_dict()
@@ -2248,7 +2398,7 @@ class ReflACTTrainer:
                                     gate_retry_record["stop_reason"] = f"gate_retry_blocked:{block['blocker']}"
                                     gate_retry_record["gate_block"] = block
                                     with open(
-                                        os.path.join(step_dir, f"gate_reject_retry_{retry_count:02d}.json"),
+                                        gate_retry_record_path,
                                         "w",
                                     ) as f:
                                         json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
@@ -2302,16 +2452,27 @@ class ReflACTTrainer:
                                     f"{cand_gate_score:.4f} > prev best {prev_best:.4f}"
                                 )
                                 break
+                            if gate.action == "reject":
+                                step_rec["gate_rejection"] = _selection_reject_gate_rejection(
+                                    history=[step_rec],
+                                    baseline_scores=baseline_scores,
+                                    gate_metric=gate_metric,
+                                    gate_mixed_weight=gate_mixed_weight,
+                                    retry_used=retry_count + 1,
+                                    retry_budget=active_retry_budget,
+                                    rejection_signal=selection_rejection_signal,
+                                )
+                                print(
+                                    f"    [6/6 EVALUATE] GATE RETRY REJECT "
+                                    f"{cand_gate_score:.4f} <= current={current_score:.4f}"
+                                )
+                                continue
                             if gate.action == "accept":
                                 print(
                                     f"    [6/6 EVALUATE] GATE RETRY ACCEPT "
                                     f"{cand_gate_score:.4f} > current={prev_current:.4f}"
                                 )
                                 break
-                            print(
-                                f"    [6/6 EVALUATE] GATE RETRY REJECT "
-                                f"{cand_gate_score:.4f} <= current={current_score:.4f}"
-                            )
                 else:
                     cand_gate_score = None
 
@@ -2883,19 +3044,28 @@ class ReflACTTrainer:
             best_skill=best_skill,
             skill_init=skill_init,
         ):
-            selection_reject_gate_rejection = _selection_reject_gate_rejection(
-                history=history,
-                baseline_scores=baseline_selection_scores,
-                gate_metric=gate_metric,
-                gate_mixed_weight=gate_mixed_weight,
-                retry_used=sum(
-                    1
-                    for record in history
-                    for attempt in record.get("gate_reject_retry_attempts", [])
-                    if isinstance(attempt, dict) and attempt.get("action") == "retry"
+            selection_reject_gate_rejection = next(
+                (
+                    record.get("gate_rejection")
+                    for record in reversed(history)
+                    if isinstance(record.get("gate_rejection"), dict)
                 ),
-                retry_budget=max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0)),
+                None,
             )
+            if selection_reject_gate_rejection is None:
+                selection_reject_gate_rejection = _selection_reject_gate_rejection(
+                    history=history,
+                    baseline_scores=baseline_selection_scores,
+                    gate_metric=gate_metric,
+                    gate_mixed_weight=gate_mixed_weight,
+                    retry_used=sum(
+                        1
+                        for record in history
+                        for attempt in record.get("gate_reject_retry_attempts", [])
+                        if isinstance(attempt, dict) and attempt.get("action") == "retry"
+                    ),
+                    retry_budget=max(0, int(cfg.get("gate_reject_retry_budget", 1) or 0)),
+                )
             if selection_reject_gate_rejection is not None:
                 skip_final_test_reason = "selection_gate_rejected_candidate"
 
@@ -3005,6 +3175,12 @@ class ReflACTTrainer:
             for attempt in h.get("gate_reject_retry_attempts", [])
             if isinstance(attempt, dict)
         ]
+        wrong_artifact_retry_attempts = [
+            attempt
+            for h in history
+            for attempt in h.get("wrong_artifact_retry_attempts", [])
+            if isinstance(attempt, dict)
+        ]
         final_has_candidate = n_accept > 0 or best_origin != "initial_skill"
         no_candidate_triggers = [] if final_has_candidate else _dedupe_texts([
             trigger
@@ -3067,6 +3243,7 @@ class ReflACTTrainer:
             "total_skips": n_skip,
             "noop_retry_attempts": noop_retry_attempts,
             "gate_reject_retry_attempts": gate_reject_retry_attempts,
+            "wrong_artifact_retry_attempts": wrong_artifact_retry_attempts,
             "no_candidate_triggers": no_candidate_triggers,
             "no_candidate_reason": no_candidate_triggers[0] if no_candidate_triggers else "",
             "gate_rejection": selection_reject_gate_rejection,

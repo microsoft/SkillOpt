@@ -226,6 +226,7 @@ def build_trainer_config(
         "eval_test": False if dry_run else True,
         "noop_retry_budget": 1,
         "gate_reject_retry_budget": 1,
+        "wrong_artifact_retry_budget": 1,
     }
 
 
@@ -360,6 +361,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "total_skips": summary.get("total_skips"),
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "gate_reject_retry_attempts": summary.get("gate_reject_retry_attempts", []),
+        "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
         "gate_rejection": _gate_rejection_dict(summary),
         "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
         "token_summary": summary.get("token_summary", {}),
@@ -443,6 +445,7 @@ def _summary_metadata(
         "no_candidate_details": no_candidate_details,
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "gate_reject_retry_attempts": summary.get("gate_reject_retry_attempts", []),
+        "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
         "gate_rejection": _gate_rejection_dict(summary),
         "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
         "next_action": _no_candidate_next_action(no_candidate_triggers),
