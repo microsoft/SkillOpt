@@ -343,7 +343,17 @@ def _gate_rejection_retry_decision(
     reason = str(packet.get("primary_reason") or packet.get("rejection_type") or "").strip()
     if not reason:
         return False, "missing_rejection_reason"
-    signature = "|".join(
+    signature = _gate_rejection_signature(packet)
+    if signature in seen_reasons:
+        return False, "repeated_rejection_reason"
+    return True, "retryable"
+
+
+def _gate_rejection_signature(packet: dict | None) -> str:
+    if not isinstance(packet, dict):
+        return ""
+    reason = str(packet.get("primary_reason") or packet.get("rejection_type") or "").strip()
+    return "|".join(
         str(value or "").strip()
         for value in (
             reason,
@@ -351,9 +361,6 @@ def _gate_rejection_retry_decision(
             packet.get("optimizer_hint"),
         )
     )
-    if signature in seen_reasons:
-        return False, "repeated_rejection_reason"
-    return True, "retryable"
 
 
 def _is_wrong_artifact_rejection(packet: dict | None) -> bool:
@@ -427,6 +434,18 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
     if evidence:
         lines.append("Evidence: " + "; ".join(str(item) for item in evidence[:8]))
     return "\n".join(line for line in lines if str(line).strip())
+
+
+def _format_duplicate_gate_retry_context(*, duplicate_of: str, attempt: int) -> str:
+    return "\n".join(
+        [
+            "## Duplicate Gate Retry Candidate",
+            f"The previous gate retry attempt {attempt} produced the same candidate hash: {duplicate_of}.",
+            "Do not repeat the same structural update or patch direction.",
+            "Preserve useful candidate strengths, but make a different skill change using evaluator rationale.",
+            "Specifically address the candidate weaknesses from delta_summary before retrying.",
+        ]
+    )
 
 
 def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
@@ -1857,6 +1876,8 @@ class ReflACTTrainer:
                 wrong_artifact_retry_budget = max(0, int(cfg.get("wrong_artifact_retry_budget", 1) or 0))
                 wrong_artifact_retry_attempts: list[dict] = []
                 seen_wrong_artifact_rejection_reasons: set[str] = set()
+                duplicate_gate_retry_context = ""
+                duplicate_gate_retry_hashes: set[str] = set()
                 noop_retry_budget = max(0, int(cfg.get("noop_retry_budget", 1) or 0))
                 noop_retry_attempts: list[dict] = []
                 noop_retry_context = ""
@@ -2294,26 +2315,17 @@ class ReflACTTrainer:
                                 step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
                                 break
 
-                            reason = str(
-                                gate_rejection.get("primary_reason")
-                                or gate_rejection.get("rejection_type")
-                                or ""
-                            ).strip()
-                            if reason:
-                                active_seen_reasons.add(
-                                    "|".join(
-                                        str(value or "").strip()
-                                        for value in (
-                                            reason,
-                                            gate_rejection.get("attempted_patch"),
-                                            gate_rejection.get("optimizer_hint"),
-                                        )
-                                    )
-                                )
+                            gate_rejection_signature = _gate_rejection_signature(gate_rejection)
+                            if gate_rejection_signature:
+                                active_seen_reasons.add(gate_rejection_signature)
                             gate_retry_context = _format_gate_reject_retry_context(
                                 gate_rejection,
                                 retry_count + 1,
                                 active_retry_budget,
+                            )
+                            gate_retry_context = _join_optimizer_context(
+                                gate_retry_context,
+                                "" if wrong_artifact_retry else duplicate_gate_retry_context,
                             )
                             gate_retry_suffix = f"_{retry_file_prefix}_{retry_count + 1:02d}"
                             print(
@@ -2491,6 +2503,47 @@ class ReflACTTrainer:
                                 step_rec["timing"].get("update_s", 0) + time.time() - t_retry_phase,
                                 1,
                             )
+                            previous_retry_candidate_hash = str(gate_retry_record.get("candidate_hash") or "").strip()
+                            if (
+                                not wrong_artifact_retry
+                                and previous_retry_candidate_hash
+                                and cand_hash == previous_retry_candidate_hash
+                            ):
+                                gate_retry_record["retry_produced_duplicate_candidate"] = True
+                                gate_retry_record["duplicate_of"] = previous_retry_candidate_hash
+                                gate_retry_record["duplicate_candidate_hash"] = cand_hash
+                                step_rec["retry_produced_duplicate_candidate"] = True
+                                step_rec["duplicate_of"] = previous_retry_candidate_hash
+                                if gate_rejection_signature:
+                                    active_seen_reasons.discard(gate_rejection_signature)
+                                if cand_hash in duplicate_gate_retry_hashes:
+                                    step_rec["action"] = "reject"
+                                    step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
+                                    step_rec["no_candidate_triggers"] = _dedupe_texts(
+                                        [
+                                            "gate_rejected_best_origin_initial_skill",
+                                            "repeated_duplicate_candidate",
+                                        ]
+                                    )
+                                    gate_retry_record["action"] = "stop"
+                                    gate_retry_record["stop_reason"] = "repeated_duplicate_candidate"
+                                    with open(
+                                        gate_retry_record_path,
+                                        "w",
+                                    ) as f:
+                                        json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                                    break
+                                duplicate_gate_retry_hashes.add(cand_hash)
+                                duplicate_gate_retry_context = _format_duplicate_gate_retry_context(
+                                    duplicate_of=cand_hash,
+                                    attempt=retry_count + 1,
+                                )
+                                with open(
+                                    gate_retry_record_path,
+                                    "w",
+                                ) as f:
+                                    json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                                continue
 
                             retry_change_check = _detect_no_meaningful_change(
                                 current_skill=current_skill,
