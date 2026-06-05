@@ -700,7 +700,7 @@ def _gate_rejection_retry_decision(
         candidate_hard = candidate.get("hard")
         if isinstance(candidate_hard, bool) or not isinstance(candidate_hard, int | float):
             return False, "missing_candidate_hard_score"
-        if float(candidate_hard) < 1.0:
+        if float(candidate_hard) < 1.0 and not _candidate_hard_score_allows_gate_retry(packet):
             return False, "candidate_hard_score_failed"
         baseline_gate = baseline.get("gate_score")
         candidate_gate = candidate.get("gate_score")
@@ -731,6 +731,55 @@ def _gate_rejection_retry_decision(
     if signature in seen_reasons:
         return False, "repeated_rejection_reason"
     return True, "retryable"
+
+
+def _candidate_hard_score_allows_gate_retry(packet: dict) -> bool:
+    if _is_wrong_artifact_rejection(packet):
+        return False
+    failed_dimensions = packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []
+    failed_checks = packet.get("failed_checks") if isinstance(packet.get("failed_checks"), list) else []
+    fields = [
+        packet.get("primary_reason"),
+        packet.get("rejection_type"),
+        *(failed_dimensions or []),
+    ]
+    for check in failed_checks:
+        if isinstance(check, dict):
+            fields.extend([check.get("check"), check.get("reason"), check.get("severity")])
+    normalized = {
+        str(field or "").strip().lower().replace("-", "_").replace(".", "_")
+        for field in fields
+        if str(field or "").strip()
+    }
+    retryable_hard_zero_tokens = {
+        "animation_motion_quality",
+        "brand_identity",
+        "cta_clarity",
+        "footer_presence_clarity",
+        "hero_quality",
+        "human_feedback_not_resolved",
+        "human_feedback_resolution",
+        "mobile_responsiveness",
+        "proof_trust_content",
+        "ranked_strength_preservation",
+        "text_overlap_readability",
+        "visual_images_relevance",
+        "visual_quality",
+    }
+    return any(
+        _matches_retryable_hard_zero_token(field, token)
+        for field in normalized
+        for token in retryable_hard_zero_tokens
+    )
+
+
+def _matches_retryable_hard_zero_token(field: str, token: str) -> bool:
+    return (
+        field == token
+        or field.endswith(f"_{token}")
+        or field.startswith(f"{token}_")
+        or f"_{token}_" in field
+    )
 
 
 def _gate_rejection_signature(packet: dict | None) -> str:
@@ -849,6 +898,7 @@ def _format_duplicate_gate_retry_context(*, duplicate_of: str, attempt: int) -> 
 def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
     if not results:
         return None
+    first_signal: dict | None = None
     for result in results:
         if not isinstance(result, dict):
             continue
@@ -857,7 +907,9 @@ def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
             continue
         if _is_wrong_artifact_rejection(signal):
             return signal
-    return None
+        if first_signal is None:
+            first_signal = signal
+    return first_signal
 
 
 def _structured_result_failure(result: dict) -> dict | None:

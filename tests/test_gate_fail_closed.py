@@ -12,6 +12,7 @@ from skillopt.engine.trainer import (
     _gate_rejection_retry_decision,
     _non_feedback_direct_items,
     _ranked_feedback_context_packet,
+    _selection_rejection_signal,
     _selection_reject_gate_rejection,
     _should_skip_final_test_after_selection_reject,
 )
@@ -2195,6 +2196,49 @@ def test_gate_rejection_prefers_signal_specific_human_feedback_context():
     assert "human_feedback_alignment" in rejection["failed_dimensions"]
 
 
+def test_selection_rejection_signal_keeps_non_artifact_failure_after_wrong_artifact_priority():
+    signal = _selection_rejection_signal(
+        [
+            {
+                "id": "item-1",
+                "hard": 0,
+                "soft": 0.45,
+                "primary_reason": "human_feedback_not_resolved",
+                "optimizer_hint": "Improve mobile responsiveness and motion.",
+                "failed_dimensions": ["human_feedback_resolution", "mobile_responsiveness"],
+            }
+        ]
+    )
+
+    assert signal is not None
+    assert signal["primary_reason"] == "human_feedback_not_resolved"
+    assert signal["failed_dimensions"] == ["human_feedback_resolution", "mobile_responsiveness"]
+
+    wrong_artifact = _selection_rejection_signal(
+        [
+            {
+                "id": "item-1",
+                "hard": 0,
+                "soft": 0.45,
+                "primary_reason": "human_feedback_not_resolved",
+                "optimizer_hint": "Improve motion.",
+                "failed_dimensions": ["human_feedback_resolution"],
+            },
+            {
+                "id": "item-2",
+                "hard": 0,
+                "soft": 0.0,
+                "primary_reason": "wrong_artifact_type",
+                "optimizer_hint": "Return a Vue/Vite bundle.",
+                "failed_dimensions": ["wrong_artifact_type"],
+            },
+        ]
+    )
+
+    assert wrong_artifact is not None
+    assert wrong_artifact["primary_reason"] == "wrong_artifact_type"
+
+
 def test_gate_rejection_retry_decision_requires_actionable_new_information():
     packet = {
         "rejection_type": "candidate_score_regression",
@@ -2242,7 +2286,61 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         close_gap=0.03,
     ) == (False, "gate_score_gap_too_large")
     assert _gate_rejection_retry_decision(
-        {**packet, "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87}},
+        {
+            **packet,
+            "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87},
+            "failed_dimensions": ["human_feedback_resolution"],
+        },
+        attempt=0,
+        budget=2,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (True, "retryable")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
+            "primary_reason": "mobile_responsiveness_failed",
+            "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87},
+            "failed_dimensions": [],
+        },
+        attempt=0,
+        budget=2,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (True, "retryable")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
+            "primary_reason": "landing_page_judge_rejected",
+            "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87},
+            "failed_dimensions": [],
+            "failed_checks": [{"check": "landing_page_v1.mobile_responsiveness"}],
+        },
+        attempt=0,
+        budget=2,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (True, "retryable")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
+            "primary_reason": "new_unclassified_hard_failure",
+            "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87},
+            "failed_dimensions": ["new_unclassified_hard_failure"],
+        },
+        attempt=0,
+        budget=2,
+        seen_reasons=set(),
+        close_gap=0.03,
+    ) == (False, "candidate_hard_score_failed")
+    assert _gate_rejection_retry_decision(
+        {
+            **packet,
+            "rejection_type": "wrong_artifact_type",
+            "primary_reason": "wrong_artifact_type",
+            "candidate": {"hard": 0.0, "soft": 0.87, "gate_score": 0.87},
+            "failed_dimensions": ["wrong_artifact_type", "artifact_contract"],
+        },
         attempt=0,
         budget=2,
         seen_reasons=set(),
