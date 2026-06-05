@@ -47,6 +47,7 @@ def run_optimize(
     gate_reject_retry_budget: int = 3,
     wrong_artifact_retry_budget: int = 1,
     gate_reject_retry_close_gap: float = 0.03,
+    feedback_direct_mode: str = "auto",
 ) -> CandidatePackage:
     package_path = _require_file(training_package, "training package")
     artifact_root_path = _require_dir(artifact_root, "artifact root")
@@ -101,6 +102,7 @@ def run_optimize(
         gate_reject_retry_budget=gate_reject_retry_budget,
         wrong_artifact_retry_budget=wrong_artifact_retry_budget,
         gate_reject_retry_close_gap=gate_reject_retry_close_gap,
+        feedback_direct_mode=feedback_direct_mode,
     )
     adapter = GitmootAdapter(
         training_package=str(package_path),
@@ -146,6 +148,7 @@ def build_trainer_config(
     gate_reject_retry_budget: int = 3,
     wrong_artifact_retry_budget: int = 1,
     gate_reject_retry_close_gap: float = 0.03,
+    feedback_direct_mode: str = "auto",
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
     normalized_gate_metric = str(gate_metric or "hard").strip().lower()
@@ -240,7 +243,15 @@ def build_trainer_config(
         "gate_reject_retry_budget": max(0, int(gate_reject_retry_budget)),
         "wrong_artifact_retry_budget": max(0, int(wrong_artifact_retry_budget)),
         "gate_reject_retry_close_gap": max(0.0, float(gate_reject_retry_close_gap)),
+        "feedback_direct_mode": _normalize_feedback_direct_mode(feedback_direct_mode),
     }
+
+
+def _normalize_feedback_direct_mode(value: str | None) -> str:
+    raw = str(value or "auto").strip().lower()
+    if raw not in {"auto", "on", "off"}:
+        raise ValueError("feedback_direct_mode must be one of auto, on, off")
+    return raw
 
 
 def write_candidate_package(

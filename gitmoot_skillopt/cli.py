@@ -126,6 +126,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.03,
         help="maximum baseline-minus-candidate gate score gap eligible for gate-reject retry",
     )
+    optimize.add_argument(
+        "--feedback-direct-mode",
+        default="auto",
+        choices=["auto", "on", "off"],
+        help="use ranked human feedback as the first optimizer signal before target rollout",
+    )
     optimize.set_defaults(func=_run_optimize)
 
     return parser
@@ -158,6 +164,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         gate_reject_retry_budget=args.gate_reject_retry_budget,
         wrong_artifact_retry_budget=args.wrong_artifact_retry_budget,
         gate_reject_retry_close_gap=args.gate_reject_retry_close_gap,
+        feedback_direct_mode=args.feedback_direct_mode,
     )
     summary = getattr(candidate, "summary", None)
     metadata = summary.metadata if summary is not None and isinstance(summary.metadata, dict) else {}

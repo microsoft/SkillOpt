@@ -147,7 +147,9 @@ def fmt_minibatch_trajectories(
     parts: list[str] = []
     for idx, item in enumerate(items, 1):
         tid = str(item["id"])
-        conv_path = os.path.join(prediction_dir, tid, "conversation.json")
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        prediction_id = str(item.get("prediction_id") or tid)
+        conv_path = os.path.join(prediction_dir, prediction_id, "conversation.json")
         if not os.path.exists(conv_path):
             continue
         with open(conv_path) as f:
@@ -179,7 +181,7 @@ def fmt_minibatch_trajectories(
         # ── Append target context (what the agent saw) ──────────────
         target_prompt = item.get("target_system_prompt", "")
         if not target_prompt:
-            prompt_path = os.path.join(prediction_dir, tid, "target_system_prompt.txt")
+            prompt_path = os.path.join(prediction_dir, prediction_id, "target_system_prompt.txt")
             if os.path.exists(prompt_path):
                 with open(prompt_path) as f:
                     target_prompt = f.read()
@@ -191,7 +193,7 @@ def fmt_minibatch_trajectories(
 
         user_prompt = item.get("target_user_prompt", "")
         if not user_prompt:
-            user_prompt_path = os.path.join(prediction_dir, tid, "target_user_prompt.txt")
+            user_prompt_path = os.path.join(prediction_dir, prediction_id, "target_user_prompt.txt")
             if os.path.exists(user_prompt_path):
                 with open(user_prompt_path) as f:
                     user_prompt = f.read()
@@ -204,7 +206,7 @@ def fmt_minibatch_trajectories(
         if os.environ.get("REFLACT_CODEX_TRACE_TO_OPTIMIZER", "0") == "1":
             codex_trace_summary = item.get("codex_trace_summary", "")
             if not codex_trace_summary:
-                codex_trace_summary_path = os.path.join(prediction_dir, tid, "codex_trace_summary.txt")
+                codex_trace_summary_path = os.path.join(prediction_dir, prediction_id, "codex_trace_summary.txt")
                 if os.path.exists(codex_trace_summary_path):
                     with open(codex_trace_summary_path) as f:
                         codex_trace_summary = f.read()
@@ -223,7 +225,7 @@ def fmt_minibatch_trajectories(
 
         preview = item.get("spreadsheet_preview", "")
         if not preview:
-            preview_path = os.path.join(prediction_dir, tid, "spreadsheet_preview.txt")
+            preview_path = os.path.join(prediction_dir, prediction_id, "spreadsheet_preview.txt")
             if os.path.exists(preview_path):
                 with open(preview_path) as f:
                     preview = f.read()

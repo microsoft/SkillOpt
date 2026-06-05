@@ -285,6 +285,34 @@ def test_optimize_threads_gate_metric(tmp_path, monkeypatch):
     assert captured["gate_metric"] == "soft"
 
 
+def test_optimize_threads_feedback_direct_mode(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--feedback-direct-mode",
+            "on",
+        ]
+    )
+
+    assert result == 0
+    assert captured["feedback_direct_mode"] == "on"
+
+
 def test_optimize_threads_retry_budget_options(monkeypatch):
     captured = {}
 

@@ -10,6 +10,7 @@ from skillopt.engine.trainer import (
     _best_selection_scores,
     _detect_no_meaningful_change,
     _gate_rejection_retry_decision,
+    _non_feedback_direct_items,
     _selection_reject_gate_rejection,
     _should_skip_final_test_after_selection_reject,
 )
@@ -485,6 +486,85 @@ def test_trainer_retries_noop_candidate_with_feedback_hints(tmp_path, monkeypatc
     assert "Mobile layout guidance" in canonical_candidate
 
 
+def test_feedback_direct_mode_uses_ranked_feedback_before_training_rollout(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+    rollout_dirs: list[str] = []
+    reflect_results: list[list[dict]] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        merge_contexts.append(kwargs.get("meta_skill_context", ""))
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "feedback direct candidate",
+                    "change_summary": ["mobile layout"],
+                    "new_skill": skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n",
+                }
+            ],
+        }
+
+    class FeedbackDirectAdapter(_RetryAdapter):
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, kwargs
+            rollout_dirs.append(str(out_dir))
+            changed = "Mobile layout guidance" in skill_content
+            return [
+                {
+                    "id": "val-1",
+                    "hard": 1 if changed else 0,
+                    "soft": 0.9 if changed else 0.1,
+                    "score_status": "scored",
+                    "target_status": "passed",
+                    "evaluator_status": "passed",
+                }
+            ]
+
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            reflect_results.append(results)
+            assert "Feedback-Direct Optimization" in kwargs.get("step_buffer_context", "")
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": "candidate",
+                                "change_summary": ["mobile layout"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+            ]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+
+    summary = ReflACTTrainer(cfg, FeedbackDirectAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert summary["best_origin"] == "step_0001"
+    assert "Feedback-Direct Optimization" in merge_contexts[0]
+    assert reflect_results[0][0]["metadata"]["feedback_direct"] is True
+    assert reflect_results[0][0]["target_status"] == "not_run"
+    assert not any("/steps/step_0001/rollout" in path for path in rollout_dirs)
+    assert any("/selection_eval" in path for path in rollout_dirs)
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["feedback_direct_mode"] == "auto"
+    assert history[0]["feedback_direct_items"] == ["train-1"]
+
+
 def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
@@ -504,6 +584,287 @@ def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp
     assert summary["failure"]["primary_reason"] == "human_feedback_not_distilled"
     assert "ranked human feedback" in summary["optimizer_hint"].lower()
     assert summary["feedback_retry_hints"]["improve"] == ["better mobile layout"]
+
+
+def test_feedback_direct_preserves_original_item_id_for_feedback_hints(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    item_id = "train item #1"
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+
+    summary = ReflACTTrainer(cfg, _NoPatchAdapter(_RetryDataLoader(item_id=item_id))).train()
+
+    assert summary["no_candidate_reason"] == "human_feedback_not_distilled"
+    assert summary["feedback_retry_hints"]["improve"] == ["better mobile layout"]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["feedback_direct_items"] == [item_id]
+
+
+def test_feedback_direct_records_accumulated_item_ids(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+
+    class TwoItemDataLoader(_RetryDataLoader):
+        def __init__(self) -> None:
+            super().__init__(item_id="item-a", train_size=2)
+            self.train_items = [
+                {
+                    "id": "item-a",
+                    "ranked_feedback_events": [
+                        {
+                            "required_improvements": ["better mobile layout"],
+                            "continue_mode": "refine",
+                            "promote": "no",
+                        }
+                    ],
+                },
+                {
+                    "id": "item-b",
+                    "ranked_feedback_events": [
+                        {
+                            "required_improvements": ["stronger product visuals"],
+                            "continue_mode": "refine",
+                            "promote": "no",
+                        }
+                    ],
+                },
+            ]
+
+        def plan_train_epoch(self, *, epoch, steps_per_epoch, accumulation, batch_size, seed, **kwargs):
+            del epoch, steps_per_epoch, accumulation, batch_size, seed, kwargs
+            return [
+                BatchSpec(phase="train", split="train", seed=11, batch_size=1, payload=[{"id": "item-a"}]),
+                BatchSpec(phase="train", split="train", seed=12, batch_size=1, payload=[{"id": "item-b"}]),
+            ]
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": ["mobile visual guidance"],
+                    "new_skill": skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["accumulation"] = 2
+    cfg["train_size"] = 2
+
+    summary = ReflACTTrainer(cfg, _RetryAdapter(TwoItemDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["feedback_direct_items"] == ["item-a", "item-b"]
+
+
+def test_feedback_direct_preserves_normal_items_in_mixed_batch():
+    normal_items = _non_feedback_direct_items(
+        batch_items=[
+            {"id": "feedback-item", "prompt": "ranked feedback"},
+            {"id": "normal-item", "prompt": "normal rollout"},
+        ],
+        feedback_direct_items=[{"id": "feedback-item"}],
+    )
+
+    assert normal_items == [{"id": "normal-item", "prompt": "normal rollout"}]
+
+
+def test_feedback_direct_off_allows_opaque_batch_payload(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+
+    class OpaquePayloadDataLoader(_RetryDataLoader):
+        def plan_train_epoch(self, *, epoch, steps_per_epoch, accumulation, batch_size, seed, **kwargs):
+            del epoch, steps_per_epoch, accumulation, batch_size, seed, kwargs
+            return [
+                BatchSpec(
+                    phase="train",
+                    split="train",
+                    seed=11,
+                    batch_size=1,
+                    payload=object(),
+                )
+            ]
+
+    class OpaquePayloadAdapter(_RetryAdapter):
+        def build_env_from_batch(self, batch, **kwargs):
+            del batch, kwargs
+            return {"opaque_env": True}
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            assert env_manager == {"opaque_env": True}
+            return super().rollout(env_manager, skill_content, out_dir, **kwargs)
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": ["mobile layout"],
+                    "new_skill": skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "off"
+
+    summary = ReflACTTrainer(cfg, OpaquePayloadAdapter(OpaquePayloadDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+
+
+def test_feedback_direct_mixed_batch_preserves_adapter_built_remainder_env(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    rollout_envs: list[object] = []
+
+    class MixedDataLoader(_RetryDataLoader):
+        def __init__(self) -> None:
+            super().__init__(item_id="feedback-item", train_size=2)
+            self.train_items = [
+                {
+                    "id": "feedback-item",
+                    "ranked_feedback_events": [
+                        {
+                            "required_improvements": ["better mobile layout"],
+                            "continue_mode": "refine",
+                            "promote": "no",
+                        }
+                    ],
+                },
+                {"id": "normal-item", "ranked_feedback_events": []},
+            ]
+
+        def plan_train_epoch(self, *, epoch, steps_per_epoch, accumulation, batch_size, seed, **kwargs):
+            del epoch, steps_per_epoch, accumulation, batch_size, seed, kwargs
+            return [
+                BatchSpec(
+                    phase="train",
+                    split="train",
+                    seed=11,
+                    batch_size=2,
+                    payload=[{"id": "feedback-item"}, {"id": "normal-item"}],
+                )
+            ]
+
+    class WrappedEnvAdapter(_RetryAdapter):
+        def build_env_from_batch(self, batch, **kwargs):
+            del kwargs
+            return {"ids": [item["id"] for item in list(batch.payload or [])]}
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            rollout_envs.append(env_manager)
+            if env_manager == {"ids": ["normal-item"]}:
+                return [
+                    {
+                        "id": "normal-item",
+                        "hard": 0,
+                        "soft": 0.2,
+                        "score_status": "scored",
+                        "target_status": "passed",
+                        "evaluator_status": "passed",
+                    }
+                ]
+            return super().rollout(env_manager, skill_content, out_dir, **kwargs)
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": ["mobile layout"],
+                    "new_skill": skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["batch_size"] = 2
+    cfg["train_size"] = 2
+
+    summary = ReflACTTrainer(cfg, WrappedEnvAdapter(MixedDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert {"ids": ["normal-item"]} in rollout_envs
+
+
+def test_feedback_direct_off_does_not_materialize_train_env(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+
+    class OpaqueEnv:
+        def __iter__(self):
+            raise AssertionError("trainer must not iterate opaque env before rollout")
+
+    class OpaqueEnvAdapter(_RetryAdapter):
+        def build_env_from_batch(self, batch, **kwargs):
+            del batch, kwargs
+            return OpaqueEnv()
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            assert isinstance(env_manager, OpaqueEnv)
+            return super().rollout(env_manager, skill_content, out_dir, **kwargs)
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": ["mobile layout"],
+                    "new_skill": skill_content.rstrip() + "\n\nMobile layout guidance: preserve clear structure.\n",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "off"
+
+    summary = ReflACTTrainer(cfg, OpaqueEnvAdapter(_RetryDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert "feedback_direct_items" not in json.loads(
+        (tmp_path / "out" / "history.json").read_text(encoding="utf-8")
+    )[0]
 
 
 def test_trainer_stops_repeated_noop_candidate_without_fake_candidate(tmp_path, monkeypatch):
@@ -954,6 +1315,7 @@ def test_failure_hint_without_patch_is_recorded(tmp_path):
     )
     cfg["accumulation"] = 2
     cfg["train_size"] = 2
+    cfg["feedback_direct_mode"] = "off"
 
     summary = ReflACTTrainer(cfg, HintNoPatchAdapter(_RetryDataLoader(train_size=2))).train()
 

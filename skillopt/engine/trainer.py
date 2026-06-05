@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
+from skillopt.envs.gitmoot.package import safe_item_path_segment
 from skillopt.evaluation.gate import evaluate_gate, find_gate_block, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
 from skillopt.model import (
@@ -209,6 +210,227 @@ def _has_ranked_feedback(dataloader, result_ids: set[str] | None = None) -> bool
         if isinstance(events, list) and events:
             return True
     return False
+
+
+def _normalize_feedback_direct_mode(value: str | None) -> str:
+    raw = str(value or "auto").strip().lower()
+    if raw not in {"auto", "on", "off"}:
+        raise ValueError("optimizer.feedback_direct_mode must be one of auto, on, off")
+    return raw
+
+
+def _ranked_feedback_item_index(dataloader) -> dict[str, dict]:
+    if dataloader is None or not hasattr(dataloader, "train_items"):
+        return {}
+    try:
+        train_items = dataloader.train_items
+    except Exception:  # noqa: BLE001
+        return {}
+    index: dict[str, dict] = {}
+    for item in train_items:
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or "").strip()
+            if item_id:
+                index[item_id] = item
+    return index
+
+
+def _item_ranked_feedback_events(item: dict | None) -> list[dict]:
+    if not isinstance(item, dict):
+        return []
+    events = item.get("ranked_feedback_events")
+    if isinstance(events, list):
+        return [event for event in events if isinstance(event, dict)]
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    events = metadata.get("ranked_feedback_events")
+    if isinstance(events, list):
+        return [event for event in events if isinstance(event, dict)]
+    return []
+
+
+def _ranked_feedback_requests_optimization(events: list[dict]) -> bool:
+    if not events:
+        return False
+    for event in events:
+        promote = str(event.get("promote") or "").strip().lower()
+        continue_mode = str(event.get("continue_mode") or "").strip().lower()
+        if promote in {"no", "false", "0"}:
+            return True
+        if continue_mode in {"refine", "explore", "distill"}:
+            return True
+        required = _flatten_trait_values(event.get("required_improvements"))
+        if required:
+            return True
+        if promote not in {"yes", "true", "1"} and continue_mode not in {"stop", "validate"}:
+            return True
+    return False
+
+
+def _feedback_direct_items(
+    *,
+    dataloader,
+    batch_items: list[dict],
+    mode: str,
+) -> list[dict]:
+    normalized_mode = _normalize_feedback_direct_mode(mode)
+    if normalized_mode == "off":
+        return []
+    index = _ranked_feedback_item_index(dataloader)
+    direct_items: list[dict] = []
+    for batch_item in batch_items:
+        if not isinstance(batch_item, dict):
+            continue
+        item_id = str(batch_item.get("id") or "").strip()
+        full_item = index.get(item_id, batch_item)
+        events = _item_ranked_feedback_events(full_item)
+        if normalized_mode == "auto" and not _ranked_feedback_requests_optimization(events):
+            continue
+        if normalized_mode == "on" and not events:
+            continue
+        merged = {**batch_item, **full_item}
+        merged["ranked_feedback_events"] = events
+        direct_items.append(merged)
+    return direct_items
+
+
+def _non_feedback_direct_items(
+    *,
+    batch_items: list[dict],
+    feedback_direct_items: list[dict],
+) -> list[dict]:
+    direct_ids = {str(item.get("id") or "").strip() for item in feedback_direct_items}
+    return [
+        item
+        for item in batch_items
+        if isinstance(item, dict) and str(item.get("id") or "").strip() not in direct_ids
+    ]
+
+
+def _format_feedback_direct_context(items: list[dict], dataloader) -> str:
+    hints = _ranked_feedback_retry_hints(dataloader, {str(item.get("id") or "") for item in items})
+    lines = [
+        "## Feedback-Direct Optimization",
+        "Ranked human feedback is available before target rollout.",
+        "Update the skill from the review feedback first; do not wait for a fresh old-skill artifact failure.",
+        "The optimizer output must be a skill update. Do not output Vue files, JSON bundles, YAML review data, or target artifacts.",
+    ]
+    labels = {
+        "preserve": "Preserve winning traits",
+        "improve": "Required improvements",
+        "avoid": "Avoid losing traits",
+    }
+    for key, label in labels.items():
+        values = hints.get(key) or []
+        if values:
+            lines.append(f"{label}: " + "; ".join(values[:8]))
+    return "\n".join(lines)
+
+
+def _write_feedback_direct_predictions(
+    *,
+    items: list[dict],
+    prediction_dir: str,
+) -> list[dict]:
+    os.makedirs(prediction_dir, exist_ok=True)
+    results: list[dict] = []
+    for index, item in enumerate(items, start=1):
+        item_id = str(item.get("id") or f"feedback-{index}").strip()
+        prediction_id = safe_item_path_segment(item_id)
+        item_dir = os.path.join(prediction_dir, prediction_id)
+        os.makedirs(item_dir, exist_ok=True)
+        events = _item_ranked_feedback_events(item)
+        feedback_json = json.dumps(events, indent=2, ensure_ascii=False)
+        conversation = [
+            {
+                "role": "system",
+                "content": (
+                    "Feedback-direct optimizer item. Ranked human review feedback should drive "
+                    "a skill update before target rollout."
+                ),
+            },
+            {
+                "role": "user",
+                "content": feedback_json,
+            },
+        ]
+        with open(os.path.join(item_dir, "conversation.json"), "w", encoding="utf-8") as f:
+            json.dump(conversation, f, indent=2, ensure_ascii=False)
+        prompt = str(item.get("prompt") or item.get("task_description") or item_id)
+        with open(os.path.join(item_dir, "target_user_prompt.txt"), "w", encoding="utf-8") as f:
+            f.write(prompt)
+        failure = {
+            "primary_reason": "ranked_human_feedback_requires_skill_update",
+            "human_reason": (
+                "Ranked human feedback was imported and asks the optimizer to refine the skill "
+                "before another target rollout."
+            ),
+            "optimizer_hint": _human_feedback_not_distilled_hint(
+                {
+                    "preserve": _dedupe_texts(
+                        [
+                            text
+                            for event in events
+                            for text in _flatten_trait_values(event.get("useful_traits"))
+                        ]
+                    ),
+                    "improve": _dedupe_texts(
+                        [
+                            text
+                            for event in events
+                            for text in _flatten_trait_values(event.get("required_improvements"))
+                        ]
+                    ),
+                    "avoid": _dedupe_texts(
+                        [
+                            text
+                            for event in events
+                            for text in _flatten_trait_values(event.get("rejected_traits"))
+                        ]
+                    ),
+                    "already_covered": [],
+                }
+            ),
+            "failed_dimensions": ["human_feedback_alignment"],
+            "evidence": [feedback_json[:2000]],
+            "stage_status": [{"stage": "feedback_direct", "status": "failed"}],
+        }
+        results.append(
+            {
+                "id": item_id,
+                "prediction_id": prediction_id,
+                "hard": 0,
+                "soft": 0.0,
+                "response": "",
+                "fail_reason": "ranked human feedback requests feedback-direct skill optimization",
+                "agent_ok": True,
+                "n_turns": 1,
+                "task_type": item.get("task_type", "gitmoot-skillopt"),
+                "task_description": item.get("task_description", prompt),
+                "metadata": {
+                    **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                    "ranked_feedback_events": events,
+                    "feedback_direct": True,
+                    "prediction_id": prediction_id,
+                    "failure": failure,
+                },
+                "target_status": "not_run",
+                "evaluator_status": "not_run",
+                "score_status": "scored",
+                "blocker": "",
+                "failure": failure,
+                "primary_reason": failure["primary_reason"],
+                "human_reason": failure["human_reason"],
+                "optimizer_hint": failure["optimizer_hint"],
+                "failed_dimensions": failure["failed_dimensions"],
+                "evidence": failure["evidence"],
+                "stage_status": failure["stage_status"],
+                "target_trace_path": os.path.join(item_dir, "conversation.json"),
+                "evaluator_trace_path": "",
+                "target_system_prompt": "Feedback-direct optimization input",
+                "target_user_prompt": prompt,
+            }
+        )
+    return results
 
 
 def _human_feedback_not_distilled_hint(retry_hints: dict[str, list[str]]) -> str:
@@ -1548,6 +1770,7 @@ class ReflACTTrainer:
         cfg["samples_per_epoch"] = train_size
         cfg["skill_update_mode"] = update_mode
         cfg["lr_control_mode"] = lr_control_mode
+        cfg["feedback_direct_mode"] = _normalize_feedback_direct_mode(cfg.get("feedback_direct_mode", "auto"))
 
         # Save config after deriving runtime values.
         with open(os.path.join(out_root, "config.json"), "w") as f:
@@ -1845,6 +2068,7 @@ class ReflACTTrainer:
                 all_raw_patches: list[dict | None] = []
                 all_rollout_results: list[dict] = []
                 accum_rollout_stats: list[dict] = []
+                feedback_direct_contexts: list[str] = []
                 total_rollout_time = 0.0
                 total_reflect_time = 0.0
 
@@ -1853,6 +2077,13 @@ class ReflACTTrainer:
                     if dataloader is not None:
                         batch_spec = epoch_batches[batch_idx]
                         train_env, train_n, batch_seed = _build_train_env(batch_spec)
+                        batch_payload = batch_spec.payload
+                        batch_items = (
+                            list(batch_payload)
+                            if isinstance(batch_payload, list)
+                            and all(isinstance(item, dict) for item in batch_payload)
+                            else []
+                        )
                     else:
                         batch_seed = shuffled_seeds[batch_idx]
                         train_env = adapter.build_train_env(
@@ -1861,6 +2092,7 @@ class ReflACTTrainer:
                             out_root=out_root,
                         )
                         train_n = len(train_env) if hasattr(train_env, "__len__") else batch_size
+                        batch_items = []
 
                     # Directory routing
                     if accumulation > 1:
@@ -1870,14 +2102,62 @@ class ReflACTTrainer:
 
                     rollout_dir = os.path.join(batch_dir, "rollout")
                     patches_dir = os.path.join(batch_dir, "patches")
+                    feedback_direct_items = _feedback_direct_items(
+                        dataloader=dataloader,
+                        batch_items=batch_items,
+                        mode=cfg.get("feedback_direct_mode", "auto"),
+                    )
 
                     # ① ROLLOUT ────────────────────────────────────────────
                     t_phase = time.time()
-                    print(f"    [1/6 ROLLOUT] train items={train_n} (from pool, batch_seed={batch_seed})")
-                    rollout_results = adapter.rollout(
-                        train_env, current_skill, rollout_dir,
-                        use_eval_feedback=True,
-                    )
+                    if feedback_direct_items:
+                        pred_dir = os.path.join(rollout_dir, "predictions")
+                        normal_rollout_items = _non_feedback_direct_items(
+                            batch_items=batch_items,
+                            feedback_direct_items=feedback_direct_items,
+                        )
+                        print(
+                            f"    [1/6 FEEDBACK-DIRECT] ranked feedback items={len(feedback_direct_items)} "
+                            f"(batch_seed={batch_seed})"
+                        )
+                        rollout_results = _write_feedback_direct_predictions(
+                            items=feedback_direct_items,
+                            prediction_dir=pred_dir,
+                        )
+                        if normal_rollout_items:
+                            normal_batch = BatchSpec(
+                                phase=batch_spec.phase,
+                                split=batch_spec.split,
+                                seed=batch_spec.seed,
+                                batch_size=len(normal_rollout_items),
+                                payload=normal_rollout_items,
+                                metadata=batch_spec.metadata,
+                            )
+                            normal_env, normal_n, _normal_seed = _build_train_env(normal_batch)
+                            print(
+                                f"    [1/6 ROLLOUT] remaining train items={normal_n} "
+                                f"(from mixed feedback-direct batch)"
+                            )
+                            rollout_results.extend(
+                                adapter.rollout(
+                                    normal_env,
+                                    current_skill,
+                                    rollout_dir,
+                                    use_eval_feedback=True,
+                                )
+                            )
+                        step_rec["feedback_direct_mode"] = cfg.get("feedback_direct_mode", "auto")
+                        step_rec["feedback_direct_items"] = _dedupe_texts(
+                            list(step_rec.get("feedback_direct_items") or [])
+                            + [str(item.get("id") or "") for item in feedback_direct_items],
+                            limit=64,
+                        )
+                    else:
+                        print(f"    [1/6 ROLLOUT] train items={train_n} (from pool, batch_seed={batch_seed})")
+                        rollout_results = adapter.rollout(
+                            train_env, current_skill, rollout_dir,
+                            use_eval_feedback=True,
+                        )
                     r_hard, r_soft = compute_score(rollout_results)
                     total_rollout_time += time.time() - t_phase
                     all_rollout_results.extend(rollout_results)
@@ -1889,6 +2169,10 @@ class ReflACTTrainer:
 
                     # Build step context from buffer
                     step_buffer_context = _format_step_buffer(step_buffer)
+                    if feedback_direct_items:
+                        feedback_direct_context = _format_feedback_direct_context(feedback_direct_items, dataloader)
+                        feedback_direct_contexts.append(feedback_direct_context)
+                        step_buffer_context = _join_optimizer_context(step_buffer_context, feedback_direct_context)
 
                     raw_patches = adapter.reflect(
                         rollout_results, current_skill, batch_dir,
@@ -1998,6 +2282,8 @@ class ReflACTTrainer:
                     print("    [skip] no usable patches — skill unchanged")
                     continue
 
+                feedback_direct_optimizer_context = _join_optimizer_context(*feedback_direct_contexts)
+
                 gate_reject_retry_budget = max(0, int(cfg.get("gate_reject_retry_budget", 3) or 0))
                 gate_reject_retry_close_gap = max(0.0, float(cfg.get("gate_reject_retry_close_gap", 0.03) or 0.0))
                 gate_reject_retry_attempts: list[dict] = []
@@ -2014,7 +2300,11 @@ class ReflACTTrainer:
 
                 for noop_attempt in range(noop_retry_budget + 1):
                     retry_suffix = "" if noop_attempt == 0 else f"_retry_{noop_attempt:02d}"
-                    optimizer_context = _join_optimizer_context(active_meta_skill, noop_retry_context)
+                    optimizer_context = _join_optimizer_context(
+                        active_meta_skill,
+                        feedback_direct_optimizer_context,
+                        noop_retry_context,
+                    )
                     rewrite_step_context = _join_optimizer_context(step_buffer_context, noop_retry_context)
                     if noop_attempt:
                         print(
@@ -2471,6 +2761,7 @@ class ReflACTTrainer:
 
                             retry_optimizer_context = _join_optimizer_context(
                                 active_meta_skill,
+                                feedback_direct_optimizer_context,
                                 noop_retry_context,
                                 gate_retry_context,
                             )

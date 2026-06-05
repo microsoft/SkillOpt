@@ -132,3 +132,94 @@ def test_structured_failure_feedback_reaches_error_analyst_prompt(tmp_path, monk
     assert "Return JSON with package.json" in captured["user"]
     assert "vue_vite_bundle.required_files" in captured["user"]
     assert "missing src/App.vue" in captured["user"]
+
+
+def test_error_analyst_reads_prediction_id_when_result_id_differs(tmp_path, monkeypatch):
+    pred_dir = tmp_path / "predictions"
+    item_dir = pred_dir / "safe-id"
+    item_dir.mkdir(parents=True)
+    (item_dir / "conversation.json").write_text(
+        json.dumps([{"role": "user", "content": "Ranked feedback says improve mobile layout."}]),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "batch_size": 1,
+                    "failure_summary": [],
+                    "patch": {"reasoning": "Use feedback.", "edits": []},
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.gradient.reflect.chat_optimizer", fake_chat_optimizer)
+
+    result = run_error_analyst_minibatch(
+        "Current skill",
+        [
+            {
+                "id": "raw item #1",
+                "prediction_id": "safe-id",
+                "task_description": "Landing page",
+                "task_type": "gitmoot-skillopt",
+                "hard": 0,
+                "fail_reason": "ranked human feedback requests optimization",
+            }
+        ],
+        str(pred_dir),
+        system_prompt="system",
+    )
+
+    assert result is not None
+    assert "raw item #1" in captured["user"]
+    assert "Ranked feedback says improve mobile layout." in captured["user"]
+
+
+def test_error_analyst_ignores_untrusted_metadata_prediction_id(tmp_path, monkeypatch):
+    pred_dir = tmp_path / "predictions"
+    item_dir = pred_dir / "normal-item"
+    item_dir.mkdir(parents=True)
+    (item_dir / "conversation.json").write_text(
+        json.dumps([{"role": "user", "content": "Real rollout conversation."}]),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_chat_optimizer(**kwargs):
+        captured.update(kwargs)
+        return (
+            json.dumps(
+                {
+                    "batch_size": 1,
+                    "failure_summary": [],
+                    "patch": {"reasoning": "Use real rollout.", "edits": []},
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.gradient.reflect.chat_optimizer", fake_chat_optimizer)
+
+    result = run_error_analyst_minibatch(
+        "Current skill",
+        [
+            {
+                "id": "normal-item",
+                "metadata": {"prediction_id": "wrong-dir"},
+                "task_description": "Landing page",
+                "task_type": "gitmoot-skillopt",
+                "hard": 0,
+                "fail_reason": "target failed",
+            }
+        ],
+        str(pred_dir),
+        system_prompt="system",
+    )
+
+    assert result is not None
+    assert "Real rollout conversation." in captured["user"]
