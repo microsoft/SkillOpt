@@ -105,6 +105,8 @@ class GitmootAdapter(EnvAdapter):
             step_buffer_context=kwargs.get("step_buffer_context", ""),
             meta_skill_context=kwargs.get("meta_skill_context", ""),
             update_mode=update_mode,
+            error_system=self.get_error_minibatch_prompt(),
+            success_system=self.get_success_minibatch_prompt(),
         )
         if is_full_rewrite_minibatch_mode(update_mode):
             _recompose_full_rewrite_candidates(patches, template)

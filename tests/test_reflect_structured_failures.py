@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from skillopt.gradient.reflect import run_error_analyst_minibatch
 from skillopt.prompts import clear_cache, load_prompt
@@ -17,6 +18,38 @@ def test_error_analyst_prompts_instruct_structured_failure_generalization():
         assert "failed_checks" in prompt
         assert "general" in prompt.lower()
         assert "artifact-contract blockers" in prompt
+
+
+def test_gitmoot_prompts_preserve_markers_and_separate_optimizer_context():
+    clear_cache()
+
+    for prompt_name in (
+        "analyst_error",
+        "analyst_error_full_rewrite",
+        "analyst_success",
+        "analyst_success_full_rewrite",
+    ):
+        prompt = load_prompt(prompt_name, env="gitmoot")
+
+        assert "SKILLOPT_TARGET_START" in prompt
+        assert "SKILLOPT_OPTIMIZER_START" in prompt
+        assert "target section" in prompt
+        assert "optimizer section" in prompt
+        assert "Never insert optimizer response-format sections" in prompt
+
+    error_prompt = load_prompt("analyst_error", env="gitmoot")
+    assert "wrong_artifact_type" in error_prompt
+    assert "artifact_contract_failure" in error_prompt
+    assert "human_feedback_misalignment" in error_prompt
+    assert "failed_dimensions" in error_prompt
+    assert "Tailwind-style UI polish" in error_prompt
+
+
+def test_gitmoot_prompt_files_are_packaged():
+    project_root = Path(__file__).resolve().parents[1]
+    pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"skillopt.envs.gitmoot" = ["prompts/*.md"]' in pyproject
 
 
 def test_structured_failure_feedback_reaches_error_analyst_prompt(tmp_path, monkeypatch):

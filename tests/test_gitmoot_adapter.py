@@ -563,6 +563,26 @@ Optimizer-only exec notes.
     assert result["target_trace_path"] == str(raw_path)
 
 
+def test_gitmoot_reflect_uses_env_specific_prompts(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_minibatch_reflect(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.adapter.run_minibatch_reflect", fake_run_minibatch_reflect)
+
+    adapter = GitmootAdapter()
+    adapter._cfg = {"skill_update_mode": "patch"}
+    patches = adapter.reflect([], "# Skill", str(tmp_path))
+
+    assert patches == []
+    assert "SKILLOPT_TARGET_START" in captured["error_system"]
+    assert "wrong_artifact_type" in captured["error_system"]
+    assert "SKILLOPT_OPTIMIZER_START" in captured["success_system"]
+    assert "Never insert optimizer response-format sections" in captured["success_system"]
+
+
 def test_mock_response_under_exec_backend_records_conversation_trace(tmp_path, monkeypatch):
     def fail_exec(**kwargs):
         raise AssertionError("mock response should not invoke exec target")

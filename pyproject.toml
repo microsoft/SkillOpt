@@ -71,6 +71,7 @@ include = ["gitmoot_skillopt*", "skillopt*", "scripts*"]
 
 [tool.setuptools.package-data]
 "skillopt.prompts" = ["*.md"]
+"skillopt.envs.gitmoot" = ["prompts/*.md"]
 
 [tool.ruff]
 line-length = 120
