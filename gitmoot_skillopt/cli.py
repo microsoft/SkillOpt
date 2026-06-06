@@ -145,6 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="number of reflection retries when structured evaluator failures produce no usable patch",
     )
     optimize.add_argument(
+        "--evaluator-schema-retry-budget",
+        type=int,
+        default=1,
+        help="number of evaluator retries for malformed judge schema before failing the evaluator",
+    )
+    optimize.add_argument(
         "--eval-test",
         action="store_true",
         help="run final test evaluation after selection; disabled by default for Gitmoot human-review flows",
@@ -184,6 +190,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         feedback_direct_mode=args.feedback_direct_mode,
         target_artifact_retry_budget=args.target_artifact_retry_budget,
         hard_failure_retry_budget=args.hard_failure_retry_budget,
+        evaluator_schema_retry_budget=args.evaluator_schema_retry_budget,
         eval_test=args.eval_test,
     )
     summary = getattr(candidate, "summary", None)

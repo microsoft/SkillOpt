@@ -7,7 +7,7 @@ import pytest
 
 from gitmoot_skillopt.cli import main
 from gitmoot_skillopt.contracts import CANDIDATE_PACKAGE_KIND, CandidatePackage, TrainingPackage
-from gitmoot_skillopt.optimize import build_trainer_config, write_candidate_package
+from gitmoot_skillopt.optimize import _no_candidate_details, build_trainer_config, write_candidate_package
 from gitmoot_skillopt.preflight import PreflightResult, resolve_evaluator_config
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from tests.test_gitmoot_dataloader import write_training_package
@@ -406,6 +406,8 @@ def test_optimize_threads_retry_budget_options(monkeypatch):
             "4",
             "--gate-reject-retry-close-gap",
             "0.07",
+            "--evaluator-schema-retry-budget",
+            "6",
         ]
     )
 
@@ -414,6 +416,7 @@ def test_optimize_threads_retry_budget_options(monkeypatch):
     assert captured["gate_reject_retry_budget"] == 5
     assert captured["wrong_artifact_retry_budget"] == 4
     assert captured["gate_reject_retry_close_gap"] == 0.07
+    assert captured["evaluator_schema_retry_budget"] == 6
 
 
 def test_build_trainer_config_uses_adaptive_gate_retry_defaults(tmp_path):
@@ -440,7 +443,53 @@ def test_build_trainer_config_uses_adaptive_gate_retry_defaults(tmp_path):
     assert cfg["noop_retry_budget"] == 1
     assert cfg["wrong_artifact_retry_budget"] == 1
     assert cfg["gate_reject_retry_close_gap"] == 0.03
+    assert cfg["evaluator_schema_retry_budget"] == 1
+    assert cfg["evaluator_config"]["evaluator_schema_retry_budget"] == 1
     assert cfg["eval_test"] is False
+
+
+def test_no_candidate_details_reports_evaluator_contract_failure():
+    summary = {
+        "no_candidate_triggers": ["evaluator_contract_failure", "gate_rejected_best_origin_initial_skill"],
+        "gate_rejection": {
+            "primary_reason": "evaluator_missing_human_feedback_dimensions",
+            "rejection_type": "evaluator_contract_failure",
+            "retryable": False,
+            "baseline": {"hard": 0.0, "soft": 0.0, "gate_score": 0.0},
+            "candidate": {"hard": 0.0, "soft": 0.0, "gate_score": 0.0},
+            "failed_dimensions": ["human_feedback_alignment"],
+            "failed_checks": [
+                {
+                    "check": "llm_judge.human_feedback_dimensions",
+                    "severity": "evaluator_contract_failure",
+                }
+            ],
+            "evidence": [
+                json.dumps(
+                    {
+                        "hard": 1,
+                        "soft": 0.88,
+                        "dimension_scores": {
+                            "human_feedback_resolution": 0.9,
+                            "artifact_validity": 1.0,
+                            "task_completeness": 0.9,
+                        },
+                    }
+                )
+            ],
+            "next_action": "Retry or fix the evaluator schema; do not retry the optimizer.",
+        },
+    }
+
+    details = _no_candidate_details(summary, summary["no_candidate_triggers"])
+
+    assert "evaluator_contract_failure" in details["diagnostic_categories"]
+    assert details["candidate_quality_status"] == "judge_passed_but_schema_failed"
+    assert details["raw_judge_hard"] == 1
+    assert details["raw_judge_soft"] == 0.88
+    assert details["normalized_hard"] == 0.0
+    assert details["normalized_soft"] == 0.0
+    assert "do not retry the optimizer" in details["next_action"]
 
 
 def test_build_trainer_config_threads_final_eval_flag(tmp_path):

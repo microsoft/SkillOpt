@@ -11,12 +11,13 @@ from skillopt.engine.trainer import (
     _detect_no_meaningful_change,
     _format_duplicate_gate_retry_context_from_packet,
     _format_gate_reject_retry_context,
+    _gate_reject_exhausted_reason,
     _gate_rejection_retry_decision,
     _non_feedback_direct_items,
     _ranked_feedback_context_packet,
     _selection_eval_context,
-    _selection_rejection_signal,
     _selection_reject_gate_rejection,
+    _selection_rejection_signal,
     _should_skip_final_test_after_selection_reject,
 )
 from skillopt.evaluation.gate import evaluate_gate, find_gate_block
@@ -1060,6 +1061,63 @@ def test_final_selection_reject_packet_uses_configured_gate_retry_budget():
     assert round(rejection["baseline"]["gate_score"], 3) == 0.945
     assert rejection["retry_attempts"] == "0/1"
     assert "retry" in rejection["next_action"].lower()
+
+
+def test_selection_reject_packet_marks_evaluator_contract_failure_non_retryable():
+    history = [
+        {
+            "action": "reject",
+            "selection_hard": 0.0,
+            "selection_soft": 0.0,
+            "candidate_gate_score": 0.0,
+            "rewrite_change_summary": ["human feedback update"],
+        }
+    ]
+    rejection_signal = {
+        "primary_reason": "evaluator_missing_human_feedback_dimensions",
+        "human_reason": "Human feedback exists, but the judge did not return structured dimensions.",
+        "optimizer_hint": "Retry or fix the evaluator schema.",
+        "failed_dimensions": ["human_feedback_alignment"],
+        "failed_checks": [
+            {
+                "check": "llm_judge.human_feedback_dimensions",
+                "severity": "evaluator_contract_failure",
+                "reason": "judge output omitted required human-feedback readiness fields",
+            }
+        ],
+    }
+
+    rejection = _selection_reject_gate_rejection(
+        history=history,
+        baseline_scores=(0.0, 0.0),
+        gate_metric="soft",
+        gate_mixed_weight=0.5,
+        retry_used=0,
+        retry_budget=3,
+        rejection_signal=rejection_signal,
+    )
+
+    assert rejection is not None
+    assert rejection["rejection_type"] == "evaluator_contract_failure"
+    assert rejection["retryable"] is False
+    assert rejection["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert "do not retry the optimizer" in rejection["next_action"].lower()
+    can_retry, reason = _gate_rejection_retry_decision(
+        rejection,
+        attempt=0,
+        budget=3,
+        seen_reasons=set(),
+    )
+    assert can_retry is False
+    assert reason == "non_retryable_gate_rejection"
+    assert (
+        _gate_reject_exhausted_reason(
+            rejection,
+            gate_reject_stop_reason="budget_exhausted",
+            wrong_artifact_retry=False,
+        )
+        == "evaluator_contract_failure"
+    )
 
 
 def test_selection_reject_packet_includes_evaluator_reasoning_and_delta_summary():
@@ -2467,6 +2525,64 @@ def test_selection_rejection_signal_keeps_non_artifact_failure_after_wrong_artif
 
     assert wrong_artifact is not None
     assert wrong_artifact["primary_reason"] == "wrong_artifact_type"
+
+    evaluator_contract = _selection_rejection_signal(
+        [
+            {
+                "id": "item-1",
+                "hard": 0,
+                "soft": 0.45,
+                "primary_reason": "human_feedback_not_resolved",
+                "optimizer_hint": "Improve motion.",
+                "failed_dimensions": ["human_feedback_resolution"],
+            },
+            {
+                "id": "item-2",
+                "hard": 0,
+                "soft": 0.0,
+                "primary_reason": "evaluator_missing_human_feedback_dimensions",
+                "optimizer_hint": "Retry evaluation with explicit dimensions.",
+                "failed_checks": [
+                    {
+                        "check": "llm_judge.human_feedback_dimensions",
+                        "severity": "evaluator_contract_failure",
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert evaluator_contract is not None
+    assert evaluator_contract["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+
+    evaluator_contract_over_artifact = _selection_rejection_signal(
+        [
+            {
+                "id": "item-1",
+                "hard": 0,
+                "soft": 0.0,
+                "primary_reason": "wrong_artifact_type",
+                "optimizer_hint": "Return a Vue/Vite bundle.",
+                "failed_dimensions": ["wrong_artifact_type"],
+            },
+            {
+                "id": "item-2",
+                "hard": 0,
+                "soft": 0.0,
+                "primary_reason": "evaluator_missing_human_feedback_dimensions",
+                "optimizer_hint": "Retry evaluation with explicit dimensions.",
+                "failed_checks": [
+                    {
+                        "check": "llm_judge.human_feedback_dimensions",
+                        "severity": "evaluator_contract_failure",
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert evaluator_contract_over_artifact is not None
+    assert evaluator_contract_over_artifact["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
 
 
 def test_gate_rejection_retry_decision_requires_actionable_new_information():

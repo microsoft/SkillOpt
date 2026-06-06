@@ -244,6 +244,7 @@ def _contains_score(item: dict[str, Any], response: str, config: dict[str, Any])
 
 
 def _human_feedback_judge_system_prompt() -> str:
+    schema = json.dumps(_human_feedback_judge_schema(), sort_keys=True)
     return (
         "You are evaluating a Gitmoot SkillOpt candidate response against imported human review feedback. "
         "The soft score is stop-readiness against the human feedback, not generic output quality. "
@@ -261,17 +262,41 @@ def _human_feedback_judge_system_prompt() -> str:
         "hard must be 1 when the response is a valid usable artifact/answer, even if quality still needs work. "
         "Use soft, unresolved_feedback, rejection_reason, and optimizer_hint for quality/readiness problems. "
         "soft must be a 0-to-1 readiness-to-stop score. "
-        "dimension_scores must include human_feedback_resolution, artifact_validity, and task_completeness."
+        "dimension_scores must include human_feedback_resolution, artifact_validity, and task_completeness. "
+        f"Canonical JSON schema example: {schema}"
     )
 
 
+def _human_feedback_judge_schema() -> dict[str, Any]:
+    return {
+        "hard": 1,
+        "soft": 0.0,
+        "fail_reason": "",
+        "reasoning": "short rationale",
+        "human_feedback_alignment": {
+            "status": "resolved|partially_resolved|unresolved",
+            "resolved": ["specific resolved feedback"],
+            "unresolved": ["specific unresolved feedback"],
+        },
+        "dimension_scores": {
+            "human_feedback_resolution": 0.0,
+            "artifact_validity": 0.0,
+            "task_completeness": 0.0,
+        },
+        "unresolved_feedback": [],
+        "rejection_reason": None,
+        "optimizer_hint": "actionable optimizer hint",
+    }
+
+
 def _missing_human_feedback_dimensions(parsed: dict[str, Any]) -> bool:
-    if not isinstance(parsed.get("human_feedback_alignment"), dict):
+    if not _has_valid_judge_score_fields(parsed):
         return True
     dimensions = parsed.get("dimension_scores")
     if not isinstance(dimensions, dict):
         return True
-    if "unresolved_feedback" not in parsed or not isinstance(parsed.get("unresolved_feedback"), list):
+    unresolved = parsed.get("unresolved_feedback")
+    if unresolved is not None and not isinstance(unresolved, list):
         return True
     required = {"human_feedback_resolution", "artifact_validity", "task_completeness"}
     if not required.issubset({str(key) for key in dimensions}):
@@ -284,8 +309,47 @@ def _missing_human_feedback_dimensions(parsed: dict[str, Any]) -> bool:
     return False
 
 
-def _missing_feedback_dimensions_failure(item: dict[str, Any], *, raw: str) -> dict[str, Any]:
+def _has_valid_judge_score_fields(parsed: dict[str, Any]) -> bool:
+    if "hard" not in parsed or "soft" not in parsed:
+        return False
+    hard = parsed.get("hard")
+    if isinstance(hard, bool):
+        pass
+    elif isinstance(hard, int | float):
+        pass
+    elif isinstance(hard, str) and hard.strip():
+        normalized = hard.strip().lower()
+        if normalized not in {"1", "true", "yes", "pass", "passed", "success", "0", "false", "no", "fail", "failed", "failure"}:
+            try:
+                float(normalized)
+            except ValueError:
+                return False
+    else:
+        return False
+    try:
+        float(parsed.get("soft"))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _feedback_schema_warnings(parsed: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    if "human_feedback_alignment" in parsed and not isinstance(parsed.get("human_feedback_alignment"), dict):
+        warnings.append("judge returned noncanonical human_feedback_alignment field")
+    if "unresolved_feedback" not in parsed:
+        warnings.append("judge omitted unresolved_feedback; defaulted to an empty list")
+    return warnings
+
+
+def _missing_feedback_dimensions_failure(
+    item: dict[str, Any],
+    *,
+    raw: str,
+    schema_retry_attempts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     alignment = _human_feedback_alignment(item)
+    retry_attempts = list(schema_retry_attempts or [])
     failure = {
         "primary_reason": "evaluator_missing_human_feedback_dimensions",
         "human_reason": (
@@ -336,6 +400,7 @@ def _missing_feedback_dimensions_failure(item: dict[str, Any], *, raw: str) -> d
             "evidence": failure["evidence"],
             "stage_status": failure["stage_status"],
             "raw": raw[:1000],
+            **({"evaluator_schema_retry_attempts": retry_attempts} if retry_attempts else {}),
         },
     }
 
@@ -445,7 +510,7 @@ def _feedback_resolution_proven(parsed: dict[str, Any], *, require_top_level_unr
     unresolved_feedback = parsed.get("unresolved_feedback")
     if require_top_level_unresolved and not isinstance(unresolved_feedback, list):
         return False
-    if _normalize_string_list(unresolved_feedback):
+    if _normalize_string_list(unresolved_feedback) and not _minor_unresolved_feedback_is_score_context(parsed):
         return False
     if isinstance(alignment, dict):
         alignment_unresolved = alignment.get("unresolved")
@@ -479,7 +544,8 @@ def _candidate_specific_feedback_failure(parsed: dict[str, Any], *, hard: int) -
         status = str(parsed.get(status_key) or "").strip().lower().replace("-", "_")
         if status == "failed":
             return True
-    if _normalize_string_list(parsed.get("unresolved_feedback")):
+    unresolved_feedback = _normalize_string_list(parsed.get("unresolved_feedback"))
+    if unresolved_feedback and not _minor_unresolved_feedback_is_score_context(parsed):
         return True
     alignment = parsed.get("human_feedback_alignment")
     if isinstance(alignment, dict):
@@ -501,6 +567,18 @@ def _candidate_specific_feedback_failure(parsed: dict[str, Any], *, hard: int) -
         if str(failure.get("primary_reason") or failure.get("human_reason") or "").strip():
             return True
     return False
+
+
+def _minor_unresolved_feedback_is_score_context(parsed: dict[str, Any]) -> bool:
+    if str(parsed.get("rejection_reason") or "").strip():
+        return False
+    dimensions = parsed.get("dimension_scores")
+    if not isinstance(dimensions, dict):
+        return False
+    try:
+        return float(dimensions.get("human_feedback_resolution", 0.0)) >= 0.85
+    except (TypeError, ValueError):
+        return False
 
 
 def _apply_feedback_stop_readiness_cap(item: dict[str, Any], soft: float, *, resolved: bool = False) -> float:
@@ -616,6 +694,75 @@ def _generic_feedback_task_context(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_judge_with_schema_retry(
+    config: dict[str, Any],
+    *,
+    system: str,
+    user: str,
+    has_feedback: bool,
+) -> tuple[str, Any, list[dict[str, Any]]]:
+    budget = max(0, int(config.get("evaluator_schema_retry_budget", 1) or 0)) if has_feedback else 0
+    attempts: list[dict[str, Any]] = []
+    raw = ""
+    parsed: Any = None
+    for attempt in range(budget + 1):
+        retry_user = user if attempt == 0 else _feedback_schema_retry_user_prompt(user, raw)
+        raw, _usage = _chat_evaluator(
+            config,
+            system=system,
+            user=retry_user,
+            max_completion_tokens=2048,
+            retries=2,
+            stage="gitmoot_judge" if attempt == 0 else "gitmoot_judge_schema_retry",
+        )
+        parsed = extract_json(raw)
+        if not has_feedback:
+            return raw, parsed, attempts
+        if isinstance(parsed, dict) and not _missing_human_feedback_dimensions(parsed):
+            return raw, parsed, attempts
+        if attempt < budget:
+            attempts.append(
+                {
+                    "attempt": attempt + 1,
+                    "reason": _judge_schema_retry_reason(parsed),
+                    "raw": raw[:500],
+                }
+            )
+    return raw, parsed, attempts
+
+
+def _feedback_schema_retry_user_prompt(original_user: str, previous_raw: str) -> str:
+    return "\n\n".join(
+        [
+            original_user,
+            "## Evaluator Schema Repair",
+            "The previous judge output did not satisfy the required structured schema.",
+            "Re-evaluate the same candidate and return only one JSON object with these fields:",
+            json.dumps(_human_feedback_judge_schema(), indent=2),
+            "Use numbers from 0 to 1 for all dimension scores. Use an empty list for unresolved_feedback if no unresolved feedback remains.",
+            "Previous invalid judge output:",
+            previous_raw[:1000],
+        ]
+    )
+
+
+def _judge_schema_retry_reason(parsed: Any) -> str:
+    if not isinstance(parsed, dict):
+        return "judge did not return JSON"
+    if not _has_valid_judge_score_fields(parsed):
+        return "judge omitted valid hard/soft score fields"
+    dimensions = parsed.get("dimension_scores")
+    if not isinstance(dimensions, dict):
+        return "judge omitted dimension_scores"
+    if "unresolved_feedback" in parsed and not isinstance(parsed.get("unresolved_feedback"), list):
+        return "judge returned unresolved_feedback with the wrong type"
+    required = {"human_feedback_resolution", "artifact_validity", "task_completeness"}
+    missing = sorted(required - {str(key) for key in dimensions})
+    if missing:
+        return "judge omitted required dimension_scores: " + ", ".join(missing)
+    return "judge returned invalid human-feedback scoring schema"
+
+
 def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
     has_feedback = _has_human_feedback(item)
     system = _human_feedback_judge_system_prompt() if has_feedback else (
@@ -641,24 +788,25 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             response,
         ]
     )
-    raw, _usage = _chat_evaluator(
+    raw, parsed, schema_retry_attempts = _run_judge_with_schema_retry(
         config,
         system=system,
         user=user,
-        max_completion_tokens=2048,
-        retries=2,
-        stage="gitmoot_judge",
+        has_feedback=has_feedback,
     )
-    parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         return {
             "hard": 0,
             "soft": 0.0,
             "fail_reason": "judge did not return JSON",
-            "metadata": {"evaluator": "llm_judge", "raw": raw[:1000]},
+            "metadata": {
+                "evaluator": "llm_judge",
+                "raw": raw[:1000],
+                **({"evaluator_schema_retry_attempts": schema_retry_attempts} if schema_retry_attempts else {}),
+            },
         }
     if has_feedback and _missing_human_feedback_dimensions(parsed):
-        return _missing_feedback_dimensions_failure(item, raw=raw)
+        return _missing_feedback_dimensions_failure(item, raw=raw, schema_retry_attempts=schema_retry_attempts)
     parsed_hard = _parse_hard(parsed.get("hard"))
     try:
         soft = float(parsed.get("soft", parsed_hard))
@@ -688,6 +836,7 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             "reasoning": str(parsed.get("reasoning") or ""),
             "candidate_specific_failure": candidate_specific_failure,
             "quality_failed": quality_failed,
+            **({"evaluator_schema_retry_attempts": schema_retry_attempts} if schema_retry_attempts else {}),
         },
     }
     if feedback_source:
@@ -700,6 +849,7 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
         score.update(comparative_fields)
         score["metadata"].update(comparative_fields)
     if has_feedback:
+        schema_warnings = _feedback_schema_warnings(parsed)
         alignment = _human_feedback_alignment(item, parsed.get("human_feedback_alignment"))
         score.update(
             {
@@ -716,6 +866,10 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
                 "stage_status": score["stage_status"],
             }
         )
+        if schema_warnings:
+            score["metadata"]["schema_warnings"] = schema_warnings
+        if "human_feedback_alignment" in parsed and not isinstance(parsed.get("human_feedback_alignment"), dict):
+            score["metadata"]["raw_human_feedback_alignment"] = parsed.get("human_feedback_alignment")
         if quality_failed or hard == 0:
             failure = _feedback_judge_failure(parsed, item=item, fail_reason=score["fail_reason"])
             score.update(

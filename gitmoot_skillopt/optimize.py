@@ -50,6 +50,7 @@ def run_optimize(
     feedback_direct_mode: str = "auto",
     target_artifact_retry_budget: int = 1,
     hard_failure_retry_budget: int = 1,
+    evaluator_schema_retry_budget: int = 1,
     eval_test: bool = False,
 ) -> CandidatePackage:
     package_path = _require_file(training_package, "training package")
@@ -108,6 +109,7 @@ def run_optimize(
         feedback_direct_mode=feedback_direct_mode,
         target_artifact_retry_budget=target_artifact_retry_budget,
         hard_failure_retry_budget=hard_failure_retry_budget,
+        evaluator_schema_retry_budget=evaluator_schema_retry_budget,
         eval_test=eval_test,
     )
     adapter = GitmootAdapter(
@@ -157,12 +159,15 @@ def build_trainer_config(
     feedback_direct_mode: str = "auto",
     target_artifact_retry_budget: int = 1,
     hard_failure_retry_budget: int = 1,
+    evaluator_schema_retry_budget: int = 1,
     eval_test: bool = False,
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
     normalized_gate_metric = str(gate_metric or "hard").strip().lower()
     if normalized_gate_metric not in {"hard", "soft", "mixed"}:
         raise ValueError(f"unsupported gate metric: {gate_metric}")
+    evaluator_config = dict(evaluator_config)
+    evaluator_config["evaluator_schema_retry_budget"] = max(0, int(evaluator_schema_retry_budget))
     return {
         "env": "gitmoot",
         "training_package": str(package_path),
@@ -255,6 +260,7 @@ def build_trainer_config(
         "feedback_direct_mode": _normalize_feedback_direct_mode(feedback_direct_mode),
         "target_artifact_retry_budget": max(0, int(target_artifact_retry_budget)),
         "hard_failure_retry_budget": max(0, int(hard_failure_retry_budget)),
+        "evaluator_schema_retry_budget": max(0, int(evaluator_schema_retry_budget)),
     }
 
 
@@ -644,6 +650,12 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
         details["retry_budget_exhausted"] = diagnostics.get("retry_budget_exhausted", False)
         details["feedback_themes"] = diagnostics.get("feedback_themes", [])
         details["stop_reason"] = diagnostics.get("stop_reason", "")
+        if diagnostics.get("evaluator_contract_failure"):
+            details["candidate_quality_status"] = "judge_passed_but_schema_failed"
+            details["raw_judge_hard"] = diagnostics.get("raw_judge_hard")
+            details["raw_judge_soft"] = diagnostics.get("raw_judge_soft")
+            details["normalized_hard"] = candidate.get("hard")
+            details["normalized_soft"] = candidate.get("soft")
         details["rejection"] = {
             "baseline": baseline,
             "candidate": candidate,
@@ -691,6 +703,11 @@ def _no_candidate_report_fields(details: dict[str, Any]) -> dict[str, Any]:
         "failed_dimensions",
         "human_feedback_context",
         "retry_budget_exhausted",
+        "candidate_quality_status",
+        "raw_judge_hard",
+        "raw_judge_soft",
+        "normalized_hard",
+        "normalized_soft",
         "selection_gate_relation",
         "stop_reason",
         "next_actions",
@@ -716,6 +733,16 @@ def _gate_rejection_diagnostics(summary: dict[str, Any], gate_rejection: dict[st
     categories: list[str] = []
     if _contains_any(fields, ("artifact_contract", "artifact_contract_failure", "wrong_artifact_type")):
         categories.append("artifact_contract_failure")
+    evaluator_contract_failure = _contains_any(
+        fields,
+        (
+            "evaluator_contract_failure",
+            "evaluator_missing_human_feedback_dimensions",
+            "llm_judge_human_feedback_dimensions",
+        ),
+    )
+    if evaluator_contract_failure:
+        categories.append("evaluator_contract_failure")
     if gate_rejection.get("human_feedback_context"):
         categories.append("old_review_training_signal")
     if _contains_any(fields, ("human_feedback_not_resolved", "human_feedback_resolution", "unresolved_feedback")):
@@ -754,6 +781,9 @@ def _gate_rejection_diagnostics(summary: dict[str, Any], gate_rejection: dict[st
         "retry_stop_reasons": retry_stop_reasons,
         "stop_reason": retry_stop_reasons[-1] if retry_stop_reasons else "",
         "feedback_themes": _feedback_themes(gate_rejection.get("human_feedback_context")),
+        "evaluator_contract_failure": evaluator_contract_failure,
+        "raw_judge_hard": _raw_judge_score(gate_rejection, "hard"),
+        "raw_judge_soft": _raw_judge_score(gate_rejection, "soft"),
     }
 
 
@@ -772,6 +802,30 @@ def _diagnostic_fields(gate_rejection: dict[str, Any], failed_dimensions: list[s
 
 def _contains_any(fields: list[str], tokens: tuple[str, ...]) -> bool:
     return any(token in field for field in fields for token in tokens)
+
+
+def _raw_judge_score(gate_rejection: dict[str, Any], key: str) -> float | int | None:
+    evidence = gate_rejection.get("evidence")
+    if not isinstance(evidence, list):
+        return None
+    for item in evidence:
+        text = str(item or "").strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        value = parsed.get(key) if isinstance(parsed, dict) else None
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, int | float):
+            return value
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _selection_gate_relation(baseline_gate: float | None, candidate_gate: float | None) -> str:

@@ -270,6 +270,161 @@ def test_structured_evaluator_feedback_reaches_rollout_result(tmp_path, monkeypa
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required")
 
 
+def test_llm_judge_keeps_score_for_recoverable_feedback_schema_warning(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        del kwargs
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.88,
+                    "fail_reason": None,
+                    "reasoning": "The candidate directly addresses the feedback.",
+                    "human_feedback_alignment": "strong",
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.9,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [
+                        "Could be slightly more dry or owner-like, but the main feedback theme is resolved."
+                    ],
+                    "rejection_reason": None,
+                    "optimizer_hint": "Preserve the grounded question direction.",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "smithyx-feedback",
+        "prompt": "Generate one SmithyX-style reply.",
+        "feedback_context": {
+            "feedback_target": "baseline_review_outputs",
+            "review_issue": "jerryfane/gitmoot-x-posts-smithyx#2",
+        },
+        "ranked_feedback_events": [
+            {
+                "choice": "Option D is best because it asks a question; the rest restate the obvious.",
+                "ranking": ["D > A > B > C"],
+                "promote": "no",
+                "continue_mode": "refine",
+            }
+        ],
+        "evaluator_config": {"mode": "llm_judge"},
+    }
+
+    result = evaluate_response(item, "candidate response", {"mode": "llm_judge"})
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.88
+    assert result["fail_reason"] == ""
+    assert result["dimension_scores"]["human_feedback_resolution"] == 0.9
+    assert result["stage_status"] == [{"stage": "llm_judge", "status": "passed"}]
+    assert result["metadata"]["schema_warnings"] == [
+        "judge returned noncanonical human_feedback_alignment field"
+    ]
+    assert result["metadata"]["raw_human_feedback_alignment"] == "strong"
+    assert "failure" not in result
+
+
+def test_llm_judge_unusable_feedback_schema_still_fails(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        del kwargs
+        return (json.dumps({"reasoning": "looks good"}), {})
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "smithyx-feedback-unusable",
+        "prompt": "Generate one SmithyX-style reply.",
+        "ranked_feedback_events": [{"choice": "Needs a sharper point.", "ranking": ["D > A"]}],
+        "evaluator_config": {"mode": "llm_judge"},
+    }
+
+    result = evaluate_response(item, "candidate response", {"mode": "llm_judge"})
+
+    assert result["hard"] == 0
+    assert result["soft"] == 0.0
+    assert result["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert result["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert result["failed_checks"][0]["severity"] == "evaluator_contract_failure"
+
+
+def test_llm_judge_schema_retry_repairs_unusable_feedback_output(monkeypatch):
+    calls = 0
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return (json.dumps({"reasoning": "looks good"}), {})
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.91,
+                    "fail_reason": "",
+                    "reasoning": "The repaired judge result follows the schema.",
+                    "human_feedback_alignment": {"status": "resolved", "resolved": ["sharper point"], "unresolved": []},
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.92,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": None,
+                    "optimizer_hint": "Keep this direction.",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "smithyx-feedback-retry",
+        "prompt": "Generate one SmithyX-style reply.",
+        "ranked_feedback_events": [{"choice": "Needs a sharper point.", "ranking": ["D > A"]}],
+        "evaluator_config": {"mode": "llm_judge", "evaluator_schema_retry_budget": 1},
+    }
+
+    result = evaluate_response(item, "candidate response", item["evaluator_config"])
+
+    assert calls == 2
+    assert result["hard"] == 1
+    assert result["soft"] == 0.91
+    assert result["metadata"]["evaluator_schema_retry_attempts"][0]["reason"] == (
+        "judge omitted valid hard/soft score fields"
+    )
+
+
+def test_llm_judge_schema_retry_exhaustion_reports_evaluator_failure(monkeypatch):
+    calls = 0
+
+    def fake_chat_optimizer(**kwargs):
+        nonlocal calls
+        calls += 1
+        return (json.dumps({"reasoning": f"still invalid {calls}"}), {})
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "smithyx-feedback-retry-fails",
+        "prompt": "Generate one SmithyX-style reply.",
+        "ranked_feedback_events": [{"choice": "Needs a sharper point.", "ranking": ["D > A"]}],
+        "evaluator_config": {"mode": "llm_judge", "evaluator_schema_retry_budget": 1},
+    }
+
+    result = evaluate_response(item, "candidate response", item["evaluator_config"])
+
+    assert calls == 2
+    assert result["hard"] == 0
+    assert result["soft"] == 0.0
+    assert result["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert result["metadata"]["evaluator_schema_retry_attempts"][0]["reason"] == (
+        "judge omitted valid hard/soft score fields"
+    )
+
+
 def test_target_artifact_retry_repairs_vue_bundle_before_reflection(tmp_path, monkeypatch):
     calls: list[str] = []
     eval_responses: list[str] = []
@@ -1655,7 +1810,7 @@ def test_generic_judge_with_feedback_fails_closed_with_invalid_dimension_values(
     assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
 
 
-def test_generic_judge_with_feedback_requires_explicit_unresolved_feedback_list(monkeypatch):
+def test_generic_judge_with_feedback_defaults_missing_unresolved_feedback_list(monkeypatch):
     def fake_chat_optimizer(**kwargs):
         return (
             json.dumps(
@@ -1697,9 +1852,12 @@ def test_generic_judge_with_feedback_requires_explicit_unresolved_feedback_list(
         {},
     )
 
-    assert score["hard"] == 0
-    assert score["soft"] == 0.0
-    assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert score["hard"] == 1
+    assert score["soft"] == 0.95
+    assert score["fail_reason"] == ""
+    assert score["metadata"]["schema_warnings"] == [
+        "judge omitted unresolved_feedback; defaulted to an empty list"
+    ]
 
 
 def test_generic_judge_with_resolved_feedback_does_not_emit_failure_hint(monkeypatch):

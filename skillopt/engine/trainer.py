@@ -791,6 +791,23 @@ def _gate_rejection_retry_decision(
     return True, "retryable"
 
 
+def _gate_reject_exhausted_reason(
+    gate_rejection: dict | None,
+    *,
+    gate_reject_stop_reason: str,
+    wrong_artifact_retry: bool,
+) -> str:
+    if _is_evaluator_contract_rejection(gate_rejection):
+        return "evaluator_contract_failure"
+    if wrong_artifact_retry and gate_reject_stop_reason == "budget_exhausted":
+        return "wrong_artifact_retries_exhausted"
+    if gate_reject_stop_reason == "budget_exhausted":
+        return "gate_reject_retries_exhausted"
+    if gate_reject_stop_reason in {"non_retryable", "non_retryable_gate_rejection"}:
+        return "gate_rejected_non_retryable"
+    return gate_reject_stop_reason
+
+
 def _candidate_hard_score_allows_gate_retry(packet: dict) -> bool:
     if _is_wrong_artifact_rejection(packet):
         return False
@@ -809,9 +826,6 @@ def _candidate_hard_score_allows_gate_retry(packet: dict) -> bool:
         for field in fields
         if str(field or "").strip()
     }
-    primary_reason = (
-        str(packet.get("primary_reason") or "").strip().lower().replace("-", "_").replace(".", "_")
-    )
     rejection_type = (
         str(packet.get("rejection_type") or "").strip().lower().replace("-", "_").replace(".", "_")
     )
@@ -899,11 +913,45 @@ def _is_wrong_artifact_rejection(packet: dict | None) -> bool:
     return any(str(field or "").strip().lower() == "wrong_artifact_type" for field in fields)
 
 
+def _is_evaluator_contract_rejection(packet: dict | None) -> bool:
+    if not isinstance(packet, dict):
+        return False
+    fields = [
+        packet.get("primary_reason"),
+        packet.get("rejection_type"),
+        packet.get("human_reason"),
+        packet.get("optimizer_hint"),
+        *(packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []),
+    ]
+    for check in packet.get("failed_checks") if isinstance(packet.get("failed_checks"), list) else []:
+        if isinstance(check, dict):
+            fields.extend([check.get("check"), check.get("reason"), check.get("severity")])
+    normalized = {
+        str(field or "").strip().lower().replace("-", "_").replace(".", "_")
+        for field in fields
+        if str(field or "").strip()
+    }
+    return any(
+        token in normalized
+        for token in {
+            "evaluator_contract_failure",
+            "evaluator_missing_human_feedback_dimensions",
+            "llm_judge_human_feedback_dimensions",
+        }
+    )
+
+
 def _gate_rejection_with_retry_attempts(packet: dict | None, *, used: int, budget: int) -> dict | None:
     if not isinstance(packet, dict):
         return None
     enriched = dict(packet)
     enriched["retry_attempts"] = f"{used}/{budget}"
+    if not bool(enriched.get("retryable", False)):
+        enriched.setdefault(
+            "next_action",
+            "Fix or rerun the evaluator; do not retry the optimizer for this gate rejection.",
+        )
+        return enriched
     if used >= budget:
         enriched["next_action"] = (
             "Stop this pass without final test eval; collect more feedback or rerun with a larger "
@@ -1054,6 +1102,8 @@ def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
     if not results:
         return None
     first_signal: dict | None = None
+    first_evaluator_contract_signal: dict | None = None
+    first_wrong_artifact_signal: dict | None = None
     for result in results:
         if not isinstance(result, dict):
             continue
@@ -1061,9 +1111,17 @@ def _selection_rejection_signal(results: list[dict] | None) -> dict | None:
         if not signal:
             continue
         if _is_wrong_artifact_rejection(signal):
-            return signal
+            first_wrong_artifact_signal = first_wrong_artifact_signal or signal
+            continue
+        if _is_evaluator_contract_rejection(signal):
+            first_evaluator_contract_signal = first_evaluator_contract_signal or signal
+            continue
         if first_signal is None:
             first_signal = signal
+    if first_evaluator_contract_signal is not None:
+        return first_evaluator_contract_signal
+    if first_wrong_artifact_signal is not None:
+        return first_wrong_artifact_signal
     return first_signal
 
 
@@ -1851,6 +1909,7 @@ def _selection_reject_gate_rejection(
     signal = rejection_signal if isinstance(rejection_signal, dict) else {}
     signal_primary_reason = str(signal.get("primary_reason") or "").strip()
     signal_is_wrong_artifact = _is_wrong_artifact_rejection(signal)
+    signal_is_evaluator_contract_failure = _is_evaluator_contract_rejection(signal)
     signal_feedback_context = signal.get("human_feedback_context")
     packet_feedback_context = (
         signal_feedback_context
@@ -1875,17 +1934,31 @@ def _selection_reject_gate_rejection(
         evidence.append(f"Structured rejection came from selection item {source_item_id}.")
 
     primary_reason = signal_primary_reason or (
-        "wrong_artifact_type" if signal_is_wrong_artifact else "candidate_quality_regressed"
+        "wrong_artifact_type"
+        if signal_is_wrong_artifact
+        else "evaluator_contract_failure"
+        if signal_is_evaluator_contract_failure
+        else "candidate_quality_regressed"
     )
-    rejection_type = "wrong_artifact_type" if signal_is_wrong_artifact else "candidate_score_regression"
+    rejection_type = (
+        "wrong_artifact_type"
+        if signal_is_wrong_artifact
+        else "evaluator_contract_failure"
+        if signal_is_evaluator_contract_failure
+        else "candidate_score_regression"
+    )
     optimizer_hint = signal_optimizer_hint or (
-        "Use the gate rejection evidence and human feedback to change the skill direction before spending final test-eval budget."
+        "Retry or fix the evaluator schema before changing the skill."
+        if signal_is_evaluator_contract_failure
+        else "Use the gate rejection evidence and human feedback to change the skill direction before spending final test-eval budget."
     )
     hint_suffix = _human_feedback_hint_suffix(packet_feedback_context)
     if hint_suffix and hint_suffix.strip() not in optimizer_hint:
         optimizer_hint = (optimizer_hint + hint_suffix).strip()
     human_reason = signal_human_reason or (
-        "The candidate lost selection evaluation against the baseline skill, so final test evaluation was skipped."
+        "The evaluator could not produce a usable structured score for the candidate."
+        if signal_is_evaluator_contract_failure
+        else "The candidate lost selection evaluation against the baseline skill, so final test evaluation was skipped."
     )
     failed_dimensions = signal_failed_dimensions or ["selection_gate", "human_feedback_alignment"]
     if packet_feedback_context and "human_feedback_alignment" not in failed_dimensions:
@@ -1896,7 +1969,7 @@ def _selection_reject_gate_rejection(
 
     packet = {
         "rejection_type": rejection_type,
-        "retryable": True,
+        "retryable": not signal_is_evaluator_contract_failure,
         "baseline": _gate_score_payload(
             hard=baseline_hard,
             soft=baseline_soft,
@@ -1928,7 +2001,11 @@ def _selection_reject_gate_rejection(
         "actual_artifact": actual_artifact,
         "attempted_patch": attempted_patch,
         "retry_attempts": retry_attempts,
-        "next_action": next_action,
+        "next_action": (
+            "Retry or fix the evaluator schema; do not retry the optimizer or collect more human feedback yet."
+            if signal_is_evaluator_contract_failure
+            else next_action
+        ),
     }
     if packet_feedback_context:
         packet["human_feedback_context"] = packet_feedback_context
@@ -3483,14 +3560,10 @@ class ReflACTTrainer:
                             ) as f:
                                 json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
                             if not can_retry_gate_reject or gate_rejection is None:
-                                exhausted_reason = (
-                                    "wrong_artifact_retries_exhausted"
-                                    if wrong_artifact_retry and gate_reject_stop_reason == "budget_exhausted"
-                                    else "gate_reject_retries_exhausted"
-                                    if gate_reject_stop_reason == "budget_exhausted"
-                                    else "gate_rejected_non_retryable"
-                                    if gate_reject_stop_reason == "non_retryable"
-                                    else gate_reject_stop_reason
+                                exhausted_reason = _gate_reject_exhausted_reason(
+                                    gate_rejection,
+                                    gate_reject_stop_reason=gate_reject_stop_reason,
+                                    wrong_artifact_retry=wrong_artifact_retry,
                                 )
                                 step_rec["no_candidate_triggers"] = _dedupe_texts(
                                     step_rec.get("no_candidate_triggers", [])
