@@ -10,9 +10,11 @@ from skillopt.engine.trainer import (
     _best_selection_scores,
     _detect_no_meaningful_change,
     _format_duplicate_gate_retry_context_from_packet,
+    _format_gate_reject_retry_context,
     _gate_rejection_retry_decision,
     _non_feedback_direct_items,
     _ranked_feedback_context_packet,
+    _selection_eval_context,
     _selection_rejection_signal,
     _selection_reject_gate_rejection,
     _should_skip_final_test_after_selection_reject,
@@ -1010,9 +1012,10 @@ def test_trainer_skips_final_test_eval_after_selection_reject(tmp_path, monkeypa
     assert summary["total_rejects"] == 1
     assert summary["best_origin"] == "initial_skill"
     assert summary["final_test_skipped_reason"] == "selection_gate_rejected_candidate"
-    assert len(summary["gate_reject_retry_attempts"]) == 2
-    assert summary["gate_reject_retry_attempts"][0]["action"] == "retry"
-    assert summary["gate_reject_retry_attempts"][1]["action"] == "stop"
+    assert len(summary["gate_reject_retry_attempts"]) == 1
+    assert summary["gate_reject_retry_attempts"][0]["action"] == "stop"
+    assert summary["gate_reject_retry_attempts"][0]["result"] == "duplicate_candidate"
+    assert summary["gate_reject_retry_attempts"][0]["fresh_reflect_retry"] is True
     assert summary["baseline_test_hard"] is None
     assert summary["test_hard"] is None
     assert final_test_rollouts == []
@@ -1098,6 +1101,63 @@ def test_selection_reject_packet_includes_evaluator_reasoning_and_delta_summary(
     assert rejection["delta_summary"]["weaknesses"] == [
         "Baseline evaluator rationale to beat: Baseline had a strong full-screen hero and complete footer."
     ]
+
+
+def test_selection_reject_packet_includes_dimension_deltas():
+    baseline_context = _selection_eval_context(
+        [
+            {
+                "id": "baseline",
+                "reasoning": "baseline rationale",
+                "dimension_scores": {
+                    "hero_quality": 0.68,
+                    "visual_images_relevance": 0.58,
+                },
+            }
+        ]
+    )
+    candidate_context = _selection_eval_context(
+        [
+            {
+                "id": "candidate",
+                "reasoning": "candidate rationale",
+                "metadata": {
+                    "dimension_scores": {
+                        "hero_quality": 0.72,
+                        "visual_images_relevance": 0.58,
+                    }
+                },
+            }
+        ]
+    )
+    rejection = _selection_reject_gate_rejection(
+        history=[
+            {
+                "action": "reject",
+                "selection_hard": 1.0,
+                "selection_soft": 0.62,
+                "candidate_gate_score": 0.81,
+                "rewrite_change_summary": ["brand and imagery guidance"],
+            }
+        ],
+        baseline_scores=(1.0, 0.62),
+        gate_metric="mixed",
+        gate_mixed_weight=0.5,
+        baseline_context=baseline_context,
+        candidate_context=candidate_context,
+    )
+
+    assert rejection is not None
+    assert rejection["baseline"]["dimension_scores"]["hero_quality"] == 0.68
+    assert rejection["candidate"]["dimension_scores"]["hero_quality"] == 0.72
+    assert round(rejection["dimension_scores"]["delta"]["hero_quality"], 2) == 0.04
+    assert rejection["dimension_scores"]["delta"]["visual_images_relevance"] == 0.0
+
+    retry_context = _format_gate_reject_retry_context(rejection, attempt=1, budget=3)
+
+    assert "Dimension deltas candidate-baseline:" in retry_context
+    assert "hero_quality=+0.0400" in retry_context
+    assert "visual_images_relevance=+0.0000" in retry_context
 
 
 def test_trainer_retries_actionable_gate_rejection_with_optimizer_hint(tmp_path, monkeypatch):
@@ -1835,15 +1895,18 @@ def test_trainer_stops_gate_rejection_after_retry_budget(tmp_path, monkeypatch):
     assert summary["total_accepts"] == 0
     assert summary["total_rejects"] == 1
     assert summary["best_origin"] == "initial_skill"
-    assert summary["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
-    assert "budget_exhausted" in summary["no_candidate_triggers"]
-    assert len(summary["gate_reject_retry_attempts"]) == 2
-    assert summary["gate_reject_retry_attempts"][0]["action"] == "retry"
-    assert summary["gate_reject_retry_attempts"][1]["action"] == "stop"
+    assert summary["no_candidate_reason"] == "gate_retry_duplicate_budget_exhausted"
+    assert "retry_budget_exhausted" in summary["no_candidate_triggers"]
+    assert len(summary["gate_reject_retry_attempts"]) == 1
+    assert summary["gate_reject_retry_attempts"][0]["action"] == "stop"
+    assert summary["gate_reject_retry_attempts"][0]["result"] == "duplicate_candidate"
     assert summary["gate_rejection"]["retry_attempts"] == "1/1"
     assert "retry_budget_exhausted" in summary["no_candidate_diagnostics"]["categories"]
     assert summary["no_candidate_diagnostics"]["retry_budget_exhausted"] is True
-    assert summary["no_candidate_diagnostics"]["retry_stop_reasons"] == ["budget_exhausted"]
+    assert summary["no_candidate_diagnostics"]["retry_stop_reasons"] == [
+        "gate_retry_duplicate_budget_exhausted"
+    ]
+    assert summary["no_candidate_diagnostics"]["retry_attempts"][0]["fresh_reflect_retry"] is True
     assert summary["no_candidate_diagnostics"]["selection_gate_relation"] == "candidate_below_baseline"
 
 
@@ -1851,6 +1914,7 @@ def test_gate_rejection_duplicate_retry_forces_stronger_context(tmp_path, monkey
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
     merge_contexts: list[str] = []
+    reflect_contexts: list[str] = []
 
     def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
         del failure_patches, success_patches
@@ -1874,6 +1938,15 @@ def test_gate_rejection_duplicate_retry_forces_stronger_context(tmp_path, monkey
         }
 
     class DuplicateThenAcceptAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            reflect_contexts.append(
+                "\n\n".join(
+                    str(kwargs.get(key) or "")
+                    for key in ("step_buffer_context", "meta_skill_context")
+                )
+            )
+            return super().reflect(results, skill_content, out_dir, **kwargs)
+
         def rollout(self, env_manager, skill_content, out_dir, **kwargs):
             del env_manager, out_dir, kwargs
             if "Mobile visual system guidance" in skill_content:
@@ -1906,6 +1979,92 @@ def test_gate_rejection_duplicate_retry_forces_stronger_context(tmp_path, monkey
     assert "Repeated patch direction: artifact delivery only" in merge_contexts[2]
     assert "Unresolved human feedback themes:" in merge_contexts[2]
     assert "better mobile layout" in merge_contexts[2]
+    assert any("Gate Rejection Retry" in context for context in reflect_contexts[1:])
+    assert "Duplicate Gate Retry Candidate" in reflect_contexts[2]
+
+
+def test_gate_rejection_retry_reflect_preserves_accumulation_batch_dirs(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    reflect_calls: list[dict] = []
+
+    class TwoBatchDataLoader(_RetryDataLoader):
+        def __init__(self) -> None:
+            super().__init__(item_id="item-a", train_size=2)
+            self.train_items = [
+                {
+                    "id": "item-a",
+                    "ranked_feedback_events": [
+                        {"required_improvements": ["better mobile layout"]}
+                    ],
+                },
+                {
+                    "id": "item-b",
+                    "ranked_feedback_events": [
+                        {"required_improvements": ["better product imagery"]}
+                    ],
+                },
+            ]
+
+        def plan_train_epoch(self, *, epoch, steps_per_epoch, accumulation, batch_size, seed, **kwargs):
+            del epoch, steps_per_epoch, accumulation, batch_size, seed, kwargs
+            return [
+                BatchSpec(phase="train", split="train", seed=11, batch_size=1, payload=[{"id": "item-a"}]),
+                BatchSpec(phase="train", split="train", seed=12, batch_size=1, payload=[{"id": "item-b"}]),
+            ]
+
+    class RecordingAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            reflect_calls.append(
+                {
+                    "ids": [str(result.get("id")) for result in results],
+                    "out_dir": str(out_dir),
+                    "prediction_dir": str(kwargs.get("prediction_dir")),
+                    "has_gate_retry_context": "Gate Rejection Retry" in str(kwargs.get("step_buffer_context", "")),
+                }
+            )
+            return super().reflect(results, skill_content, out_dir, **kwargs)
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            changed = "Artifact delivery only" in skill_content
+            return [_scored_result(soft=0.84 if changed else 0.89)]
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "weak candidate",
+                    "change_summary": ["artifact delivery only"],
+                    "new_skill": skill_content.rstrip() + "\n\nArtifact delivery only.\n",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["accumulation"] = 2
+    cfg["train_size"] = 2
+    cfg["gate_metric"] = "soft"
+    cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
+
+    summary = ReflACTTrainer(cfg, RecordingAdapter(TwoBatchDataLoader())).train()
+
+    retry_calls = [call for call in reflect_calls if call["has_gate_retry_context"]]
+    assert summary["total_accepts"] == 0
+    assert len(retry_calls) == 2
+    assert retry_calls[0]["ids"] == ["item-a"]
+    assert retry_calls[1]["ids"] == ["item-b"]
+    assert "/batch_0/rollout/predictions" in retry_calls[0]["prediction_dir"]
+    assert "/batch_1/rollout/predictions" in retry_calls[1]["prediction_dir"]
 
 
 def test_duplicate_gate_retry_context_includes_unresolved_feedback_themes():
@@ -1969,14 +2128,16 @@ def test_gate_rejection_repeated_duplicate_retry_stops(tmp_path, monkeypatch):
     summary = ReflACTTrainer(cfg, DuplicateRejectAdapter(_RetryDataLoader())).train()
 
     assert summary["total_accepts"] == 0
-    assert summary["no_candidate_reason"] == "gate_rejected_best_origin_initial_skill"
-    assert "repeated_duplicate_candidate" in summary["no_candidate_triggers"]
-    assert len(summary["gate_reject_retry_attempts"]) == 2
+    assert summary["no_candidate_reason"] == "gate_retry_duplicate_budget_exhausted"
+    assert "duplicate_candidate" in summary["no_candidate_triggers"]
+    assert len(summary["gate_reject_retry_attempts"]) == 3
     assert summary["gate_reject_retry_attempts"][0]["retry_produced_duplicate_candidate"] is True
-    stop_attempt = summary["gate_reject_retry_attempts"][1]
+    assert summary["gate_reject_retry_attempts"][1]["retry_produced_duplicate_candidate"] is True
+    assert summary["gate_reject_retry_attempts"][1]["action"] == "retry"
+    stop_attempt = summary["gate_reject_retry_attempts"][2]
     assert stop_attempt["retry_produced_duplicate_candidate"] is True
     assert stop_attempt["action"] == "stop"
-    assert stop_attempt["stop_reason"] == "repeated_duplicate_candidate"
+    assert stop_attempt["stop_reason"] == "gate_retry_duplicate_budget_exhausted"
 
 
 def test_gate_rejection_retry_uses_current_skill_scores_after_accept(tmp_path, monkeypatch):

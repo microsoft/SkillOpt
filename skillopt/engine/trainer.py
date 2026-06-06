@@ -22,6 +22,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
@@ -918,6 +919,7 @@ def _gate_rejection_with_retry_attempts(packet: dict | None, *, used: int, budge
 def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -> str:
     baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
     candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
+    dimension_scores = packet.get("dimension_scores") if isinstance(packet.get("dimension_scores"), dict) else {}
     delta_summary = packet.get("delta_summary") if isinstance(packet.get("delta_summary"), dict) else {}
     failed_dimensions = packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []
     failed_checks = packet.get("failed_checks") if isinstance(packet.get("failed_checks"), list) else []
@@ -948,6 +950,34 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
         "Do not repeat this failed patch direction. Make a different, meaningful skill update "
         "that addresses the failed dimensions and imported human feedback.",
     ]
+    dimension_delta = dimension_scores.get("delta") if isinstance(dimension_scores.get("delta"), dict) else {}
+    if dimension_delta:
+        formatted_deltas = []
+        for key in sorted(dimension_delta):
+            value = dimension_delta.get(key)
+            if isinstance(value, (int, float)):
+                formatted_deltas.append(f"{key}={value:+.4f}")
+            else:
+                formatted_deltas.append(f"{key}=n/a")
+        lines.append("Dimension deltas candidate-baseline: " + ", ".join(formatted_deltas))
+    baseline_dimensions = dimension_scores.get("baseline") if isinstance(dimension_scores.get("baseline"), dict) else {}
+    candidate_dimensions = dimension_scores.get("candidate") if isinstance(dimension_scores.get("candidate"), dict) else {}
+    if baseline_dimensions:
+        lines.append(
+            "Baseline dimension scores: "
+            + ", ".join(
+                f"{key}={_fmt_score(value)}"
+                for key, value in sorted(baseline_dimensions.items())
+            )
+        )
+    if candidate_dimensions:
+        lines.append(
+            "Candidate dimension scores: "
+            + ", ".join(
+                f"{key}={_fmt_score(value)}"
+                for key, value in sorted(candidate_dimensions.items())
+            )
+        )
     expected_artifact = str(packet.get("expected_artifact") or "").strip()
     actual_artifact = str(packet.get("actual_artifact") or "").strip()
     if expected_artifact:
@@ -1209,9 +1239,14 @@ def _selection_eval_context(results: list[dict] | None) -> dict:
     if not results:
         return {}
     reasoning: list[str] = []
+    dimension_totals: dict[str, float] = {}
+    dimension_counts: dict[str, int] = {}
     for result in results:
         if not isinstance(result, dict):
             continue
+        for key, value in _extract_dimension_scores(result).items():
+            dimension_totals[key] = dimension_totals.get(key, 0.0) + value
+            dimension_counts[key] = dimension_counts.get(key, 0) + 1
         item_id = str(result.get("id") or "").strip()
         text = _extract_evaluator_reasoning(result)
         if not text:
@@ -1219,7 +1254,78 @@ def _selection_eval_context(results: list[dict] | None) -> dict:
         if item_id:
             text = f"{item_id}: {text}"
         reasoning.append(text)
-    return {"evaluator_reasoning": " | ".join(_dedupe_texts(reasoning, limit=4))}
+    context = {"evaluator_reasoning": " | ".join(_dedupe_texts(reasoning, limit=4))}
+    if dimension_totals:
+        context["dimension_scores"] = {
+            key: round(total / max(dimension_counts.get(key, 1), 1), 6)
+            for key, total in sorted(dimension_totals.items())
+        }
+    return context
+
+
+def _extract_dimension_scores(result: dict | None) -> dict[str, float]:
+    if not isinstance(result, dict):
+        return {}
+    containers: list[object] = [
+        result.get("dimension_scores"),
+        result.get("dimensions"),
+    ]
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    containers.extend([metadata.get("dimension_scores"), metadata.get("dimensions")])
+    score = result.get("score") if isinstance(result.get("score"), dict) else {}
+    containers.extend([score.get("dimension_scores"), score.get("dimensions")])
+
+    scores: dict[str, float] = {}
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for raw_key, raw_value in container.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                scores[key] = value
+    return scores
+
+
+def _dimension_score_delta_payload(
+    baseline_context: dict | None,
+    candidate_context: dict | None,
+) -> dict:
+    baseline_scores = (
+        baseline_context.get("dimension_scores")
+        if isinstance(baseline_context, dict) and isinstance(baseline_context.get("dimension_scores"), dict)
+        else {}
+    )
+    candidate_scores = (
+        candidate_context.get("dimension_scores")
+        if isinstance(candidate_context, dict) and isinstance(candidate_context.get("dimension_scores"), dict)
+        else {}
+    )
+    keys = sorted({str(key) for key in baseline_scores} | {str(key) for key in candidate_scores})
+    if not keys:
+        return {}
+    baseline: dict[str, float | None] = {}
+    candidate: dict[str, float | None] = {}
+    delta: dict[str, float | None] = {}
+    for key in keys:
+        base_value = baseline_scores.get(key)
+        cand_value = candidate_scores.get(key)
+        baseline[key] = float(base_value) if isinstance(base_value, (int, float)) else None
+        candidate[key] = float(cand_value) if isinstance(cand_value, (int, float)) else None
+        if baseline[key] is None or candidate[key] is None:
+            delta[key] = None
+        else:
+            delta[key] = round(float(candidate[key]) - float(baseline[key]), 6)
+    return {
+        "baseline": baseline,
+        "candidate": candidate,
+        "delta": delta,
+    }
 
 
 def _gate_score_payload(
@@ -1238,6 +1344,13 @@ def _gate_score_payload(
         evaluator_reasoning = str(context.get("evaluator_reasoning") or "").strip()
         if evaluator_reasoning:
             payload["evaluator_reasoning"] = evaluator_reasoning
+        dimension_scores = context.get("dimension_scores")
+        if isinstance(dimension_scores, dict) and dimension_scores:
+            payload["dimension_scores"] = {
+                str(key): float(value)
+                for key, value in dimension_scores.items()
+                if isinstance(value, (int, float))
+            }
     return payload
 
 
@@ -1772,6 +1885,10 @@ def _selection_reject_gate_rejection(
             candidate_context=candidate_context,
             rejection_signal=rejection_signal,
         ),
+        "dimension_scores": _dimension_score_delta_payload(
+            baseline_context=baseline_context,
+            candidate_context=candidate_context,
+        ),
         "primary_reason": primary_reason,
         "human_reason": human_reason,
         "optimizer_hint": optimizer_hint,
@@ -1831,7 +1948,7 @@ def _no_candidate_diagnostics(
         stop_reason_values,
         limit=12,
     )
-    if "budget_exhausted" in stop_reasons or "noop_retry_budget_exhausted" in stop_reasons:
+    if any("budget_exhausted" in reason for reason in stop_reasons):
         categories.append("retry_budget_exhausted")
     if isinstance(gate_rejection, dict):
         fields = _gate_rejection_diagnostic_fields(gate_rejection)
@@ -1869,12 +1986,44 @@ def _no_candidate_diagnostics(
     diagnostics = {
         "categories": _dedupe_texts(categories + no_candidate_triggers, limit=16),
         "selection_gate_relation": relation,
-        "retry_budget_exhausted": "budget_exhausted" in stop_reasons or "noop_retry_budget_exhausted" in stop_reasons,
+        "retry_budget_exhausted": any("budget_exhausted" in reason for reason in stop_reasons),
         "retry_stop_reasons": stop_reasons,
+        "retry_attempts": _retry_attempt_diagnostics(
+            gate_reject_retry_attempts=gate_reject_retry_attempts,
+            wrong_artifact_retry_attempts=wrong_artifact_retry_attempts,
+        ),
     }
     if feedback_themes:
         diagnostics["feedback_themes"] = feedback_themes
     return diagnostics
+
+
+def _retry_attempt_diagnostics(
+    *,
+    gate_reject_retry_attempts: list[dict],
+    wrong_artifact_retry_attempts: list[dict],
+) -> list[dict]:
+    attempts: list[dict] = []
+    for attempt in [*gate_reject_retry_attempts, *wrong_artifact_retry_attempts]:
+        if not isinstance(attempt, dict):
+            continue
+        gate_rejection = attempt.get("gate_rejection") if isinstance(attempt.get("gate_rejection"), dict) else {}
+        candidate = gate_rejection.get("candidate") if isinstance(gate_rejection.get("candidate"), dict) else {}
+        attempts.append(
+            {
+                "attempt": attempt.get("attempt"),
+                "retry_class": attempt.get("retry_class", ""),
+                "action": attempt.get("action", ""),
+                "result": attempt.get("result") or attempt.get("stop_reason") or attempt.get("action", ""),
+                "candidate_hash": attempt.get("candidate_hash", ""),
+                "duplicate_candidate_hash": attempt.get("duplicate_candidate_hash", ""),
+                "stop_reason": attempt.get("stop_reason", ""),
+                "candidate_gate_score": candidate.get("gate_score"),
+                "fresh_reflect_retry": bool(attempt.get("fresh_reflect_retry")),
+                "n_retry_patches": attempt.get("n_retry_patches"),
+            }
+        )
+    return attempts
 
 
 def _feedback_context_themes(context) -> list[str]:
@@ -2557,6 +2706,7 @@ class ReflACTTrainer:
                 all_rollout_results: list[dict] = []
                 accum_rollout_stats: list[dict] = []
                 feedback_direct_contexts: list[str] = []
+                retry_reflect_batches: list[dict] = []
                 total_rollout_time = 0.0
                 total_reflect_time = 0.0
 
@@ -2744,6 +2894,16 @@ class ReflACTTrainer:
                     all_failure_patches.extend(failure_patches)
                     all_success_patches.extend(success_patches)
                     all_raw_patches.extend(raw_patches)
+                    retry_reflect_batches.append(
+                        {
+                            "rollout_results": list(rollout_results),
+                            "batch_dir": batch_dir,
+                            "prediction_dir": pred_dir,
+                            "patches_dir": patches_dir,
+                            "batch_seed": batch_seed,
+                            "step_buffer_context": step_buffer_context,
+                        }
+                    )
                     total_reflect_time += time.time() - t_phase
 
                     print(
@@ -3284,11 +3444,20 @@ class ReflACTTrainer:
                             ) as f:
                                 json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
                             if not can_retry_gate_reject or gate_rejection is None:
+                                exhausted_reason = (
+                                    "wrong_artifact_retries_exhausted"
+                                    if wrong_artifact_retry and gate_reject_stop_reason == "budget_exhausted"
+                                    else "gate_reject_retries_exhausted"
+                                    if gate_reject_stop_reason == "budget_exhausted"
+                                    else "gate_rejected_non_retryable"
+                                    if gate_reject_stop_reason == "non_retryable"
+                                    else gate_reject_stop_reason
+                                )
                                 step_rec["no_candidate_triggers"] = _dedupe_texts(
                                     step_rec.get("no_candidate_triggers", [])
-                                    + ["gate_rejected_best_origin_initial_skill", gate_reject_stop_reason]
+                                    + [exhausted_reason, "gate_rejected_best_origin_initial_skill", gate_reject_stop_reason]
                                 )
-                                step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
+                                step_rec["no_candidate_reason"] = exhausted_reason
                                 break
 
                             gate_rejection_signature = _gate_rejection_signature(gate_rejection)
@@ -3306,7 +3475,7 @@ class ReflACTTrainer:
                             gate_retry_suffix = f"_{retry_file_prefix}_{retry_count + 1:02d}"
                             print(
                                 f"    [gate retry {retry_count + 1}/{active_retry_budget}] "
-                                "rerunning aggregate/select/update with gate-rejection feedback"
+                                "rerunning reflect/aggregate/select/update with gate-rejection feedback"
                             )
 
                             retry_optimizer_context = _join_optimizer_context(
@@ -3322,10 +3491,83 @@ class ReflACTTrainer:
                             )
 
                             t_retry_phase = time.time()
+                            retry_patches_dirs: list[str] = []
+                            raw_retry_patches: list[dict | None] = []
+                            for retry_batch_idx, retry_batch in enumerate(retry_reflect_batches):
+                                retry_patches_dir = os.path.join(
+                                    str(retry_batch["patches_dir"]),
+                                    f"{retry_file_prefix}_{retry_count + 1:02d}",
+                                )
+                                retry_patches_dirs.append(retry_patches_dir)
+                                batch_retry_context = _join_optimizer_context(
+                                    str(retry_batch.get("step_buffer_context") or ""),
+                                    noop_retry_context,
+                                    gate_retry_context,
+                                )
+                                raw_retry_patches.extend(
+                                    adapter.reflect(
+                                        list(retry_batch.get("rollout_results") or []),
+                                        current_skill,
+                                        str(retry_batch["batch_dir"]),
+                                        prediction_dir=str(retry_batch["prediction_dir"]),
+                                        patches_dir=retry_patches_dir,
+                                        random_seed=int(retry_batch.get("batch_seed", seed))
+                                        + retry_count
+                                        + retry_batch_idx
+                                        + 1,
+                                        step_buffer_context=batch_retry_context,
+                                        meta_skill_context=retry_optimizer_context,
+                                    )
+                                )
+                            retry_failure_patches, retry_success_patches = _normalise_patches(
+                                raw_retry_patches,
+                                update_mode=update_mode,
+                            )
+                            retry_n_patches = len(retry_failure_patches) + len(retry_success_patches)
+                            gate_retry_record["fresh_reflect_retry"] = True
+                            gate_retry_record["retry_patches_dirs"] = retry_patches_dirs
+                            gate_retry_record["n_retry_failure_patches"] = len(retry_failure_patches)
+                            gate_retry_record["n_retry_success_patches"] = len(retry_success_patches)
+                            gate_retry_record["n_retry_patches"] = retry_n_patches
+                            with open(
+                                gate_retry_record_path,
+                                "w",
+                            ) as f:
+                                json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                            step_rec["timing"]["reflect_s"] = round(
+                                step_rec["timing"].get("reflect_s", 0) + time.time() - t_retry_phase,
+                                1,
+                            )
+                            if retry_n_patches == 0:
+                                gate_rejection = _gate_rejection_with_retry_attempts(
+                                    gate_rejection,
+                                    used=retry_count + 1,
+                                    budget=active_retry_budget,
+                                )
+                                gate_retry_record["gate_rejection"] = gate_rejection
+                                step_rec["gate_rejection"] = gate_rejection
+                                step_rec["action"] = "reject"
+                                step_rec["no_candidate_reason"] = "gate_retry_no_actionable_patch"
+                                step_rec["no_candidate_triggers"] = _dedupe_texts(
+                                    [
+                                        "gate_retry_no_actionable_patch",
+                                        "gate_rejected_best_origin_initial_skill",
+                                    ]
+                                )
+                                gate_retry_record["action"] = "stop"
+                                gate_retry_record["stop_reason"] = "gate_retry_no_actionable_patch"
+                                with open(
+                                    gate_retry_record_path,
+                                    "w",
+                                ) as f:
+                                    json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                                break
+
+                            t_retry_phase = time.time()
                             merged_patch = merge_patches(
                                 current_skill,
-                                all_failure_patches,
-                                all_success_patches,
+                                retry_failure_patches,
+                                retry_success_patches,
                                 batch_size=merge_bs,
                                 verbose=True,
                                 workers=cfg["analyst_workers"],
@@ -3486,6 +3728,14 @@ class ReflACTTrainer:
                                 and previous_retry_candidate_hash
                                 and cand_hash == previous_retry_candidate_hash
                             ):
+                                gate_rejection = _gate_rejection_with_retry_attempts(
+                                    gate_rejection,
+                                    used=retry_count + 1,
+                                    budget=active_retry_budget,
+                                )
+                                gate_retry_record["gate_rejection"] = gate_rejection
+                                step_rec["gate_rejection"] = gate_rejection
+                                gate_retry_record["result"] = "duplicate_candidate"
                                 gate_retry_record["retry_produced_duplicate_candidate"] = True
                                 gate_retry_record["duplicate_of"] = previous_retry_candidate_hash
                                 gate_retry_record["duplicate_candidate_hash"] = cand_hash
@@ -3493,29 +3743,31 @@ class ReflACTTrainer:
                                 step_rec["duplicate_of"] = previous_retry_candidate_hash
                                 if gate_rejection_signature:
                                     active_seen_reasons.discard(gate_rejection_signature)
-                                if cand_hash in duplicate_gate_retry_hashes:
-                                    step_rec["action"] = "reject"
-                                    step_rec["no_candidate_reason"] = "gate_rejected_best_origin_initial_skill"
-                                    step_rec["no_candidate_triggers"] = _dedupe_texts(
-                                        [
-                                            "gate_rejected_best_origin_initial_skill",
-                                            "repeated_duplicate_candidate",
-                                        ]
-                                    )
-                                    gate_retry_record["action"] = "stop"
-                                    gate_retry_record["stop_reason"] = "repeated_duplicate_candidate"
-                                    with open(
-                                        gate_retry_record_path,
-                                        "w",
-                                    ) as f:
-                                        json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
-                                    break
                                 duplicate_gate_retry_hashes.add(cand_hash)
                                 duplicate_gate_retry_context = _format_duplicate_gate_retry_context_from_packet(
                                     duplicate_of=cand_hash,
                                     attempt=retry_count + 1,
                                     packet=gate_rejection,
                                 )
+                                if retry_count + 1 >= active_retry_budget:
+                                    step_rec["action"] = "reject"
+                                    step_rec["no_candidate_reason"] = "gate_retry_duplicate_budget_exhausted"
+                                    step_rec["no_candidate_triggers"] = _dedupe_texts(
+                                        [
+                                            "gate_retry_duplicate_budget_exhausted",
+                                            "duplicate_candidate",
+                                            "retry_budget_exhausted",
+                                            "gate_rejected_best_origin_initial_skill",
+                                        ]
+                                    )
+                                    gate_retry_record["action"] = "stop"
+                                    gate_retry_record["stop_reason"] = "gate_retry_duplicate_budget_exhausted"
+                                    with open(
+                                        gate_retry_record_path,
+                                        "w",
+                                    ) as f:
+                                        json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
+                                    break
                                 with open(
                                     gate_retry_record_path,
                                     "w",
