@@ -290,6 +290,7 @@ def _evaluator_config_for_result(config: Any, pred_dir: str, response: str) -> d
         "render-smoke",
         hashlib.sha256(response.encode("utf-8", errors="replace")).hexdigest()[:12],
     )
+    configured["_prediction_dir"] = pred_dir
     return configured
 
 
