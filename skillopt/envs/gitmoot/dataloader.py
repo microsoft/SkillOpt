@@ -31,6 +31,7 @@ _SPLIT_ALIASES = {
 
 _SUPPORTED_TEXT_DRIVERS = {"text", "markdown", "text/markdown"}
 _SUPPORTED_PREVIEW_DRIVERS = {"vue-vite"}
+_TRAINING_MODES = {"explore", "refine", "distill", "validate"}
 
 
 class GitmootDataLoader(BaseDataLoader):
@@ -65,7 +66,7 @@ class GitmootDataLoader(BaseDataLoader):
 
         self.package = TrainingPackage.load(self.training_package)
         profile_config = _evaluator_profile_config(self.package)
-        package_config = self.package.evaluator_config if isinstance(self.package.evaluator_config, dict) else {}
+        package_config = _package_evaluator_config(self.package)
         override_config = cfg.get("evaluator_config") if isinstance(cfg.get("evaluator_config"), dict) else {}
         self.evaluator_config = {**profile_config, **package_config}
         _apply_evaluator_id_mode_override(self.evaluator_config, package_config)
@@ -433,14 +434,27 @@ def _profile_requires_landing_page_mode(config: dict[str, Any]) -> bool:
 
 
 def _apply_evaluator_id_mode_override(config: dict[str, Any], override_config: dict[str, Any]) -> None:
-    if "mode" in override_config:
+    if "mode" in override_config and not _is_training_mode(override_config.get("mode")):
         return
+    if _is_training_mode(config.get("mode")):
+        config.pop("mode", None)
     driver = str(override_config.get("driver") or "").strip().lower().replace("-", "_")
     evaluator_id = _normal_evaluator_mode(override_config.get("evaluator_id") or override_config.get("id") or "")
     if not evaluator_id and driver and driver != "manual_review":
         evaluator_id = _normal_evaluator_mode(driver)
     if evaluator_id:
         config["mode"] = evaluator_id
+
+
+def _package_evaluator_config(package: TrainingPackage) -> dict[str, Any]:
+    config = dict(package.evaluator_config) if isinstance(package.evaluator_config, dict) else {}
+    if _is_training_mode(config.get("mode")):
+        config.pop("mode", None)
+    return config
+
+
+def _is_training_mode(value: Any) -> bool:
+    return str(value or "").strip().lower().replace("-", "_") in _TRAINING_MODES
 
 
 def _normal_evaluator_mode(value: Any) -> str:

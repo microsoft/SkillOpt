@@ -1028,6 +1028,7 @@ class TrainingPackage:
     contract_version: int
     template: TemplateSnapshot
     eval_run: EvalRun
+    training_mode: str = ""
     items: list[EvalItem] = field(default_factory=list)
     artifacts: list[ArtifactRef] = field(default_factory=list)
     feedback_events: list[FeedbackEvent] = field(default_factory=list)
@@ -1047,6 +1048,7 @@ class TrainingPackage:
             contract_version=contract_version,
             template=TemplateSnapshot.from_dict(data.get("template")),
             eval_run=EvalRun.from_dict(data.get("eval_run")),
+            training_mode=_optional_string(data.get("training_mode")),
             items=[EvalItem.from_dict(item) for item in data.get("items", [])],
             artifacts=[ArtifactRef.from_dict(artifact) for artifact in data.get("artifacts", [])],
             feedback_events=[FeedbackEvent.from_dict(event) for event in data.get("feedback_events", [])],
@@ -1117,6 +1119,8 @@ class TrainingPackage:
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             "feedback_events": [event.to_dict() for event in self.feedback_events],
         }
+        if self.training_mode:
+            data["training_mode"] = self.training_mode
         if self.ranked_feedback_events:
             data["ranked_feedback_events"] = [event.to_dict() for event in self.ranked_feedback_events]
         if self.feedback_context is not None:

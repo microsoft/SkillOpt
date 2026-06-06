@@ -414,6 +414,21 @@ def test_dataloader_honors_driver_override_over_profile_mode(tmp_path):
     assert item["evaluator_config"]["profile_id"] == "vue_landing_page_v1"
 
 
+def test_dataloader_ignores_legacy_training_mode_in_evaluator_config(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["training_mode"] = "explore"
+    package["evaluator_config"] = {"mode": "explore", "evaluation": {"preferred_gate": "soft"}}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    loader = GitmootDataLoader(str(package_path), str(artifact_root))
+
+    loader.setup({})
+    item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
+
+    assert item["evaluator_config"]["evaluation"]["preferred_gate"] == "soft"
+    assert "mode" not in item["evaluator_config"]
+
+
 def test_dataloader_does_not_force_default_override_evaluator_id(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
     package = json.loads(package_path.read_text(encoding="utf-8"))

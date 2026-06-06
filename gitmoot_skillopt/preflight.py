@@ -32,6 +32,7 @@ from skillopt.model.common import default_model_for_backend, normalize_backend_n
 from skillopt.utils import extract_json
 
 SUPPORTED_EVALUATORS = {LANDING_PAGE_EVALUATOR_ID, "llm_judge", "fixture", "contains"}
+TRAINING_MODES = {"explore", "refine", "distill", "validate"}
 OPTIMIZER_CANARY_TEXT = "gitmoot-optimizer-canary-ok"
 TARGET_CANARY_TEXT = "gitmoot-target-canary-ok"
 
@@ -55,7 +56,7 @@ def resolve_evaluator_config(
     evaluator_model: str = "",
 ) -> dict[str, Any]:
     profile_config = _evaluator_profile_config(package)
-    package_config = dict(package.evaluator_config) if isinstance(package.evaluator_config, dict) else {}
+    package_config = _package_evaluator_config(package)
     config = {**profile_config, **package_config}
     _apply_evaluator_id_mode_override(config, package_config)
     explicit = _normal_evaluator_id(evaluator_id)
@@ -155,7 +156,10 @@ def _runtime_target_backend_name(value: str | None) -> str:
 
 def _configured_evaluator_id(config: dict[str, Any]) -> str:
     for key in ("mode", "evaluator_id", "id"):
-        if resolved := _normal_evaluator_id(str(config.get(key) or "")):
+        value = str(config.get(key) or "")
+        if key == "mode" and _is_training_mode(value):
+            continue
+        if resolved := _normal_evaluator_id(value):
             return resolved
     driver = str(config.get("driver") or "").strip().lower().replace("-", "_")
     if driver and driver != "manual_review":
@@ -164,14 +168,27 @@ def _configured_evaluator_id(config: dict[str, Any]) -> str:
 
 
 def _apply_evaluator_id_mode_override(config: dict[str, Any], override_config: dict[str, Any]) -> None:
-    if "mode" in override_config:
+    if "mode" in override_config and not _is_training_mode(str(override_config.get("mode") or "")):
         return
+    if _is_training_mode(str(config.get("mode") or "")):
+        config.pop("mode", None)
     driver = str(override_config.get("driver") or "").strip().lower().replace("-", "_")
     evaluator_id = _normal_evaluator_id(str(override_config.get("evaluator_id") or override_config.get("id") or ""))
     if not evaluator_id and driver and driver != "manual_review":
         evaluator_id = _normal_evaluator_id(driver)
     if evaluator_id:
         config["mode"] = evaluator_id
+
+
+def _package_evaluator_config(package: TrainingPackage) -> dict[str, Any]:
+    config = dict(package.evaluator_config) if isinstance(package.evaluator_config, dict) else {}
+    if _is_training_mode(str(config.get("mode") or "")):
+        config.pop("mode", None)
+    return config
+
+
+def _is_training_mode(value: str) -> bool:
+    return str(value or "").strip().lower().replace("-", "_") in TRAINING_MODES
 
 
 def _infer_evaluator_id(package: TrainingPackage) -> str:

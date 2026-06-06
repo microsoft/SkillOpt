@@ -630,6 +630,47 @@ def test_preflight_honors_driver_override_over_profile_mode(tmp_path):
     assert config["profile_id"] == "vue_landing_page_v1"
 
 
+def test_preflight_ignores_top_level_training_mode_for_default_evaluator(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["training_mode"] = "explore"
+    package["evaluator_config"] = {"evaluation": {"preferred_gate": "soft"}}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    loaded = TrainingPackage.load(package_path)
+    config = resolve_evaluator_config(loaded)
+
+    assert loaded.training_mode == "explore"
+    assert config["evaluator_id"] == "llm_judge"
+    assert "mode" not in config
+    assert config["evaluation"]["preferred_gate"] == "soft"
+
+
+def test_preflight_normalizes_legacy_training_mode_in_evaluator_config(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"mode": "explore", "evaluation": {"preferred_gate": "soft"}}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path))
+
+    assert config["evaluator_id"] == "llm_judge"
+    assert "mode" not in config
+    assert config["evaluation"]["preferred_gate"] == "soft"
+
+
+def test_preflight_evaluator_id_override_wins_over_legacy_training_mode(tmp_path):
+    package_path, _artifact_root = write_training_package(tmp_path)
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["evaluator_config"] = {"mode": "explore"}
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+
+    config = resolve_evaluator_config(TrainingPackage.load(package_path), evaluator_id="fixture")
+
+    assert config["mode"] == "fixture"
+    assert config["evaluator_id"] == "fixture"
+
+
 @pytest.mark.parametrize(
     ("raw_config", "expected_mode"),
     [
