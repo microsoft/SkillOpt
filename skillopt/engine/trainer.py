@@ -63,7 +63,7 @@ from skillopt.optimizer.update_modes import (
     payload_label,
     short_item_summary,
 )
-from skillopt.utils import compute_score, is_quality_failed_result, skill_hash
+from skillopt.utils import compute_score, compute_structural_score, is_quality_failed_result, skill_hash
 
 # ── Patch normalization ───────────────────────────────────────────────────────
 
@@ -1832,6 +1832,7 @@ def _selection_reject_gate_rejection(
     *,
     history: list[dict],
     baseline_scores: tuple[float | None, float | None],
+    baseline_gate_scores: tuple[float | None, float | None] | None = None,
     gate_metric: str,
     gate_mixed_weight: float,
     retry_used: int = 0,
@@ -1850,9 +1851,10 @@ def _selection_reject_gate_rejection(
     baseline_hard, baseline_soft = baseline_scores
     candidate_hard = rejected.get("selection_hard")
     candidate_soft = rejected.get("selection_soft")
+    gate_baseline_hard, gate_baseline_soft = baseline_gate_scores or baseline_scores
     baseline_gate_score = _gate_score_for_summary(
-        baseline_hard,
-        baseline_soft,
+        gate_baseline_hard,
+        gate_baseline_soft,
         gate_metric,
         gate_mixed_weight,
     )
@@ -2640,6 +2642,7 @@ class ReflACTTrainer:
 
         # ── Selection cache ──────────────────────────────────────────────
         sel_cache: dict[str, tuple[float, float]] = {}
+        sel_gate_cache: dict[str, tuple[float, float]] = {}
         sel_rejection_signal_cache: dict[str, dict] = {}
         sel_eval_context_cache: dict[str, dict] = {}
         sel_sample_artifact_cache: dict[str, str] = {}
@@ -2647,6 +2650,10 @@ class ReflACTTrainer:
             sh = rec.get("candidate_hash", "")
             if sh and rec.get("selection_hard") is not None:
                 sel_cache[sh] = (rec["selection_hard"], rec["selection_soft"])
+                sel_gate_cache[sh] = (
+                    rec.get("selection_gate_hard", rec["selection_hard"]),
+                    rec.get("selection_gate_soft", rec["selection_soft"]),
+                )
                 sample_artifact = str(rec.get("selection_sample_artifact_path") or "").strip()
                 if sample_artifact:
                     sel_sample_artifact_cache[sh] = sample_artifact
@@ -2722,13 +2729,15 @@ class ReflACTTrainer:
                     json.dump(summary, f, indent=2, ensure_ascii=False)
                 print(f"  [gate blocked] blocked:{block['blocker']} items={len(block.get('items', []))}")
                 return summary
-            baseline_hard, baseline_soft = compute_score(baseline_results)
+            baseline_hard, baseline_soft = compute_structural_score(baseline_results)
+            baseline_gate_hard, baseline_gate_soft = compute_score(baseline_results)
             current_score = select_gate_score(
-                baseline_hard, baseline_soft, gate_metric, gate_mixed_weight,
+                baseline_gate_hard, baseline_gate_soft, gate_metric, gate_mixed_weight,
             )
             best_score = current_score
             sh = skill_hash(skill_init)
             sel_cache[sh] = (baseline_hard, baseline_soft)
+            sel_gate_cache[sh] = (baseline_gate_hard, baseline_gate_soft)
             sel_eval_context_cache[sh] = _selection_eval_context(baseline_results)
             current_origin = "initial_skill"
             best_origin = "initial_skill"
@@ -3374,12 +3383,14 @@ class ReflACTTrainer:
                 selection_candidate_context = None
                 if cand_hash in sel_cache:
                     cand_hard, cand_soft = sel_cache[cand_hash]
+                    cand_gate_hard, cand_gate_soft = sel_gate_cache.get(cand_hash, (cand_hard, cand_soft))
                     selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
                     selection_candidate_context = sel_eval_context_cache.get(cand_hash)
                     sample_artifact_path = sel_sample_artifact_cache.get(cand_hash, "")
                     print(
                         f"    [6/6 EVALUATE] "
-                        f"cache hit {cand_hash}: hard={cand_hard:.4f}"
+                        f"cache hit {cand_hash}: structural_hard={cand_hard:.4f} "
+                        f"gate_hard={cand_gate_hard:.4f}"
                     )
                 else:
                     sel_env, sel_n = _build_eval_env(
@@ -3418,12 +3429,16 @@ class ReflACTTrainer:
                             f"blocked:{block['blocker']} items={len(block.get('items', []))}"
                         )
                     else:
-                        cand_hard, cand_soft = compute_score(sel_results)
+                        cand_hard, cand_soft = compute_structural_score(sel_results)
+                        cand_gate_hard, cand_gate_soft = compute_score(sel_results)
                         sel_cache[cand_hash] = (cand_hard, cand_soft)
+                        sel_gate_cache[cand_hash] = (cand_gate_hard, cand_gate_soft)
 
                 if step_rec.get("gate_status") != "blocked":
                     step_rec["selection_hard"] = cand_hard
                     step_rec["selection_soft"] = cand_soft
+                    step_rec["selection_gate_hard"] = cand_gate_hard
+                    step_rec["selection_gate_soft"] = cand_gate_soft
                     if sample_artifact_path:
                         step_rec["selection_sample_artifact_path"] = sample_artifact_path
                     if selection_candidate_context:
@@ -3431,19 +3446,19 @@ class ReflACTTrainer:
 
                     gate = evaluate_gate(
                         candidate_skill=candidate_skill,
-                        cand_hard=cand_hard,
+                        cand_hard=cand_gate_hard,
                         current_skill=current_skill,
                         current_score=current_score,
                         best_skill=best_skill,
                         best_score=best_score,
                         best_step=best_step,
                         global_step=global_step,
-                        cand_soft=cand_soft,
+                        cand_soft=cand_gate_soft,
                         metric=gate_metric,
                         mixed_weight=gate_mixed_weight,
                     )
                     cand_gate_score = select_gate_score(
-                        cand_hard, cand_soft, gate_metric, gate_mixed_weight,
+                        cand_gate_hard, cand_gate_soft, gate_metric, gate_mixed_weight,
                     )
                     step_rec["gate_metric"] = gate_metric
                     step_rec["candidate_gate_score"] = cand_gate_score
@@ -3462,13 +3477,17 @@ class ReflACTTrainer:
                         selection_scores_by_origin[best_origin] = (cand_hard, cand_soft)
 
                     if gate_metric == "hard":
-                        score_label = f"hard={cand_hard:.4f}"
+                        score_label = (
+                            f"gate_hard={cand_gate_hard:.4f} "
+                            f"(structural_hard={cand_hard:.4f})"
+                        )
                     elif gate_metric == "soft":
                         score_label = f"soft={cand_soft:.4f}"
                     else:
                         score_label = (
                             f"mixed[w={gate_mixed_weight}]={cand_gate_score:.4f} "
-                            f"(hard={cand_hard:.4f} soft={cand_soft:.4f})"
+                            f"(gate_hard={cand_gate_hard:.4f} structural_hard={cand_hard:.4f} "
+                            f"soft={cand_soft:.4f})"
                         )
                     if gate.action == "accept_new_best":
                         print(
@@ -3490,9 +3509,14 @@ class ReflACTTrainer:
                                 skill_hash(current_skill),
                                 sel_cache.get(skill_hash(skill_init), (None, None)),
                             )
+                            baseline_gate_scores = sel_gate_cache.get(
+                                skill_hash(current_skill),
+                                sel_gate_cache.get(skill_hash(skill_init), baseline_scores),
+                            )
                             gate_rejection = _selection_reject_gate_rejection(
                                 history=[step_rec],
                                 baseline_scores=baseline_scores,
+                                baseline_gate_scores=baseline_gate_scores,
                                 gate_metric=gate_metric,
                                 gate_mixed_weight=gate_mixed_weight,
                                 rejection_signal=selection_rejection_signal,
@@ -3921,6 +3945,7 @@ class ReflACTTrainer:
                             selection_candidate_context = None
                             if cand_hash in sel_cache:
                                 cand_hard, cand_soft = sel_cache[cand_hash]
+                                cand_gate_hard, cand_gate_soft = sel_gate_cache.get(cand_hash, (cand_hard, cand_soft))
                                 selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
                                 selection_candidate_context = sel_eval_context_cache.get(cand_hash)
                                 sample_artifact_path = sel_sample_artifact_cache.get(cand_hash, "")
@@ -3975,31 +4000,35 @@ class ReflACTTrainer:
                                     ) as f:
                                         json.dump(gate_retry_record, f, indent=2, ensure_ascii=False)
                                     break
-                                cand_hard, cand_soft = compute_score(sel_results)
+                                cand_hard, cand_soft = compute_structural_score(sel_results)
+                                cand_gate_hard, cand_gate_soft = compute_score(sel_results)
                                 sel_cache[cand_hash] = (cand_hard, cand_soft)
+                                sel_gate_cache[cand_hash] = (cand_gate_hard, cand_gate_soft)
 
                             step_rec["selection_hard"] = cand_hard
                             step_rec["selection_soft"] = cand_soft
+                            step_rec["selection_gate_hard"] = cand_gate_hard
+                            step_rec["selection_gate_soft"] = cand_gate_soft
                             if sample_artifact_path:
                                 step_rec["selection_sample_artifact_path"] = sample_artifact_path
                             if selection_candidate_context:
                                 step_rec["selection_eval_context"] = selection_candidate_context
                             gate = evaluate_gate(
                                 candidate_skill=candidate_skill,
-                                cand_hard=cand_hard,
+                                cand_hard=cand_gate_hard,
                                 current_skill=current_skill,
                                 current_score=current_score,
                                 best_skill=best_skill,
                                 best_score=best_score,
                                 best_step=best_step,
                                 global_step=global_step,
-                                cand_soft=cand_soft,
+                                cand_soft=cand_gate_soft,
                                 metric=gate_metric,
                                 mixed_weight=gate_mixed_weight,
                             )
                             cand_gate_score = select_gate_score(
-                                cand_hard,
-                                cand_soft,
+                                cand_gate_hard,
+                                cand_gate_soft,
                                 gate_metric,
                                 gate_mixed_weight,
                             )
@@ -4032,6 +4061,7 @@ class ReflACTTrainer:
                                 step_rec["gate_rejection"] = _selection_reject_gate_rejection(
                                     history=[step_rec],
                                     baseline_scores=baseline_scores,
+                                    baseline_gate_scores=baseline_gate_scores,
                                     gate_metric=gate_metric,
                                     gate_mixed_weight=gate_mixed_weight,
                                     retry_used=retry_count + 1,
@@ -4346,9 +4376,14 @@ class ReflACTTrainer:
                                 slow_sel_hard, slow_sel_soft = sel_cache[
                                     slow_candidate_hash
                                 ]
+                                slow_gate_hard, slow_gate_soft = sel_gate_cache.get(
+                                    slow_candidate_hash,
+                                    (slow_sel_hard, slow_sel_soft),
+                                )
                                 print(
                                     f"    [slow gate] cache hit: "
-                                    f"hard={slow_sel_hard:.4f}"
+                                    f"structural_hard={slow_sel_hard:.4f} "
+                                    f"gate_hard={slow_gate_hard:.4f}"
                                 )
                             else:
                                 sel_env, sel_n = _build_eval_env(
@@ -4379,29 +4414,37 @@ class ReflACTTrainer:
                                         f"blocked:{block['blocker']} items={len(block.get('items', []))}"
                                     )
                                 else:
-                                    slow_sel_hard, slow_sel_soft = compute_score(
+                                    slow_sel_hard, slow_sel_soft = compute_structural_score(
+                                        slow_eval_results
+                                    )
+                                    slow_gate_hard, slow_gate_soft = compute_score(
                                         slow_eval_results
                                     )
                                     sel_cache[slow_candidate_hash] = (
                                         slow_sel_hard, slow_sel_soft,
                                     )
+                                    sel_gate_cache[slow_candidate_hash] = (
+                                        slow_gate_hard, slow_gate_soft,
+                                    )
 
                             if slow_result.get("gate_status") != "blocked":
                                 slow_gate = evaluate_gate(
                                     candidate_skill=slow_candidate,
-                                    cand_hard=slow_sel_hard,
+                                    cand_hard=slow_gate_hard,
                                     current_skill=current_skill,
                                     current_score=current_score,
                                     best_skill=best_skill,
                                     best_score=best_score,
                                     best_step=best_step,
                                     global_step=global_step,
-                                    cand_soft=slow_sel_soft,
+                                    cand_soft=slow_gate_soft,
                                     metric=gate_metric,
                                     mixed_weight=gate_mixed_weight,
                                 )
                                 slow_result["selection_hard"] = slow_sel_hard
                                 slow_result["selection_soft"] = slow_sel_soft
+                                slow_result["selection_gate_hard"] = slow_gate_hard
+                                slow_result["selection_gate_soft"] = slow_gate_soft
                                 slow_result["action"] = slow_gate.action
                                 prev_current = current_score
                                 prev_best = best_score
@@ -4422,19 +4465,19 @@ class ReflACTTrainer:
                                     )
                                     print(
                                         f"    [slow gate] ACCEPT (new best) "
-                                        f"hard={slow_sel_hard:.4f} > "
+                                        f"gate_hard={slow_gate_hard:.4f} > "
                                         f"prev best {prev_best:.4f}"
                                     )
                                 elif slow_gate.action == "accept":
                                     print(
                                         f"    [slow gate] ACCEPT "
-                                        f"hard={slow_sel_hard:.4f} > "
+                                        f"gate_hard={slow_gate_hard:.4f} > "
                                         f"current={prev_current:.4f}"
                                     )
                                 else:
                                     print(
                                         f"    [slow gate] REJECT "
-                                        f"hard={slow_sel_hard:.4f} <= "
+                                        f"gate_hard={slow_gate_hard:.4f} <= "
                                         f"current={current_score:.4f}"
                                     )
                             else:
@@ -4461,6 +4504,7 @@ class ReflACTTrainer:
                             # slow-update-injected skill for hashing.
                             slow_candidate_hash = skill_hash(current_skill)
                             sel_cache[slow_candidate_hash] = (current_score, 0.0)
+                            sel_gate_cache[slow_candidate_hash] = (current_score, 0.0)
 
                             slow_result["action"] = "force_accept"
                             current_origin = f"slow_update_epoch_{epoch:02d}"
@@ -4616,6 +4660,7 @@ class ReflACTTrainer:
         )
 
         baseline_selection_scores = sel_cache.get(skill_hash(skill_init), (None, None))
+        baseline_selection_gate_scores = sel_gate_cache.get(skill_hash(skill_init), baseline_selection_scores)
         selection_reject_gate_rejection = None
         skip_final_test_reason = ""
         if _should_skip_final_test_after_selection_reject(
@@ -4636,6 +4681,7 @@ class ReflACTTrainer:
                 selection_reject_gate_rejection = _selection_reject_gate_rejection(
                     history=history,
                     baseline_scores=baseline_selection_scores,
+                    baseline_gate_scores=baseline_selection_gate_scores,
                     gate_metric=gate_metric,
                     gate_mixed_weight=gate_mixed_weight,
                     retry_used=sum(

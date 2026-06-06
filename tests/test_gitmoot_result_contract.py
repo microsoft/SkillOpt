@@ -10,7 +10,7 @@ from skillopt.envs.gitmoot.result_contract import (
     normalize_scored_evaluation,
 )
 from skillopt.optimizer.slow_update import format_comparison_text
-from skillopt.utils.scoring import compute_score
+from skillopt.utils.scoring import compute_score, compute_structural_score
 
 
 class _ResultWithExtras:
@@ -35,27 +35,32 @@ def test_compute_score_rejects_unscored_results():
         compute_score(results)
 
 
-def test_compute_score_treats_quality_failed_as_hard_failure():
-    hard, soft = compute_score(
-        [
-            {
-                "id": "quality-failed",
-                "hard": 1,
-                "soft": 0.64,
-                "score_status": "scored",
-                "quality_status": "failed",
-            }
-        ]
-    )
+def test_compute_score_applies_quality_gate_while_structural_score_preserves_hard():
+    results = [
+        {
+            "id": "quality-failed",
+            "hard": 1,
+            "soft": 0.64,
+            "score_status": "scored",
+            "quality_status": "failed",
+        }
+    ]
+
+    hard, soft = compute_score(results)
 
     assert hard == 0.0
     assert soft == 0.64
 
+    structural_hard, structural_soft = compute_structural_score(results)
 
-def test_compute_score_treats_quality_failed_extras_as_hard_failure():
-    hard, soft = compute_score([_ResultWithExtras()])
+    assert structural_hard == 1.0
+    assert structural_soft == 0.64
 
-    assert hard == 0.0
+
+def test_compute_structural_score_preserves_hard_for_quality_failed_extras():
+    hard, soft = compute_structural_score([_ResultWithExtras()])
+
+    assert hard == 1.0
     assert soft == 0.5
 
 

@@ -27,6 +27,16 @@ def compute_score(results: list) -> tuple[float, float]:
     return hard, soft
 
 
+def compute_structural_score(results: list) -> tuple[float, float]:
+    """Compute raw structural hard/soft scores without applying quality-gate failure."""
+    if not results:
+        return 0.0, 0.0
+
+    hard = sum(_score_value(r, "hard", 0) for r in results) / len(results)
+    soft = sum(_score_value(r, "soft", 0.0) for r in results) / len(results)
+    return hard, soft
+
+
 def _score_value(result: object, key: str, default: float) -> float:
     if hasattr(result, key):
         value = getattr(result, key)
