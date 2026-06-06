@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitmoot-skillopt"
-version = "0.2.0a11"
+version = "0.2.0a12"
 description = "Gitmoot-SkillOpt: optimize Gitmoot agent templates with SkillOpt"
 readme = "README.md"
 license = {text = "MIT"}
