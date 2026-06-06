@@ -124,7 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--gate-reject-retry-close-gap",
         type=float,
         default=0.03,
-        help="maximum baseline-minus-candidate gate score gap eligible for gate-reject retry",
+        help=(
+            "baseline-minus-candidate gate score gap recorded as large-regression "
+            "retry context when actionable gate-reject retry is enabled"
+        ),
     )
     optimize.add_argument(
         "--feedback-direct-mode",

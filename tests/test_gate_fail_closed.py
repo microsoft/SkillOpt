@@ -309,6 +309,39 @@ class _RetryDataLoader:
         )
 
 
+class _TwoItemFeedbackDataLoader(_RetryDataLoader):
+    def __init__(self) -> None:
+        super().__init__(item_id="item-001", train_size=1)
+        self.train_items = [
+            {
+                "id": "item-001",
+                "ranked_feedback_events": [
+                    {
+                        "ranking": ["D > A > B > C"],
+                        "quality": "poor",
+                        "continue_mode": "refine",
+                        "promote": "no",
+                        "reasoning": "replies need a sharper real point, not obvious restatement",
+                        "required_improvements": ["sharper mechanism question"],
+                    }
+                ],
+            },
+            {
+                "id": "item-002",
+                "ranked_feedback_events": [
+                    {
+                        "ranking": ["C > B > A > D"],
+                        "quality": "acceptable",
+                        "continue_mode": "refine",
+                        "promote": "no",
+                        "reasoning": "remove finally, avoid fake edginess and AI-written phrasing",
+                        "required_improvements": ["remove filler words"],
+                    }
+                ],
+            },
+        ]
+
+
 class _RetryAdapter:
     def __init__(self, dataloader: _RetryDataLoader) -> None:
         self.dataloader = dataloader
@@ -601,6 +634,7 @@ def test_feedback_direct_mode_uses_ranked_feedback_before_training_rollout(tmp_p
         package_path=package_path,
     )
     cfg["feedback_direct_mode"] = "auto"
+    cfg["gate_metric"] = "soft"
 
     summary = ReflACTTrainer(cfg, FeedbackDirectAdapter(_RetryDataLoader())).train()
 
@@ -614,6 +648,76 @@ def test_feedback_direct_mode_uses_ranked_feedback_before_training_rollout(tmp_p
     history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
     assert history[0]["feedback_direct_mode"] == "auto"
     assert history[0]["feedback_direct_items"] == ["train-1"]
+
+
+def test_feedback_direct_optimizer_context_includes_all_reviewed_items(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+    reflect_contexts: list[str] = []
+    reflect_results: list[list[dict]] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        merge_contexts.append(kwargs.get("meta_skill_context", ""))
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "feedback direct candidate",
+                    "change_summary": ["all review feedback"],
+                    "new_skill": skill_content.rstrip() + "\n\nAll reviewed feedback guidance.\n",
+                }
+            ],
+        }
+
+    class AllFeedbackAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            reflect_results.append(results)
+            reflect_contexts.append(kwargs.get("step_buffer_context", ""))
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": "candidate",
+                                "change_summary": ["all review feedback"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+            ]
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            changed = "All reviewed feedback guidance" in skill_content
+            return [_scored_result(soft=0.95 if changed else 0.1)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+    cfg["gate_metric"] = "soft"
+
+    summary = ReflACTTrainer(cfg, AllFeedbackAdapter(_TwoItemFeedbackDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert [result["id"] for result in reflect_results[0]] == ["item-001", "item-002"]
+    assert "Optimizer context items: item-001, item-002" in reflect_contexts[0]
+    assert "item-001" in merge_contexts[0]
+    assert "item-002" in merge_contexts[0]
+    assert "sharper mechanism question" in merge_contexts[0]
+    assert "remove filler words" in merge_contexts[0]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["feedback_direct_items"] == ["item-001", "item-002"]
+    assert history[0]["optimizer_context_items"] == ["item-001", "item-002"]
 
 
 def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp_path):
@@ -2119,8 +2223,8 @@ def test_gate_rejection_retry_reflect_preserves_accumulation_batch_dirs(tmp_path
     retry_calls = [call for call in reflect_calls if call["has_gate_retry_context"]]
     assert summary["total_accepts"] == 0
     assert len(retry_calls) == 2
-    assert retry_calls[0]["ids"] == ["item-a"]
-    assert retry_calls[1]["ids"] == ["item-b"]
+    assert retry_calls[0]["ids"] == ["item-a", "item-b"]
+    assert retry_calls[1]["ids"] == ["item-a", "item-b"]
     assert "/batch_0/rollout/predictions" in retry_calls[0]["prediction_dir"]
     assert "/batch_1/rollout/predictions" in retry_calls[1]["prediction_dir"]
 
@@ -2630,7 +2734,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "gate_score_gap_too_large")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2641,7 +2745,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2653,7 +2757,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2666,7 +2770,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2692,7 +2796,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=3,
         seen_reasons=set(),
         close_gap=1.0,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2704,7 +2808,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=3,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2717,7 +2821,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2730,7 +2834,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (False, "candidate_hard_score_failed")
+    ) == (True, "retryable")
     assert _gate_rejection_retry_decision(
         packet,
         attempt=1,

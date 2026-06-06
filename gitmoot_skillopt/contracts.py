@@ -85,6 +85,15 @@ def _optional_string_list(value: Any, label: str) -> list[str]:
     return normalized
 
 
+def _optional_mapping(value: Any, label: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ContractError(f"{label} must be an object")
+    json.dumps(value)
+    return dict(value)
+
+
 def _optional_dimension_scores(value: Any) -> dict[str, float] | None:
     if value is None:
         return None
@@ -620,6 +629,7 @@ class GateRejectionPacket:
     attempted_patch: str = ""
     retry_attempts: str = ""
     next_action: str = ""
+    retry_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> GateRejectionPacket | None:
@@ -643,6 +653,7 @@ class GateRejectionPacket:
             attempted_patch=_optional_string(data.get("attempted_patch")),
             retry_attempts=_optional_string(data.get("retry_attempts")),
             next_action=_optional_string(data.get("next_action")),
+            retry_metadata=_optional_mapping(data.get("retry_metadata"), "gate_rejection.retry_metadata"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -676,6 +687,8 @@ class GateRejectionPacket:
             data["retry_attempts"] = self.retry_attempts
         if self.next_action:
             data["next_action"] = self.next_action
+        if self.retry_metadata:
+            data["retry_metadata"] = self.retry_metadata
         return data
 
 

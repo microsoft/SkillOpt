@@ -416,6 +416,23 @@ def _ranked_feedback_item_index(dataloader) -> dict[str, dict]:
     return index
 
 
+def _all_ranked_feedback_items(dataloader, *, mode: str) -> list[dict]:
+    normalized_mode = _normalize_feedback_direct_mode(mode)
+    if normalized_mode == "off":
+        return []
+    ranked_items: list[dict] = []
+    for item in _ranked_feedback_item_index(dataloader).values():
+        events = _item_ranked_feedback_events(item)
+        if normalized_mode == "auto" and not _ranked_feedback_requests_optimization(events):
+            continue
+        if normalized_mode == "on" and not events:
+            continue
+        merged = dict(item)
+        merged["ranked_feedback_events"] = events
+        ranked_items.append(merged)
+    return ranked_items
+
+
 def _item_ranked_feedback_events(item: dict | None) -> list[dict]:
     if not isinstance(item, dict):
         return []
@@ -456,6 +473,9 @@ def _feedback_direct_items(
     normalized_mode = _normalize_feedback_direct_mode(mode)
     if normalized_mode == "off":
         return []
+    all_ranked_items = _all_ranked_feedback_items(dataloader, mode=normalized_mode)
+    if all_ranked_items:
+        return all_ranked_items
     index = _ranked_feedback_item_index(dataloader)
     direct_items: list[dict] = []
     for batch_item in batch_items:
@@ -488,13 +508,21 @@ def _non_feedback_direct_items(
 
 
 def _format_feedback_direct_context(items: list[dict], dataloader) -> str:
-    hints = _ranked_feedback_retry_hints(dataloader, {str(item.get("id") or "") for item in items})
+    context_item_ids = {str(item.get("id") or "") for item in items}
+    full_feedback_packet = _ranked_feedback_context_packet(dataloader)
+    hints = _ranked_feedback_retry_hints(dataloader, context_item_ids)
     lines = [
         "## Feedback-Direct Optimization",
         "Ranked human feedback is available before target rollout.",
         "Update the skill from the review feedback first; do not wait for a fresh old-skill artifact failure.",
+        "Use all reviewed feedback items below as the optimization scope; do not optimize only for one sampled item.",
         "The optimizer output must be a skill update. Do not output Vue files, JSON bundles, YAML review data, or target artifacts.",
     ]
+    if context_item_ids:
+        lines.append("Optimizer context items: " + ", ".join(sorted(context_item_ids)))
+    full_feedback_text = _format_ranked_feedback_packet(full_feedback_packet)
+    if full_feedback_text:
+        lines.append(full_feedback_text)
     labels = {
         "preserve": "Preserve winning traits",
         "improve": "Required improvements",
@@ -754,23 +782,26 @@ def _gate_rejection_retry_decision(
         return False, "non_retryable_gate_rejection"
     baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
     candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
+    retry_metadata: dict[str, object] = {}
     if close_gap is not None:
         candidate_hard = candidate.get("hard")
-        if isinstance(candidate_hard, bool) or not isinstance(candidate_hard, int | float):
-            return False, "missing_candidate_hard_score"
-        if float(candidate_hard) < 1.0 and not _candidate_hard_score_allows_gate_retry(packet):
-            return False, "candidate_hard_score_failed"
+        if not isinstance(candidate_hard, bool) and isinstance(candidate_hard, int | float):
+            if float(candidate_hard) < 1.0:
+                retry_metadata["hard_score_handling"] = "retryable_if_actionable"
         baseline_gate = baseline.get("gate_score")
         candidate_gate = candidate.get("gate_score")
         if (
-            isinstance(baseline_gate, bool)
-            or isinstance(candidate_gate, bool)
-            or not isinstance(baseline_gate, int | float)
-            or not isinstance(candidate_gate, int | float)
+            not isinstance(baseline_gate, bool)
+            and not isinstance(candidate_gate, bool)
+            and isinstance(baseline_gate, int | float)
+            and isinstance(candidate_gate, int | float)
         ):
-            return False, "missing_gate_score_delta"
-        if float(baseline_gate) - float(candidate_gate) > max(0.0, float(close_gap)):
-            return False, "gate_score_gap_too_large"
+            score_gap = float(baseline_gate) - float(candidate_gate)
+            retry_metadata["score_gap"] = score_gap
+            if score_gap > max(0.0, float(close_gap)):
+                retry_metadata["score_gap_handling"] = "retry_context"
+                retry_metadata["severity"] = "large_regression"
+    evidence_values = packet.get("evidence") if isinstance(packet.get("evidence"), list) else []
     has_actionable_context = any(
         str(value or "").strip()
         for value in (
@@ -778,6 +809,7 @@ def _gate_rejection_retry_decision(
             packet.get("human_reason"),
             baseline.get("evaluator_reasoning"),
             candidate.get("evaluator_reasoning"),
+            "; ".join(str(item) for item in evidence_values),
         )
     )
     if not has_actionable_context:
@@ -788,6 +820,11 @@ def _gate_rejection_retry_decision(
     signature = _gate_rejection_signature(packet)
     if signature in seen_reasons:
         return False, "repeated_rejection_reason"
+    if retry_metadata:
+        existing_metadata = packet.get("retry_metadata")
+        metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+        metadata.update(retry_metadata)
+        packet["retry_metadata"] = metadata
     return True, "retryable"
 
 
@@ -967,6 +1004,7 @@ def _gate_rejection_with_retry_attempts(packet: dict | None, *, used: int, budge
 def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -> str:
     baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
     candidate = packet.get("candidate") if isinstance(packet.get("candidate"), dict) else {}
+    retry_metadata = packet.get("retry_metadata") if isinstance(packet.get("retry_metadata"), dict) else {}
     dimension_scores = packet.get("dimension_scores") if isinstance(packet.get("dimension_scores"), dict) else {}
     delta_summary = packet.get("delta_summary") if isinstance(packet.get("delta_summary"), dict) else {}
     failed_dimensions = packet.get("failed_dimensions") if isinstance(packet.get("failed_dimensions"), list) else []
@@ -998,6 +1036,17 @@ def _format_gate_reject_retry_context(packet: dict, attempt: int, budget: int) -
         "Do not repeat this failed patch direction. Make a different, meaningful skill update "
         "that addresses the failed dimensions and imported human feedback.",
     ]
+    if retry_metadata:
+        metadata_bits = []
+        for key in ("score_gap", "score_gap_handling", "hard_score_handling", "severity"):
+            value = retry_metadata.get(key)
+            if value not in (None, ""):
+                if isinstance(value, float):
+                    metadata_bits.append(f"{key}={value:.4f}")
+                else:
+                    metadata_bits.append(f"{key}={value}")
+        if metadata_bits:
+            lines.append("Retry decision metadata: " + ", ".join(metadata_bits))
     dimension_delta = dimension_scores.get("delta") if isinstance(dimension_scores.get("delta"), dict) else {}
     if dimension_delta:
         formatted_deltas = []
@@ -2909,6 +2958,11 @@ class ReflACTTrainer:
                             + [str(item.get("id") or "") for item in feedback_direct_items],
                             limit=64,
                         )
+                        step_rec["optimizer_context_items"] = _dedupe_texts(
+                            list(step_rec.get("optimizer_context_items") or [])
+                            + [str(item.get("id") or "") for item in feedback_direct_items],
+                            limit=64,
+                        )
                     else:
                         print(f"    [1/6 ROLLOUT] train items={train_n} (from pool, batch_seed={batch_seed})")
                         rollout_results = adapter.rollout(
@@ -3556,6 +3610,13 @@ class ReflACTTrainer:
                                 "stop_reason": gate_reject_stop_reason,
                                 "gate_rejection": gate_rejection,
                             }
+                            if isinstance(gate_rejection, dict):
+                                retry_metadata = gate_rejection.get("retry_metadata")
+                                if isinstance(retry_metadata, dict) and retry_metadata:
+                                    gate_retry_record["retry_metadata"] = retry_metadata
+                                gate_retry_record["retry_decision"] = (
+                                    "retry" if can_retry_gate_reject else gate_reject_stop_reason
+                                )
                             if wrong_artifact_retry and isinstance(gate_rejection, dict):
                                 gate_retry_record["expected_artifact"] = str(
                                     gate_rejection.get("expected_artifact") or "vue-vite bundle"
@@ -4811,6 +4872,15 @@ class ReflACTTrainer:
             for attempt in h.get("wrong_artifact_retry_attempts", [])
             if isinstance(attempt, dict)
         ]
+        optimizer_context_items = _dedupe_texts(
+            [
+                str(item)
+                for h in history
+                for item in h.get("optimizer_context_items", [])
+                if str(item or "").strip()
+            ],
+            limit=128,
+        )
         final_has_candidate = n_accept > 0 or best_origin != "initial_skill"
         no_candidate_triggers = [] if final_has_candidate else _dedupe_texts([
             trigger
@@ -4892,6 +4962,7 @@ class ReflACTTrainer:
             "total_rejects": n_reject,
             "total_blocks": n_block,
             "total_skips": n_skip,
+            "optimizer_context_items": optimizer_context_items,
             "noop_retry_attempts": noop_retry_attempts,
             "gate_reject_retry_attempts": gate_reject_retry_attempts,
             "wrong_artifact_retry_attempts": wrong_artifact_retry_attempts,

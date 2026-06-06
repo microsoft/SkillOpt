@@ -428,6 +428,7 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "total_rejects": summary.get("total_rejects"),
         "total_blocks": summary.get("total_blocks"),
         "total_skips": summary.get("total_skips"),
+        "optimizer_context_items": summary.get("optimizer_context_items", []),
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "gate_reject_retry_attempts": summary.get("gate_reject_retry_attempts", []),
         "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
@@ -519,6 +520,7 @@ def _summary_metadata(
         "no_candidate_triggers": no_candidate_triggers,
         "no_candidate_details": no_candidate_details,
         "no_candidate_diagnostics": no_candidate_diagnostics,
+        "optimizer_context_items": summary.get("optimizer_context_items", []),
         "noop_retry_attempts": summary.get("noop_retry_attempts", []),
         "gate_reject_retry_attempts": summary.get("gate_reject_retry_attempts", []),
         "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
@@ -650,6 +652,13 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
         details["retry_budget_exhausted"] = diagnostics.get("retry_budget_exhausted", False)
         details["feedback_themes"] = diagnostics.get("feedback_themes", [])
         details["stop_reason"] = diagnostics.get("stop_reason", "")
+        details["optimizer_context_items"] = summary.get("optimizer_context_items", [])
+        retry_metadata = gate_rejection.get("retry_metadata") if isinstance(gate_rejection.get("retry_metadata"), dict) else {}
+        if retry_metadata:
+            details["retry_metadata"] = retry_metadata
+            details["score_gap"] = retry_metadata.get("score_gap")
+            details["score_gap_handling"] = retry_metadata.get("score_gap_handling", "")
+            details["hard_score_handling"] = retry_metadata.get("hard_score_handling", "")
         if diagnostics.get("evaluator_contract_failure"):
             details["candidate_quality_status"] = "judge_passed_but_schema_failed"
             details["raw_judge_hard"] = diagnostics.get("raw_judge_hard")
@@ -773,6 +782,7 @@ def _gate_rejection_diagnostics(summary: dict[str, Any], gate_rejection: dict[st
     retry_budget_exhausted = _has_retry_budget_exhausted(retry_stop_reasons)
     if retry_budget_exhausted:
         categories.append("retry_budget_exhausted")
+    retry_metadata = gate_rejection.get("retry_metadata") if isinstance(gate_rejection.get("retry_metadata"), dict) else {}
 
     return {
         "categories": _dedupe_triggers(categories),
@@ -780,6 +790,10 @@ def _gate_rejection_diagnostics(summary: dict[str, Any], gate_rejection: dict[st
         "retry_budget_exhausted": retry_budget_exhausted,
         "retry_stop_reasons": retry_stop_reasons,
         "stop_reason": retry_stop_reasons[-1] if retry_stop_reasons else "",
+        "retry_metadata": retry_metadata,
+        "score_gap": retry_metadata.get("score_gap"),
+        "score_gap_handling": retry_metadata.get("score_gap_handling", ""),
+        "hard_score_handling": retry_metadata.get("hard_score_handling", ""),
         "feedback_themes": _feedback_themes(gate_rejection.get("human_feedback_context")),
         "evaluator_contract_failure": evaluator_contract_failure,
         "raw_judge_hard": _raw_judge_score(gate_rejection, "hard"),
