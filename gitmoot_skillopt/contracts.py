@@ -629,6 +629,7 @@ class GateRejectionPacket:
     attempted_patch: str = ""
     retry_attempts: str = ""
     next_action: str = ""
+    selection_failed_item: str = ""
     retry_metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -653,6 +654,7 @@ class GateRejectionPacket:
             attempted_patch=_optional_string(data.get("attempted_patch")),
             retry_attempts=_optional_string(data.get("retry_attempts")),
             next_action=_optional_string(data.get("next_action")),
+            selection_failed_item=_optional_string(data.get("selection_failed_item")),
             retry_metadata=_optional_mapping(data.get("retry_metadata"), "gate_rejection.retry_metadata"),
         )
 
@@ -687,6 +689,8 @@ class GateRejectionPacket:
             data["retry_attempts"] = self.retry_attempts
         if self.next_action:
             data["next_action"] = self.next_action
+        if self.selection_failed_item:
+            data["selection_failed_item"] = self.selection_failed_item
         if self.retry_metadata:
             data["retry_metadata"] = self.retry_metadata
         return data

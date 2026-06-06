@@ -652,7 +652,17 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
         details["retry_budget_exhausted"] = diagnostics.get("retry_budget_exhausted", False)
         details["feedback_themes"] = diagnostics.get("feedback_themes", [])
         details["stop_reason"] = diagnostics.get("stop_reason", "")
+        details["review_feedback_items"] = summary.get("review_feedback_items", [])
         details["optimizer_context_items"] = summary.get("optimizer_context_items", [])
+        details["selection_failed_item"] = str(gate_rejection.get("selection_failed_item") or "")
+        details["retry_decision"] = _latest_retry_decision(
+            summary,
+            key=(
+                "wrong_artifact_retry_attempts"
+                if _gate_rejection_is_wrong_artifact(gate_rejection)
+                else "gate_reject_retry_attempts"
+            ),
+        )
         retry_metadata = gate_rejection.get("retry_metadata") if isinstance(gate_rejection.get("retry_metadata"), dict) else {}
         if retry_metadata:
             details["retry_metadata"] = retry_metadata
@@ -673,6 +683,7 @@ def _no_candidate_details(summary: dict[str, Any], no_candidate_triggers: list[s
             "optimizer_hint": str(gate_rejection.get("optimizer_hint") or ""),
             "failed_dimensions": gate_rejection.get("failed_dimensions") or [],
             "evidence": gate_rejection.get("evidence") or [],
+            "selection_failed_item": str(gate_rejection.get("selection_failed_item") or ""),
             "human_feedback_context": gate_rejection.get("human_feedback_context") or {},
         }
         details["human_feedback_context"] = gate_rejection.get("human_feedback_context") or {}
@@ -718,6 +729,13 @@ def _no_candidate_report_fields(details: dict[str, Any]) -> dict[str, Any]:
         "normalized_hard",
         "normalized_soft",
         "selection_gate_relation",
+        "review_feedback_items",
+        "optimizer_context_items",
+        "selection_failed_item",
+        "retry_decision",
+        "score_gap",
+        "score_gap_handling",
+        "hard_score_handling",
         "stop_reason",
         "next_actions",
     ):
@@ -941,3 +959,30 @@ def _duplicate_retry_detected(summary: dict[str, Any]) -> bool:
         if "duplicate" in stop_reason:
             return True
     return False
+
+
+def _gate_rejection_is_wrong_artifact(gate_rejection: dict[str, Any]) -> bool:
+    for key in ("rejection_type", "primary_reason"):
+        if str(gate_rejection.get(key) or "").strip() == "wrong_artifact_type":
+            return True
+    return False
+
+
+def _latest_retry_decision(summary: dict[str, Any], *, key: str | None = None) -> str:
+    keys = [key] if key else ["gate_reject_retry_attempts", "wrong_artifact_retry_attempts", "noop_retry_attempts"]
+    attempts: list[dict[str, Any]] = []
+    for attempt_key in keys:
+        value = summary.get(attempt_key)
+        if isinstance(value, list):
+            attempts.extend(attempt for attempt in value if isinstance(attempt, dict))
+    for attempt in reversed(attempts):
+        decision = str(attempt.get("retry_decision") or "").strip()
+        if decision:
+            return decision
+        action = str(attempt.get("action") or "").strip()
+        stop_reason = str(attempt.get("stop_reason") or "").strip()
+        if action == "retry":
+            return "retry"
+        if action == "stop" and stop_reason:
+            return stop_reason
+    return ""

@@ -212,6 +212,13 @@ def _run_optimize(args: argparse.Namespace) -> int:
                 print(f"candidate_gate: {candidate_gate}")
             if "duplicate_retry_detected" in details:
                 print(f"duplicate_retry_detected: {bool(details.get('duplicate_retry_detected'))}")
+            for key in ("review_feedback_items", "optimizer_context_items"):
+                value = details.get(key)
+                if isinstance(value, list) and value:
+                    print(f"{key}: {','.join(str(item) for item in value)}")
+            for key in ("selection_failed_item", "retry_decision", "score_gap_handling", "hard_score_handling"):
+                if value := str(details.get(key) or "").strip():
+                    print(f"{key}: {value}")
             if evaluator_reason := str(details.get("evaluator_reason") or "").strip():
                 print(f"evaluator_reason: {evaluator_reason}")
             rejection = details.get("rejection")

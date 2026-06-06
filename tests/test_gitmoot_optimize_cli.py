@@ -1413,16 +1413,34 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
             "baseline_selection_hard": 1.0,
             "baseline_selection_soft": 0.89,
             "final_test_skipped_reason": "selection_gate_rejected_candidate",
+            "review_feedback_items": ["item-001", "item-002"],
+            "optimizer_context_items": ["item-001", "item-002"],
             "gate_reject_retry_attempts": [
                 {
                     "attempt": 0,
                     "action": "retry",
+                    "retry_decision": "retry",
                     "retry_produced_duplicate_candidate": True,
                 },
                 {
                     "attempt": 1,
                     "action": "stop",
                     "stop_reason": "budget_exhausted",
+                    "retry_decision": "budget_exhausted",
+                }
+            ],
+            "wrong_artifact_retry_attempts": [
+                {
+                    "attempt": 0,
+                    "action": "stop",
+                    "retry_decision": "wrong_artifact_budget_exhausted",
+                }
+            ],
+            "noop_retry_attempts": [
+                {
+                    "attempt": 0,
+                    "action": "stop",
+                    "retry_decision": "noop_retry_budget_exhausted",
                 }
             ],
             "gate_rejection": {
@@ -1449,6 +1467,7 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
                 "optimizer_hint": "Use gate rejection evidence before spending final test budget.",
                 "failed_dimensions": ["human_feedback_resolution", "visual_quality"],
                 "evidence": ["Candidate gate score 0.8400 <= baseline gate score 0.8900."],
+                "selection_failed_item": "item-001",
                 "human_feedback_context": {
                     "improve": ["stronger product visuals", "better mobile layout"],
                     "preserve": ["complete footer"],
@@ -1483,6 +1502,10 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
     assert loaded.eval_report["no_candidate_details"]["baseline_gate"] == 0.89
     assert loaded.eval_report["no_candidate_details"]["candidate_gate"] == 0.84
     assert loaded.eval_report["no_candidate_details"]["duplicate_retry_detected"] is True
+    assert loaded.eval_report["no_candidate_details"]["review_feedback_items"] == ["item-001", "item-002"]
+    assert loaded.eval_report["no_candidate_details"]["optimizer_context_items"] == ["item-001", "item-002"]
+    assert loaded.eval_report["no_candidate_details"]["selection_failed_item"] == "item-001"
+    assert loaded.eval_report["no_candidate_details"]["retry_decision"] == "budget_exhausted"
     assert loaded.eval_report["no_candidate_details"]["evaluator_reason"] == (
         "Candidate was valid but had weaker imagery."
     )
@@ -1509,10 +1532,15 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
         "too close to prior layout",
     ]
     assert loaded.eval_report["gate_rejection"]["candidate"]["gate_score"] == 0.84
+    assert loaded.eval_report["gate_rejection"]["selection_failed_item"] == "item-001"
     assert loaded.summary.metadata["gate_rejection"]["baseline"]["gate_score"] == 0.89
+    assert loaded.summary.metadata["gate_rejection"]["selection_failed_item"] == "item-001"
     assert loaded.summary.metadata["no_candidate_details"]["baseline_gate"] == 0.89
     assert loaded.summary.metadata["no_candidate_details"]["candidate_gate"] == 0.84
     assert loaded.summary.metadata["no_candidate_details"]["duplicate_retry_detected"] is True
+    assert loaded.summary.metadata["no_candidate_details"]["review_feedback_items"] == ["item-001", "item-002"]
+    assert loaded.summary.metadata["no_candidate_details"]["selection_failed_item"] == "item-001"
+    assert loaded.summary.metadata["no_candidate_details"]["retry_decision"] == "budget_exhausted"
     assert loaded.summary.metadata["no_candidate_details"]["next_actions"] == [
         "collect more feedback",
         "rerun with higher retry budget",
@@ -1528,6 +1556,7 @@ def test_selection_reject_summary_writes_gate_rejection_package(tmp_path):
     assert loaded.summary.metadata["no_candidate_details"]["rejection"]["baseline"]["gate_score"] == 0.89
     assert loaded.summary.gate_rejection is not None
     assert loaded.summary.gate_rejection.primary_reason == "candidate_quality_regressed"
+    assert loaded.summary.gate_rejection.selection_failed_item == "item-001"
     assert loaded.summary.gate_rejection.attempted_patch == "artifact delivery only"
     assert loaded.summary.gate_rejection.candidate.evaluator_reasoning == (
         "Candidate was valid but had weaker imagery."

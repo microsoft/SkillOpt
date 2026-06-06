@@ -15,6 +15,7 @@ from skillopt.engine.trainer import (
     _gate_rejection_retry_decision,
     _non_feedback_direct_items,
     _ranked_feedback_context_packet,
+    _ranked_feedback_item_ids,
     _selection_eval_context,
     _selection_reject_gate_rejection,
     _selection_rejection_signal,
@@ -709,6 +710,8 @@ def test_feedback_direct_optimizer_context_includes_all_reviewed_items(tmp_path,
     summary = ReflACTTrainer(cfg, AllFeedbackAdapter(_TwoItemFeedbackDataLoader())).train()
 
     assert summary["total_accepts"] == 1
+    assert summary["review_feedback_items"] == ["item-001", "item-002"]
+    assert summary["optimizer_context_items"] == ["item-001", "item-002"]
     assert [result["id"] for result in reflect_results[0]] == ["item-001", "item-002"]
     assert "Optimizer context items: item-001, item-002" in reflect_contexts[0]
     assert "item-001" in merge_contexts[0]
@@ -718,6 +721,24 @@ def test_feedback_direct_optimizer_context_includes_all_reviewed_items(tmp_path,
     history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
     assert history[0]["feedback_direct_items"] == ["item-001", "item-002"]
     assert history[0]["optimizer_context_items"] == ["item-001", "item-002"]
+
+
+def test_review_feedback_item_ids_are_not_prompt_context_limited():
+    class ManyItemDataLoader(_RetryDataLoader):
+        def __init__(self) -> None:
+            super().__init__(item_id="item-001", train_size=1)
+            self.train_items = [
+                {
+                    "id": f"item-{idx:03d}",
+                    "ranked_feedback_events": [{"choice": f"feedback {idx}"}],
+                }
+                for idx in range(1, 18)
+            ]
+
+    dataloader = ManyItemDataLoader()
+
+    assert len(_ranked_feedback_context_packet(dataloader)["source_item_ids"]) == 12
+    assert _ranked_feedback_item_ids(dataloader) == [f"item-{idx:03d}" for idx in range(1, 18)]
 
 
 def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp_path):
@@ -1179,6 +1200,7 @@ def test_selection_reject_packet_marks_evaluator_contract_failure_non_retryable(
     ]
     rejection_signal = {
         "primary_reason": "evaluator_missing_human_feedback_dimensions",
+        "source_item_id": "item-001",
         "human_reason": "Human feedback exists, but the judge did not return structured dimensions.",
         "optimizer_hint": "Retry or fix the evaluator schema.",
         "failed_dimensions": ["human_feedback_alignment"],
@@ -1205,6 +1227,7 @@ def test_selection_reject_packet_marks_evaluator_contract_failure_non_retryable(
     assert rejection["rejection_type"] == "evaluator_contract_failure"
     assert rejection["retryable"] is False
     assert rejection["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert rejection["selection_failed_item"] == "item-001"
     assert "do not retry the optimizer" in rejection["next_action"].lower()
     can_retry, reason = _gate_rejection_retry_decision(
         rejection,

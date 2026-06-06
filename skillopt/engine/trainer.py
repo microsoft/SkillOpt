@@ -311,6 +311,24 @@ def _ranked_feedback_context_packet(
     return _ranked_feedback_context_from_events(events_with_item)
 
 
+def _ranked_feedback_item_ids(dataloader, result_ids: set[str] | None = None, *, limit: int = 128) -> list[str]:
+    if dataloader is None or not hasattr(dataloader, "train_items"):
+        return []
+    try:
+        train_items = [item for item in dataloader.train_items if isinstance(item, dict)]
+    except Exception:  # noqa: BLE001
+        return []
+    ids = {str(item_id or "").strip() for item_id in (result_ids or set()) if str(item_id or "").strip()}
+    reviewed_ids: list[str] = []
+    for item in train_items:
+        item_id = str(item.get("id") or "").strip()
+        if not item_id or (ids and item_id not in ids):
+            continue
+        if _item_ranked_feedback_events(item):
+            reviewed_ids.append(item_id)
+    return _dedupe_texts(reviewed_ids, limit=limit)
+
+
 def _format_ranked_feedback_packet(packet: dict | None) -> str:
     if not isinstance(packet, dict) or not packet:
         return ""
@@ -2058,6 +2076,8 @@ def _selection_reject_gate_rejection(
             else next_action
         ),
     }
+    if source_item_id:
+        packet["selection_failed_item"] = source_item_id
     if packet_feedback_context:
         packet["human_feedback_context"] = packet_feedback_context
     return packet
@@ -4881,6 +4901,7 @@ class ReflACTTrainer:
             ],
             limit=128,
         )
+        review_feedback_items = _ranked_feedback_item_ids(dataloader)
         final_has_candidate = n_accept > 0 or best_origin != "initial_skill"
         no_candidate_triggers = [] if final_has_candidate else _dedupe_texts([
             trigger
@@ -4962,6 +4983,7 @@ class ReflACTTrainer:
             "total_rejects": n_reject,
             "total_blocks": n_block,
             "total_skips": n_skip,
+            "review_feedback_items": review_feedback_items,
             "optimizer_context_items": optimizer_context_items,
             "noop_retry_attempts": noop_retry_attempts,
             "gate_reject_retry_attempts": gate_reject_retry_attempts,
