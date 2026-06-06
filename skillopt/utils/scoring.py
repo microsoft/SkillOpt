@@ -15,6 +15,8 @@ def compute_score(results: list) -> tuple[float, float]:
         return 0.0, 0.0
 
     def _hard(r: object) -> float:
+        if is_quality_failed_result(r):
+            return 0.0
         return _score_value(r, "hard", 0)
 
     def _soft(r: object) -> float:
@@ -42,6 +44,12 @@ def _is_unscored_result(result: object) -> bool:
     return str(status).strip().lower() == "unscored"
 
 
+def is_quality_failed_result(result: object) -> bool:
+    """Return true when a scored result failed the structured quality gate."""
+    status = _result_field(result, "quality_status", "")
+    return str(status).strip().lower().replace("-", "_") == "failed"
+
+
 def _result_label(result: object) -> str:
     result_id = _result_field(result, "id", "unknown")
     blocker = _result_field(result, "blocker", "")
@@ -57,6 +65,9 @@ def _result_label(result: object) -> str:
 def _result_field(result: object, key: str, default: Any) -> Any:
     if hasattr(result, key):
         return getattr(result, key)
+    extras = getattr(result, "extras", None)
+    if isinstance(extras, dict) and key in extras:
+        return extras.get(key, default)
     if isinstance(result, dict):
         return result.get(key, default)
     return default

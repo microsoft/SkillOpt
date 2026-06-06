@@ -62,7 +62,7 @@ from skillopt.optimizer.update_modes import (
     payload_label,
     short_item_summary,
 )
-from skillopt.utils import compute_score, skill_hash
+from skillopt.utils import compute_score, is_quality_failed_result, skill_hash
 
 # ── Patch normalization ───────────────────────────────────────────────────────
 
@@ -817,15 +817,28 @@ def _candidate_hard_score_allows_gate_retry(packet: dict) -> bool:
     baseline = packet.get("baseline") if isinstance(packet.get("baseline"), dict) else {}
     baseline_hard = baseline.get("hard")
     if (
+        not isinstance(baseline_hard, bool)
+        and isinstance(baseline_hard, int | float)
+        and float(baseline_hard) > 0.0
+    ):
+        return False
+    if (
         isinstance(packet.get("human_feedback_context"), dict)
         and not isinstance(baseline_hard, bool)
         and isinstance(baseline_hard, int | float)
         and float(baseline_hard) <= 0.0
-        and primary_reason in {"candidate_quality_regressed", "candidate_score_regression"}
         and rejection_type in {"", "candidate_score_regression"}
         and any(
-            _matches_retryable_hard_zero_token(field, "human_feedback_alignment")
+            _matches_retryable_hard_zero_token(field, token)
             for field in normalized
+            for token in {
+                "candidate_score_regression",
+                "human_feedback_alignment",
+                "human_feedback_not_resolved",
+                "human_feedback_resolution",
+                "quality_rejection",
+                "soft_quality_rejection",
+            }
         )
     ):
         return True
@@ -1520,7 +1533,8 @@ def _compute_task_type_buckets(results: list[dict], task_types: list[str]) -> di
             if _is_unscored_rollout_result(r):
                 buckets[key]["unscored"] += 1
                 continue
-            buckets[key]["hard"] += float(r.get("hard", 0))
+            if not is_quality_failed_result(r):
+                buckets[key]["hard"] += float(r.get("hard", 0))
             buckets[key]["soft"] += float(r.get("soft", 0.0))
     return buckets
 
@@ -1531,6 +1545,8 @@ def _is_unscored_rollout_result(result: dict) -> bool:
 
 def _is_failed_rollout_result(result: dict) -> bool:
     if _is_unscored_rollout_result(result):
+        return True
+    if is_quality_failed_result(result):
         return True
     return not result.get("hard") or float(result.get("hard", 0)) < 1e-9
 
@@ -2678,7 +2694,7 @@ class ReflACTTrainer:
                         hard_failure_retry_attempts = list(step_rec.get("hard_failure_retry_attempts") or [])
                         hard_failure_results = [
                             result for result in rollout_results
-                            if isinstance(result, dict) and not result.get("hard")
+                            if isinstance(result, dict) and (not result.get("hard") or is_quality_failed_result(result))
                         ]
                         for retry_attempt in range(1, hard_failure_retry_budget + 1):
                             retry_context = _format_hard_failure_retry_context(

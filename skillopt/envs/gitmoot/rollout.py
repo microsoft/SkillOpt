@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from dataclasses import dataclass
 from typing import Any
 
-from skillopt.envs.gitmoot.evaluator import evaluate_response
+from skillopt.envs.gitmoot.evaluator import _check_vue_vite_bundle, evaluate_response
 from skillopt.envs.gitmoot.package import safe_item_path_segment
 from skillopt.envs.gitmoot.result_contract import (
     EVALUATOR_FAILED,
@@ -27,6 +28,8 @@ SKILLOPT_TARGET_START = "<!-- SKILLOPT_TARGET_START -->"
 SKILLOPT_TARGET_END = "<!-- SKILLOPT_TARGET_END -->"
 SKILLOPT_OPTIMIZER_START = "<!-- SKILLOPT_OPTIMIZER_START -->"
 SKILLOPT_OPTIMIZER_END = "<!-- SKILLOPT_OPTIMIZER_END -->"
+VUE_VITE_REQUIRED_FILES = ("package.json", "index.html", "src/main.js", "src/App.vue")
+VUE_VITE_ARTIFACT_MARKERS = {"vue_vite_bundle", "vue-vite-bundle"}
 
 
 @dataclass(frozen=True)
@@ -82,13 +85,15 @@ def process_one(
     repair_attempts: list[dict[str, Any]] = []
 
     try:
-        response = _run_agent(
+        config = evaluator_config if evaluator_config is not None else item.get("evaluator_config")
+        response = _call_run_agent(
             item,
             target_skill.content,
             system_prompt,
             user_prompt,
             max_completion_tokens,
             pred_dir,
+            config=config,
         )
         agent_ok = True
     except Exception as exc:  # noqa: BLE001 - rollout result records the failure.
@@ -106,7 +111,6 @@ def process_one(
             metadata={"evaluator": "not_run", "agent_error": True},
         )
     else:
-        config = evaluator_config if evaluator_config is not None else item.get("evaluator_config")
         try:
             score = _evaluate_target_response(
                 item=item,
@@ -127,13 +131,14 @@ def process_one(
                 )
                 repair_record = _artifact_repair_record(score=score, attempt=attempt + 1)
                 try:
-                    repaired_response = _run_agent(
+                    repaired_response = _call_run_agent(
                         item,
                         target_skill.content,
                         system_prompt,
                         repair_prompt,
                         max_completion_tokens,
                         pred_dir,
+                        config=config,
                     )
                 except Exception as repair_exc:  # noqa: BLE001 - keep the last scored artifact failure.
                     repair_record["status"] = "target_failed"
@@ -179,6 +184,7 @@ def process_one(
         "metadata": {
             **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
             "target_skill": target_skill.metadata,
+            **_target_note_metadata(response),
             **(score.get("metadata") if isinstance(score.get("metadata"), dict) else {}),
             **({"target_artifact_repair_attempts": repair_attempts} if repair_attempts else {}),
         },
@@ -294,12 +300,14 @@ def _run_agent(
     user_prompt: str,
     max_completion_tokens: int,
     pred_dir: str,
+    *,
+    config: Any = None,
 ) -> str:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     if _has_mock_response(item):
         return str(metadata["mock_response"])
     if is_target_exec_backend():
-        response = _run_exec_agent(item, skill_content, system_prompt, user_prompt, pred_dir)
+        response = _run_exec_agent(item, skill_content, system_prompt, user_prompt, pred_dir, config=config)
         if not response.strip():
             raise RuntimeError("exec target returned empty response")
         return response
@@ -315,14 +323,39 @@ def _run_agent(
     return response
 
 
+def _call_run_agent(
+    item: dict[str, Any],
+    skill_content: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_completion_tokens: int,
+    pred_dir: str,
+    *,
+    config: Any = None,
+) -> str:
+    parameters = inspect.signature(_run_agent).parameters
+    if "config" in parameters:
+        return _run_agent(
+            item,
+            skill_content,
+            system_prompt,
+            user_prompt,
+            max_completion_tokens,
+            pred_dir,
+            config=config,
+        )
+    return _run_agent(item, skill_content, system_prompt, user_prompt, max_completion_tokens, pred_dir)
+
+
 def _run_exec_agent(
     item: dict[str, Any],
     skill_content: str,
     system_prompt: str,
     user_prompt: str,
     pred_dir: str,
+    *,
+    config: Any = None,
 ) -> str:
-    del item
     work_dir = os.path.join(pred_dir, "target_exec")
     skill_md = render_skill_md(
         skill_content,
@@ -335,13 +368,14 @@ def _run_exec_agent(
         task_text=user_prompt,
     )
     model = os.environ.get("TARGET_DEPLOYMENT") or default_model_for_backend(get_target_backend())
+    collect_workspace_artifact = _requires_vue_vite_workspace_artifact(item, config)
     try:
         response, raw = run_target_exec(
             work_dir=work_dir,
-            prompt=_build_exec_prompt(system_prompt),
+            prompt=_build_exec_prompt(system_prompt, collect_workspace_artifact=collect_workspace_artifact),
             model=model,
             timeout=900,
-            allow_file_edits=False,
+            allow_file_edits=collect_workspace_artifact,
         )
     except Exception as exc:
         _write_target_exec_trace_alias(pred_dir, error=str(exc) or "exec target failed")
@@ -349,20 +383,170 @@ def _run_exec_agent(
     _write_target_exec_trace_alias(pred_dir, raw=raw)
     with open(os.path.join(pred_dir, "target_exec_response.txt"), "w", encoding="utf-8") as handle:
         handle.write(response)
+    if collect_workspace_artifact:
+        artifact_response, _is_complete = _collect_vue_vite_workspace_artifact(work_dir, target_note=response)
+        if artifact_response is not None and not _is_valid_vue_vite_response(response):
+            with open(os.path.join(pred_dir, "target_exec_artifact.json"), "w", encoding="utf-8") as handle:
+                handle.write(artifact_response)
+            return artifact_response
     return response
 
 
-def _build_exec_prompt(system_prompt: str) -> str:
-    return "\n\n".join(
-        [
-            "Use the `skillopt-target` skill available in this workspace.",
-            "Read `.agents/skills/skillopt-target/SKILL.md` directly; do not call a Skill tool.",
-            "Read `task.md` and complete the Gitmoot SkillOpt target task.",
-            "Return only the requested response text.",
-            "## System Instructions",
-            system_prompt,
+def _requires_vue_vite_workspace_artifact(item: dict[str, Any], config: Any) -> bool:
+    sources: list[dict[str, Any]] = []
+    if isinstance(config, dict):
+        sources.append(config)
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    sources.append(metadata)
+    item_config = item.get("evaluator_config")
+    if isinstance(item_config, dict):
+        sources.append(item_config)
+    for artifact in (item.get("artifacts") or {}).values() if isinstance(item.get("artifacts"), dict) else []:
+        if isinstance(artifact, dict):
+            sources.append(artifact)
+
+    prompt = str(item.get("prompt") or "").strip().lower()
+    if "vue/vite" in prompt or "vue-vite" in prompt:
+        return True
+
+    for source in sources:
+        artifact_contract = str(source.get("artifact_contract") or source.get("output_contract") or "").strip().lower()
+        output_type = str(source.get("output_type") or "").strip().lower()
+        profile_id = str(source.get("profile_id") or "").strip().lower()
+        task_kind = str(source.get("task_kind") or "").strip().lower()
+        driver = str(source.get("driver") or "").strip().lower()
+        mode = str(source.get("mode") or "").strip().lower()
+        checks = source.get("checks")
+        if bool(source.get("require_vue_vite_bundle")) or bool(source.get("require_vue_render_smoke")):
+            return True
+        if _has_vue_render_smoke_check(checks):
+            return True
+        if artifact_contract in VUE_VITE_ARTIFACT_MARKERS:
+            return True
+        if output_type in VUE_VITE_ARTIFACT_MARKERS:
+            return True
+        if profile_id in {"landing_page_v1", "vue_landing_page_v1"}:
+            return True
+        if task_kind in {"landing_page", "vue_landing_page"}:
+            return True
+        if driver == "vue-vite":
+            return True
+        if mode in {"landing_page_v1", "landing-page-v1", "landing_page"}:
+            return True
+    return False
+
+
+def _has_vue_render_smoke_check(checks: Any) -> bool:
+    if not isinstance(checks, list):
+        return False
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        check_id = str(check.get("id") or "").strip().lower().replace("-", "_")
+        check_type = str(check.get("type") or "").strip().lower().replace("-", "_")
+        if check_id == "render_smoke" or check_type == "render_smoke":
+            return True
+    return False
+
+
+def _collect_vue_vite_workspace_artifact(work_dir: str, *, target_note: str) -> tuple[str | None, bool]:
+    files: list[dict[str, str]] = []
+    for rel_path, path in _iter_vue_vite_workspace_files(work_dir):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                files.append({"path": rel_path, "content": handle.read()})
+        except UnicodeDecodeError:
+            continue
+    if not files:
+        return None, False
+    is_complete = set(VUE_VITE_REQUIRED_FILES).issubset({entry["path"] for entry in files})
+    return json.dumps(
+        {
+            "renderer": "vue-vite",
+            "build_command": "npm run build",
+            "dist_dir": "dist",
+            "files": files,
+            "target_note": target_note,
+            "artifact_source": "codex_exec_workspace",
+        },
+        ensure_ascii=False,
+    ), is_complete
+
+
+def _iter_vue_vite_workspace_files(work_dir: str) -> list[tuple[str, str]]:
+    files: list[tuple[str, str]] = []
+    workspace_root = os.path.realpath(work_dir)
+    for root, dirs, filenames in os.walk(work_dir):
+        dirs[:] = [
+            dirname
+            for dirname in dirs
+            if dirname not in {".agents", ".git", "dist", "node_modules"}
+            and not dirname.startswith(".")
+            and _is_workspace_child(os.path.join(root, dirname), workspace_root)
         ]
-    )
+        for filename in filenames:
+            path = os.path.join(root, filename)
+            rel_path = os.path.relpath(path, work_dir).replace(os.sep, "/")
+            if _is_collectable_vue_vite_workspace_file(rel_path) and _is_workspace_child(path, workspace_root):
+                files.append((rel_path, path))
+    return sorted(files, key=lambda item: (item[0] not in VUE_VITE_REQUIRED_FILES, item[0]))
+
+
+def _is_workspace_child(path: str, workspace_root: str) -> bool:
+    if os.path.islink(path):
+        return False
+    real_path = os.path.realpath(path)
+    return os.path.commonpath([workspace_root, real_path]) == workspace_root
+
+
+def _is_collectable_vue_vite_workspace_file(rel_path: str) -> bool:
+    if rel_path in VUE_VITE_REQUIRED_FILES:
+        return True
+    if rel_path.startswith("src/") or rel_path.startswith("public/"):
+        return not rel_path.endswith((".map",))
+    return rel_path in {"vite.config.js", "vite.config.mjs", "vite.config.ts"}
+
+
+def _is_valid_vue_vite_response(response: str) -> bool:
+    return _check_vue_vite_bundle(response) is None
+
+
+def _target_note_metadata(response: str) -> dict[str, str]:
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    target_note = parsed.get("target_note")
+    if not isinstance(target_note, str) or not target_note.strip():
+        return {}
+    artifact_source = parsed.get("artifact_source")
+    metadata = {"target_note": target_note}
+    if isinstance(artifact_source, str) and artifact_source.strip():
+        metadata["target_artifact_source"] = artifact_source.strip()
+    return metadata
+
+
+def _build_exec_prompt(system_prompt: str, *, collect_workspace_artifact: bool = False) -> str:
+    instructions = [
+        "Use the `skillopt-target` skill available in this workspace.",
+        "Read `.agents/skills/skillopt-target/SKILL.md` directly; do not call a Skill tool.",
+        "Read `task.md` and complete the Gitmoot SkillOpt target task.",
+    ]
+    if collect_workspace_artifact:
+        instructions.extend(
+            [
+                "Create the requested Vue/Vite preview as files in this workspace before answering.",
+                "At minimum write package.json, index.html, src/main.js, and src/App.vue.",
+                "Gitmoot will collect those workspace files as the artifact, so do not return a skill file, prompt template, YAML/frontmatter, or Markdown code blocks as the deliverable.",
+                "After writing the files, return a short plain-text completion note.",
+            ]
+        )
+    else:
+        instructions.append("Return only the requested response text.")
+    instructions.extend(["## System Instructions", system_prompt])
+    return "\n\n".join(instructions)
 
 
 def _write_target_exec_trace_alias(pred_dir: str, raw: str = "", error: str = "") -> None:

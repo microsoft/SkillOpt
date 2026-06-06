@@ -204,7 +204,7 @@ def _contains_score(item: dict[str, Any], response: str, config: dict[str, Any])
 def _human_feedback_judge_system_prompt() -> str:
     return (
         "You are evaluating a Gitmoot SkillOpt candidate response against imported human review feedback. "
-        "The score is stop-readiness against the human feedback, not generic output quality. "
+        "The soft score is stop-readiness against the human feedback, not generic output quality. "
         "When feedback_target=baseline_review_outputs, the review describes known issues in previous/baseline "
         "outputs. Judge whether the new candidate resolves those baseline issues; do not penalize the candidate "
         "as if the old quality/promote labels were written about the unseen candidate. "
@@ -216,7 +216,8 @@ def _human_feedback_judge_system_prompt() -> str:
         "Return only JSON with keys hard, soft, fail_reason, reasoning, human_feedback_alignment, "
         "dimension_scores, unresolved_feedback, rejection_reason, optimizer_hint, baseline_known_issues, "
         "candidate_resolution, baseline_resolution, selection_decision, and score_delta_reason. "
-        "hard must be 1 only when the candidate is ready to stop optimizing and promote. "
+        "hard must be 1 when the response is a valid usable artifact/answer, even if quality still needs work. "
+        "Use soft, unresolved_feedback, rejection_reason, and optimizer_hint for quality/readiness problems. "
         "soft must be a 0-to-1 readiness-to-stop score. "
         "dimension_scores must include human_feedback_resolution, artifact_validity, and task_completeness."
     )
@@ -485,6 +486,21 @@ def _generic_feedback_dimension_scores(parsed: dict[str, Any]) -> dict[str, floa
     return {**_FEEDBACK_DIMENSION_DEFAULTS, **parsed_scores}
 
 
+def _feedback_artifact_hard(parsed: dict[str, Any], *, default_hard: int) -> int:
+    if default_hard == 0:
+        return 0
+    dimensions = _generic_feedback_dimension_scores(parsed)
+    artifact_validity = dimensions.get("artifact_validity", 1.0)
+    task_completeness = dimensions.get("task_completeness", 0.5)
+    try:
+        if float(artifact_validity) < 0.5 or float(task_completeness) < 0.5:
+            return 0
+        return 1
+    except (TypeError, ValueError):
+        pass
+    return 1
+
+
 def _comparative_feedback_fields(parsed: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     for key in (
@@ -601,30 +617,35 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
         }
     if has_feedback and _missing_human_feedback_dimensions(parsed):
         return _missing_feedback_dimensions_failure(item, raw=raw)
-    hard = _parse_hard(parsed.get("hard"))
+    parsed_hard = _parse_hard(parsed.get("hard"))
     try:
-        soft = float(parsed.get("soft", hard))
+        soft = float(parsed.get("soft", parsed_hard))
     except (TypeError, ValueError):
-        soft = float(hard)
+        soft = float(parsed_hard)
     soft = max(0.0, min(1.0, soft))
     feedback_resolved = _feedback_resolution_proven(parsed, require_top_level_unresolved=True)
     feedback_source = _feedback_source(item)
-    candidate_specific_failure = _candidate_specific_feedback_failure(parsed, hard=hard)
+    candidate_specific_failure = _candidate_specific_feedback_failure(parsed, hard=parsed_hard)
     needs_more_optimization = _feedback_requests_more_optimization(item)
     should_apply_stop_cap = needs_more_optimization and candidate_specific_failure and not feedback_resolved
     soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=not should_apply_stop_cap)
-    if should_apply_stop_cap:
-        hard = 0
+    hard = _feedback_artifact_hard(parsed, default_hard=parsed_hard) if has_feedback else parsed_hard
+    quality_failed = hard == 0 or should_apply_stop_cap or (
+        has_feedback and candidate_specific_failure and not feedback_resolved
+    )
     fail_reason = str(parsed.get("fail_reason") or "")
+    if quality_failed and not fail_reason:
+        fail_reason = _feedback_stop_readiness_fail_reason(item) or "Human feedback is not fully resolved."
     score = {
         "hard": hard,
         "soft": soft,
-        "fail_reason": "" if hard else fail_reason or _feedback_stop_readiness_fail_reason(item) or "judge marked this item failed",
+        "fail_reason": "" if hard and not quality_failed else fail_reason or "judge marked this item failed",
         "metadata": {
             "evaluator": "llm_judge",
             "judge_derived": True,
             "reasoning": str(parsed.get("reasoning") or ""),
             "candidate_specific_failure": candidate_specific_failure,
+            "quality_failed": quality_failed,
         },
     }
     if feedback_source:
@@ -642,8 +663,8 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             {
                 "human_feedback_alignment": alignment,
                 "dimension_scores": _generic_feedback_dimension_scores(parsed),
-                "quality_status": QUALITY_PASSED if hard else QUALITY_FAILED,
-                "stage_status": [{"stage": "llm_judge", "status": "passed" if hard else "failed"}],
+                "quality_status": QUALITY_FAILED if quality_failed else QUALITY_PASSED,
+                "stage_status": [{"stage": "llm_judge", "status": "failed" if quality_failed else "passed"}],
             }
         )
         score["metadata"].update(
@@ -653,7 +674,7 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
                 "stage_status": score["stage_status"],
             }
         )
-        if hard == 0:
+        if quality_failed or hard == 0:
             failure = _feedback_judge_failure(parsed, item=item, fail_reason=score["fail_reason"])
             score.update(
                 {
@@ -703,7 +724,11 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
                     quality_status=QUALITY_NOT_RUN,
                 )
 
-    check_context = _landing_page_check_context(requires_vue_bundle=requires_vue_bundle, render_result=render_result)
+    check_context = _landing_page_check_context(
+        requires_vue_bundle=requires_vue_bundle,
+        render_result=render_result,
+        render_required=render_required if requires_vue_bundle else False,
+    )
     raw, _usage = _chat_evaluator(
         config,
         system=_landing_page_system_prompt(),
@@ -1627,8 +1652,9 @@ def _landing_page_system_prompt() -> str:
         "When feedback_target=baseline_review_outputs, the review describes known issues in previous/baseline "
         "landing-page outputs. Compare the generated candidate against those baseline issues and score whether "
         "the candidate resolves them; do not treat old poor/refine/promote=no labels as candidate labels. "
-        "hard must be 1 only when the landing page is suitable to stop optimizing and promote after review. "
+        "hard must be 1 when the Vue/render artifact is valid and usable, even if the page is not ready to promote. "
         "soft must be a 0-to-1 readiness-to-stop score against the human feedback, not generic prettiness. "
+        "Use quality_status, human_feedback_alignment, failure, and soft score for unresolved quality/readiness work. "
         "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
         "continue_mode=refine/explore/distill or promote=no means the candidate may be good but is not ready to stop "
         "unless you can prove all named feedback themes were resolved. Penalize missing mobile responsiveness, "
@@ -1656,7 +1682,8 @@ def _landing_page_user_prompt(
             "## Rubric",
             "\n".join(
                 [
-                    "- hard/soft: Score readiness to stop optimizing against human feedback.",
+                    "- hard: Artifact/render contract validity; keep hard=1 for valid Vue outputs even when quality needs more work.",
+                    "- soft: Readiness to stop optimizing against human feedback.",
                     "- human_feedback_alignment: Explain which review requests were resolved and which remain unresolved.",
                     "- mobile_responsiveness: Works on mobile without overflow or unusable layout.",
                     "- footer_presence_clarity: Includes a clear footer with useful links or closing context.",
@@ -1678,7 +1705,12 @@ def _landing_page_user_prompt(
     )
 
 
-def _landing_page_check_context(*, requires_vue_bundle: bool, render_result: dict[str, Any] | None) -> dict[str, Any]:
+def _landing_page_check_context(
+    *,
+    requires_vue_bundle: bool,
+    render_result: dict[str, Any] | None,
+    render_required: bool = False,
+) -> dict[str, Any]:
     context: dict[str, Any] = {
         "artifact_contract": {
             "stage": "artifact_contract",
@@ -1699,6 +1731,7 @@ def _landing_page_check_context(*, requires_vue_bundle: bool, render_result: dic
     context["render_smoke"] = {
         "stage": "render_smoke",
         "status": _last_stage_status(stage_status, default="passed" if render_result.get("hard") else "failed"),
+        "required": bool(render_required),
         "soft": render_result.get("soft"),
         "fail_reason": str(render_result.get("fail_reason") or ""),
         "failure": render_result.get("failure") or render_smoke.get("failure"),
@@ -1772,7 +1805,7 @@ def _contract_status_from_check_context(check_context: dict[str, Any] | None) ->
     render_smoke = context.get("render_smoke") if isinstance(context.get("render_smoke"), dict) else {}
     if str(artifact_contract.get("status") or "").strip().lower() == "failed":
         return CONTRACT_FAILED
-    if str(render_smoke.get("status") or "").strip().lower() == "failed":
+    if bool(render_smoke.get("required")) and str(render_smoke.get("status") or "").strip().lower() == "failed":
         return CONTRACT_FAILED
     return CONTRACT_PASSED
 
@@ -1912,33 +1945,44 @@ def _normalize_landing_page_score(
     item: dict[str, Any],
     check_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    hard = _parse_landing_hard(parsed.get("hard"))
+    parsed_hard = _parse_landing_hard(parsed.get("hard"))
     soft = _parse_score(parsed.get("soft"), "soft")
     feedback_resolved = _feedback_resolution_proven(parsed)
     feedback_source = _feedback_source(item)
-    candidate_specific_failure = _candidate_specific_feedback_failure(parsed, hard=hard)
+    candidate_specific_failure = _candidate_specific_feedback_failure(parsed, hard=parsed_hard)
     needs_more_optimization = _feedback_requests_more_optimization(item)
     should_apply_stop_cap = needs_more_optimization and candidate_specific_failure and not feedback_resolved
     soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=not should_apply_stop_cap)
-    if should_apply_stop_cap:
-        hard = 0
     dimensions = _parse_dimension_scores(parsed.get("dimension_scores"))
     rationale = str(parsed.get("rationale") or parsed.get("reasoning") or "").strip()
     fail_reason = str(parsed.get("fail_reason") or "").strip()
+    contract_status = _contract_status_from_check_context(check_context)
+    hard = 0 if contract_status == CONTRACT_FAILED else parsed_hard
+    quality_failed = hard == 0 or (
+        should_apply_stop_cap
+        or (
+            candidate_specific_failure
+            and not feedback_resolved
+            and contract_status != CONTRACT_FAILED
+        )
+    )
     if hard not in {0, 1}:
         raise ValueError("landing_page_v1 hard must be 0 or 1")
     if not rationale:
         raise ValueError("landing_page_v1 rationale is required")
-    if hard == 0 and not fail_reason:
+    if (hard == 0 or quality_failed) and not fail_reason:
         fail_reason = (
             _feedback_stop_readiness_fail_reason(item)
             or "landing_page_v1 judge marked this landing page below promotion quality"
         )
-    judge_stage = {"stage": "llm_judge", "status": "passed" if hard else "failed"}
+    judge_stage = {"stage": "llm_judge", "status": "failed" if quality_failed or hard == 0 else "passed"}
     stage_status = [judge_stage]
-    failure = _landing_page_judge_failure(parsed, fail_reason=fail_reason, rationale=rationale, dimensions=dimensions) if hard == 0 else None
-    contract_status = _contract_status_from_check_context(check_context)
-    quality_status = QUALITY_PASSED if hard else QUALITY_FAILED
+    failure = (
+        _landing_page_judge_failure(parsed, fail_reason=fail_reason, rationale=rationale, dimensions=dimensions)
+        if quality_failed or hard == 0
+        else None
+    )
+    quality_status = QUALITY_FAILED if quality_failed else QUALITY_PASSED
     alignment = _human_feedback_alignment(item, parsed.get("human_feedback_alignment"))
     metadata: dict[str, Any] = {
         "evaluator": LANDING_PAGE_EVALUATOR_ID,
@@ -1951,6 +1995,7 @@ def _normalize_landing_page_score(
         "stage_status": stage_status,
         "check_context": check_context or {},
         "candidate_specific_failure": candidate_specific_failure,
+        "quality_failed": quality_failed,
     }
     if feedback_source:
         metadata["feedback_source"] = feedback_source
@@ -1967,7 +2012,7 @@ def _normalize_landing_page_score(
     return {
         "hard": hard,
         "soft": soft,
-        "fail_reason": "" if hard else fail_reason,
+        "fail_reason": "" if hard and not quality_failed else fail_reason,
         "profile_id": "vue_landing_page_v1",
         "task_kind": "vue_landing_page",
         "contract_status": contract_status,

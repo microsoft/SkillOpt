@@ -24,7 +24,7 @@ import traceback
 
 from skillopt.model import chat_optimizer
 from skillopt.prompts import load_prompt
-from skillopt.utils import extract_json
+from skillopt.utils import extract_json, is_quality_failed_result
 
 # ── Protected field markers ─────────────────────────────────────────────────
 
@@ -183,8 +183,8 @@ def build_comparison_pairs(
         tid = str(item.get("id", ""))
         prev = prev_by_id.get(tid, {})
         curr = curr_by_id.get(tid, {})
-        prev_ok = bool(prev.get("hard", 0))
-        curr_ok = bool(curr.get("hard", 0))
+        prev_ok = bool(prev.get("hard", 0)) and not is_quality_failed_result(prev)
+        curr_ok = bool(curr.get("hard", 0)) and not is_quality_failed_result(curr)
 
         if not prev_ok and curr_ok:
             category = "improved"
@@ -201,12 +201,14 @@ def build_comparison_pairs(
             "category": category,
             "prev": {
                 "hard": int(prev_ok),
+                "quality_status": str(prev.get("quality_status") or ""),
                 "soft": float(prev.get("soft", 0.0)),
                 "predicted_answer": prev.get("predicted_answer", prev.get("answer", "N/A")),
                 "fail_reason": prev.get("fail_reason", ""),
             },
             "curr": {
                 "hard": int(curr_ok),
+                "quality_status": str(curr.get("quality_status") or ""),
                 "soft": float(curr.get("soft", 0.0)),
                 "predicted_answer": curr.get("predicted_answer", curr.get("answer", "N/A")),
                 "fail_reason": curr.get("fail_reason", ""),
@@ -275,16 +277,18 @@ def format_comparison_text(pairs: list[dict]) -> str:
         for e in entries:
             prev = e["prev"]
             curr = e["curr"]
+            prev_ok = bool(prev.get("hard", 0)) and not is_quality_failed_result(prev)
+            curr_ok = bool(curr.get("hard", 0)) and not is_quality_failed_result(curr)
             lines.append(
                 f"\n#### Task {e['id']}: {e['task'][:300]}\n"
-                f"- Prev epoch: {'PASS' if prev['hard'] else 'FAIL'} "
+                f"- Prev epoch: {'PASS' if prev_ok else 'FAIL'} "
                 f"(soft={prev['soft']:.2f}) — answer: {str(prev['predicted_answer'])[:200]}\n"
-                f"- Curr epoch: {'PASS' if curr['hard'] else 'FAIL'} "
+                f"- Curr epoch: {'PASS' if curr_ok else 'FAIL'} "
                 f"(soft={curr['soft']:.2f}) — answer: {str(curr['predicted_answer'])[:200]}"
             )
             if curr.get("fail_reason"):
                 lines.append(f"- Curr fail reason: {curr['fail_reason'][:300]}")
-            if prev.get("fail_reason") and not prev["hard"]:
+            if prev.get("fail_reason") and not prev_ok:
                 lines.append(f"- Prev fail reason: {prev['fail_reason'][:300]}")
 
             if show_traj:

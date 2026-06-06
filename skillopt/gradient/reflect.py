@@ -37,7 +37,7 @@ from skillopt.optimizer.update_modes import (
     truncate_payload,
 )
 from skillopt.prompts import load_prompt
-from skillopt.utils import extract_json
+from skillopt.utils import extract_json, is_quality_failed_result
 
 # ── Trajectory formatting ────────────────────────────────────────────────────
 
@@ -523,8 +523,12 @@ def run_minibatch_reflect(
     os.makedirs(patches_dir, exist_ok=True)
 
     # Separate failure / success
-    failures = [r for r in results if not r.get("hard") or float(r.get("hard", 0)) < 1e-9]
-    successes = [r for r in results if r.get("hard")] if not failure_only else []
+    failures = [
+        r
+        for r in results
+        if not r.get("hard") or float(r.get("hard", 0)) < 1e-9 or is_quality_failed_result(r)
+    ]
+    successes = [r for r in results if r.get("hard") and not is_quality_failed_result(r)] if not failure_only else []
 
     failures = _shuffle_for_minibatch(failures, random_seed)
     successes = _shuffle_for_minibatch(successes, None if random_seed is None else random_seed + 1)

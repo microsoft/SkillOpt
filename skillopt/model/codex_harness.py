@@ -804,6 +804,7 @@ def _run_codex_sdk_exec(
     timeout: int,
     images: list[str] | None = None,
     data_dirs: list[str] | None = None,
+    allow_file_edits: bool = False,
 ) -> tuple[str, str]:
     from openai_codex_sdk import Codex
 
@@ -836,7 +837,10 @@ def _run_codex_sdk_exec(
             codex_options["codexPathOverride"] = codex_path
         codex = Codex(codex_options)
         thread = codex.start_thread(thread_options)
-        turn = await thread.run(prompt, {"output_schema": _strict_schema(ANSWER_SCHEMA)})
+        turn = await thread.run(
+            _exec_prompt(prompt, allow_file_edits=allow_file_edits),
+            {"output_schema": _strict_schema(ANSWER_SCHEMA)},
+        )
         result_text = str(getattr(turn, "final_response", "") or "")
         parsed: Any = None
         parse_error = ""
@@ -876,6 +880,7 @@ def _run_codex_cli_exec(
     data_dirs: list[str] | None = None,
     sandbox: str | None = None,
     full_auto: bool | None = None,
+    allow_file_edits: bool = False,
 ) -> tuple[str, str]:
     config = get_codex_exec_config()
     last_message_path = os.path.join(work_dir, "codex_last_message.txt")
@@ -906,7 +911,7 @@ def _run_codex_cli_exec(
     for image in images or []:
         _validate_exec_path(os.path.dirname(image) or work_dir)
         cmd.extend(["-i", image])
-    cmd.extend(["--output-last-message", last_message_path, prompt])
+    cmd.extend(["--output-last-message", last_message_path, _exec_prompt(prompt, allow_file_edits=allow_file_edits)])
 
     try:
         proc = subprocess.run(
@@ -957,6 +962,7 @@ def run_codex_exec(
     data_dirs: list[str] | None = None,
     sandbox: str | None = None,
     full_auto: bool | None = None,
+    allow_file_edits: bool = False,
 ) -> tuple[str, str]:
     config = get_codex_exec_config()
     mode = _sdk_mode(config.get("use_sdk"))
@@ -975,6 +981,7 @@ def run_codex_exec(
                     timeout=timeout,
                     images=images,
                     data_dirs=data_dirs,
+                    allow_file_edits=allow_file_edits,
                 )
                 all_raw.append(f"===== CODEX SDK ATTEMPT {attempt + 1} =====\n{raw}")
                 if response.strip():
@@ -1003,6 +1010,7 @@ def run_codex_exec(
                 data_dirs=data_dirs,
                 sandbox=sandbox,
                 full_auto=full_auto,
+                allow_file_edits=allow_file_edits,
             )
             all_raw.append(f"===== CODEX CLI ATTEMPT {attempt + 1} =====\n{raw}")
             last_response = response
@@ -1041,6 +1049,7 @@ def run_target_exec(
             data_dirs=data_dirs,
             sandbox=sandbox,
             full_auto=full_auto,
+            allow_file_edits=allow_file_edits,
         )
     if backend == "claude_code_exec":
         return run_claude_code_exec(

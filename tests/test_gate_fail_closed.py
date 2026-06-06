@@ -2364,7 +2364,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (True, "retryable")
+    ) == (False, "candidate_hard_score_failed")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2376,7 +2376,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (True, "retryable")
+    ) == (False, "candidate_hard_score_failed")
     assert _gate_rejection_retry_decision(
         {
             **packet,
@@ -2389,7 +2389,7 @@ def test_gate_rejection_retry_decision_requires_actionable_new_information():
         budget=2,
         seen_reasons=set(),
         close_gap=0.03,
-    ) == (True, "retryable")
+    ) == (False, "candidate_hard_score_failed")
     assert _gate_rejection_retry_decision(
         {
             **packet,

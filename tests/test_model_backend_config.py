@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import skillopt.model as model
+import skillopt.model.codex_harness as codex_harness
 
 
 def test_codex_optimizer_backend_routes_chat_optimizer(monkeypatch):
@@ -41,3 +42,29 @@ def test_codex_target_backend_alias_routes_to_exec_backend():
         assert model.is_target_exec_backend() is True
     finally:
         model.set_target_backend(original)
+
+
+def test_codex_target_exec_receives_file_edit_mode(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake_sdk_exec(**kwargs):
+        raise ModuleNotFoundError("openai_codex_sdk")
+
+    def fake_cli_exec(**kwargs):
+        calls.update(kwargs)
+        return "done", "raw"
+
+    monkeypatch.setattr(codex_harness, "_run_codex_sdk_exec", fake_sdk_exec)
+    monkeypatch.setattr(codex_harness, "_run_codex_cli_exec", fake_cli_exec)
+
+    response, raw = codex_harness.run_codex_exec(
+        work_dir=str(tmp_path),
+        prompt="Build a Vue/Vite preview.",
+        model="gpt-test",
+        timeout=1,
+        allow_file_edits=True,
+    )
+
+    assert response == "done"
+    assert raw.startswith("===== CODEX")
+    assert calls["allow_file_edits"] is True

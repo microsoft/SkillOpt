@@ -32,6 +32,7 @@ import random
 
 from skillopt.datasets.base import BaseDataLoader, BatchSpec
 from skillopt.prompts import load_prompt
+from skillopt.utils import is_quality_failed_result
 
 
 class EnvAdapter(ABC):
@@ -119,12 +120,12 @@ class EnvAdapter(ABC):
         failures = [
             (result, item_by_id[str(result.get("id"))])
             for result in results
-            if not result.get("hard") and str(result.get("id")) in item_by_id
+            if (not result.get("hard") or is_quality_failed_result(result)) and str(result.get("id")) in item_by_id
         ]
         successes = [
             (result, item_by_id[str(result.get("id"))])
             for result in results
-            if result.get("hard") and str(result.get("id")) in item_by_id
+            if result.get("hard") and not is_quality_failed_result(result) and str(result.get("id")) in item_by_id
         ]
 
         rng = random.Random(seed)

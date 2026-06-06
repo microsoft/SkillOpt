@@ -9,7 +9,14 @@ from skillopt.envs.gitmoot.result_contract import (
     make_unscored_evaluation,
     normalize_scored_evaluation,
 )
+from skillopt.optimizer.slow_update import format_comparison_text
 from skillopt.utils.scoring import compute_score
+
+
+class _ResultWithExtras:
+    hard = 1
+    soft = 0.5
+    extras = {"quality_status": "failed"}
 
 
 def test_compute_score_rejects_unscored_results():
@@ -26,6 +33,60 @@ def test_compute_score_rejects_unscored_results():
 
     with pytest.raises(ValueError, match="cannot compute aggregate score for unscored result"):
         compute_score(results)
+
+
+def test_compute_score_treats_quality_failed_as_hard_failure():
+    hard, soft = compute_score(
+        [
+            {
+                "id": "quality-failed",
+                "hard": 1,
+                "soft": 0.64,
+                "score_status": "scored",
+                "quality_status": "failed",
+            }
+        ]
+    )
+
+    assert hard == 0.0
+    assert soft == 0.64
+
+
+def test_compute_score_treats_quality_failed_extras_as_hard_failure():
+    hard, soft = compute_score([_ResultWithExtras()])
+
+    assert hard == 0.0
+    assert soft == 0.5
+
+
+def test_slow_update_context_labels_quality_failed_as_fail():
+    text = format_comparison_text(
+        [
+            {
+                "id": "quality-regression",
+                "task": "Improve the landing page.",
+                "category": "regressed",
+                "prev": {
+                    "hard": 1,
+                    "quality_status": "passed",
+                    "soft": 0.91,
+                    "predicted_answer": "Strong page",
+                    "fail_reason": "",
+                },
+                "curr": {
+                    "hard": 1,
+                    "quality_status": "failed",
+                    "soft": 0.62,
+                    "predicted_answer": "Valid but still weak page",
+                    "fail_reason": "human feedback not resolved",
+                },
+            }
+        ]
+    )
+
+    assert "- Prev epoch: PASS" in text
+    assert "- Curr epoch: FAIL" in text
+    assert "human feedback not resolved" in text
 
 
 def test_task_type_buckets_count_unscored_results_without_numeric_score():

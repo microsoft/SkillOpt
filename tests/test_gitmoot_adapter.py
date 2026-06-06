@@ -16,7 +16,7 @@ from skillopt.envs.gitmoot.evaluator import (
     _write_vue_render_workspace,
     evaluate_response,
 )
-from skillopt.envs.gitmoot.rollout import extract_target_skill_content, process_one
+from skillopt.envs.gitmoot.rollout import _build_exec_prompt, extract_target_skill_content, process_one
 from skillopt.gradient.reflect import fmt_minibatch_trajectories
 from skillopt.model import get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
 from skillopt.model.common import default_model_for_backend
@@ -661,6 +661,519 @@ Optimizer-only exec notes.
     assert result["target_trace_path"] == str(raw_path)
 
 
+def test_exec_target_collects_vue_workspace_files_when_final_message_is_prose(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_exec(**kwargs):
+        captured["allow_file_edits"] = kwargs.get("allow_file_edits")
+        captured["prompt"] = kwargs.get("prompt")
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text(
+            '<div id="app"></div><script type="module" src="/src/main.js"></script>',
+            encoding="utf-8",
+        )
+        (work_dir / "src" / "main.js").write_text(
+            "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');",
+            encoding="utf-8",
+        )
+        (work_dir / "src" / "styles.css").write_text("main { color: #111; }", encoding="utf-8")
+        (work_dir / "public").mkdir(parents=True, exist_ok=True)
+        (work_dir / "public" / "brand.svg").write_text("<svg></svg>", encoding="utf-8")
+        (work_dir / "public" / "brand.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff")
+        (work_dir / "src" / "App.vue").write_text(
+            '<template><main><a href="#hero">Hero</a><footer>Footer</footer></main></template>',
+            encoding="utf-8",
+        )
+        return "Implemented Vue/Vite preview bundle in target_exec.", "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.88,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The collected Vue/Vite workspace artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    def pass_render(response, item, config):
+        return {
+            "hard": 1,
+            "soft": 1.0,
+            "dimension_scores": {"render_smoke": 1.0},
+            "stage_status": [{"stage": "render_smoke", "status": "passed"}],
+            "metadata": {"dimension_scores": {"render_smoke": 1.0}},
+        }
+
+    monkeypatch.setenv("TARGET_DEPLOYMENT", "gpt-test")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", pass_render)
+    item = {
+        "id": "exec-vue-files",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+    response = json.loads(result["response"])
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.88
+    assert result["contract_status"] == "passed"
+    assert result["metadata"]["target_note"] == "Implemented Vue/Vite preview bundle in target_exec."
+    assert result["metadata"]["target_artifact_source"] == "codex_exec_workspace"
+    assert response["renderer"] == "vue-vite"
+    assert response["target_note"] == "Implemented Vue/Vite preview bundle in target_exec."
+    assert captured["allow_file_edits"] is True
+    assert "Create the requested Vue/Vite preview as files in this workspace" in captured["prompt"]
+    assert "At minimum write package.json, index.html, src/main.js, and src/App.vue" in captured["prompt"]
+    assert {entry["path"] for entry in response["files"]} == {
+        "package.json",
+        "index.html",
+        "src/main.js",
+        "src/App.vue",
+        "src/styles.css",
+        "public/brand.svg",
+    }
+    assert (tmp_path / "predictions" / "exec-vue-files" / "target_exec_artifact.json").is_file()
+
+
+def test_exec_target_file_artifact_prompt_tells_target_to_write_workspace_files():
+    prompt = _build_exec_prompt("system", collect_workspace_artifact=True)
+
+    assert "Create the requested Vue/Vite preview as files in this workspace" in prompt
+    assert "At minimum write package.json, index.html, src/main.js, and src/App.vue" in prompt
+    assert "Gitmoot will collect those workspace files as the artifact" in prompt
+    assert "After writing the files, return a short plain-text completion note." in prompt
+    assert "Return only the requested response text." not in prompt
+
+
+def test_exec_target_collector_reports_missing_vue_workspace_files(tmp_path, monkeypatch):
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text('<div id="app"></div>', encoding="utf-8")
+        (work_dir / "src" / "main.js").write_text("console.log('missing app');", encoding="utf-8")
+        return "Implemented partial Vue/Vite preview bundle.", "raw exec trace"
+
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run for collected artifact contract failures")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+    item = {
+        "id": "exec-vue-missing",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path), target_artifact_retry_budget=0)
+
+    assert result["hard"] == 0
+    assert result["contract_status"] == "failed"
+    assert result["primary_reason"] == "artifact_contract_failure"
+    assert result["failure"]["failed_checks"][0]["check"] == "vue_vite_bundle.required_files"
+    assert "missing src/App.vue" in result["failure"]["evidence"]
+    assert "wrong_artifact_type" not in json.dumps(result)
+    assert result["metadata"]["target_note"] == "Implemented partial Vue/Vite preview bundle."
+
+
+def test_exec_target_collector_skips_symlinked_workspace_files(tmp_path, monkeypatch):
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("do not collect", encoding="utf-8")
+
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text(
+            '<div id="app"></div><script type="module" src="/src/main.js"></script>',
+            encoding="utf-8",
+        )
+        (work_dir / "src" / "main.js").write_text(
+            "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');",
+            encoding="utf-8",
+        )
+        (work_dir / "src" / "App.vue").symlink_to(outside)
+        return "Implemented Vue/Vite preview bundle with a bad symlink.", "raw exec trace"
+
+    def fail_chat_optimizer(**kwargs):
+        raise AssertionError("landing page judge should not run when required App.vue is skipped")
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fail_chat_optimizer)
+    item = {
+        "id": "exec-vue-symlink",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path), target_artifact_retry_budget=0)
+
+    assert result["hard"] == 0
+    assert result["primary_reason"] == "artifact_contract_failure"
+    assert "missing src/App.vue" in result["failure"]["evidence"]
+    assert "do not collect" not in result["response"]
+
+
+def test_exec_target_collects_vue_workspace_files_when_render_smoke_requires_bundle(tmp_path, monkeypatch):
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text(
+            '<div id="app"></div><script type="module" src="/src/main.js"></script>',
+            encoding="utf-8",
+        )
+        (work_dir / "src" / "main.js").write_text(
+            "import { createApp } from 'vue'; import App from './App.vue'; createApp(App).mount('#app');",
+            encoding="utf-8",
+        )
+        (work_dir / "src" / "App.vue").write_text(
+            '<template><main><a href="#hero">Hero</a><footer>Footer</footer></main></template>',
+            encoding="utf-8",
+        )
+        return "Implemented Vue preview files.", "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.86,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The collected artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    def pass_render(response, item, config):
+        return {
+            "hard": 1,
+            "soft": 1.0,
+            "dimension_scores": {"render_smoke": 1.0},
+            "stage_status": [{"stage": "render_smoke", "status": "passed"}],
+            "metadata": {"dimension_scores": {"render_smoke": 1.0}},
+        }
+
+    monkeypatch.setenv("TARGET_DEPLOYMENT", "gpt-test")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator._run_vue_render_smoke", pass_render)
+    item = {
+        "id": "exec-vue-render-smoke-files",
+        "prompt": "Build a landing page preview.",
+        "evaluator_config": {
+            "mode": "landing_page_v1",
+            "checks": [{"id": "render_smoke", "type": "playwright", "required": True}],
+        },
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.86
+    assert json.loads(result["response"])["renderer"] == "vue-vite"
+
+
+def test_exec_target_keeps_json_response_fallback_when_workspace_files_absent(tmp_path, monkeypatch):
+    def fake_exec(**kwargs):
+        return _valid_vue_bundle_response(), "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.81,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The direct JSON artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "exec-vue-json",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.81
+    assert result["response"] == _valid_vue_bundle_response()
+    assert "target_note" not in result["metadata"]
+    assert not (tmp_path / "predictions" / "exec-vue-json" / "target_exec_artifact.json").exists()
+
+
+def test_exec_target_keeps_valid_json_when_workspace_files_are_partial(tmp_path, monkeypatch):
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        return _valid_vue_bundle_response(), "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.83,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The direct JSON artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "exec-vue-json-partial-workspace",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.83
+    assert result["response"] == _valid_vue_bundle_response()
+    assert "target_note" not in result["metadata"]
+    artifact_path = tmp_path / "predictions" / "exec-vue-json-partial-workspace" / "target_exec_artifact.json"
+    assert not artifact_path.exists()
+
+
+def test_exec_target_keeps_valid_json_when_workspace_files_are_complete(tmp_path, monkeypatch):
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text('<div id="app"></div>', encoding="utf-8")
+        (work_dir / "src" / "main.js").write_text("console.log('workspace version');", encoding="utf-8")
+        (work_dir / "src" / "App.vue").write_text("<template><main>Workspace</main></template>", encoding="utf-8")
+        return _valid_vue_bundle_response(), "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.85,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The direct JSON artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "exec-vue-json-complete-workspace",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.85
+    assert result["response"] == _valid_vue_bundle_response()
+    artifact_path = tmp_path / "predictions" / "exec-vue-json-complete-workspace" / "target_exec_artifact.json"
+    assert not artifact_path.exists()
+
+
+def test_exec_target_collects_workspace_when_json_response_lacks_top_level_bundle_fields(tmp_path, monkeypatch):
+    incomplete_json = json.dumps(
+        {
+            "files": [
+                {"path": "package.json", "content": '{"scripts":{"build":"vite build"}}'},
+                {"path": "index.html", "content": '<div id="app"></div>'},
+                {"path": "src/main.js", "content": "console.log('json version');"},
+                {"path": "src/App.vue", "content": "<template><main>JSON</main></template>"},
+            ]
+        }
+    )
+
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text('<div id="app"></div>', encoding="utf-8")
+        (work_dir / "src" / "main.js").write_text("console.log('workspace version');", encoding="utf-8")
+        (work_dir / "src" / "App.vue").write_text("<template><main>Workspace</main></template>", encoding="utf-8")
+        return incomplete_json, "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.87,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The collected workspace artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "exec-vue-json-missing-top-level-fields",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+    response = json.loads(result["response"])
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.87
+    assert response["renderer"] == "vue-vite"
+    assert response["build_command"] == "npm run build"
+    assert response["dist_dir"] == "dist"
+    assert response["target_note"] == incomplete_json
+    assert (tmp_path / "predictions" / "exec-vue-json-missing-top-level-fields" / "target_exec_artifact.json").is_file()
+
+
+def test_exec_target_collects_workspace_when_json_response_has_invalid_file_contents(tmp_path, monkeypatch):
+    invalid_json = _valid_vue_bundle_response(
+        package_json='{"scripts":{"build":"echo not vite"}}',
+        app_vue='<template><main><a href="https://example.com">Broken</a></main></template>',
+    )
+
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "package.json").write_text('{"scripts":{"build":"vite build"}}', encoding="utf-8")
+        (work_dir / "index.html").write_text('<div id="app"></div>', encoding="utf-8")
+        (work_dir / "src" / "main.js").write_text("console.log('workspace version');", encoding="utf-8")
+        (work_dir / "src" / "App.vue").write_text(
+            '<template><main><a href="#hero">Workspace</a><footer>Footer</footer></main></template>',
+            encoding="utf-8",
+        )
+        return invalid_json, "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.89,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The collected workspace artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "exec-vue-json-invalid-file-contents",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+    response = json.loads(result["response"])
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.89
+    assert response["target_note"] == invalid_json
+    assert (tmp_path / "predictions" / "exec-vue-json-invalid-file-contents" / "target_exec_artifact.json").is_file()
+
+
+def test_exec_target_keeps_fenced_valid_json_when_workspace_files_are_partial(tmp_path, monkeypatch):
+    valid_response = f"```json\n{_valid_vue_bundle_response()}\n```"
+
+    def fake_exec(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        (work_dir / "src").mkdir(parents=True, exist_ok=True)
+        (work_dir / "src" / "main.js").write_text("console.log('partial');", encoding="utf-8")
+        return valid_response, "raw exec trace"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.84,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The fenced JSON artifact is valid.",
+                    "fail_reason": "",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_exec_backend", lambda: True)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.is_target_chat_backend", lambda: False)
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.get_target_backend", lambda: "codex_exec")
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout.run_target_exec", fake_exec)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+    item = {
+        "id": "exec-vue-fenced-json-partial-workspace",
+        "prompt": "Build a Vue/Vite landing page.",
+        "evaluator_config": {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    }
+
+    result = process_one(item=item, skill_content="skill", out_root=str(tmp_path))
+
+    assert result["hard"] == 1
+    assert result["soft"] == 0.84
+    assert result["response"] == valid_response
+    artifact_path = tmp_path / "predictions" / "exec-vue-fenced-json-partial-workspace" / "target_exec_artifact.json"
+    assert not artifact_path.exists()
+
+
 def test_gitmoot_reflect_uses_env_specific_prompts(tmp_path, monkeypatch):
     captured = {}
 
@@ -903,7 +1416,7 @@ def test_landing_page_judge_prompt_includes_render_and_feedback_context(monkeypa
         {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle", "require_vue_render_smoke": True},
     )
 
-    assert score["hard"] == 0
+    assert score["hard"] == 1
     assert score["soft"] == 0.75
     assert score["contract_status"] == "passed"
     assert score["quality_status"] == "failed"
@@ -962,9 +1475,11 @@ def test_landing_page_judge_is_inferred_for_legacy_vue_feedback_package(monkeypa
     )
 
     assert captured["stage"] == "gitmoot_landing_page_judge"
-    assert score["hard"] == 0
+    assert score["hard"] == 1
     assert score["soft"] == 0.75
     assert score["fail_reason"] == "human feedback requested continued optimization; candidate is not ready to stop"
+    assert score["contract_status"] == "passed"
+    assert score["quality_status"] == "failed"
     assert score["human_feedback_alignment"]["required_improvements"] == ["more motion", "better product graphics"]
     assert score["failure"]["primary_reason"] == "human_feedback_not_resolved"
     assert "motion" in score["failure"]["optimizer_hint"]
@@ -1242,6 +1757,104 @@ def test_generic_judge_with_resolved_feedback_does_not_emit_failure_hint(monkeyp
     assert "B is ready" in captured["user"]
 
 
+def test_generic_judge_with_feedback_keeps_incomplete_answer_hard_failed(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 0,
+                    "soft": 0.55,
+                    "reasoning": "The response is valid but incomplete.",
+                    "fail_reason": "answer_incomplete",
+                    "human_feedback_alignment": {"status": "resolved"},
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.9,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.4,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "answer_incomplete",
+                    "optimizer_hint": "Complete the requested answer before retrying.",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-incomplete",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B is ready if complete.",
+                    "quality": "strong",
+                    "continue_mode": "validate",
+                    "promote": "yes",
+                }
+            ],
+        },
+        "A partial post.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.55
+    assert score["quality_status"] == "failed"
+    assert score["primary_reason"] == "answer_incomplete"
+
+
+def test_generic_judge_with_feedback_preserves_explicit_hard_failure(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 0,
+                    "soft": 0.7,
+                    "reasoning": "The response is not a valid final answer.",
+                    "fail_reason": "invalid_final_answer",
+                    "human_feedback_alignment": {"status": "resolved"},
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.9,
+                        "artifact_validity": 0.9,
+                        "task_completeness": 0.9,
+                    },
+                    "unresolved_feedback": [],
+                    "rejection_reason": "invalid_final_answer",
+                    "optimizer_hint": "Return a valid final answer.",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "generic-explicit-hard-fail",
+            "prompt": "Write an X post.",
+            "ranked_feedback_events": [
+                {
+                    "ranking": ["B", "A"],
+                    "reasoning": "B resolved the feedback.",
+                    "quality": "strong",
+                    "continue_mode": "validate",
+                    "promote": "yes",
+                }
+            ],
+        },
+        "Invalid final answer.",
+        {},
+    )
+
+    assert score["hard"] == 0
+    assert score["soft"] == 0.7
+    assert score["quality_status"] == "failed"
+    assert score["primary_reason"] == "invalid_final_answer"
+
+
 def test_generic_judge_uses_top_level_feedback_context(monkeypatch):
     captured = {}
 
@@ -1409,7 +2022,7 @@ def test_generic_judge_rejects_inconsistent_resolved_feedback(monkeypatch):
         {},
     )
 
-    assert score["hard"] == 0
+    assert score["hard"] == 1
     assert score["soft"] == 0.75
     assert score["quality_status"] == "failed"
     assert score["primary_reason"] == "visuals_unresolved"
@@ -1463,7 +2076,7 @@ def test_generic_judge_preserves_alignment_only_unresolved_feedback(monkeypatch)
         {},
     )
 
-    assert score["hard"] == 0
+    assert score["hard"] == 1
     assert score["quality_status"] == "failed"
     assert score["primary_reason"] == "human_feedback_not_resolved"
     assert score["evidence"] == ["scroll animation", "product graphics"]
@@ -1555,6 +2168,39 @@ def test_landing_page_evaluator_accepts_numeric_string_hard(tmp_path, monkeypatc
     assert result["soft"] == 0.82
     assert result["score_status"] == "scored"
     assert result["evaluator_status"] == "passed"
+
+
+def test_landing_page_judge_hard_failure_is_not_overwritten_by_contract_pass(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 0,
+                    "soft": 0.52,
+                    "dimension_scores": _landing_dimension_scores(),
+                    "rationale": "The bundle is valid, but the judged page is incomplete.",
+                    "fail_reason": "page is incomplete",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "landing-page-judge-hard-fail",
+            "prompt": "Build a Vue/Vite landing page preview.",
+            "metadata": {"output_type": "vue_vite_bundle"},
+        },
+        _valid_vue_bundle_response(),
+        {"mode": "landing_page_v1", "artifact_contract": "vue_vite_bundle"},
+    )
+
+    assert score["contract_status"] == "passed"
+    assert score["hard"] == 0
+    assert score["quality_status"] == "failed"
+    assert score["fail_reason"] == "page is incomplete"
 
 
 def test_landing_page_judge_rejection_returns_optimizer_failure_packet(monkeypatch):
@@ -2470,7 +3116,7 @@ def test_landing_page_evaluator_optional_render_smoke_failure_reaches_judge(monk
 
     assert called is True
     assert score["hard"] == 1
-    assert score["contract_status"] == "failed"
+    assert score["contract_status"] == "passed"
     assert score["quality_status"] == "passed"
     assert score["metadata"]["dimension_scores"]["render_smoke"] == 0.0
     assert score["metadata"]["render_smoke"]["failure"]["failed_checks"][0]["check"] == "vue_render_smoke.horizontal_overflow"
