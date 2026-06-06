@@ -1263,6 +1263,19 @@ def _selection_eval_context(results: list[dict] | None) -> dict:
     return context
 
 
+def _selection_sample_artifact_path(eval_dir: str) -> str:
+    """Return the first persisted target artifact from a selection rollout."""
+    if not eval_dir:
+        return ""
+    candidates: list[str] = []
+    for root, _dirs, files in os.walk(eval_dir):
+        if "target_exec_artifact.json" in files:
+            candidates.append(os.path.join(root, "target_exec_artifact.json"))
+        if "target_response.txt" in files:
+            candidates.append(os.path.join(root, "target_response.txt"))
+    return sorted(candidates)[0] if candidates else ""
+
+
 def _extract_dimension_scores(result: dict | None) -> dict[str, float]:
     if not isinstance(result, dict):
         return {}
@@ -1733,6 +1746,22 @@ def _best_selection_scores(
     if soft is None and gate_metric == "soft" and best_score >= 0:
         soft = best_score
     return hard, soft
+
+
+def _best_selection_sample_artifact_path(history: list[dict], best_origin: str) -> str:
+    if best_origin == "initial_skill":
+        return ""
+    for record in reversed(history):
+        origin = str(record.get("current_origin") or "")
+        step = record.get("step")
+        if not origin and isinstance(step, int):
+            origin = f"step_{step:04d}"
+        if origin != best_origin:
+            continue
+        sample_path = str(record.get("selection_sample_artifact_path") or "").strip()
+        if sample_path:
+            return sample_path
+    return ""
 
 
 def _gate_score_for_summary(hard: float | None, soft: float | None, gate_metric: str, gate_mixed_weight: float) -> float | None:
@@ -2536,10 +2565,14 @@ class ReflACTTrainer:
         sel_cache: dict[str, tuple[float, float]] = {}
         sel_rejection_signal_cache: dict[str, dict] = {}
         sel_eval_context_cache: dict[str, dict] = {}
+        sel_sample_artifact_cache: dict[str, str] = {}
         for rec in history:
             sh = rec.get("candidate_hash", "")
             if sh and rec.get("selection_hard") is not None:
                 sel_cache[sh] = (rec["selection_hard"], rec["selection_soft"])
+                sample_artifact = str(rec.get("selection_sample_artifact_path") or "").strip()
+                if sample_artifact:
+                    sel_sample_artifact_cache[sh] = sample_artifact
                 selection_eval_context = rec.get("selection_eval_context")
                 if isinstance(selection_eval_context, dict):
                     sel_eval_context_cache[sh] = selection_eval_context
@@ -3266,6 +3299,7 @@ class ReflACTTrainer:
                     cand_hard, cand_soft = sel_cache[cand_hash]
                     selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
                     selection_candidate_context = sel_eval_context_cache.get(cand_hash)
+                    sample_artifact_path = sel_sample_artifact_cache.get(cand_hash, "")
                     print(
                         f"    [6/6 EVALUATE] "
                         f"cache hit {cand_hash}: hard={cand_hard:.4f}"
@@ -3279,6 +3313,9 @@ class ReflACTTrainer:
                     print(f"    [6/6 EVALUATE] selection items={sel_n}")
                     sel_eval_dir = os.path.join(step_dir, "selection_eval")
                     sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
+                    sample_artifact_path = _selection_sample_artifact_path(sel_eval_dir)
+                    if sample_artifact_path:
+                        sel_sample_artifact_cache[cand_hash] = sample_artifact_path
                     selection_rejection_signal = _selection_rejection_signal(sel_results)
                     selection_candidate_context = _selection_eval_context(sel_results)
                     sel_eval_context_cache[cand_hash] = selection_candidate_context
@@ -3310,6 +3347,8 @@ class ReflACTTrainer:
                 if step_rec.get("gate_status") != "blocked":
                     step_rec["selection_hard"] = cand_hard
                     step_rec["selection_soft"] = cand_soft
+                    if sample_artifact_path:
+                        step_rec["selection_sample_artifact_path"] = sample_artifact_path
                     if selection_candidate_context:
                         step_rec["selection_eval_context"] = selection_candidate_context
 
@@ -3811,6 +3850,7 @@ class ReflACTTrainer:
                                 cand_hard, cand_soft = sel_cache[cand_hash]
                                 selection_rejection_signal = sel_rejection_signal_cache.get(cand_hash)
                                 selection_candidate_context = sel_eval_context_cache.get(cand_hash)
+                                sample_artifact_path = sel_sample_artifact_cache.get(cand_hash, "")
                             else:
                                 sel_env, sel_n = _build_eval_env(
                                     split="valid_seen",
@@ -3823,6 +3863,9 @@ class ReflACTTrainer:
                                     f"selection_eval{gate_retry_suffix}",
                                 )
                                 sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
+                                sample_artifact_path = _selection_sample_artifact_path(sel_eval_dir)
+                                if sample_artifact_path:
+                                    sel_sample_artifact_cache[cand_hash] = sample_artifact_path
                                 selection_rejection_signal = _selection_rejection_signal(sel_results)
                                 selection_candidate_context = _selection_eval_context(sel_results)
                                 sel_eval_context_cache[cand_hash] = selection_candidate_context
@@ -3864,6 +3907,8 @@ class ReflACTTrainer:
 
                             step_rec["selection_hard"] = cand_hard
                             step_rec["selection_soft"] = cand_soft
+                            if sample_artifact_path:
+                                step_rec["selection_sample_artifact_path"] = sample_artifact_path
                             if selection_candidate_context:
                                 step_rec["selection_eval_context"] = selection_candidate_context
                             gate = evaluate_gate(
@@ -4538,7 +4583,10 @@ class ReflACTTrainer:
         test_hard = None
         test_soft = None
 
-        if cfg["eval_test"] and skip_final_test_reason:
+        if not cfg["eval_test"]:
+            skip_final_test_reason = skip_final_test_reason or "final_eval_disabled"
+            print("\n  [skip final test] final eval disabled by config.")
+        elif cfg["eval_test"] and skip_final_test_reason:
             print(
                 "\n  [skip final test] selection gate rejected the candidate; "
                 "final test eval is skipped by default."
@@ -4704,6 +4752,7 @@ class ReflACTTrainer:
             gate_metric=gate_metric,
             best_score=best_score,
         )
+        best_selection_sample_artifact_path = _best_selection_sample_artifact_path(history, best_origin)
         summary = {
             "version": "skillopt-0.1.0",
             "config": _redact_cfg(cfg),
@@ -4715,6 +4764,7 @@ class ReflACTTrainer:
             "baseline_selection_soft": baseline_selection_scores[1],
             "best_selection_hard": best_selection_hard,
             "best_selection_soft": best_selection_soft,
+            "best_selection_sample_artifact_path": best_selection_sample_artifact_path,
             "best_step": best_step,
             "current_origin": current_origin,
             "best_origin": best_origin,

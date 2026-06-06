@@ -15,8 +15,13 @@ from tests.test_gitmoot_dataloader import write_training_package
 
 def _landing_dimension_scores():
     return {
+        "artifact_validity": 1.0,
+        "task_completion": 0.9,
+        "human_feedback_alignment": 0.85,
+        "readiness_to_stop": 0.8,
         "mobile_responsiveness": 0.9,
         "footer_presence_clarity": 0.8,
+        "brand_distinctiveness": 0.8,
         "hero_quality": 0.9,
         "cta_clarity": 0.85,
         "visual_images_relevance": 0.75,
@@ -435,6 +440,33 @@ def test_build_trainer_config_uses_adaptive_gate_retry_defaults(tmp_path):
     assert cfg["noop_retry_budget"] == 1
     assert cfg["wrong_artifact_retry_budget"] == 1
     assert cfg["gate_reject_retry_close_gap"] == 0.03
+    assert cfg["eval_test"] is False
+
+
+def test_build_trainer_config_threads_final_eval_flag(tmp_path):
+    base_kwargs = {
+        "package_path": tmp_path / "training.json",
+        "artifact_root": tmp_path / "blobs",
+        "out_root": tmp_path / "out",
+        "initial_skill_path": tmp_path / "skill.md",
+        "num_epochs": 1,
+        "batch_size": 1,
+        "seed": 1,
+        "optimizer_model": "gpt-opt",
+        "target_model": "gpt-target",
+        "optimizer_backend": "codex",
+        "target_backend": "codex_exec",
+        "evaluator_config": {"mode": "fixture"},
+        "gate_metric": "mixed",
+        "reasoning_effort": "",
+        "skill_update_mode": "full_rewrite_minibatch",
+    }
+
+    enabled = build_trainer_config(**base_kwargs, dry_run=False, eval_test=True)
+    dry_run = build_trainer_config(**base_kwargs, dry_run=True, eval_test=True)
+
+    assert enabled["eval_test"] is True
+    assert dry_run["eval_test"] is False
 
 
 def test_optimize_threads_evaluator_options(monkeypatch):
@@ -1197,6 +1229,48 @@ def test_blocked_summary_writes_non_promotable_candidate_metadata(tmp_path):
     assert loaded.summary.metadata["promotable"] is False
     assert loaded.summary.metadata["gate_blocker"] == "evaluator_not_run"
     assert loaded.summary.metadata["gate_blockers"][0]["items"][0]["id"] == "val-1"
+
+
+def test_candidate_package_attaches_best_selection_sample_artifact(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    del artifact_root
+    package = TrainingPackage.load(package_path)
+    candidate_output = tmp_path / "out" / "candidate.json"
+    sample_path = tmp_path / "sample" / "target_exec_artifact.json"
+    sample_path.parent.mkdir(parents=True)
+    sample_path.write_text(
+        json.dumps({"renderer": "vue-vite", "files": [{"path": "src/App.vue", "content": "<template />"}]}),
+        encoding="utf-8",
+    )
+
+    candidate = write_candidate_package(
+        package=package,
+        candidate_content=package.template.content + "\nImprove visuals.\n",
+        summary={
+            "gate_status": "passed",
+            "promotable": True,
+            "best_origin": "step_0001",
+            "best_selection_hard": 1,
+            "baseline_selection_hard": 1,
+            "best_selection_sample_artifact_path": str(sample_path),
+            "config": {"eval_test": False},
+        },
+        out_root=tmp_path / "out",
+        artifact_dir=tmp_path / "out" / "artifacts",
+        candidate_output=candidate_output,
+        dry_run=False,
+    )
+
+    loaded = CandidatePackage.load(candidate_output)
+    sample_artifacts = [artifact for artifact in candidate.artifacts if artifact.id.endswith("/candidate-selection-sample")]
+
+    assert len(sample_artifacts) == 1
+    assert sample_artifacts[0].media_type == "application/json"
+    assert sample_artifacts[0].driver == "vue-vite"
+    assert (tmp_path / "out" / "artifacts" / sample_artifacts[0].path).is_file()
+    assert loaded.eval_report["best_selection_sample_artifact_path"] == str(sample_path)
+    assert loaded.eval_report["final_eval_enabled"] is False
+    assert loaded.summary.metadata["artifact_ids"][-1].endswith("/candidate-selection-sample")
 
 
 def test_initial_skill_best_origin_writes_no_candidate_metadata(tmp_path):

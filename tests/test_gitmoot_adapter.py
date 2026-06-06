@@ -3570,8 +3570,13 @@ def test_render_smoke_fallback_artifact_dir_sanitizes_item_id():
 
 def _landing_dimension_scores():
     return {
+        "artifact_validity": 1.0,
+        "task_completion": 0.9,
+        "human_feedback_alignment": 0.85,
+        "readiness_to_stop": 0.8,
         "mobile_responsiveness": 0.9,
         "footer_presence_clarity": 0.8,
+        "brand_distinctiveness": 0.8,
         "hero_quality": 0.9,
         "cta_clarity": 0.85,
         "visual_images_relevance": 0.75,

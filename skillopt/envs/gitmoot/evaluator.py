@@ -19,16 +19,58 @@ from skillopt.utils import extract_json
 
 LANDING_PAGE_EVALUATOR_ID = "landing_page_v1"
 LANDING_PAGE_EVALUATOR_VERSION = "v1"
-LANDING_PAGE_DIMENSIONS = (
+CORE_RUBRIC_DIMENSIONS = (
+    "artifact_validity",
+    "task_completion",
+    "human_feedback_alignment",
+    "readiness_to_stop",
+)
+VUE_LANDING_PAGE_DIMENSIONS = (
     "mobile_responsiveness",
     "footer_presence_clarity",
     "hero_quality",
+    "brand_distinctiveness",
     "cta_clarity",
     "visual_images_relevance",
     "animation_motion_quality",
     "text_overlap_readability",
     "ranked_strength_preservation",
 )
+LANDING_PAGE_DIMENSIONS = VUE_LANDING_PAGE_DIMENSIONS
+RUBRIC_DIMENSION_DESCRIPTIONS = {
+    "artifact_validity": "Artifact/render contract is valid and usable.",
+    "task_completion": "The output completes the requested task, not just a partial plan.",
+    "human_feedback_alignment": "The candidate resolves the imported human feedback themes.",
+    "readiness_to_stop": "The output is ready enough that optimization can stop.",
+    "mobile_responsiveness": "Works on mobile without overflow or unusable layout.",
+    "footer_presence_clarity": "Includes a clear footer with useful links or closing context.",
+    "hero_quality": "Hero is clear, polished, product-relevant, and visually strong.",
+    "brand_distinctiveness": "Brand system is memorable, specific, and visible in the first viewport.",
+    "cta_clarity": "Primary and final calls to action are obvious and well placed.",
+    "visual_images_relevance": "Graphics/images help explain the product and are not generic filler.",
+    "animation_motion_quality": "Motion exists when requested and supports comprehension.",
+    "text_overlap_readability": "Text does not overlap, occlude, or become unreadable.",
+    "ranked_strength_preservation": "Preserves strengths called out in human rankings/feedback.",
+}
+FEEDBACK_DIMENSION_KEYWORDS = {
+    "visual_images_relevance": (
+        "image",
+        "images",
+        "graphic",
+        "graphics",
+        "visual",
+        "visuals",
+        "hero visual",
+        "product visual",
+    ),
+    "animation_motion_quality": ("animation", "animations", "motion", "scroll animation", "transition"),
+    "mobile_responsiveness": ("mobile", "responsive", "responsiveness", "phone"),
+    "brand_distinctiveness": ("brand", "branding", "memorable", "rememberable", "generic", "personality"),
+    "footer_presence_clarity": ("footer",),
+    "hero_quality": ("hero",),
+    "cta_clarity": ("cta", "call to action", "button"),
+    "text_overlap_readability": ("overlap", "unreadable", "readability", "occlude"),
+}
 CONTRACT_PASSED = "passed"
 CONTRACT_FAILED = "failed"
 QUALITY_PASSED = "passed"
@@ -703,6 +745,7 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
 
 def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, Any]) -> dict[str, Any]:
     render_result: dict[str, Any] | None = None
+    rubric = _compose_evaluator_rubric(item, config)
     requires_vue_bundle = _requires_vue_vite_bundle(item, config)
     if requires_vue_bundle:
         artifact_check = _check_vue_vite_bundle(response)
@@ -731,8 +774,8 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     )
     raw, _usage = _chat_evaluator(
         config,
-        system=_landing_page_system_prompt(),
-        user=_landing_page_user_prompt(item, response, config, check_context),
+        system=_landing_page_system_prompt(rubric),
+        user=_landing_page_user_prompt(item, response, config, check_context, rubric),
         max_completion_tokens=4096,
         retries=2,
         stage="gitmoot_landing_page_judge",
@@ -740,7 +783,7 @@ def _landing_page_score(item: dict[str, Any], response: str, config: dict[str, A
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         raise ValueError("landing_page_v1 judge did not return JSON")
-    score = _normalize_landing_page_score(parsed, raw=raw, item=item, check_context=check_context)
+    score = _normalize_landing_page_score(parsed, raw=raw, item=item, check_context=check_context, rubric=rubric)
     if render_result is not None:
         _attach_render_metadata(score, render_result)
     return _with_landing_page_signals(
@@ -1639,8 +1682,144 @@ def _chat_evaluator(config: dict[str, Any], **kwargs) -> tuple[str, dict[str, An
         set_optimizer_deployment(previous_model or default_model_for_backend(previous_backend))
 
 
-def _landing_page_system_prompt() -> str:
-    dimensions = ", ".join(LANDING_PAGE_DIMENSIONS)
+def _compose_evaluator_rubric(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """Build a deterministic rubric from core, task, config, and feedback signals."""
+    dimensions = list(CORE_RUBRIC_DIMENSIONS) + list(VUE_LANDING_PAGE_DIMENSIONS)
+    rubric_config = config.get("rubric") if isinstance(config.get("rubric"), dict) else {}
+    configured_dimensions = _normalize_dimension_list(
+        rubric_config.get("dimensions")
+        or config.get("dimensions")
+        or config.get("rubric_dimensions")
+    )
+    if configured_dimensions:
+        dimensions = configured_dimensions
+    else:
+        extra_dimensions = _normalize_dimension_list(
+            rubric_config.get("extra_dimensions")
+            or config.get("extra_dimensions")
+            or config.get("rubric_extra_dimensions")
+        )
+        for dimension in extra_dimensions:
+            if dimension not in dimensions:
+                dimensions.append(dimension)
+    weights = {dimension: 1.0 for dimension in dimensions}
+    weights.update(_configured_rubric_weights(rubric_config.get("weights") or config.get("dimension_weights")))
+    feedback_weights = _feedback_dimension_weights(item, dimensions)
+    for dimension, weight in feedback_weights.items():
+        weights[dimension] = max(weights.get(dimension, 1.0), weight)
+    descriptions = {
+        dimension: str(
+            (rubric_config.get("descriptions") if isinstance(rubric_config.get("descriptions"), dict) else {}).get(dimension)
+            or RUBRIC_DIMENSION_DESCRIPTIONS.get(dimension)
+            or dimension.replace("_", " ").capitalize()
+        )
+        for dimension in dimensions
+    }
+    return {
+        "dimensions": dimensions,
+        "weights": weights,
+        "descriptions": descriptions,
+        "feedback_weighted_dimensions": feedback_weights,
+    }
+
+
+def _normalize_dimension_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = re.split(r"[\s,]+", value)
+    elif isinstance(value, list | tuple):
+        raw_items = value
+    else:
+        return []
+    dimensions: list[str] = []
+    for item in raw_items:
+        dimension = _normalize_dimension_name(item)
+        if dimension and dimension not in dimensions:
+            dimensions.append(dimension)
+    return dimensions
+
+
+def _normalize_dimension_name(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    text = re.sub(r"[^a-z0-9_]", "", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text
+
+
+def _configured_rubric_weights(value: Any) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    weights: dict[str, float] = {}
+    for key, raw_weight in value.items():
+        dimension = _normalize_dimension_name(key)
+        if not dimension:
+            continue
+        weight = _rubric_weight_value(raw_weight)
+        if weight is not None:
+            weights[dimension] = weight
+    return weights
+
+
+def _rubric_weight_value(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return max(0.0, float(value))
+    text = str(value or "").strip().lower()
+    if text in {"critical", "high"}:
+        return 2.0
+    if text == "medium":
+        return 1.5
+    if text == "low":
+        return 0.75
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        return None
+
+
+def _feedback_dimension_weights(item: dict[str, Any], dimensions: list[str]) -> dict[str, float]:
+    feedback_text = " ".join(_feedback_dimension_source_texts(item)).lower()
+    if not feedback_text:
+        return {}
+    dimension_set = set(dimensions)
+    weights: dict[str, float] = {}
+    for dimension, keywords in FEEDBACK_DIMENSION_KEYWORDS.items():
+        if dimension not in dimension_set:
+            continue
+        hits = sum(1 for keyword in keywords if keyword in feedback_text)
+        if hits:
+            weights[dimension] = 2.0 if hits > 1 else 1.5
+    if weights and "human_feedback_alignment" in dimension_set:
+        weights["human_feedback_alignment"] = 2.0
+    return weights
+
+
+def _feedback_dimension_source_texts(item: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for event in _feedback_signals(item):
+        if not isinstance(event, dict):
+            continue
+        for key in (
+            "choice",
+            "reasoning",
+            "notes",
+            "themes",
+            "required_improvements",
+            "useful_traits",
+            "rejected_traits",
+            "quality",
+            "continue_mode",
+            "promote",
+        ):
+            texts.extend(_normalize_string_list(event.get(key)))
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    for key in ("feedback_context", "artifact_hints", "brief", "task_description"):
+        texts.extend(_normalize_string_list(item.get(key) or metadata.get(key)))
+    return texts
+
+
+def _landing_page_system_prompt(rubric: dict[str, Any]) -> str:
+    dimensions = ", ".join(rubric.get("dimensions") or VUE_LANDING_PAGE_DIMENSIONS)
     return (
         "You are evaluating a generated landing page for Gitmoot SkillOpt. "
         "Return only JSON with keys evaluator_id, evaluator_version, hard, soft, "
@@ -1672,29 +1851,19 @@ def _landing_page_user_prompt(
     response: str,
     config: dict[str, Any],
     check_context: dict[str, Any] | None = None,
+    rubric: dict[str, Any] | None = None,
 ) -> str:
+    rubric = rubric or _compose_evaluator_rubric(item, config)
     return "\n\n".join(
         [
             "## Landing Page Evaluation Config",
             json.dumps(config, indent=2, sort_keys=True),
             "## Deterministic And Render Check Context",
             _json_for_prompt(check_context or {}),
+            "## Composed Rubric",
+            _json_for_prompt(rubric),
             "## Rubric",
-            "\n".join(
-                [
-                    "- hard: Artifact/render contract validity; keep hard=1 for valid Vue outputs even when quality needs more work.",
-                    "- soft: Readiness to stop optimizing against human feedback.",
-                    "- human_feedback_alignment: Explain which review requests were resolved and which remain unresolved.",
-                    "- mobile_responsiveness: Works on mobile without overflow or unusable layout.",
-                    "- footer_presence_clarity: Includes a clear footer with useful links or closing context.",
-                    "- hero_quality: Hero is clear, polished, product-relevant, and visually strong.",
-                    "- cta_clarity: Primary and final calls to action are obvious and well placed.",
-                    "- visual_images_relevance: Graphics/images help explain the product and are not generic filler.",
-                    "- animation_motion_quality: Motion exists when requested and supports comprehension.",
-                    "- text_overlap_readability: Text does not overlap, occlude, or become unreadable.",
-                    "- ranked_strength_preservation: Preserves strengths called out in human rankings/feedback.",
-                ]
-            ),
+            _rubric_prompt_lines(rubric),
             "## Task Prompt, Artifacts, And Human Feedback",
             str(item.get("prompt") or ""),
             "## Structured Task Context",
@@ -1703,6 +1872,21 @@ def _landing_page_user_prompt(
             response,
         ]
     )
+
+
+def _rubric_prompt_lines(rubric: dict[str, Any]) -> str:
+    descriptions = rubric.get("descriptions") if isinstance(rubric.get("descriptions"), dict) else {}
+    weights = rubric.get("weights") if isinstance(rubric.get("weights"), dict) else {}
+    lines = [
+        "- hard: Artifact/render contract validity; keep hard=1 for valid Vue outputs even when quality needs more work.",
+        "- soft: Readiness to stop optimizing against human feedback.",
+        "- human_feedback_alignment: Explain which review requests were resolved and which remain unresolved.",
+    ]
+    for dimension in rubric.get("dimensions") or VUE_LANDING_PAGE_DIMENSIONS:
+        description = descriptions.get(dimension) or RUBRIC_DIMENSION_DESCRIPTIONS.get(dimension) or dimension
+        weight = weights.get(dimension, 1.0)
+        lines.append(f"- {dimension}: {description} Weight: {weight}.")
+    return "\n".join(lines)
 
 
 def _landing_page_check_context(
@@ -1944,7 +2128,9 @@ def _normalize_landing_page_score(
     raw: str,
     item: dict[str, Any],
     check_context: dict[str, Any] | None = None,
+    rubric: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    rubric = rubric or _compose_evaluator_rubric(item, {})
     parsed_hard = _parse_landing_hard(parsed.get("hard"))
     soft = _parse_score(parsed.get("soft"), "soft")
     feedback_resolved = _feedback_resolution_proven(parsed)
@@ -1953,7 +2139,7 @@ def _normalize_landing_page_score(
     needs_more_optimization = _feedback_requests_more_optimization(item)
     should_apply_stop_cap = needs_more_optimization and candidate_specific_failure and not feedback_resolved
     soft = _apply_feedback_stop_readiness_cap(item, soft, resolved=not should_apply_stop_cap)
-    dimensions = _parse_dimension_scores(parsed.get("dimension_scores"))
+    dimensions = _parse_dimension_scores(parsed.get("dimension_scores"), rubric)
     rationale = str(parsed.get("rationale") or parsed.get("reasoning") or "").strip()
     fail_reason = str(parsed.get("fail_reason") or "").strip()
     contract_status = _contract_status_from_check_context(check_context)
@@ -1990,6 +2176,7 @@ def _normalize_landing_page_score(
         "contract_status": contract_status,
         "quality_status": quality_status,
         "dimension_scores": dimensions,
+        "rubric": rubric,
         "rationale": rationale,
         "raw": raw[:1000],
         "stage_status": stage_status,
@@ -2167,15 +2354,16 @@ def _parse_landing_hard(value: Any) -> int:
     raise ValueError("landing_page_v1 hard must be 0 or 1")
 
 
-def _parse_dimension_scores(value: Any) -> dict[str, float]:
+def _parse_dimension_scores(value: Any, rubric: dict[str, Any]) -> dict[str, float]:
     if not isinstance(value, dict):
         raise ValueError("landing_page_v1 dimension_scores must be an object")
-    missing = [dimension for dimension in LANDING_PAGE_DIMENSIONS if dimension not in value]
+    expected_dimensions = list(rubric.get("dimensions") or VUE_LANDING_PAGE_DIMENSIONS)
+    missing = [dimension for dimension in expected_dimensions if dimension not in value]
     if missing:
         raise ValueError(f"landing_page_v1 dimension_scores missing: {', '.join(missing)}")
     return {
         dimension: _parse_score(value[dimension], f"dimension_scores.{dimension}")
-        for dimension in LANDING_PAGE_DIMENSIONS
+        for dimension in expected_dimensions
     }
 
 

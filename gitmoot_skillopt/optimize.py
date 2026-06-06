@@ -50,6 +50,7 @@ def run_optimize(
     feedback_direct_mode: str = "auto",
     target_artifact_retry_budget: int = 1,
     hard_failure_retry_budget: int = 1,
+    eval_test: bool = False,
 ) -> CandidatePackage:
     package_path = _require_file(training_package, "training package")
     artifact_root_path = _require_dir(artifact_root, "artifact root")
@@ -107,6 +108,7 @@ def run_optimize(
         feedback_direct_mode=feedback_direct_mode,
         target_artifact_retry_budget=target_artifact_retry_budget,
         hard_failure_retry_budget=hard_failure_retry_budget,
+        eval_test=eval_test,
     )
     adapter = GitmootAdapter(
         training_package=str(package_path),
@@ -155,6 +157,7 @@ def build_trainer_config(
     feedback_direct_mode: str = "auto",
     target_artifact_retry_budget: int = 1,
     hard_failure_retry_budget: int = 1,
+    eval_test: bool = False,
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
     normalized_gate_metric = str(gate_metric or "hard").strip().lower()
@@ -244,7 +247,7 @@ def build_trainer_config(
         "gate_mixed_weight": 0.5,
         "sel_env_num": 0,
         "test_env_num": 0,
-        "eval_test": False if dry_run else True,
+        "eval_test": bool(eval_test) and not dry_run,
         "noop_retry_budget": max(0, int(noop_retry_budget)),
         "gate_reject_retry_budget": max(0, int(gate_reject_retry_budget)),
         "wrong_artifact_retry_budget": max(0, int(wrong_artifact_retry_budget)),
@@ -301,6 +304,9 @@ def write_candidate_package(
             driver="gitmoot-skillopt",
         ),
     ]
+    sample_artifact = _candidate_selection_sample_artifact(package, summary, writer)
+    if sample_artifact is not None:
+        artifacts.append(sample_artifact)
     summary_metadata = _summary_metadata(summary, artifacts=artifacts, no_candidate_triggers=no_candidate_triggers)
     gate_rejection = _gate_rejection_packet(summary)
     candidate = CandidatePackage(
@@ -333,6 +339,29 @@ def _candidate_artifact_id(package: TrainingPackage, suffix: str) -> str:
     if not run_id:
         run_id = str(package.template.id or "candidate").strip()
     return f"{run_id}/{suffix}"
+
+
+def _candidate_selection_sample_artifact(
+    package: TrainingPackage,
+    summary: dict[str, Any],
+    writer: OutputArtifactWriter,
+) -> Any | None:
+    sample_path_text = str(summary.get("best_selection_sample_artifact_path") or "").strip()
+    if not sample_path_text:
+        return None
+    sample_path = Path(sample_path_text)
+    if not sample_path.is_file():
+        return None
+    content = sample_path.read_bytes()
+    media_type = "application/json" if sample_path.suffix.lower() == ".json" else "text/plain"
+    driver = "vue-vite" if media_type == "application/json" else "text"
+    return writer.write_bytes(
+        "candidate-selection-sample" + sample_path.suffix.lower(),
+        content,
+        artifact_id=_candidate_artifact_id(package, "candidate-selection-sample"),
+        media_type=media_type,
+        driver=driver,
+    )
 
 
 def _require_file(path_text: str, label: str) -> Path:
@@ -398,6 +427,9 @@ def _eval_report(summary: dict[str, Any], *, dry_run: bool, no_candidate_trigger
         "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
         "gate_rejection": _gate_rejection_dict(summary),
         "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
+        "final_eval_enabled": _summary_eval_test_enabled(summary),
+        "final_eval_ran": summary.get("test_hard") is not None,
+        "best_selection_sample_artifact_path": str(summary.get("best_selection_sample_artifact_path") or ""),
         "token_summary": summary.get("token_summary", {}),
     }
     report.update(_no_candidate_report_fields(no_candidate_details))
@@ -486,8 +518,17 @@ def _summary_metadata(
         "wrong_artifact_retry_attempts": summary.get("wrong_artifact_retry_attempts", []),
         "gate_rejection": _gate_rejection_dict(summary),
         "final_test_skipped_reason": str(summary.get("final_test_skipped_reason") or ""),
+        "final_eval_enabled": _summary_eval_test_enabled(summary),
+        "final_eval_ran": summary.get("test_hard") is not None,
+        "best_selection_sample_artifact_path": str(summary.get("best_selection_sample_artifact_path") or ""),
         "next_action": _no_candidate_next_action(no_candidate_triggers),
     }
+
+
+def _summary_eval_test_enabled(summary: dict[str, Any]) -> bool:
+    config = summary.get("config") if isinstance(summary.get("config"), dict) else {}
+    value = config.get("eval_test")
+    return bool(value)
 
 
 def _gate_rejection_dict(summary: dict[str, Any]) -> dict[str, Any] | None:
