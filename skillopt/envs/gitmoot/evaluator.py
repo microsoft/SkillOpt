@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlparse
 
 from skillopt.model import chat_optimizer, get_optimizer_backend, set_optimizer_backend, set_optimizer_deployment
 from skillopt.model.common import default_model_for_backend
+from skillopt.envs.gitmoot.package import feedback_is_about_previous_outputs, feedback_target_values
 from skillopt.utils import extract_json
 
 LANDING_PAGE_EVALUATOR_ID = "landing_page_v1"
@@ -251,11 +252,12 @@ def _human_feedback_judge_system_prompt() -> str:
         "When feedback_target=baseline_review_outputs, the review describes known issues in previous/baseline "
         "outputs. Judge whether the new candidate resolves those baseline issues; do not penalize the candidate "
         "as if the old quality/promote labels were written about the unseen candidate. "
-        "If review feedback exists, assume the human is asking for optimization unless promote=yes or "
-        "continue_mode explicitly indicates stopping/validation approval. "
+        "If live candidate feedback exists, assume the human is asking for optimization unless promote=yes or "
+        "continue_mode explicitly indicates stopping/validation approval. For baseline_review_outputs feedback, "
+        "use quality/promote/continue_mode as prior-output labels and rubric context, not as current-candidate vetoes. "
         "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
-        "continue_mode=refine/explore/distill or promote=no means the candidate may be good but is not ready to stop "
-        "unless you can prove all named feedback themes were resolved. "
+        "For live candidate feedback, continue_mode=refine/explore/distill or promote=no means the candidate may be "
+        "good but is not ready to stop unless you can prove all named feedback themes were resolved. "
         "Return only JSON with keys hard, soft, fail_reason, reasoning, human_feedback_alignment, "
         "dimension_scores, unresolved_feedback, rejection_reason, optimizer_hint, baseline_known_issues, "
         "candidate_resolution, baseline_resolution, selection_decision, and score_delta_reason. "
@@ -461,14 +463,30 @@ def _feedback_context_signal(value: Any) -> dict[str, Any]:
 def _feedback_target(item: dict[str, Any]) -> str:
     targets: list[str] = []
     for signal in _feedback_signals(item):
-        target = str(signal.get("feedback_target") or "").strip()
-        if target:
-            targets.append(target)
+        targets.extend(feedback_target_values(signal))
     return targets[0] if targets else ""
 
 
-def _feedback_requests_more_optimization(item: dict[str, Any]) -> bool:
+def _feedback_scope_counts(item: dict[str, Any]) -> dict[str, int]:
     signals = _feedback_signals(item)
+    previous_output_events = sum(1 for signal in signals if feedback_is_about_previous_outputs(signal))
+    return {
+        "total_events": len(signals),
+        "previous_output_events": previous_output_events,
+        "live_candidate_events": len(signals) - previous_output_events,
+    }
+
+
+def _live_feedback_signals(item: dict[str, Any]) -> list[dict[str, Any]]:
+    return [signal for signal in _feedback_signals(item) if not feedback_is_about_previous_outputs(signal)]
+
+
+def _has_previous_output_scoped_feedback(item: dict[str, Any]) -> bool:
+    return any(feedback_is_about_previous_outputs(signal) for signal in _feedback_signals(item))
+
+
+def _feedback_requests_more_optimization(item: dict[str, Any]) -> bool:
+    signals = _live_feedback_signals(item)
     if not signals:
         return False
     for event in signals:
@@ -492,7 +510,7 @@ def _feedback_stop_readiness_cap(item: dict[str, Any]) -> float | None:
     if not _feedback_requests_more_optimization(item):
         return None
     cap = 0.75
-    for event in _feedback_signals(item):
+    for event in _live_feedback_signals(item):
         quality = str(event.get("quality") or "").strip().lower()
         if quality == "poor":
             cap = min(cap, 0.45)
@@ -689,8 +707,45 @@ def _generic_feedback_task_context(item: dict[str, Any]) -> dict[str, Any]:
         "task_description": item.get("task_description"),
         "feedback_context": item.get("feedback_context") or metadata.get("feedback_context"),
         "feedback_target": _feedback_target(item),
+        "feedback_scopes": item.get("feedback_scopes") or metadata.get("feedback_scopes") or _feedback_scope_counts(item),
+        "feedback_scope_note": _feedback_scope_note(item),
+        "candidate_evaluation_rubric": _candidate_evaluation_rubric(item),
         "feedback_events": item.get("feedback_events") or metadata.get("feedback_events"),
         "ranked_feedback_events": item.get("ranked_feedback_events") or metadata.get("ranked_feedback_events"),
+    }
+
+
+def _feedback_scope_note(item: dict[str, Any]) -> str:
+    if _has_previous_output_scoped_feedback(item):
+        return (
+            "Feedback with feedback_target=baseline_review_outputs describes previously reviewed baseline outputs. "
+            "Use it as a rubric for this candidate; do not apply its old quality/promote/continue_mode labels as "
+            "automatic current-candidate stop caps."
+        )
+    return "Feedback describes the current candidate or has unspecified scope."
+
+
+def _candidate_evaluation_rubric(item: dict[str, Any]) -> dict[str, Any]:
+    signals = _feedback_signals(item)
+    if not signals:
+        return {}
+    required: list[str] = []
+    preserve: list[str] = []
+    avoid: list[str] = []
+    notes: list[str] = []
+    for signal in signals[:8]:
+        required.extend(_alignment_text_list(signal.get("required_improvements")))
+        preserve.extend(_alignment_trait_texts(signal.get("useful_traits")))
+        avoid.extend(_alignment_trait_texts(signal.get("rejected_traits")))
+        note = _alignment_text(signal.get("reasoning") or signal.get("choice"), limit=500)
+        if note:
+            notes.append(note)
+    return {
+        "scope": "previous_outputs" if _has_previous_output_scoped_feedback(item) else "live_candidate",
+        "required_improvements": list(dict.fromkeys(required))[:12],
+        "preserve_traits": list(dict.fromkeys(preserve))[:12],
+        "avoid_traits": list(dict.fromkeys(avoid))[:12],
+        "review_notes": notes[:5],
     }
 
 
@@ -836,6 +891,10 @@ def _judge_score(item: dict[str, Any], response: str, config: dict[str, Any]) ->
             "reasoning": str(parsed.get("reasoning") or ""),
             "candidate_specific_failure": candidate_specific_failure,
             "quality_failed": quality_failed,
+            "feedback_scopes": item.get("feedback_scopes") or _feedback_scope_counts(item),
+            "feedback_stop_cap_applied": should_apply_stop_cap,
+            "evaluator_feedback_mode": item.get("evaluator_feedback_mode")
+            or ("rubric" if _has_previous_output_scoped_feedback(item) else "direct"),
             **({"evaluator_schema_retry_attempts": schema_retry_attempts} if schema_retry_attempts else {}),
         },
     }
@@ -1989,8 +2048,10 @@ def _landing_page_system_prompt(rubric: dict[str, Any]) -> str:
         "soft must be a 0-to-1 readiness-to-stop score against the human feedback, not generic prettiness. "
         "Use quality_status, human_feedback_alignment, failure, and soft score for unresolved quality/readiness work. "
         "quality describes the current sample quality only; quality=high or quality=strong is not approval by itself. "
-        "continue_mode=refine/explore/distill or promote=no means the candidate may be good but is not ready to stop "
-        "unless you can prove all named feedback themes were resolved. Penalize missing mobile responsiveness, "
+        "For live candidate feedback, continue_mode=refine/explore/distill or promote=no means the candidate may be "
+        "good but is not ready to stop unless you can prove all named feedback themes were resolved. For "
+        "baseline_review_outputs feedback, use those labels as prior-output context, not current-candidate vetoes. "
+        "Penalize missing mobile responsiveness, "
         "missing footer, weak hero/CTA, irrelevant or absent visuals, missing requested motion, "
         "text overlap/readability problems, and failure to preserve human-ranked strengths. "
         "When hard is 0, failure must include primary_reason, human_reason, optimizer_hint, "
@@ -2095,6 +2156,9 @@ def _landing_page_task_context(item: dict[str, Any]) -> dict[str, Any]:
         "artifacts": item.get("artifacts") or metadata.get("artifacts"),
         "feedback_context": item.get("feedback_context") or metadata.get("feedback_context"),
         "feedback_target": _feedback_target(item),
+        "feedback_scopes": item.get("feedback_scopes") or metadata.get("feedback_scopes") or _feedback_scope_counts(item),
+        "feedback_scope_note": _feedback_scope_note(item),
+        "candidate_evaluation_rubric": _candidate_evaluation_rubric(item),
         "feedback_events": item.get("feedback_events") or metadata.get("feedback_events"),
         "ranked_feedback_events": item.get("ranked_feedback_events") or metadata.get("ranked_feedback_events"),
         "ranked_artifacts": item.get("ranked_artifacts") or metadata.get("ranked_artifacts"),
@@ -2337,6 +2401,10 @@ def _normalize_landing_page_score(
         "check_context": check_context or {},
         "candidate_specific_failure": candidate_specific_failure,
         "quality_failed": quality_failed,
+        "feedback_scopes": item.get("feedback_scopes") or _feedback_scope_counts(item),
+        "feedback_stop_cap_applied": should_apply_stop_cap,
+        "evaluator_feedback_mode": item.get("evaluator_feedback_mode")
+        or ("rubric" if _has_previous_output_scoped_feedback(item) else "direct"),
     }
     if feedback_source:
         metadata["feedback_source"] = feedback_source

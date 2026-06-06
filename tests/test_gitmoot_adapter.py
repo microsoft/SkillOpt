@@ -9,6 +9,8 @@ from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import (
     TRUSTED_VUE_RENDER_PACKAGE_JSON,
     _block_external_browser_requests,
+    _feedback_requests_more_optimization,
+    _feedback_stop_readiness_cap,
     _prepare_trusted_vue_render_deps,
     _render_artifact_dir,
     _run_vue_render_smoke,
@@ -327,6 +329,36 @@ def test_llm_judge_keeps_score_for_recoverable_feedback_schema_warning(monkeypat
     ]
     assert result["metadata"]["raw_human_feedback_alignment"] == "strong"
     assert "failure" not in result
+
+
+def test_old_review_feedback_labels_do_not_create_stop_cap():
+    old_review_item = {
+        "ranked_feedback_events": [
+            {
+                "feedback_target": "baseline_review_outputs",
+                "quality": "poor",
+                "continue_mode": "refine",
+                "promote": "no",
+                "required_improvements": ["ask sharper questions"],
+            }
+        ]
+    }
+    live_review_item = {
+        "ranked_feedback_events": [
+            {
+                "feedback_target": "candidate_output",
+                "quality": "poor",
+                "continue_mode": "refine",
+                "promote": "no",
+                "required_improvements": ["ask sharper questions"],
+            }
+        ]
+    }
+
+    assert _feedback_requests_more_optimization(old_review_item) is False
+    assert _feedback_stop_readiness_cap(old_review_item) is None
+    assert _feedback_requests_more_optimization(live_review_item) is True
+    assert _feedback_stop_readiness_cap(live_review_item) == 0.45
 
 
 def test_llm_judge_unusable_feedback_schema_still_fails(monkeypatch):
@@ -2482,7 +2514,7 @@ def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypa
                     "quality": "poor",
                     "continue_mode": "refine",
                     "promote": "no",
-                    "feedback_target": "baseline_review_outputs",
+                    "feedback_target": ["baseline_review_outputs"],
                     "feedback_source": "imported_human_review",
                     "themes": ["MoonAI-level branding", "product graphics", "mobile polish"],
                 }

@@ -343,6 +343,42 @@ class _TwoItemFeedbackDataLoader(_RetryDataLoader):
         ]
 
 
+class _SplitFeedbackDataLoader(_RetryDataLoader):
+    def __init__(self) -> None:
+        super().__init__(item_id="item-002", train_size=1)
+        self.train_items = [
+            {
+                "id": "item-002",
+                "ranked_feedback_events": [
+                    {
+                        "ranking": ["C > B > A > D"],
+                        "quality": "acceptable",
+                        "continue_mode": "refine",
+                        "promote": "no",
+                        "reasoning": "remove finally, avoid fake edginess and AI-written phrasing",
+                        "required_improvements": ["remove filler words"],
+                    }
+                ],
+            }
+        ]
+        self.val_items = [
+            {
+                "id": "item-001",
+                "ranked_feedback_events": [
+                    {
+                        "ranking": ["D > A > B > C"],
+                        "quality": "poor",
+                        "continue_mode": "refine",
+                        "promote": "no",
+                        "reasoning": "replies need a sharper real point, not obvious restatement",
+                        "required_improvements": ["sharper mechanism question"],
+                    }
+                ],
+            }
+        ]
+        self.test_items = []
+
+
 class _RetryAdapter:
     def __init__(self, dataloader: _RetryDataLoader) -> None:
         self.dataloader = dataloader
@@ -723,6 +759,78 @@ def test_feedback_direct_optimizer_context_includes_all_reviewed_items(tmp_path,
     assert history[0]["optimizer_context_items"] == ["item-001", "item-002"]
 
 
+def test_feedback_direct_optimizer_context_includes_reviewed_items_across_splits(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    merge_contexts: list[str] = []
+    reflect_contexts: list[str] = []
+    reflect_results: list[list[dict]] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches
+        merge_contexts.append(kwargs.get("meta_skill_context", ""))
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "split feedback direct candidate",
+                    "change_summary": ["all split review feedback"],
+                    "new_skill": skill_content.rstrip() + "\n\nAll reviewed split feedback guidance.\n",
+                }
+            ],
+        }
+
+    class SplitFeedbackAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            reflect_results.append(results)
+            reflect_contexts.append(kwargs.get("step_buffer_context", ""))
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": "candidate",
+                                "change_summary": ["all split review feedback"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+            ]
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            changed = "All reviewed split feedback guidance" in skill_content
+            return [_scored_result(soft=0.95 if changed else 0.1)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+    cfg["gate_metric"] = "soft"
+
+    summary = ReflACTTrainer(cfg, SplitFeedbackAdapter(_SplitFeedbackDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert summary["review_feedback_items"] == ["item-002", "item-001"]
+    assert summary["optimizer_context_items"] == ["item-002", "item-001"]
+    assert [result["id"] for result in reflect_results[0]] == ["item-002", "item-001"]
+    assert "Optimizer context items: item-001, item-002" in reflect_contexts[0]
+    assert "item-001" in merge_contexts[0]
+    assert "item-002" in merge_contexts[0]
+    assert "sharper mechanism question" in merge_contexts[0]
+    assert "remove filler words" in merge_contexts[0]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["feedback_direct_items"] == ["item-002", "item-001"]
+    assert history[0]["optimizer_context_items"] == ["item-002", "item-001"]
+
+
 def test_review_feedback_item_ids_are_not_prompt_context_limited():
     class ManyItemDataLoader(_RetryDataLoader):
         def __init__(self) -> None:
@@ -739,6 +847,37 @@ def test_review_feedback_item_ids_are_not_prompt_context_limited():
 
     assert len(_ranked_feedback_context_packet(dataloader)["source_item_ids"]) == 12
     assert _ranked_feedback_item_ids(dataloader) == [f"item-{idx:03d}" for idx in range(1, 18)]
+
+
+def test_ranked_feedback_context_does_not_leak_test_split_feedback():
+    class SplitFeedbackDataLoader(_RetryDataLoader):
+        def __init__(self) -> None:
+            super().__init__(item_id="train-001", train_size=1)
+            self.train_items = [
+                {
+                    "id": "train-001",
+                    "ranked_feedback_events": [{"choice": "train feedback"}],
+                }
+            ]
+            self.val_items = [
+                {
+                    "id": "val-001",
+                    "ranked_feedback_events": [{"choice": "selection feedback"}],
+                }
+            ]
+            self.test_items = [
+                {
+                    "id": "test-001",
+                    "ranked_feedback_events": [{"choice": "held-out test feedback"}],
+                }
+            ]
+
+    dataloader = SplitFeedbackDataLoader()
+    packet = _ranked_feedback_context_packet(dataloader)
+
+    assert packet["source_item_ids"] == ["train-001", "val-001"]
+    assert packet["reviewer_reasoning"] == ["train feedback", "selection feedback"]
+    assert _ranked_feedback_item_ids(dataloader) == ["train-001", "val-001"]
 
 
 def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp_path):

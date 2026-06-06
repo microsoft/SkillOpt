@@ -11,6 +11,7 @@ from gitmoot_skillopt.contracts import (
     ContractError,
     TrainingPackage,
 )
+from skillopt.envs.gitmoot.package import feedback_is_about_previous_outputs
 
 
 def template_content(template_id: str = "planner", name: str = "Planner") -> str:
@@ -34,7 +35,14 @@ outputs:
 # {name}
 
 Plan carefully.
-"""
+    """
+
+
+def test_feedback_scope_detects_list_valued_previous_output_targets():
+    assert feedback_is_about_previous_outputs({"feedback_target": "baseline_review_outputs"}) is True
+    assert feedback_is_about_previous_outputs({"feedback_target": ["baseline_review_outputs"]}) is True
+    assert feedback_is_about_previous_outputs({"feedback_target": ["candidate_output", "baseline_review_outputs"]}) is True
+    assert feedback_is_about_previous_outputs({"feedback_target": ["candidate_output"]}) is False
 
 
 def metadata(template_id: str = "planner", name: str = "Planner") -> dict[str, object]:

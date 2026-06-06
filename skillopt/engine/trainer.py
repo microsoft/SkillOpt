@@ -201,6 +201,27 @@ def _event_feedback_themes(event: dict) -> list[str]:
     return _dedupe_texts(themes, limit=20)
 
 
+def _ranked_feedback_candidate_items(dataloader) -> list[dict]:
+    if dataloader is None:
+        return []
+    items: list[dict] = []
+    seen: set[str] = set()
+    for attr in ("train_items", "val_items"):
+        try:
+            values = getattr(dataloader, attr)
+        except Exception:  # noqa: BLE001
+            continue
+        for item in values or []:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if not item_id or item_id in seen:
+                continue
+            seen.add(item_id)
+            items.append(item)
+    return items
+
+
 def _feedback_retry_hints(dataloader, result_ids: set[str]) -> dict[str, list[str]]:
     hints = {
         "preserve": [],
@@ -208,13 +229,7 @@ def _feedback_retry_hints(dataloader, result_ids: set[str]) -> dict[str, list[st
         "avoid": [],
         "already_covered": [],
     }
-    if dataloader is None or not hasattr(dataloader, "train_items"):
-        return hints
-    try:
-        train_items = dataloader.train_items
-    except Exception:  # noqa: BLE001
-        return hints
-    for item in train_items:
+    for item in _ranked_feedback_candidate_items(dataloader):
         if result_ids and str(item.get("id", "")) not in result_ids:
             continue
         events = item.get("ranked_feedback_events")
@@ -283,11 +298,8 @@ def _ranked_feedback_context_packet(
     *,
     fallback_to_all: bool = True,
 ) -> dict:
-    if dataloader is None or not hasattr(dataloader, "train_items"):
-        return {}
-    try:
-        train_items = [item for item in dataloader.train_items if isinstance(item, dict)]
-    except Exception:  # noqa: BLE001
+    ranked_items = _ranked_feedback_candidate_items(dataloader)
+    if not ranked_items:
         return {}
     explicit_filter = result_ids is not None
     ids = {str(item_id or "").strip() for item_id in (result_ids or set()) if str(item_id or "").strip()}
@@ -295,11 +307,11 @@ def _ranked_feedback_context_packet(
         return {}
     selected_items = [
         item
-        for item in train_items
+        for item in ranked_items
         if not ids or str(item.get("id") or "").strip() in ids
     ]
     if ids and not selected_items and fallback_to_all:
-        selected_items = train_items
+        selected_items = ranked_items
     if ids and not selected_items:
         return {}
 
@@ -312,15 +324,9 @@ def _ranked_feedback_context_packet(
 
 
 def _ranked_feedback_item_ids(dataloader, result_ids: set[str] | None = None, *, limit: int = 128) -> list[str]:
-    if dataloader is None or not hasattr(dataloader, "train_items"):
-        return []
-    try:
-        train_items = [item for item in dataloader.train_items if isinstance(item, dict)]
-    except Exception:  # noqa: BLE001
-        return []
     ids = {str(item_id or "").strip() for item_id in (result_ids or set()) if str(item_id or "").strip()}
     reviewed_ids: list[str] = []
-    for item in train_items:
+    for item in _ranked_feedback_candidate_items(dataloader):
         item_id = str(item.get("id") or "").strip()
         if not item_id or (ids and item_id not in ids):
             continue
@@ -395,14 +401,8 @@ def _with_human_feedback_context(packet: dict | None, feedback_context: dict | N
 
 
 def _has_ranked_feedback(dataloader, result_ids: set[str] | None = None) -> bool:
-    if dataloader is None or not hasattr(dataloader, "train_items"):
-        return False
-    try:
-        train_items = dataloader.train_items
-    except Exception:  # noqa: BLE001
-        return False
     ids = result_ids or set()
-    for item in train_items:
+    for item in _ranked_feedback_candidate_items(dataloader):
         if ids and str(item.get("id", "")) not in ids:
             continue
         events = item.get("ranked_feedback_events")
@@ -419,18 +419,11 @@ def _normalize_feedback_direct_mode(value: str | None) -> str:
 
 
 def _ranked_feedback_item_index(dataloader) -> dict[str, dict]:
-    if dataloader is None or not hasattr(dataloader, "train_items"):
-        return {}
-    try:
-        train_items = dataloader.train_items
-    except Exception:  # noqa: BLE001
-        return {}
     index: dict[str, dict] = {}
-    for item in train_items:
-        if isinstance(item, dict):
-            item_id = str(item.get("id") or "").strip()
-            if item_id:
-                index[item_id] = item
+    for item in _ranked_feedback_candidate_items(dataloader):
+        item_id = str(item.get("id") or "").strip()
+        if item_id:
+            index[item_id] = item
     return index
 
 
