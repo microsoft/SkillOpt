@@ -13,6 +13,7 @@ from skillopt.datasets.base import BaseDataLoader, BatchSpec
 from skillopt.envs.gitmoot.package import (
     artifact_ids_for_item,
     artifact_refs_by_id,
+    feedback_is_about_previous_outputs,
     feedback_events_for_item,
     json_safe_metadata,
     ranked_feedback_events_for_item,
@@ -204,13 +205,16 @@ class GitmootDataLoader(BaseDataLoader):
             ]
             if not feedback_event_contexts and not ranked_feedback_event_contexts:
                 feedback_event_contexts = [package_feedback_context]
+        target_feedback_event_contexts = _target_visible_feedback_events(feedback_event_contexts)
+        target_ranked_feedback_event_contexts = _target_visible_feedback_events(ranked_feedback_event_contexts)
         prompt = build_task_prompt(
             package=self.package,
             item=item,
             artifacts=artifacts,
-            feedback_events=feedback_event_contexts,
-            ranked_feedback_events=ranked_feedback_event_contexts,
+            feedback_events=target_feedback_event_contexts,
+            ranked_feedback_events=target_ranked_feedback_event_contexts,
         )
+        feedback_scopes = _feedback_scope_summary(feedback_event_contexts, ranked_feedback_event_contexts)
         return {
             "id": item.id,
             "title": item.title,
@@ -222,6 +226,12 @@ class GitmootDataLoader(BaseDataLoader):
             "artifacts": artifacts,
             "feedback_events": feedback_event_contexts,
             "ranked_feedback_events": ranked_feedback_event_contexts,
+            "target_feedback_events": target_feedback_event_contexts,
+            "target_ranked_feedback_events": target_ranked_feedback_event_contexts,
+            "feedback_scopes": feedback_scopes,
+            "target_feedback_mode": "sanitized" if feedback_scopes["previous_output_events"] else "full",
+            "evaluator_feedback_mode": "rubric" if feedback_scopes["previous_output_events"] else "direct",
+            "optimizer_feedback_mode": "full",
             "feedback_context": package_feedback_context,
             "evaluator_config": self.evaluator_config,
         }
@@ -468,6 +478,23 @@ def _normal_evaluator_mode(value: Any) -> str:
     if normalized == "substring":
         return "contains"
     return normalized
+
+
+def _target_visible_feedback_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if not feedback_is_about_previous_outputs(event)]
+
+
+def _feedback_scope_summary(
+    feedback_events: list[dict[str, Any]],
+    ranked_feedback_events: list[dict[str, Any]],
+) -> dict[str, int]:
+    events = [*feedback_events, *ranked_feedback_events]
+    previous_output_events = sum(1 for event in events if feedback_is_about_previous_outputs(event))
+    return {
+        "total_events": len(events),
+        "previous_output_events": previous_output_events,
+        "target_visible_events": len(events) - previous_output_events,
+    }
 
 
 def _feedback_event_prompt_context(event: Any) -> dict[str, str]:

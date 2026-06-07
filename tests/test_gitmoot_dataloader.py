@@ -219,7 +219,7 @@ def write_training_package(tmp_path, *, artifact_driver: str = "text"):
         ],
         "feedback_context": {
             "feedback_source": "imported_human_review",
-            "feedback_target": "baseline_review_outputs",
+            "feedback_target": ["baseline_review_outputs"],
             "review_issue": "owner/repo#1",
             "review_run_id": "run-1",
             "reviewed_skill_version": "planner@v1",
@@ -257,38 +257,46 @@ def test_dataloader_loads_package_and_builds_splits(tmp_path):
     assert "### src/style.css" in prompt
     assert "Option D landing page" in prompt
     assert "https://example.test/d" in prompt
-    assert prompt.index("Human Feedback") < prompt.index("Baseline Artifact")
-    assert "review_1 (alice, github):" in prompt
-    assert "preferred_option: d" in prompt
-    assert "ranking: d > b > c > a" in prompt
-    assert "feedback_target: baseline_review_outputs" in prompt
-    assert "review_issue: owner/repo#1" in prompt
-    assert "themes: MoonAI-like premium branding; product-relevant graphics" in prompt
-    assert "quality: acceptable" in prompt
-    assert "continue_mode: refine" in prompt
-    assert "promote: no" in prompt
-    assert "notes: D is the cleanest option." in prompt
-    assert "preserve: d: cleanest hero" in prompt
-    assert "avoid: c: overlapping text" in prompt
-    assert "fix: better mobile layout; stronger product visuals" in prompt
-    assert "review_2:" in prompt
-    assert "preferred_option: b" in prompt
-    assert "notes: Candidate is clearer." in prompt
+    assert "Human Feedback" not in prompt
+    assert "review_1 (alice, github):" not in prompt
+    assert "preferred_option: d" not in prompt
+    assert "ranking: d > b > c > a" not in prompt
+    assert "feedback_target: baseline_review_outputs" not in prompt
+    assert "review_issue: owner/repo#1" not in prompt
+    assert "themes: MoonAI-like premium branding; product-relevant graphics" not in prompt
+    assert "quality: acceptable" not in prompt
+    assert "continue_mode: refine" not in prompt
+    assert "promote: no" not in prompt
+    assert "notes: D is the cleanest option." not in prompt
+    assert "preserve: d: cleanest hero" not in prompt
+    assert "avoid: c: overlapping text" not in prompt
+    assert "fix: better mobile layout; stronger product visuals" not in prompt
+    assert "review_2:" not in prompt
+    assert "preferred_option: b" not in prompt
+    assert "notes: Candidate is clearer." not in prompt
     assert "Ranked Human Feedback Events" not in prompt
     assert "Human Feedback Events" not in prompt
     assert '"ranking": [' not in prompt
     assert '"required_improvements": [' not in prompt
-    assert "cleanest hero" in prompt
     assert "Option D landing page" in train_batch.payload[0]["artifacts"]["option:d"]["text"]
     assert train_batch.payload[0]["feedback_events"][0]["reasoning"] == "Candidate is clearer."
     assert train_batch.payload[0]["feedback_events"][0]["continue_mode"] == "refine"
-    assert train_batch.payload[0]["feedback_events"][0]["feedback_target"] == "baseline_review_outputs"
+    assert train_batch.payload[0]["feedback_events"][0]["feedback_target"] == ["baseline_review_outputs"]
     assert train_batch.payload[0]["feedback_context"]["review_issue"] == "owner/repo#1"
     assert train_batch.payload[0]["ranked_feedback_events"][0]["winner"] == "d"
     assert train_batch.payload[0]["ranked_feedback_events"][0]["reasoning"] == "D is the cleanest option."
     assert train_batch.payload[0]["ranked_feedback_events"][0]["continue_mode"] == "refine"
-    assert train_batch.payload[0]["ranked_feedback_events"][0]["feedback_target"] == "baseline_review_outputs"
+    assert train_batch.payload[0]["ranked_feedback_events"][0]["feedback_target"] == ["baseline_review_outputs"]
     assert train_batch.payload[0]["ranked_feedback_events"][0]["required_improvements"] == ["better mobile layout", "stronger product visuals"]
+    assert train_batch.payload[0]["target_feedback_events"] == []
+    assert train_batch.payload[0]["target_ranked_feedback_events"] == []
+    assert train_batch.payload[0]["feedback_scopes"] == {
+        "total_events": 2,
+        "previous_output_events": 2,
+        "target_visible_events": 0,
+    }
+    assert train_batch.payload[0]["target_feedback_mode"] == "sanitized"
+    assert train_batch.payload[0]["evaluator_feedback_mode"] == "rubric"
 
 
 def test_dataloader_uses_compact_feedback_without_ranked_feedback(tmp_path):
@@ -301,12 +309,12 @@ def test_dataloader_uses_compact_feedback_without_ranked_feedback(tmp_path):
     loader.setup({})
     prompt = loader.build_train_batch(batch_size=1, seed=1).payload[0]["prompt"]
 
-    assert "## Human Feedback" in prompt
-    assert "preferred_option: b" in prompt
-    assert "notes: Candidate is clearer." in prompt
-    assert "feedback_target: baseline_review_outputs" in prompt
-    assert "review_issue: owner/repo#1" in prompt
-    assert "themes: MoonAI-like premium branding; product-relevant graphics" in prompt
+    assert "## Human Feedback" not in prompt
+    assert "preferred_option: b" not in prompt
+    assert "notes: Candidate is clearer." not in prompt
+    assert "feedback_target: baseline_review_outputs" not in prompt
+    assert "review_issue: owner/repo#1" not in prompt
+    assert "themes: MoonAI-like premium branding; product-relevant graphics" not in prompt
     assert "ranking:" not in prompt
     assert "Ranked Human Feedback Events" not in prompt
     assert "Baseline Artifact" in prompt
@@ -324,11 +332,11 @@ def test_dataloader_surfaces_context_only_feedback(tmp_path):
     item = loader.build_train_batch(batch_size=1, seed=1).payload[0]
     prompt = item["prompt"]
 
-    assert "## Human Feedback" in prompt
-    assert "feedback_target: baseline_review_outputs" in prompt
-    assert "review_issue: owner/repo#1" in prompt
-    assert "themes: MoonAI-like premium branding; product-relevant graphics" in prompt
-    assert item["feedback_events"][0]["feedback_target"] == "baseline_review_outputs"
+    assert "## Human Feedback" not in prompt
+    assert "feedback_target: baseline_review_outputs" not in prompt
+    assert "review_issue: owner/repo#1" not in prompt
+    assert "themes: MoonAI-like premium branding; product-relevant graphics" not in prompt
+    assert item["feedback_events"][0]["feedback_target"] == ["baseline_review_outputs"]
     assert item["ranked_feedback_events"] == []
 
 

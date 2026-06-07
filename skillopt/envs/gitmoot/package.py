@@ -49,6 +49,54 @@ def ranked_feedback_events_for_item(package: TrainingPackage, item_id: str) -> l
     return [event for event in package.ranked_feedback_events if event.item_id == item_id]
 
 
+_PREVIOUS_OUTPUT_FEEDBACK_TARGETS = {
+    "baseline_review_outputs",
+    "baseline_outputs",
+    "previous_outputs",
+    "previous_review_outputs",
+    "prior_outputs",
+}
+
+
+def feedback_scope_from_event(event: Any) -> str:
+    normalized_targets = set(feedback_target_values(event))
+    if normalized_targets & _PREVIOUS_OUTPUT_FEEDBACK_TARGETS:
+        return "previous_outputs"
+    return "live_candidate" if normalized_targets else "unspecified"
+
+
+def feedback_target_values(event: Any) -> list[str]:
+    targets = _event_string_values(_event_field(event, "feedback_target"))
+    normalized = [target.strip().lower().replace("-", "_") for target in targets if target.strip()]
+    return list(dict.fromkeys(normalized))
+
+
+def feedback_is_about_previous_outputs(event: Any) -> bool:
+    return feedback_scope_from_event(event) == "previous_outputs"
+
+
+def _event_field(event: Any, field: str) -> Any:
+    if isinstance(event, dict):
+        return event.get(field)
+    return getattr(event, field, None)
+
+
+def _event_string_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            values.extend(_event_string_values(item))
+        return values
+    if isinstance(value, tuple | set):
+        values = []
+        for item in value:
+            values.extend(_event_string_values(item))
+        return values
+    return [str(value)]
+
+
 def artifact_refs_by_id(package: TrainingPackage) -> dict[str, ArtifactRef]:
     return {artifact.id: artifact for artifact in package.artifacts}
 

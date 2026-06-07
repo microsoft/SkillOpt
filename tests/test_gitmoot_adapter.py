@@ -9,6 +9,8 @@ from skillopt.envs.gitmoot.adapter import GitmootAdapter
 from skillopt.envs.gitmoot.evaluator import (
     TRUSTED_VUE_RENDER_PACKAGE_JSON,
     _block_external_browser_requests,
+    _feedback_requests_more_optimization,
+    _feedback_stop_readiness_cap,
     _prepare_trusted_vue_render_deps,
     _render_artifact_dir,
     _run_vue_render_smoke,
@@ -72,6 +74,74 @@ def test_adapter_rollout_returns_skillopt_result_shape(tmp_path):
     assert results[0]["response"] == "better plan"
     assert results[0]["fail_reason"] == ""
     assert (tmp_path / "out" / "predictions" / "train-1" / "conversation.json").is_file()
+
+
+def test_rollout_persists_judge_raw_and_facts(tmp_path, monkeypatch):
+    def pass_agent(*args, **kwargs):
+        return "candidate reply"
+
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.92,
+                    "fail_reason": "",
+                    "reasoning": "The candidate resolves the old feedback.",
+                    "human_feedback_alignment": {
+                        "status": "resolved",
+                        "resolved": ["sharper point"],
+                        "unresolved": [],
+                    },
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.92,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "resolved_feedback": ["sharper point"],
+                    "unresolved_feedback": [],
+                    "rejection_reason": "",
+                    "optimizer_hint": "",
+                    "baseline_known_issues": ["old reply restated the obvious"],
+                    "candidate_resolution": ["candidate adds a sharper point"],
+                    "baseline_resolution": "old labels are prior-output context",
+                    "selection_decision": "candidate_resolves_baseline_feedback",
+                    "score_delta_reason": "candidate resolves the prior feedback theme",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.rollout._run_agent", pass_agent)
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    result = process_one(
+        item={
+            "id": "judge-facts",
+            "prompt": "Write one reply.",
+            "ranked_feedback_events": [
+                {
+                    "feedback_target": "baseline_review_outputs",
+                    "ranking": ["D > A > B > C"],
+                    "reasoning": "D was best but still needs a sharper point.",
+                    "quality": "poor",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                }
+            ],
+            "evaluator_config": {"mode": "llm_judge"},
+        },
+        skill_content="skill",
+        out_root=str(tmp_path),
+    )
+
+    pred_dir = tmp_path / "predictions" / "judge-facts"
+    assert result["hard"] == 1
+    assert (pred_dir / "judge_raw.txt").is_file()
+    facts = json.loads((pred_dir / "judge_facts.json").read_text(encoding="utf-8"))
+    assert facts["resolved_feedback"] == ["sharper point"]
+    assert facts["selection_decision"] == "candidate_resolves_baseline_feedback"
+    assert facts["dimension_scores"]["human_feedback_resolution"] == 0.92
 
 
 def test_adapter_eval_batch_uses_fixture_evaluator(tmp_path):
@@ -287,7 +357,7 @@ def test_structured_evaluator_feedback_reaches_rollout_result(tmp_path, monkeypa
     assert result["metadata"]["failure"]["optimizer_hint"].startswith("Return the required")
 
 
-def test_llm_judge_keeps_score_for_recoverable_feedback_schema_warning(monkeypatch):
+def test_llm_judge_rejects_noncanonical_feedback_alignment(monkeypatch):
     def fake_chat_optimizer(**kwargs):
         del kwargs
         return (
@@ -334,16 +404,41 @@ def test_llm_judge_keeps_score_for_recoverable_feedback_schema_warning(monkeypat
 
     result = evaluate_response(item, "candidate response", {"mode": "llm_judge"})
 
-    assert result["hard"] == 1
-    assert result["soft"] == 0.88
-    assert result["fail_reason"] == ""
-    assert result["dimension_scores"]["human_feedback_resolution"] == 0.9
-    assert result["stage_status"] == [{"stage": "llm_judge", "status": "passed"}]
-    assert result["metadata"]["schema_warnings"] == [
-        "judge returned noncanonical human_feedback_alignment field"
-    ]
-    assert result["metadata"]["raw_human_feedback_alignment"] == "strong"
-    assert "failure" not in result
+    assert result["hard"] == 0
+    assert result["soft"] == 0.0
+    assert result["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert result["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert "human_feedback_alignment" in result["metadata"]["failure"]["evidence"][0]
+
+
+def test_old_review_feedback_labels_do_not_create_stop_cap():
+    old_review_item = {
+        "ranked_feedback_events": [
+            {
+                "feedback_target": "baseline_review_outputs",
+                "quality": "poor",
+                "continue_mode": "refine",
+                "promote": "no",
+                "required_improvements": ["ask sharper questions"],
+            }
+        ]
+    }
+    live_review_item = {
+        "ranked_feedback_events": [
+            {
+                "feedback_target": "candidate_output",
+                "quality": "poor",
+                "continue_mode": "refine",
+                "promote": "no",
+                "required_improvements": ["ask sharper questions"],
+            }
+        ]
+    }
+
+    assert _feedback_requests_more_optimization(old_review_item) is False
+    assert _feedback_stop_readiness_cap(old_review_item) is None
+    assert _feedback_requests_more_optimization(live_review_item) is True
+    assert _feedback_stop_readiness_cap(live_review_item) == 0.45
 
 
 def test_llm_judge_unusable_feedback_schema_still_fails(monkeypatch):
@@ -389,6 +484,7 @@ def test_llm_judge_schema_retry_repairs_unusable_feedback_output(monkeypatch):
                         "artifact_validity": 1.0,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["sharper point"],
                     "unresolved_feedback": [],
                     "rejection_reason": None,
                     "optimizer_hint": "Keep this direction.",
@@ -410,9 +506,7 @@ def test_llm_judge_schema_retry_repairs_unusable_feedback_output(monkeypatch):
     assert calls == 2
     assert result["hard"] == 1
     assert result["soft"] == 0.91
-    assert result["metadata"]["evaluator_schema_retry_attempts"][0]["reason"] == (
-        "judge omitted valid hard/soft score fields"
-    )
+    assert "hard/soft" in result["metadata"]["evaluator_schema_retry_attempts"][0]["reason"]
 
 
 def test_llm_judge_schema_retry_exhaustion_reports_evaluator_failure(monkeypatch):
@@ -437,9 +531,7 @@ def test_llm_judge_schema_retry_exhaustion_reports_evaluator_failure(monkeypatch
     assert result["hard"] == 0
     assert result["soft"] == 0.0
     assert result["primary_reason"] == "evaluator_missing_human_feedback_dimensions"
-    assert result["metadata"]["evaluator_schema_retry_attempts"][0]["reason"] == (
-        "judge omitted valid hard/soft score fields"
-    )
+    assert "hard/soft" in result["metadata"]["evaluator_schema_retry_attempts"][0]["reason"]
 
 
 def test_target_artifact_retry_repairs_vue_bundle_before_reflection(tmp_path, monkeypatch):
@@ -1827,7 +1919,7 @@ def test_generic_judge_with_feedback_fails_closed_with_invalid_dimension_values(
     assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
 
 
-def test_generic_judge_with_feedback_defaults_missing_unresolved_feedback_list(monkeypatch):
+def test_generic_judge_with_feedback_rejects_missing_unresolved_feedback_list(monkeypatch):
     def fake_chat_optimizer(**kwargs):
         return (
             json.dumps(
@@ -1836,7 +1928,7 @@ def test_generic_judge_with_feedback_defaults_missing_unresolved_feedback_list(m
                     "soft": 0.95,
                     "reasoning": "Claims complete.",
                     "fail_reason": "",
-                    "human_feedback_alignment": {"status": "resolved"},
+                    "human_feedback_alignment": {"status": "resolved", "resolved": ["hook"], "unresolved": []},
                     "dimension_scores": {
                         "human_feedback_resolution": 0.95,
                         "artifact_validity": 1.0,
@@ -1869,12 +1961,10 @@ def test_generic_judge_with_feedback_defaults_missing_unresolved_feedback_list(m
         {},
     )
 
-    assert score["hard"] == 1
-    assert score["soft"] == 0.95
-    assert score["fail_reason"] == ""
-    assert score["metadata"]["schema_warnings"] == [
-        "judge omitted unresolved_feedback; defaulted to an empty list"
-    ]
+    assert score["hard"] == 0
+    assert score["soft"] == 0.0
+    assert score["fail_reason"] == "evaluator_missing_human_feedback_dimensions"
+    assert "unresolved_feedback" in score["metadata"]["failure"]["evidence"][0]
 
 
 def test_generic_judge_with_resolved_feedback_does_not_emit_failure_hint(monkeypatch):
@@ -1889,12 +1979,13 @@ def test_generic_judge_with_resolved_feedback_does_not_emit_failure_hint(monkeyp
                     "soft": 0.93,
                     "reasoning": "The feedback is resolved and promotion was requested.",
                     "fail_reason": "",
-                    "human_feedback_alignment": {"status": "resolved"},
+                    "human_feedback_alignment": {"status": "resolved", "resolved": ["ready"], "unresolved": []},
                     "dimension_scores": {
                         "human_feedback_resolution": 0.95,
                         "artifact_validity": 1.0,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["ready"],
                     "unresolved_feedback": [],
                     "rejection_reason": "",
                     "optimizer_hint": "",
@@ -1941,12 +2032,13 @@ def test_generic_judge_with_feedback_keeps_incomplete_answer_hard_failed(monkeyp
                     "soft": 0.55,
                     "reasoning": "The response is valid but incomplete.",
                     "fail_reason": "answer_incomplete",
-                    "human_feedback_alignment": {"status": "resolved"},
+                    "human_feedback_alignment": {"status": "resolved", "resolved": ["feedback"], "unresolved": []},
                     "dimension_scores": {
                         "human_feedback_resolution": 0.9,
                         "artifact_validity": 1.0,
                         "task_completeness": 0.4,
                     },
+                    "resolved_feedback": ["feedback"],
                     "unresolved_feedback": [],
                     "rejection_reason": "answer_incomplete",
                     "optimizer_hint": "Complete the requested answer before retrying.",
@@ -1990,12 +2082,13 @@ def test_generic_judge_with_feedback_preserves_explicit_hard_failure(monkeypatch
                     "soft": 0.7,
                     "reasoning": "The response is not a valid final answer.",
                     "fail_reason": "invalid_final_answer",
-                    "human_feedback_alignment": {"status": "resolved"},
+                    "human_feedback_alignment": {"status": "resolved", "resolved": ["feedback"], "unresolved": []},
                     "dimension_scores": {
                         "human_feedback_resolution": 0.9,
                         "artifact_validity": 0.9,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["feedback"],
                     "unresolved_feedback": [],
                     "rejection_reason": "invalid_final_answer",
                     "optimizer_hint": "Return a valid final answer.",
@@ -2042,15 +2135,20 @@ def test_generic_judge_uses_top_level_feedback_context(monkeypatch):
                     "soft": 0.9,
                     "reasoning": "The candidate resolves the top-level feedback context.",
                     "fail_reason": "",
-                    "human_feedback_alignment": {"status": "resolved", "unresolved": []},
+                    "human_feedback_alignment": {"status": "resolved", "resolved": ["stronger launch hook"], "unresolved": []},
                     "dimension_scores": {
                         "human_feedback_resolution": 0.91,
                         "artifact_validity": 1.0,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["stronger launch hook"],
                     "unresolved_feedback": [],
                     "rejection_reason": "",
                     "optimizer_hint": "",
+                    "baseline_known_issues": ["old launch hook was weak"],
+                    "candidate_resolution": ["stronger launch hook"],
+                    "baseline_resolution": "old labels are prior-output context",
+                    "score_delta_reason": "candidate resolves the prior feedback themes",
                     "selection_decision": "candidate_resolves_baseline_feedback",
                 }
             ),
@@ -2105,6 +2203,7 @@ def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypa
                         "artifact_validity": 1.0,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["sharper hook", "clearer tone"],
                     "unresolved_feedback": [],
                     "rejection_reason": "",
                     "optimizer_hint": "",
@@ -2150,6 +2249,85 @@ def test_generic_judge_allows_refine_feedback_when_resolution_is_proven(monkeypa
     assert "failure" not in score
 
 
+def test_generic_old_review_feedback_does_not_cap_improved_smithyx_candidate(monkeypatch):
+    def fake_chat_optimizer(**kwargs):
+        return (
+            json.dumps(
+                {
+                    "hard": 1,
+                    "soft": 0.86,
+                    "reasoning": "The candidate keeps the useful question shape and adds a sharper quota mechanism.",
+                    "fail_reason": "",
+                    "human_feedback_alignment": {
+                        "status": "partially_resolved",
+                        "resolved": [
+                            "uses a question that can trigger a response",
+                            "adds a sharper mechanism instead of restating the obvious",
+                        ],
+                        "unresolved": ["minor risk that budget wording is slightly inferred"],
+                    },
+                    "dimension_scores": {
+                        "human_feedback_resolution": 0.86,
+                        "artifact_validity": 1.0,
+                        "task_completeness": 0.9,
+                    },
+                    "resolved_feedback": [
+                        "uses a question that can trigger a response",
+                        "adds a sharper mechanism instead of restating the obvious",
+                    ],
+                    "unresolved_feedback": ["minor risk that budget wording is slightly inferred"],
+                    "rejection_reason": "",
+                    "optimizer_hint": "Keep the question and make the quota wording more grounded.",
+                    "baseline_known_issues": [
+                        "old options mostly restated the obvious",
+                        "only option D worked because it asked a question",
+                    ],
+                    "candidate_resolution": [
+                        "candidate preserves the question shape",
+                        "candidate adds a concrete quota/fan-out mechanism",
+                    ],
+                    "baseline_resolution": "candidate improves the reviewed baseline outputs",
+                    "selection_decision": "soft_accept_continue_possible",
+                    "score_delta_reason": "candidate improves human_feedback_resolution and task_completeness versus the old review target",
+                }
+            ),
+            {},
+        )
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.evaluator.chat_optimizer", fake_chat_optimizer)
+
+    score = evaluate_response(
+        {
+            "id": "smithyx-old-review-improved",
+            "prompt": "Generate one SmithyX-style reply.",
+            "ranked_feedback_events": [
+                {
+                    "item_id": "item-001",
+                    "ranking": ["D > A > B > C"],
+                    "reasoning": (
+                        "D is best because it asks a question. The rest are obvious restatements; "
+                        "make the reply sharper."
+                    ),
+                    "quality": "poor",
+                    "continue_mode": "refine",
+                    "promote": "no",
+                    "feedback_target": "baseline_review_outputs",
+                }
+            ],
+        },
+        '{"worth_reply":true,"reply":"did the subagents get their own budget before they started spending"}',
+        {"mode": "llm_judge"},
+    )
+
+    assert score["hard"] == 1
+    assert score["soft"] == 0.86
+    assert score["quality_status"] == "failed"
+    assert score["metadata"]["feedback_stop_cap_applied"] is False
+    assert score["metadata"]["feedback_target"] == "baseline_review_outputs"
+    assert score["dimension_scores"]["human_feedback_resolution"] == 0.86
+    assert score["dimension_scores"]["task_completeness"] == 0.9
+
+
 def test_generic_judge_rejects_inconsistent_resolved_feedback(monkeypatch):
     def fake_chat_optimizer(**kwargs):
         return (
@@ -2169,6 +2347,7 @@ def test_generic_judge_rejects_inconsistent_resolved_feedback(monkeypatch):
                         "artifact_validity": 1.0,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["layout"],
                     "unresolved_feedback": ["better graphics"],
                     "rejection_reason": "visuals_unresolved",
                     "optimizer_hint": "Add product-relevant graphics.",
@@ -2223,6 +2402,7 @@ def test_generic_judge_preserves_alignment_only_unresolved_feedback(monkeypatch)
                         "artifact_validity": 1.0,
                         "task_completeness": 0.9,
                     },
+                    "resolved_feedback": ["layout"],
                     "unresolved_feedback": [],
                     "rejection_reason": "",
                     "optimizer_hint": "",
@@ -2499,7 +2679,7 @@ def test_landing_page_old_review_feedback_trains_candidate_without_veto(monkeypa
                     "quality": "poor",
                     "continue_mode": "refine",
                     "promote": "no",
-                    "feedback_target": "baseline_review_outputs",
+                    "feedback_target": ["baseline_review_outputs"],
                     "feedback_source": "imported_human_review",
                     "themes": ["MoonAI-level branding", "product graphics", "mobile polish"],
                 }
