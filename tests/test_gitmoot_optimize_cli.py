@@ -7,7 +7,7 @@ import pytest
 
 from gitmoot_skillopt.cli import main
 from gitmoot_skillopt.contracts import CANDIDATE_PACKAGE_KIND, CandidatePackage, TrainingPackage
-from gitmoot_skillopt.optimize import _no_candidate_details, build_trainer_config, write_candidate_package
+from gitmoot_skillopt.optimize import _no_candidate_details, build_trainer_config, run_optimize, write_candidate_package
 from gitmoot_skillopt.preflight import PreflightResult, resolve_evaluator_config
 from skillopt.envs.gitmoot.evaluator import evaluate_response
 from tests.test_gitmoot_dataloader import write_training_package
@@ -323,6 +323,67 @@ def test_optimize_threads_feedback_direct_mode(tmp_path, monkeypatch):
     assert captured["feedback_direct_mode"] == "on"
 
 
+def test_optimize_threads_optimizer_views(monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--optimizer-views",
+            "4",
+        ]
+    )
+
+    assert result == 0
+    assert captured["optimizer_views"] == 4
+
+
+def test_optimize_rejects_invalid_optimizer_views():
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "optimize",
+                "--training-package",
+                "training.json",
+                "--artifact-root",
+                "blobs",
+                "--out-root",
+                "out",
+                "--candidate-output",
+                "out/candidate.json",
+                "--optimizer-views",
+                "0",
+            ]
+        )
+
+
+def test_optimize_dry_run_rejects_invalid_optimizer_views(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+
+    with pytest.raises(ValueError, match="optimizer_views must be a positive integer"):
+        run_optimize(
+            training_package=str(package_path),
+            artifact_root=str(artifact_root),
+            out_root=str(tmp_path / "out"),
+            candidate_output=str(tmp_path / "out" / "candidate.json"),
+            dry_run=True,
+            optimizer_views=0,
+        )
+
+
 def test_optimize_threads_target_artifact_retry_budget(tmp_path, monkeypatch):
     captured = {}
 
@@ -446,6 +507,55 @@ def test_build_trainer_config_uses_adaptive_gate_retry_defaults(tmp_path):
     assert cfg["evaluator_schema_retry_budget"] == 1
     assert cfg["evaluator_config"]["evaluator_schema_retry_budget"] == 1
     assert cfg["eval_test"] is False
+    assert cfg["optimizer_views"] == 1
+
+
+def test_build_trainer_config_threads_optimizer_views(tmp_path):
+    cfg = build_trainer_config(
+        package_path=tmp_path / "training.json",
+        artifact_root=tmp_path / "blobs",
+        out_root=tmp_path / "out",
+        initial_skill_path=tmp_path / "skill.md",
+        dry_run=False,
+        num_epochs=1,
+        batch_size=1,
+        optimizer_views=4,
+        seed=1,
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        optimizer_backend="codex",
+        target_backend="codex_exec",
+        evaluator_config={"mode": "fixture"},
+        gate_metric="mixed",
+        reasoning_effort="",
+        skill_update_mode="patch",
+    )
+
+    assert cfg["optimizer_views"] == 4
+    assert cfg["analyst_workers"] == 4
+
+
+def test_build_trainer_config_rejects_invalid_optimizer_views(tmp_path):
+    with pytest.raises(ValueError, match="optimizer_views must be a positive integer"):
+        build_trainer_config(
+            package_path=tmp_path / "training.json",
+            artifact_root=tmp_path / "blobs",
+            out_root=tmp_path / "out",
+            initial_skill_path=tmp_path / "skill.md",
+            dry_run=False,
+            num_epochs=1,
+            batch_size=1,
+            optimizer_views=0,
+            seed=1,
+            optimizer_model="gpt-opt",
+            target_model="gpt-target",
+            optimizer_backend="codex",
+            target_backend="codex_exec",
+            evaluator_config={"mode": "fixture"},
+            gate_metric="mixed",
+            reasoning_effort="",
+            skill_update_mode="patch",
+        )
 
 
 def test_no_candidate_details_reports_evaluator_contract_failure():

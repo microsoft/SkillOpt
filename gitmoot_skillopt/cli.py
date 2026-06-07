@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     optimize.add_argument("--num-epochs", type=int, default=1, help="number of optimization epochs")
     optimize.add_argument("--batch-size", type=int, default=4, help="training batch size")
+    optimize.add_argument(
+        "--optimizer-views",
+        type=_positive_int,
+        default=1,
+        help="independent optimizer perspectives to run over imported human review feedback",
+    )
     optimize.add_argument("--seed", type=int, default=42, help="random seed")
     optimize.add_argument("--optimizer-model", default="gpt-5.5", help="optimizer model name")
     optimize.add_argument("--target-model", default="gpt-5.5", help="target model name")
@@ -163,6 +169,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _run_optimize(args: argparse.Namespace) -> int:
     from .optimize import run_optimize
 
@@ -175,6 +191,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
+        optimizer_views=args.optimizer_views,
         seed=args.seed,
         optimizer_model=args.optimizer_model,
         target_model=args.target_model,

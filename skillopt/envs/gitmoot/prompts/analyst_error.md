@@ -47,6 +47,12 @@ mobile-first layout rules, readable spacing, clear CTA/footer quality, and
 Tailwind-style UI polish. Preserve strengths from winning options and avoid
 traits explicitly rejected by reviewers.
 
+## Compact Patch Policy
+Prefer `replace` or `delete` when improving existing guidance. Use `append`
+only when the skill has no existing section that can be strengthened. Do not
+append duplicate guidance. Replace weak existing guidance instead of adding a
+nearby rule. Delete stale, contradicted, or redundant guidance.
+
 You will be told the maximum number of edits (the budget L). Produce AT MOST L
 edits, focusing on the highest-impact common patterns. You may produce fewer if
 the current skill already covers the lessons.

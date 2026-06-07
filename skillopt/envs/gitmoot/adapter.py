@@ -94,6 +94,7 @@ class GitmootAdapter(EnvAdapter):
     ) -> list[dict | None]:
         template = split_template_document(skill_content)
         update_mode = getattr(self, "_cfg", {}).get("skill_update_mode", "patch")
+        minibatch_size = int(kwargs.get("minibatch_size", self.minibatch_size) or self.minibatch_size)
         patches = run_minibatch_reflect(
             results=results,
             skill_content=template.body,
@@ -101,7 +102,7 @@ class GitmootAdapter(EnvAdapter):
             patches_dir=kwargs.get("patches_dir", os.path.join(out_dir, "patches")),
             workers=self.analyst_workers,
             failure_only=self.failure_only,
-            minibatch_size=self.minibatch_size,
+            minibatch_size=minibatch_size,
             edit_budget=self.edit_budget,
             random_seed=kwargs.get("random_seed"),
             step_buffer_context=kwargs.get("step_buffer_context", ""),

@@ -376,6 +376,51 @@ def _with_human_feedback_context(packet: dict | None, feedback_context: dict | N
     return enriched
 
 
+def _source_item_ids_from_context(context: dict | None) -> list[str]:
+    if not isinstance(context, dict):
+        return []
+    values = context.get("source_item_ids")
+    if isinstance(values, list):
+        return _dedupe_texts([str(value) for value in values], limit=64)
+    value = str(values or "").strip()
+    return [value] if value else []
+
+
+def _rollout_feedback_source_ids(rollout_results: list[dict] | None) -> set[str]:
+    ids: set[str] = set()
+    for result in rollout_results or []:
+        if not isinstance(result, dict):
+            continue
+        result_id = str(result.get("id") or "").strip()
+        if result_id:
+            ids.add(result_id)
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        metadata_source_ids = metadata.get("source_item_ids")
+        if not isinstance(metadata_source_ids, list):
+            metadata_source_ids = [metadata_source_ids] if metadata_source_ids else []
+        for value in metadata_source_ids:
+            text = str(value or "").strip()
+            if text:
+                ids.add(text)
+        failure = result.get("failure") if isinstance(result.get("failure"), dict) else {}
+        if not failure:
+            failure = metadata.get("failure") if isinstance(metadata.get("failure"), dict) else {}
+        ids.update(_source_item_ids_from_context(failure.get("human_feedback_context")))
+    return ids
+
+
+def _failure_hint_source_ids(hints: list[dict] | None) -> set[str]:
+    ids: set[str] = set()
+    for hint in hints or []:
+        if not isinstance(hint, dict):
+            continue
+        source_id = str(hint.get("source_item_id") or "").strip()
+        if source_id:
+            ids.add(source_id)
+        ids.update(_source_item_ids_from_context(hint.get("human_feedback_context")))
+    return ids
+
+
 def _has_ranked_feedback(dataloader, result_ids: set[str] | None = None) -> bool:
     if dataloader is None or not hasattr(dataloader, "train_items"):
         return False
@@ -507,6 +552,75 @@ def _non_feedback_direct_items(
     ]
 
 
+_OPTIMIZER_VIEW_HINTS = [
+    "aggressive reframing: look for a different skill strategy when the current behavior pattern is wrong.",
+    "compactness and deletion: prefer removing or replacing weak guidance over adding more rules.",
+    "preserve what works: keep useful constraints and strengths while fixing the reviewed failures.",
+    "failure-pattern-first: prioritize repeated reviewer complaints over one-off details.",
+]
+
+
+def _optimizer_view_count(cfg: dict, feedback_direct_items: list[dict]) -> int:
+    if not feedback_direct_items:
+        return 1
+    try:
+        count = int(cfg.get("optimizer_views", 1) or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, count)
+
+
+def _optimizer_view_hint(view_index: int, view_count: int) -> str:
+    if view_count <= 1:
+        return ""
+    hint = _OPTIMIZER_VIEW_HINTS[(view_index - 1) % len(_OPTIMIZER_VIEW_HINTS)]
+    return (
+        "## Optimizer View Hint\n"
+        f"View {view_index}/{view_count}: {hint}\n"
+        "This hint is optimizer-only. Use it to shape the skill update, but do not copy it into the target-facing skill."
+    )
+
+
+def _replicate_feedback_direct_items_for_views(
+    items: list[dict],
+    *,
+    view_count: int,
+) -> list[dict]:
+    if view_count <= 1 or not items:
+        return list(items)
+    source_item_ids = _dedupe_texts([str(item.get("id") or "") for item in items], limit=64)
+    all_events = [
+        dict(event)
+        for item in items
+        for event in _item_ranked_feedback_events(item)
+    ]
+    prompt_parts = [
+        str(item.get("prompt") or item.get("task_description") or item.get("id") or "").strip()
+        for item in items
+    ]
+    prompt = "\n\n".join(part for part in prompt_parts if part)
+    replicated: list[dict] = []
+    for view_index in range(1, view_count + 1):
+        view_item = {
+            "id": f"optimizer_view_{view_index:02d}",
+            "title": f"Optimizer view {view_index}/{view_count}",
+            "task_type": "gitmoot-skillopt",
+            "task_description": f"Full-feedback optimizer view {view_index}/{view_count}",
+            "prompt": prompt,
+            "ranked_feedback_events": all_events,
+            "metadata": {
+                "source_item_ids": source_item_ids,
+                "optimizer_view": view_index,
+                "optimizer_view_count": view_count,
+            },
+            "optimizer_view": view_index,
+            "optimizer_view_count": view_count,
+            "optimizer_view_hint": _optimizer_view_hint(view_index, view_count),
+        }
+        replicated.append(view_item)
+    return replicated
+
+
 def _format_feedback_direct_context(items: list[dict], dataloader) -> str:
     context_item_ids = {str(item.get("id") or "") for item in items}
     full_feedback_packet = _ranked_feedback_context_packet(dataloader)
@@ -549,6 +663,7 @@ def _write_feedback_direct_predictions(
         os.makedirs(item_dir, exist_ok=True)
         events = _item_ranked_feedback_events(item)
         feedback_json = json.dumps(events, indent=2, ensure_ascii=False)
+        view_hint = str(item.get("optimizer_view_hint") or "").strip()
         conversation = [
             {
                 "role": "system",
@@ -559,7 +674,7 @@ def _write_feedback_direct_predictions(
             },
             {
                 "role": "user",
-                "content": feedback_json,
+                "content": _join_optimizer_context(view_hint, feedback_json),
             },
         ]
         with open(os.path.join(item_dir, "conversation.json"), "w", encoding="utf-8") as f:
@@ -568,6 +683,10 @@ def _write_feedback_direct_predictions(
         with open(os.path.join(item_dir, "target_user_prompt.txt"), "w", encoding="utf-8") as f:
             f.write(prompt)
         feedback_context = _ranked_feedback_context_from_events([(item_id, event) for event in events])
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source_item_ids = metadata.get("source_item_ids")
+        if isinstance(source_item_ids, list) and source_item_ids:
+            feedback_context["source_item_ids"] = _dedupe_texts([str(value) for value in source_item_ids], limit=64)
         failure = {
             "primary_reason": "ranked_human_feedback_requires_skill_update",
             "human_reason": (
@@ -618,7 +737,7 @@ def _write_feedback_direct_predictions(
                 "task_type": item.get("task_type", "gitmoot-skillopt"),
                 "task_description": item.get("task_description", prompt),
                 "metadata": {
-                    **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                    **metadata,
                     "ranked_feedback_events": events,
                     "feedback_direct": True,
                     "prediction_id": prediction_id,
@@ -714,7 +833,7 @@ def _detect_no_meaningful_change(
         if not applied:
             reasons.extend(["no_meaningful_skill_change", "duplicate_or_already_covered_patch"])
 
-    result_ids = {str(row.get("id", "")) for row in rollout_results if isinstance(row, dict)}
+    result_ids = _rollout_feedback_source_ids(rollout_results)
     retry_hints = _feedback_retry_hints(dataloader, result_ids)
     patch_texts = _patch_texts(ranked_items, update_mode)
     already_covered = [
@@ -2913,6 +3032,11 @@ class ReflACTTrainer:
                         batch_items=batch_items,
                         mode=cfg.get("feedback_direct_mode", "auto"),
                     )
+                    optimizer_view_count = _optimizer_view_count(cfg, feedback_direct_items)
+                    feedback_direct_reflect_items = _replicate_feedback_direct_items_for_views(
+                        feedback_direct_items,
+                        view_count=optimizer_view_count,
+                    )
 
                     # ① ROLLOUT ────────────────────────────────────────────
                     t_phase = time.time()
@@ -2924,10 +3048,11 @@ class ReflACTTrainer:
                         )
                         print(
                             f"    [1/6 FEEDBACK-DIRECT] ranked feedback items={len(feedback_direct_items)} "
+                            f"optimizer_views={optimizer_view_count} "
                             f"(batch_seed={batch_seed})"
                         )
                         rollout_results = _write_feedback_direct_predictions(
-                            items=feedback_direct_items,
+                            items=feedback_direct_reflect_items,
                             prediction_dir=pred_dir,
                         )
                         if normal_rollout_items:
@@ -2963,6 +3088,12 @@ class ReflACTTrainer:
                             + [str(item.get("id") or "") for item in feedback_direct_items],
                             limit=64,
                         )
+                        step_rec["optimizer_views"] = optimizer_view_count
+                        if optimizer_view_count > 1:
+                            step_rec["optimizer_view_items_per_view"] = [
+                                [str(item.get("id") or "") for item in feedback_direct_items]
+                                for _ in range(optimizer_view_count)
+                            ]
                     else:
                         print(f"    [1/6 ROLLOUT] train items={train_n} (from pool, batch_seed={batch_seed})")
                         rollout_results = adapter.rollout(
@@ -2984,10 +3115,17 @@ class ReflACTTrainer:
                         feedback_direct_context = _format_feedback_direct_context(feedback_direct_items, dataloader)
                         feedback_direct_contexts.append(feedback_direct_context)
                         step_buffer_context = _join_optimizer_context(step_buffer_context, feedback_direct_context)
+                        if optimizer_view_count > 1:
+                            view_hints = "\n\n".join(
+                                _optimizer_view_hint(index, optimizer_view_count)
+                                for index in range(1, optimizer_view_count + 1)
+                            )
+                            step_buffer_context = _join_optimizer_context(step_buffer_context, view_hints)
 
                     raw_patches = adapter.reflect(
                         rollout_results, current_skill, batch_dir,
                         prediction_dir=pred_dir, patches_dir=patches_dir,
+                        minibatch_size=1 if feedback_direct_items and optimizer_view_count > 1 else None,
                         random_seed=batch_seed,
                         step_buffer_context=step_buffer_context,
                         meta_skill_context=active_meta_skill,
@@ -2997,11 +3135,7 @@ class ReflACTTrainer:
                         update_mode=update_mode,
                     )
                     structured_failure_hints = _structured_failure_hints(rollout_results)
-                    structured_failure_ids = {
-                        str(hint.get("source_item_id") or "").strip()
-                        for hint in structured_failure_hints
-                        if str(hint.get("source_item_id") or "").strip()
-                    }
+                    structured_failure_ids = _failure_hint_source_ids(structured_failure_hints)
                     feedback_failure_context = _ranked_feedback_context_packet(
                         dataloader,
                         structured_failure_ids,
@@ -3124,7 +3258,7 @@ class ReflACTTrainer:
                 # ── No patches? Skip ─────────────────────────────────────
                 if not all_failure_patches and not all_success_patches:
                     step_rec["action"] = "skip_no_patches"
-                    result_ids = {str(row.get("id", "")) for row in all_rollout_results if isinstance(row, dict)}
+                    result_ids = _rollout_feedback_source_ids(all_rollout_results)
                     if _has_ranked_feedback(dataloader, result_ids):
                         retry_hints = _ranked_feedback_retry_hints(dataloader, result_ids)
                         optimizer_hint = _human_feedback_not_distilled_hint(retry_hints)

@@ -720,6 +720,113 @@ def test_feedback_direct_optimizer_context_includes_all_reviewed_items(tmp_path,
     assert history[0]["optimizer_context_items"] == ["item-001", "item-002"]
 
 
+def test_optimizer_views_replicate_full_feedback_context(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    reflect_contexts: list[str] = []
+    reflect_results: list[list[dict]] = []
+    reflect_minibatch_sizes: list[int | None] = []
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        del failure_patches, success_patches, kwargs
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "feedback direct candidate",
+                    "change_summary": ["all review feedback"],
+                    "new_skill": skill_content.rstrip() + "\n\nAll reviewed feedback guidance.\n",
+                }
+            ],
+        }
+
+    class ViewAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            reflect_results.append(results)
+            reflect_contexts.append(kwargs.get("step_buffer_context", ""))
+            reflect_minibatch_sizes.append(kwargs.get("minibatch_size"))
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": f"candidate {index}",
+                                "change_summary": ["view feedback"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+                for index, _result in enumerate(results, start=1)
+            ]
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            changed = "All reviewed feedback guidance" in skill_content
+            return [_scored_result(soft=0.95 if changed else 0.1)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+    cfg["gate_metric"] = "soft"
+    cfg["optimizer_views"] = 4
+
+    summary = ReflACTTrainer(cfg, ViewAdapter(_TwoItemFeedbackDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert [result["id"] for result in reflect_results[0]] == [
+        "optimizer_view_01",
+        "optimizer_view_02",
+        "optimizer_view_03",
+        "optimizer_view_04",
+    ]
+    for result in reflect_results[0]:
+        assert result["metadata"]["source_item_ids"] == ["item-001", "item-002"]
+        assert len(result["metadata"]["ranked_feedback_events"]) == 2
+    assert "Optimizer context items: item-001, item-002" in reflect_contexts[0]
+    assert "View 1/4" in reflect_contexts[0]
+    assert "View 4/4" in reflect_contexts[0]
+    assert reflect_minibatch_sizes == [1]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["optimizer_views"] == 4
+    assert history[0]["optimizer_view_items_per_view"] == [
+        ["item-001", "item-002"],
+        ["item-001", "item-002"],
+        ["item-001", "item-002"],
+        ["item-001", "item-002"],
+    ]
+
+
+def test_optimizer_views_no_patch_preserves_source_feedback_hints(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+    cfg["optimizer_views"] = 4
+    cfg["hard_failure_retry_budget"] = 0
+
+    summary = ReflACTTrainer(cfg, _NoPatchAdapter(_TwoItemFeedbackDataLoader())).train()
+
+    assert summary["no_candidate_reason"] == "human_feedback_not_distilled"
+    assert summary["feedback_retry_hints"]["improve"] == [
+        "sharper mechanism question",
+        "remove filler words",
+    ]
+    assert summary["optimizer_context_items"] == ["item-001", "item-002"]
+
+
 def test_trainer_classifies_no_patches_with_ranked_feedback_as_not_distilled(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)

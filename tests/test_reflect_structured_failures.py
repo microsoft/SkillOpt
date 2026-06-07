@@ -43,6 +43,13 @@ def test_gitmoot_prompts_preserve_markers_and_separate_optimizer_context():
     assert "human_feedback_misalignment" in error_prompt
     assert "failed_dimensions" in error_prompt
     assert "Tailwind-style UI polish" in error_prompt
+    assert "Prefer `replace` or `delete`" in error_prompt
+    normalized_error_prompt = " ".join(error_prompt.split())
+    assert "Do not append duplicate guidance" in normalized_error_prompt
+    success_prompt = load_prompt("analyst_success", env="gitmoot")
+    normalized_success_prompt = " ".join(success_prompt.split())
+    assert "Prefer `replace` or `delete`" in success_prompt
+    assert "Delete stale, contradicted, or redundant guidance" in normalized_success_prompt
 
 
 def test_gitmoot_prompt_files_are_packaged():

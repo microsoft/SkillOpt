@@ -32,6 +32,7 @@ def run_optimize(
     dry_run: bool = False,
     num_epochs: int = 1,
     batch_size: int = 4,
+    optimizer_views: int = 1,
     seed: int = 42,
     optimizer_model: str = "gpt-5.5",
     target_model: str = "gpt-5.5",
@@ -53,6 +54,7 @@ def run_optimize(
     evaluator_schema_retry_budget: int = 1,
     eval_test: bool = False,
 ) -> CandidatePackage:
+    optimizer_views = _normalize_optimizer_views(optimizer_views)
     package_path = _require_file(training_package, "training package")
     artifact_root_path = _require_dir(artifact_root, "artifact root")
     out_root_path = Path(out_root).expanduser()
@@ -93,6 +95,7 @@ def run_optimize(
         dry_run=dry_run,
         num_epochs=num_epochs,
         batch_size=batch_size,
+        optimizer_views=optimizer_views,
         seed=seed,
         optimizer_model=preflight.optimizer_model,
         target_model=preflight.target_model,
@@ -152,6 +155,7 @@ def build_trainer_config(
     gate_metric: str,
     reasoning_effort: str,
     skill_update_mode: str,
+    optimizer_views: int = 1,
     noop_retry_budget: int = 1,
     gate_reject_retry_budget: int = 3,
     wrong_artifact_retry_budget: int = 1,
@@ -163,6 +167,7 @@ def build_trainer_config(
     eval_test: bool = False,
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
+    normalized_optimizer_views = _normalize_optimizer_views(optimizer_views)
     normalized_gate_metric = str(gate_metric or "hard").strip().lower()
     if normalized_gate_metric not in {"hard", "soft", "mixed"}:
         raise ValueError(f"unsupported gate metric: {gate_metric}")
@@ -230,11 +235,12 @@ def build_trainer_config(
         "codex_trace_to_optimizer": False,
         "num_epochs": actual_epochs,
         "batch_size": max(1, int(batch_size)),
+        "optimizer_views": normalized_optimizer_views,
         "accumulation": 1,
         "seed": int(seed),
         "minibatch_size": max(1, int(batch_size)),
         "merge_batch_size": max(1, int(batch_size)),
-        "analyst_workers": 1,
+        "analyst_workers": normalized_optimizer_views,
         "max_analyst_rounds": 1,
         "failure_only": False,
         "edit_budget": 4,
@@ -269,6 +275,13 @@ def _normalize_feedback_direct_mode(value: str | None) -> str:
     if raw not in {"auto", "on", "off"}:
         raise ValueError("feedback_direct_mode must be one of auto, on, off")
     return raw
+
+
+def _normalize_optimizer_views(value: int) -> int:
+    normalized = int(value)
+    if normalized <= 0:
+        raise ValueError("optimizer_views must be a positive integer")
+    return normalized
 
 
 def write_candidate_package(

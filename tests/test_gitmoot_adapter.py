@@ -107,6 +107,23 @@ def test_adapter_reflection_uses_template_body_not_frontmatter(tmp_path, monkeyp
     assert "kind: agent-template" not in captured["skill_content"]
 
 
+def test_adapter_reflection_accepts_minibatch_override(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_reflect(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("skillopt.envs.gitmoot.adapter.run_minibatch_reflect", fake_reflect)
+    package_path, artifact_root = write_training_package(tmp_path)
+    adapter = GitmootAdapter(str(package_path), str(artifact_root), minibatch_size=4)
+    adapter.setup({})
+
+    adapter.reflect([], adapter.dataloader.initial_skill_content, str(tmp_path / "out"), minibatch_size=1)
+
+    assert captured["minibatch_size"] == 1
+
+
 def test_full_rewrite_reflection_preserves_template_frontmatter(tmp_path, monkeypatch):
     def fake_reflect(**kwargs):
         return [

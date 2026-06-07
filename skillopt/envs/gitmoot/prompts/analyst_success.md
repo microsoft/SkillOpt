@@ -28,6 +28,12 @@ Only propose patches for patterns not already covered in the skill. Focus on
 patterns that appear across MULTIPLE trajectories. Be concise and prefer
 reinforcing existing sections over adding new top-level sections.
 
+## Compact Patch Policy
+Prefer `replace` or `delete` when improving existing guidance. Use `append`
+only when the skill has no existing section that can be strengthened. Do not
+append duplicate guidance. Replace weak existing guidance instead of adding a
+nearby rule. Delete stale, contradicted, or redundant guidance.
+
 Respond ONLY with a valid JSON object:
 {
   "batch_size": <number of trajectories analysed>,
