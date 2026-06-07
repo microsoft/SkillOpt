@@ -351,6 +351,34 @@ def test_optimize_threads_optimizer_views(monkeypatch):
     assert captured["optimizer_views"] == 4
 
 
+def test_optimize_threads_retry_optimizer_views(monkeypatch):
+    captured = {}
+
+    def fake_run_optimize(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("gitmoot_skillopt.optimize.run_optimize", fake_run_optimize)
+
+    result = main(
+        [
+            "optimize",
+            "--training-package",
+            "training.json",
+            "--artifact-root",
+            "blobs",
+            "--out-root",
+            "out",
+            "--candidate-output",
+            "out/candidate.json",
+            "--retry-optimizer-views",
+            "inherit",
+        ]
+    )
+
+    assert result == 0
+    assert captured["retry_optimizer_views"] == "inherit"
+
+
 def test_optimize_rejects_invalid_optimizer_views():
     with pytest.raises(SystemExit):
         main(
@@ -370,6 +398,26 @@ def test_optimize_rejects_invalid_optimizer_views():
         )
 
 
+@pytest.mark.parametrize("value", ["0", "-1", "nope"])
+def test_optimize_rejects_invalid_retry_optimizer_views(value):
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "optimize",
+                "--training-package",
+                "training.json",
+                "--artifact-root",
+                "blobs",
+                "--out-root",
+                "out",
+                "--candidate-output",
+                "out/candidate.json",
+                "--retry-optimizer-views",
+                value,
+            ]
+        )
+
+
 def test_optimize_dry_run_rejects_invalid_optimizer_views(tmp_path):
     package_path, artifact_root = write_training_package(tmp_path)
 
@@ -381,6 +429,20 @@ def test_optimize_dry_run_rejects_invalid_optimizer_views(tmp_path):
             candidate_output=str(tmp_path / "out" / "candidate.json"),
             dry_run=True,
             optimizer_views=0,
+        )
+
+
+def test_optimize_dry_run_rejects_invalid_retry_optimizer_views(tmp_path):
+    package_path, artifact_root = write_training_package(tmp_path)
+
+    with pytest.raises(ValueError, match="retry_optimizer_views must be auto, inherit, or a positive integer"):
+        run_optimize(
+            training_package=str(package_path),
+            artifact_root=str(artifact_root),
+            out_root=str(tmp_path / "out"),
+            candidate_output=str(tmp_path / "out" / "candidate.json"),
+            dry_run=True,
+            retry_optimizer_views=0,
         )
 
 
@@ -508,6 +570,8 @@ def test_build_trainer_config_uses_adaptive_gate_retry_defaults(tmp_path):
     assert cfg["evaluator_config"]["evaluator_schema_retry_budget"] == 1
     assert cfg["eval_test"] is False
     assert cfg["optimizer_views"] == 1
+    assert cfg["retry_optimizer_views"] == "auto"
+    assert cfg["retry_optimizer_views_resolved"] == 1
 
 
 def test_build_trainer_config_threads_optimizer_views(tmp_path):
@@ -533,6 +597,121 @@ def test_build_trainer_config_threads_optimizer_views(tmp_path):
 
     assert cfg["optimizer_views"] == 4
     assert cfg["analyst_workers"] == 4
+
+
+def test_build_trainer_config_resolves_retry_optimizer_views_for_full_rewrite(tmp_path):
+    base_kwargs = {
+        "package_path": tmp_path / "training.json",
+        "artifact_root": tmp_path / "blobs",
+        "out_root": tmp_path / "out",
+        "initial_skill_path": tmp_path / "skill.md",
+        "dry_run": False,
+        "num_epochs": 1,
+        "batch_size": 1,
+        "optimizer_views": 4,
+        "seed": 1,
+        "optimizer_model": "gpt-opt",
+        "target_model": "gpt-target",
+        "optimizer_backend": "codex",
+        "target_backend": "codex_exec",
+        "evaluator_config": {"mode": "fixture"},
+        "gate_metric": "mixed",
+        "reasoning_effort": "",
+        "skill_update_mode": "full_rewrite_minibatch",
+    }
+
+    auto_cfg = build_trainer_config(**base_kwargs, retry_optimizer_views="auto")
+    inherit_cfg = build_trainer_config(**base_kwargs, retry_optimizer_views="inherit")
+    explicit_cfg = build_trainer_config(**base_kwargs, retry_optimizer_views="2")
+
+    assert auto_cfg["retry_optimizer_views"] == "auto"
+    assert auto_cfg["retry_optimizer_views_resolved"] == 4
+    assert inherit_cfg["retry_optimizer_views"] == "inherit"
+    assert inherit_cfg["retry_optimizer_views_resolved"] == 4
+    assert explicit_cfg["retry_optimizer_views"] == "2"
+    assert explicit_cfg["retry_optimizer_views_resolved"] == 2
+
+
+def test_build_trainer_config_resolves_retry_optimizer_views_for_full_rewrite_alias(tmp_path):
+    cfg = build_trainer_config(
+        package_path=tmp_path / "training.json",
+        artifact_root=tmp_path / "blobs",
+        out_root=tmp_path / "out",
+        initial_skill_path=tmp_path / "skill.md",
+        dry_run=False,
+        num_epochs=1,
+        batch_size=1,
+        optimizer_views=4,
+        retry_optimizer_views="auto",
+        seed=1,
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        optimizer_backend="codex",
+        target_backend="codex_exec",
+        evaluator_config={"mode": "fixture"},
+        gate_metric="mixed",
+        reasoning_effort="",
+        skill_update_mode="full_rewrite",
+    )
+
+    assert cfg["retry_optimizer_views"] == "auto"
+    assert cfg["retry_optimizer_views_resolved"] == 4
+
+
+def test_build_trainer_config_keeps_patch_retry_optimizer_views_cheap_by_default(tmp_path):
+    cfg = build_trainer_config(
+        package_path=tmp_path / "training.json",
+        artifact_root=tmp_path / "blobs",
+        out_root=tmp_path / "out",
+        initial_skill_path=tmp_path / "skill.md",
+        dry_run=False,
+        num_epochs=1,
+        batch_size=1,
+        optimizer_views=4,
+        seed=1,
+        optimizer_model="gpt-opt",
+        target_model="gpt-target",
+        optimizer_backend="codex",
+        target_backend="codex_exec",
+        evaluator_config={"mode": "fixture"},
+        gate_metric="mixed",
+        reasoning_effort="",
+        skill_update_mode="patch",
+    )
+
+    assert cfg["retry_optimizer_views"] == "auto"
+    assert cfg["retry_optimizer_views_resolved"] == 1
+
+
+def test_build_trainer_config_rejects_invalid_retry_optimizer_views(tmp_path):
+    base_kwargs = {
+        "package_path": tmp_path / "training.json",
+        "artifact_root": tmp_path / "blobs",
+        "out_root": tmp_path / "out",
+        "initial_skill_path": tmp_path / "skill.md",
+        "dry_run": False,
+        "num_epochs": 1,
+        "batch_size": 1,
+        "optimizer_views": 4,
+        "seed": 1,
+        "optimizer_model": "gpt-opt",
+        "target_model": "gpt-target",
+        "optimizer_backend": "codex",
+        "target_backend": "codex_exec",
+        "evaluator_config": {"mode": "fixture"},
+        "gate_metric": "mixed",
+        "reasoning_effort": "",
+        "skill_update_mode": "patch",
+    }
+
+    with pytest.raises(ValueError, match="retry_optimizer_views must be auto, inherit, or a positive integer"):
+        build_trainer_config(**base_kwargs, retry_optimizer_views="nope")
+
+    with pytest.raises(ValueError, match="retry_optimizer_views cannot exceed optimizer_views"):
+        build_trainer_config(
+            **{**base_kwargs, "optimizer_views": 1},
+            retry_optimizer_views="4",
+        )
 
 
 def test_build_trainer_config_rejects_invalid_optimizer_views(tmp_path):

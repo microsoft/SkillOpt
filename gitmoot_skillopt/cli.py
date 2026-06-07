@@ -71,6 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="independent optimizer perspectives to run over imported human review feedback",
     )
+    optimize.add_argument(
+        "--retry-optimizer-views",
+        type=_retry_optimizer_views,
+        default="auto",
+        help=(
+            "optimizer perspectives for gate-reject retries: auto, inherit, "
+            "or a positive integer"
+        ),
+    )
     optimize.add_argument("--seed", type=int, default=42, help="random seed")
     optimize.add_argument("--optimizer-model", default="gpt-5.5", help="optimizer model name")
     optimize.add_argument("--target-model", default="gpt-5.5", help="target model name")
@@ -179,6 +188,19 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _retry_optimizer_views(value: str) -> str:
+    raw = str("auto" if value is None else value).strip().lower()
+    if raw in {"auto", "inherit"}:
+        return raw
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be auto, inherit, or a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be auto, inherit, or a positive integer")
+    return str(parsed)
+
+
 def _run_optimize(args: argparse.Namespace) -> int:
     from .optimize import run_optimize
 
@@ -192,6 +214,7 @@ def _run_optimize(args: argparse.Namespace) -> int:
         num_epochs=args.num_epochs,
         batch_size=args.batch_size,
         optimizer_views=args.optimizer_views,
+        retry_optimizer_views=args.retry_optimizer_views,
         seed=args.seed,
         optimizer_model=args.optimizer_model,
         target_model=args.target_model,

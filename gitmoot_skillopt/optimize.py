@@ -20,6 +20,7 @@ from gitmoot_skillopt.contracts import (
 from gitmoot_skillopt.preflight import run_optimizer_preflight
 from skillopt.engine.trainer import ReflACTTrainer
 from skillopt.envs.gitmoot.adapter import GitmootAdapter
+from skillopt.optimizer.update_modes import is_full_rewrite_minibatch_mode
 
 
 def run_optimize(
@@ -33,6 +34,7 @@ def run_optimize(
     num_epochs: int = 1,
     batch_size: int = 4,
     optimizer_views: int = 1,
+    retry_optimizer_views: str | int = "auto",
     seed: int = 42,
     optimizer_model: str = "gpt-5.5",
     target_model: str = "gpt-5.5",
@@ -55,6 +57,7 @@ def run_optimize(
     eval_test: bool = False,
 ) -> CandidatePackage:
     optimizer_views = _normalize_optimizer_views(optimizer_views)
+    retry_optimizer_views_request = _normalize_retry_optimizer_views_request(retry_optimizer_views)
     package_path = _require_file(training_package, "training package")
     artifact_root_path = _require_dir(artifact_root, "artifact root")
     out_root_path = Path(out_root).expanduser()
@@ -96,6 +99,7 @@ def run_optimize(
         num_epochs=num_epochs,
         batch_size=batch_size,
         optimizer_views=optimizer_views,
+        retry_optimizer_views=retry_optimizer_views_request,
         seed=seed,
         optimizer_model=preflight.optimizer_model,
         target_model=preflight.target_model,
@@ -156,6 +160,7 @@ def build_trainer_config(
     reasoning_effort: str,
     skill_update_mode: str,
     optimizer_views: int = 1,
+    retry_optimizer_views: str | int = "auto",
     noop_retry_budget: int = 1,
     gate_reject_retry_budget: int = 3,
     wrong_artifact_retry_budget: int = 1,
@@ -168,6 +173,12 @@ def build_trainer_config(
 ) -> dict[str, Any]:
     actual_epochs = 0 if dry_run else max(1, int(num_epochs))
     normalized_optimizer_views = _normalize_optimizer_views(optimizer_views)
+    retry_optimizer_views_request = _normalize_retry_optimizer_views_request(retry_optimizer_views)
+    resolved_retry_optimizer_views = _resolve_retry_optimizer_views(
+        retry_optimizer_views_request,
+        optimizer_views=normalized_optimizer_views,
+        skill_update_mode=skill_update_mode,
+    )
     normalized_gate_metric = str(gate_metric or "hard").strip().lower()
     if normalized_gate_metric not in {"hard", "soft", "mixed"}:
         raise ValueError(f"unsupported gate metric: {gate_metric}")
@@ -236,6 +247,8 @@ def build_trainer_config(
         "num_epochs": actual_epochs,
         "batch_size": max(1, int(batch_size)),
         "optimizer_views": normalized_optimizer_views,
+        "retry_optimizer_views": retry_optimizer_views_request,
+        "retry_optimizer_views_resolved": resolved_retry_optimizer_views,
         "accumulation": 1,
         "seed": int(seed),
         "minibatch_size": max(1, int(batch_size)),
@@ -282,6 +295,37 @@ def _normalize_optimizer_views(value: int) -> int:
     if normalized <= 0:
         raise ValueError("optimizer_views must be a positive integer")
     return normalized
+
+
+def _normalize_retry_optimizer_views_request(value: str | int | None) -> str:
+    raw = str("auto" if value is None else value).strip().lower()
+    if raw in {"auto", "inherit"}:
+        return raw
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError("retry_optimizer_views must be auto, inherit, or a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError("retry_optimizer_views must be auto, inherit, or a positive integer")
+    return str(parsed)
+
+
+def _resolve_retry_optimizer_views(
+    value: str,
+    *,
+    optimizer_views: int,
+    skill_update_mode: str,
+) -> int:
+    if value == "inherit":
+        return optimizer_views
+    if value == "auto":
+        if is_full_rewrite_minibatch_mode(skill_update_mode):
+            return optimizer_views
+        return 1
+    requested = _normalize_optimizer_views(int(value))
+    if requested > optimizer_views:
+        raise ValueError("retry_optimizer_views cannot exceed optimizer_views")
+    return requested
 
 
 def write_candidate_package(

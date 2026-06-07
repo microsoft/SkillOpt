@@ -581,6 +581,57 @@ def _optimizer_view_count(cfg: dict, feedback_direct_items: list[dict]) -> int:
     return max(1, count)
 
 
+def _retry_optimizer_view_count(cfg: dict) -> int:
+    try:
+        count = int(cfg.get("retry_optimizer_views_resolved", 1) or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, count)
+
+
+def _retry_reflect_results_and_minibatch(
+    retry_batch: dict,
+    *,
+    retry_view_count: int,
+) -> tuple[list[dict], int | None, int]:
+    results = list(retry_batch.get("rollout_results") or [])
+    if not retry_batch.get("feedback_direct_optimizer_views"):
+        return results, None, 1
+
+    view_ids = [
+        str(item_id)
+        for item_id in retry_batch.get("optimizer_view_result_ids") or []
+        if str(item_id).strip()
+    ]
+    if not view_ids:
+        return results, None, 1
+
+    by_id = {
+        str(result.get("id") or ""): result
+        for result in results
+        if isinstance(result, dict)
+    }
+    view_results = [by_id[item_id] for item_id in view_ids if item_id in by_id]
+    if not view_results:
+        return results, None, 1
+
+    effective_view_count = min(max(1, retry_view_count), len(view_results))
+    selected_view_ids = set(view_ids[:effective_view_count])
+    all_view_ids = set(view_ids)
+    selected_view_results = [
+        result
+        for result in view_results
+        if str(result.get("id") or "") in selected_view_ids
+    ]
+    non_view_results = [
+        result
+        for result in results
+        if not isinstance(result, dict) or str(result.get("id") or "") not in all_view_ids
+    ]
+    retry_results = selected_view_results + non_view_results
+    return retry_results, 1 if effective_view_count > 1 else None, effective_view_count
+
+
 def _optimizer_view_hint(view_index: int, view_count: int) -> str:
     if view_count <= 1:
         return ""
@@ -2310,6 +2361,11 @@ def _retry_attempt_diagnostics(
                 "candidate_gate_score": candidate.get("gate_score"),
                 "fresh_reflect_retry": bool(attempt.get("fresh_reflect_retry")),
                 "n_retry_patches": attempt.get("n_retry_patches"),
+                "retry_optimizer_views_requested": attempt.get("retry_optimizer_views_requested", ""),
+                "retry_optimizer_views_resolved": attempt.get("retry_optimizer_views_resolved"),
+                "retry_view_mode": attempt.get("retry_view_mode", ""),
+                "retry_merge_used": bool(attempt.get("retry_merge_used")),
+                "retry_minibatch_sizes": attempt.get("retry_minibatch_sizes", []),
             }
         )
     return attempts
@@ -3222,6 +3278,15 @@ class ReflACTTrainer:
                             "patches_dir": patches_dir,
                             "batch_seed": batch_seed,
                             "step_buffer_context": step_buffer_context,
+                            "feedback_direct_optimizer_views": bool(
+                                feedback_direct_items and optimizer_view_count > 1
+                            ),
+                            "optimizer_view_count": optimizer_view_count,
+                            "optimizer_view_result_ids": [
+                                str(item.get("id") or "")
+                                for item in feedback_direct_reflect_items
+                                if isinstance(item, dict) and item.get("optimizer_view")
+                            ],
                         }
                     )
                     total_reflect_time += time.time() - t_phase
@@ -3817,6 +3882,10 @@ class ReflACTTrainer:
                                 "" if wrong_artifact_retry else duplicate_gate_retry_context,
                             )
                             gate_retry_suffix = f"_{retry_file_prefix}_{retry_count + 1:02d}"
+                            requested_retry_optimizer_views = str(cfg.get("retry_optimizer_views") or "auto")
+                            retry_optimizer_view_count = (
+                                1 if wrong_artifact_retry else _retry_optimizer_view_count(cfg)
+                            )
                             print(
                                 f"    [gate retry {retry_count + 1}/{active_retry_budget}] "
                                 "rerunning reflect/aggregate/select/update with gate-rejection feedback"
@@ -3837,6 +3906,8 @@ class ReflACTTrainer:
                             t_retry_phase = time.time()
                             retry_patches_dirs: list[str] = []
                             raw_retry_patches: list[dict | None] = []
+                            resolved_retry_view_counts: list[int] = []
+                            retry_minibatch_sizes: list[int | None] = []
                             for retry_batch_idx, retry_batch in enumerate(retry_reflect_batches):
                                 retry_patches_dir = os.path.join(
                                     str(retry_batch["patches_dir"]),
@@ -3848,9 +3919,17 @@ class ReflACTTrainer:
                                     noop_retry_context,
                                     gate_retry_context,
                                 )
+                                retry_results, retry_minibatch_size, resolved_retry_view_count = (
+                                    _retry_reflect_results_and_minibatch(
+                                        retry_batch,
+                                        retry_view_count=retry_optimizer_view_count,
+                                    )
+                                )
+                                resolved_retry_view_counts.append(resolved_retry_view_count)
+                                retry_minibatch_sizes.append(retry_minibatch_size)
                                 raw_retry_patches.extend(
                                     adapter.reflect(
-                                        list(retry_batch.get("rollout_results") or []),
+                                        retry_results,
                                         current_skill,
                                         str(retry_batch["batch_dir"]),
                                         prediction_dir=str(retry_batch["prediction_dir"]),
@@ -3861,6 +3940,7 @@ class ReflACTTrainer:
                                         + 1,
                                         step_buffer_context=batch_retry_context,
                                         meta_skill_context=retry_optimizer_context,
+                                        minibatch_size=retry_minibatch_size,
                                     )
                                 )
                             retry_failure_patches, retry_success_patches = _normalise_patches(
@@ -3868,7 +3948,17 @@ class ReflACTTrainer:
                                 update_mode=update_mode,
                             )
                             retry_n_patches = len(retry_failure_patches) + len(retry_success_patches)
+                            resolved_retry_optimizer_views = max(resolved_retry_view_counts or [1])
                             gate_retry_record["fresh_reflect_retry"] = True
+                            gate_retry_record["retry_optimizer_views_requested"] = requested_retry_optimizer_views
+                            gate_retry_record["retry_optimizer_views_resolved"] = resolved_retry_optimizer_views
+                            gate_retry_record["retry_view_mode"] = (
+                                "single"
+                                if resolved_retry_optimizer_views <= 1
+                                else str(cfg.get("retry_optimizer_views") or "auto")
+                            )
+                            gate_retry_record["retry_merge_used"] = retry_n_patches > 0
+                            gate_retry_record["retry_minibatch_sizes"] = retry_minibatch_sizes
                             gate_retry_record["retry_patches_dirs"] = retry_patches_dirs
                             gate_retry_record["n_retry_failure_patches"] = len(retry_failure_patches)
                             gate_retry_record["n_retry_success_patches"] = len(retry_success_patches)

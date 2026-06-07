@@ -843,6 +843,202 @@ def test_optimizer_views_replicate_full_feedback_context(tmp_path, monkeypatch):
     ]
 
 
+def test_gate_retry_inherits_optimizer_views_for_full_rewrite(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    reflect_results: list[list[dict]] = []
+    reflect_minibatch_sizes: list[int | None] = []
+    merge_patch_counts: list[int] = []
+    merge_calls = 0
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        nonlocal merge_calls
+        del success_patches, kwargs
+        merge_calls += 1
+        merge_patch_counts.append(len(failure_patches))
+        if merge_calls == 1:
+            new_skill = skill_content.rstrip() + "\n\nWeak architecture commentary guidance.\n"
+            change_summary = ["weak architecture commentary"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nHuman reaction guidance.\n"
+            change_summary = ["human reaction guidance"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class RetryViewAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir
+            reflect_results.append(results)
+            reflect_minibatch_sizes.append(kwargs.get("minibatch_size"))
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": f"candidate {index}",
+                                "change_summary": [f"view feedback {index}"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+                for index, _result in enumerate(results, start=1)
+            ]
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Human reaction guidance" in skill_content:
+                return [_scored_result(soft=0.95)]
+            if "Weak architecture commentary guidance" in skill_content:
+                return [_scored_result(soft=0.84)]
+            return [_scored_result(soft=0.89)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+    cfg["gate_metric"] = "soft"
+    cfg["optimizer_views"] = 4
+    cfg["retry_optimizer_views"] = "auto"
+    cfg["retry_optimizer_views_resolved"] = 4
+    cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
+
+    summary = ReflACTTrainer(cfg, RetryViewAdapter(_TwoItemFeedbackDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    assert len(summary["gate_reject_retry_attempts"]) == 1
+    retry_attempt = summary["gate_reject_retry_attempts"][0]
+    assert retry_attempt["action"] == "retry"
+    assert retry_attempt["fresh_reflect_retry"] is True
+    assert retry_attempt["n_retry_patches"] == 4
+    assert retry_attempt["retry_optimizer_views_requested"] == "auto"
+    assert retry_attempt["retry_optimizer_views_resolved"] == 4
+    assert retry_attempt["retry_view_mode"] == "auto"
+    assert retry_attempt["retry_merge_used"] is True
+    assert retry_attempt["retry_minibatch_sizes"] == [1]
+    assert merge_patch_counts == [4, 4]
+    assert reflect_minibatch_sizes == [1, 1]
+    assert [result["id"] for result in reflect_results[0]] == [
+        "optimizer_view_01",
+        "optimizer_view_02",
+        "optimizer_view_03",
+        "optimizer_view_04",
+    ]
+    assert [result["id"] for result in reflect_results[1]] == [
+        "optimizer_view_01",
+        "optimizer_view_02",
+        "optimizer_view_03",
+        "optimizer_view_04",
+    ]
+    history = json.loads((tmp_path / "out" / "history.json").read_text(encoding="utf-8"))
+    assert history[0]["gate_reject_retry_attempts"][0]["retry_optimizer_views_resolved"] == 4
+
+
+def test_gate_retry_can_limit_retry_optimizer_views_to_one(tmp_path, monkeypatch):
+    package_path, artifact_root = write_training_package(tmp_path)
+    package = TrainingPackage.load(package_path)
+    reflect_results: list[list[dict]] = []
+    merge_patch_counts: list[int] = []
+    merge_calls = 0
+
+    def fake_merge(skill_content, failure_patches, success_patches, **kwargs):
+        nonlocal merge_calls
+        del success_patches, kwargs
+        merge_calls += 1
+        merge_patch_counts.append(len(failure_patches))
+        if merge_calls == 1:
+            new_skill = skill_content.rstrip() + "\n\nWeak architecture commentary guidance.\n"
+            change_summary = ["weak architecture commentary"]
+        else:
+            new_skill = skill_content.rstrip() + "\n\nHuman reaction guidance.\n"
+            change_summary = ["human reaction guidance"]
+        return {
+            "reasoning": "fake merge",
+            "skill_candidates": [
+                {
+                    "title": "candidate",
+                    "change_summary": change_summary,
+                    "new_skill": new_skill,
+                }
+            ],
+        }
+
+    class SingleRetryViewAdapter(_RetryAdapter):
+        def reflect(self, results, skill_content, out_dir, **kwargs):
+            del skill_content, out_dir, kwargs
+            reflect_results.append(results)
+            return [
+                {
+                    "source_type": "failure",
+                    "patch": {
+                        "skill_candidates": [
+                            {
+                                "title": f"candidate {index}",
+                                "change_summary": [f"view feedback {index}"],
+                                "new_skill": "",
+                            }
+                        ]
+                    },
+                }
+                for index, _result in enumerate(results, start=1)
+            ]
+
+        def rollout(self, env_manager, skill_content, out_dir, **kwargs):
+            del env_manager, out_dir, kwargs
+            if "Human reaction guidance" in skill_content:
+                return [_scored_result(soft=0.95)]
+            if "Weak architecture commentary guidance" in skill_content:
+                return [_scored_result(soft=0.84)]
+            return [_scored_result(soft=0.89)]
+
+    monkeypatch.setattr("skillopt.engine.trainer.merge_patches", fake_merge)
+    cfg = _retry_trainer_config(
+        tmp_path,
+        package_content=package.template.content,
+        artifact_root=artifact_root,
+        package_path=package_path,
+    )
+    cfg["feedback_direct_mode"] = "auto"
+    cfg["gate_metric"] = "soft"
+    cfg["optimizer_views"] = 4
+    cfg["retry_optimizer_views"] = "1"
+    cfg["retry_optimizer_views_resolved"] = 1
+    cfg["gate_reject_retry_budget"] = 1
+    cfg["gate_reject_retry_close_gap"] = 0.1
+
+    summary = ReflACTTrainer(cfg, SingleRetryViewAdapter(_TwoItemFeedbackDataLoader())).train()
+
+    assert summary["total_accepts"] == 1
+    retry_attempt = summary["gate_reject_retry_attempts"][0]
+    assert retry_attempt["n_retry_patches"] == 1
+    assert retry_attempt["retry_optimizer_views_requested"] == "1"
+    assert retry_attempt["retry_optimizer_views_resolved"] == 1
+    assert retry_attempt["retry_view_mode"] == "single"
+    assert retry_attempt["retry_minibatch_sizes"] == [None]
+    assert merge_patch_counts == [4, 1]
+    assert [result["id"] for result in reflect_results[0]] == [
+        "optimizer_view_01",
+        "optimizer_view_02",
+        "optimizer_view_03",
+        "optimizer_view_04",
+    ]
+    assert [result["id"] for result in reflect_results[1]] == ["optimizer_view_01"]
+
+
 def test_feedback_direct_optimizer_context_includes_reviewed_items_across_splits(tmp_path, monkeypatch):
     package_path, artifact_root = write_training_package(tmp_path)
     package = TrainingPackage.load(package_path)
