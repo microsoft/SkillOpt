@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 
-DATACLASS_KWARGS = {"frozen": True, "slots": True} if sys.version_info >= (3, 10) else {"frozen": True}
-
-
-@dataclass(**DATACLASS_KWARGS)
+@dataclass(frozen=True, slots=True)
 class AiforaiConfig:
     target_skill_repo: str
     sources: tuple[str, ...] = ("codex", "claude", "codewhale")

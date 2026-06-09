@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Literal
 
@@ -11,10 +10,9 @@ SourceAgent = Literal["codex", "claude", "codewhale"]
 TaskSplit = Literal["train", "val", "test"]
 TaskOutcome = Literal["success", "fail", "mixed", "unknown"]
 TaskOrigin = Literal["real", "curated"]
-DATACLASS_KWARGS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
-@dataclass(**DATACLASS_KWARGS)
+@dataclass(slots=True)
 class AiforaiSessionDigest:
     source_agent: SourceAgent
     session_id: str
@@ -41,7 +39,7 @@ class AiforaiSessionDigest:
         return cls(**{key: value for key, value in data.items() if key in fields})
 
 
-@dataclass(**DATACLASS_KWARGS)
+@dataclass(slots=True)
 class AiforaiTaskRecord:
     id: str
     source_agent: str
@@ -65,7 +63,7 @@ class AiforaiTaskRecord:
         return cls(**{key: value for key, value in data.items() if key in fields})
 
 
-@dataclass(**DATACLASS_KWARGS)
+@dataclass(slots=True)
 class AiforaiReplayResult:
     task_id: str
     source_agent: str
@@ -79,7 +77,7 @@ class AiforaiReplayResult:
         return asdict(self)
 
 
-@dataclass(**DATACLASS_KWARGS)
+@dataclass(slots=True)
 class AiforaiRunResult:
     mode: str
     staging_dir: str = ""
