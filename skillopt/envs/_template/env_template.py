@@ -14,13 +14,9 @@ For a fully worked example see ``skillopt/envs/officeqa/``.
 """
 from __future__ import annotations
 
-import os
-
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.envs._template.loader_template import TemplateBenchmarkLoader
-# When you wire in real reflection, also import:
-# from skillopt.gradient.reflect import run_minibatch_reflect
 
 
 class TemplateBenchmarkEnv(EnvAdapter):
@@ -131,53 +127,12 @@ class TemplateBenchmarkEnv(EnvAdapter):
             )
         return results
 
-    # ── Reflect: turn rollout results into patch dicts ─────────────────
-
-    def reflect(
-        self,
-        results: list[dict],
-        skill_content: str,
-        out_dir: str,
-        **kwargs,
-    ) -> list[dict | None]:
-        """
-        Turn rollouts into a list of raw patch dicts (or None to drop).
-
-        Each non-None dict MUST have:
-          - "patch":       {"edits": [...]}     a Patch.to_dict() payload
-          - "source_type": "failure" | "success"
-
-        Most benchmarks delegate to
-        :func:`skillopt.gradient.reflect.run_minibatch_reflect` which
-        will call the optimizer model with the
-        ``analyst_error_*`` / ``analyst_success_*`` prompts. To enable it,
-        uncomment the import above and call:
-
-            from skillopt.gradient.reflect import run_minibatch_reflect
-            return run_minibatch_reflect(
-                results=results,
-                skill_content=skill_content,
-                prediction_dir=kwargs.get(
-                    "prediction_dir", os.path.join(out_dir, "predictions")
-                ),
-                patches_dir=kwargs.get(
-                    "patches_dir", os.path.join(out_dir, "patches")
-                ),
-                workers=self.analyst_workers,
-                failure_only=self.failure_only,
-                minibatch_size=self.minibatch_size,
-                edit_budget=self.edit_budget,
-                random_seed=kwargs.get("random_seed"),
-                error_system=self.get_error_minibatch_prompt(),
-                success_system=self.get_success_minibatch_prompt(),
-                step_buffer_context=kwargs.get("step_buffer_context", ""),
-                update_mode=getattr(self, "_cfg", {}).get(
-                    "skill_update_mode", "patch"
-                ),
-            )
-        """
-        # Template default: produce no patches (no-op trainer step).
-        return [None for _ in results]
+    # ── Reflect (inherited) ─────────────────────────────────────────────
+    #
+    # ``reflect`` is inherited from ``EnvAdapter``: the default delegates to
+    # ``skillopt.gradient.reflect.run_minibatch_reflect`` using your
+    # ``analyst_error_*`` / ``analyst_success_*`` prompts. You do NOT need to
+    # implement it — override only if your benchmark needs custom reflection.
 
     # ── Stratification hint ────────────────────────────────────────────
 

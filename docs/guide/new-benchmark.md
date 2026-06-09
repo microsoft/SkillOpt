@@ -161,13 +161,10 @@ Two design points worth flagging:
 ```python
 from __future__ import annotations
 
-import os
-
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.envs.docfaithful.loader import DocFaithfulDataLoader
 from skillopt.envs.docfaithful.rollout import run_batch
-from skillopt.gradient.reflect import run_minibatch_reflect
 
 
 class DocFaithfulAdapter(EnvAdapter):
@@ -234,7 +231,7 @@ class DocFaithfulAdapter(EnvAdapter):
         )
         return self.build_env_from_batch(batch, **kwargs)
 
-    # ── The two real action methods ─────────────────────────────────────
+    # ── The rollout method (reflect is inherited) ───────────────────────
 
     def rollout(self, env_manager, skill_content: str,
                 out_dir: str, **kwargs) -> list[dict]:
@@ -247,27 +244,9 @@ class DocFaithfulAdapter(EnvAdapter):
             max_completion_tokens=self.max_completion_tokens,
         )
 
-    def reflect(self, results: list[dict], skill_content: str,
-                out_dir: str, **kwargs) -> list[dict | None]:
-        return run_minibatch_reflect(
-            results=results,
-            skill_content=skill_content,
-            prediction_dir=kwargs.get(
-                "prediction_dir", os.path.join(out_dir, "predictions")
-            ),
-            patches_dir=kwargs.get(
-                "patches_dir", os.path.join(out_dir, "patches")
-            ),
-            workers=self.analyst_workers,
-            failure_only=self.failure_only,
-            minibatch_size=self.minibatch_size,
-            edit_budget=self.edit_budget,
-            random_seed=kwargs.get("random_seed"),
-            error_system=self.get_error_minibatch_prompt(),
-            success_system=self.get_success_minibatch_prompt(),
-            step_buffer_context=kwargs.get("step_buffer_context", ""),
-            update_mode=getattr(self, "_cfg", {}).get("skill_update_mode", "patch"),
-        )
+    # reflect() is inherited from EnvAdapter — it delegates to
+    # run_minibatch_reflect with your analyst_error_* / analyst_success_*
+    # prompts. Override it only if you need custom reflection logic.
 
     def get_task_types(self) -> list[str]:
         seen: list[str] = []
@@ -373,9 +352,8 @@ If you get `ValueError: Unknown environment 'docfaithful'. Available: [...]`,
 you forgot Step 5.
 
 If you get `TypeError: Can't instantiate abstract class DocFaithfulAdapter`,
-you forgot to implement one of the five abstract methods on `EnvAdapter`:
-`build_train_env`, `build_eval_env`, `rollout`, `reflect`,
-`get_task_types`.
+you forgot to implement one of the four abstract methods on `EnvAdapter`:
+`build_train_env`, `build_eval_env`, `rollout`, `get_task_types`.
 
 ## Tips
 
