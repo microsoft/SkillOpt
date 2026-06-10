@@ -244,14 +244,35 @@ def adopt_latest(cfg: AiforaiConfig) -> list[str]:
         if resolved_live_path != allowed_live_path:
             continue
 
-        backup_path = staging / "backup" / "SKILL.md"
+        backup_dir = _prepare_backup_dir(staging)
+        if backup_dir is None:
+            continue
+
+        backup_path = backup_dir / "SKILL.md"
         if os.path.exists(configured_live_path):
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(configured_live_path, backup_path)
 
         write_skill(configured_live_path, proposed_path.read_text(encoding="utf-8"))
         return [configured_live_path]
     return []
+
+
+def _prepare_backup_dir(staging: Path) -> Path | None:
+    backup_dir = staging / "backup"
+    if backup_dir.is_symlink():
+        return None
+
+    if backup_dir.exists():
+        return backup_dir if backup_dir.is_dir() else None
+
+    try:
+        backup_dir.mkdir()
+    except FileExistsError:
+        if backup_dir.is_symlink():
+            return None
+        return backup_dir if backup_dir.is_dir() else None
+
+    return backup_dir
 
 
 def _harvest_sessions(

@@ -748,6 +748,56 @@ class AiforaiMockRunTests(unittest.TestCase):
             self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
             self.assertFalse((malicious_dir / "backup" / "SKILL.md").exists())
 
+    def test_adopt_latest_skips_newer_accepted_staging_with_symlink_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, skill_path = self._make_repo(tmp)
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            accepted = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            unsafe_dir = Path(cfg.staging_root) / "99999999T999999Z-run-unsafe-backup"
+            unsafe_dir.mkdir(parents=True)
+            (unsafe_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "live_skill_path": str(skill_path),
+                        "accepted": True,
+                        "has_skill": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (unsafe_dir / "proposed_SKILL.md").write_text(
+                "# unsafe overwrite\n",
+                encoding="utf-8",
+            )
+
+            outside_dir = Path(tmp) / "outside-backup"
+            outside_dir.mkdir()
+            (unsafe_dir / "backup").symlink_to(outside_dir, target_is_directory=True)
+
+            updated = adopt_latest(cfg)
+
+            self.assertEqual(updated, [str(skill_path)])
+            self.assertEqual(
+                skill_path.read_text(encoding="utf-8"),
+                (Path(accepted.staging_dir) / "proposed_SKILL.md").read_text(encoding="utf-8"),
+            )
+            self.assertFalse((outside_dir / "SKILL.md").exists())
+            self.assertFalse((unsafe_dir / "backup" / "SKILL.md").exists())
+            self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
+
     def test_adopt_latest_skips_corrupt_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, skill_path = self._make_repo(tmp)
