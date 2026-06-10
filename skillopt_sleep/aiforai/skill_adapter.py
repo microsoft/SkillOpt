@@ -62,11 +62,13 @@ def apply_learned_rules(doc: str, rules: list[str]) -> str:
             deduped.append(clean)
 
     block = _render_learned_block(deduped)
-    block_span = _find_learned_block(doc)
-    if block_span is None:
+    block_spans, malformed = _find_learned_blocks(doc)
+    if malformed or not block_spans:
         return _append_learned_block(doc, block)
-    start, end = block_span
-    return doc[:start] + block + doc[end:]
+    if len(block_spans) == 1:
+        start, end = block_spans[0]
+        return doc[:start] + block + doc[end:]
+    return _replace_learned_blocks(doc, block_spans, block)
 
 
 def run_aiforai_validators(repo: str, *, timeout: int = 120) -> dict[str, Any]:
@@ -150,11 +152,10 @@ def _extract_learned(doc: str) -> str:
 
 
 def _strip_learned(doc: str) -> str:
-    block_span = _find_learned_block(doc)
-    if block_span is None:
+    block_spans, malformed = _find_learned_blocks(doc)
+    if malformed or not block_spans:
         return doc.rstrip()
-    start, end = block_span
-    text = doc[:start] + doc[end:]
+    text = _replace_learned_blocks(doc, block_spans, "")
     while "\n\n\n" in text:
         text = text.replace("\n\n\n", "\n\n")
     return text.rstrip()
@@ -172,15 +173,50 @@ def _rule_key(rule: str) -> str:
 
 
 def _find_learned_block(doc: str) -> tuple[int, int] | None:
-    start = doc.find(LEARNED_START)
-    if start == -1:
+    block_spans, malformed = _find_learned_blocks(doc)
+    if malformed or len(block_spans) != 1:
         return None
-    after_start = start + len(LEARNED_START)
-    end = doc.find(LEARNED_END, after_start)
-    nested_start = doc.find(LEARNED_START, after_start)
-    if end == -1 or (nested_start != -1 and nested_start < end):
-        return None
-    return start, end + len(LEARNED_END)
+    return block_spans[0]
+
+
+def _find_learned_blocks(doc: str) -> tuple[list[tuple[int, int]], bool]:
+    block_spans: list[tuple[int, int]] = []
+    cursor = 0
+
+    while True:
+        start = doc.find(LEARNED_START, cursor)
+        end = doc.find(LEARNED_END, cursor)
+        if start == -1 and end == -1:
+            return block_spans, False
+        if end != -1 and (start == -1 or end < start):
+            return block_spans, True
+        if start == -1:
+            return block_spans, False
+
+        after_start = start + len(LEARNED_START)
+        end = doc.find(LEARNED_END, after_start)
+        nested_start = doc.find(LEARNED_START, after_start)
+        if end == -1 or (nested_start != -1 and nested_start < end):
+            return block_spans, True
+
+        block_spans.append((start, end + len(LEARNED_END)))
+        cursor = end + len(LEARNED_END)
+
+
+def _replace_learned_blocks(
+    doc: str, block_spans: list[tuple[int, int]], replacement: str
+) -> str:
+    parts: list[str] = []
+    cursor = 0
+
+    for index, (start, end) in enumerate(block_spans):
+        parts.append(doc[cursor:start])
+        if index == 0 and replacement:
+            parts.append(replacement)
+        cursor = end
+
+    parts.append(doc[cursor:])
+    return "".join(parts)
 
 
 def _render_learned_block(rules: list[str]) -> str:

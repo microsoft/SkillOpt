@@ -64,6 +64,57 @@ class AiforaiSkillAdapterTests(unittest.TestCase):
         self.assertEqual(updated.count(LEARNED_START), 1)
         self.assertEqual(updated.count(LEARNED_END), 1)
 
+    def test_apply_learned_rules_collapses_duplicate_protected_blocks(self) -> None:
+        doc = (
+            "# Skill\n\n"
+            "Manual intro.\n\n"
+            f"{LEARNED_START}\n"
+            "## Learned AIForAI Rules\n\n"
+            "_Old banner._\n\n"
+            "- Old rule\n"
+            f"{LEARNED_END}\n\n"
+            "Between blocks.\n\n"
+            f"{LEARNED_START}\n"
+            "## Learned AIForAI Rules\n\n"
+            "_Old banner._\n\n"
+            "- Stale rule\n"
+            f"{LEARNED_END}\n\n"
+            "Handwritten tail.\n"
+        )
+
+        updated = apply_learned_rules(doc, ["New rule"])
+
+        self.assertIn("Manual intro.", updated)
+        self.assertIn("Between blocks.", updated)
+        self.assertIn("Handwritten tail.", updated)
+        self.assertLess(updated.index("Manual intro."), updated.index(LEARNED_START))
+        self.assertLess(updated.index(LEARNED_END), updated.index("Between blocks."))
+        self.assertLess(updated.index("Between blocks."), updated.index("Handwritten tail."))
+        self.assertNotIn("- Old rule", updated)
+        self.assertNotIn("- Stale rule", updated)
+        self.assertIn("- New rule", updated)
+        self.assertEqual(updated.count(LEARNED_START), 1)
+        self.assertEqual(updated.count(LEARNED_END), 1)
+        self.assertEqual(current_learned_rules(updated), ["New rule"])
+
+    def test_current_learned_rules_returns_empty_for_duplicate_protected_blocks(self) -> None:
+        doc = (
+            "# Skill\n\n"
+            f"{LEARNED_START}\n"
+            "## Learned AIForAI Rules\n\n"
+            "_Old banner._\n\n"
+            "- First stale rule\n"
+            f"{LEARNED_END}\n\n"
+            "Manual note.\n\n"
+            f"{LEARNED_START}\n"
+            "## Learned AIForAI Rules\n\n"
+            "_Old banner._\n\n"
+            "- Second stale rule\n"
+            f"{LEARNED_END}\n"
+        )
+
+        self.assertEqual(current_learned_rules(doc), [])
+
     def test_malformed_markers_preserve_handwritten_content_and_are_ignored(self) -> None:
         cases = [
             (
