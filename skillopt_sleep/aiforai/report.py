@@ -141,3 +141,62 @@ def write_audit_report(
     lines.append("")
     with open(os.path.join(out_dir, "audit_report.md"), "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines))
+
+
+def write_run_report(
+    out_dir: str,
+    result: AiforaiRunResult,
+    proposed_skill: str,
+    baseline_rows: list[dict[str, Any]],
+    candidate_rows: list[dict[str, Any]],
+    validation: dict[str, Any],
+) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+
+    with open(os.path.join(out_dir, "proposed_SKILL.md"), "w", encoding="utf-8") as handle:
+        handle.write(proposed_skill)
+
+    write_jsonl(os.path.join(out_dir, "baseline_results.jsonl"), baseline_rows)
+    write_jsonl(os.path.join(out_dir, "candidate_results.jsonl"), candidate_rows)
+
+    with open(os.path.join(out_dir, "validation.log"), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(validation, ensure_ascii=False, indent=2))
+        handle.write("\n")
+
+    lines = [
+        "# AIForAI SkillOpt-Sleep Run Report",
+        "",
+        "## Summary",
+        f"- accepted: {result.accepted}",
+        f"- baseline_score: {result.baseline_score:.4f}",
+        f"- candidate_score: {result.candidate_score:.4f}",
+        f"- checkable_tasks: {result.checkable_tasks}",
+        f"- uncheckable_candidates: {result.uncheckable_candidates}",
+        "",
+        "## Boundary",
+        "- This run staged a proposal only.",
+        "- Live skill mutation requires explicit adopt.",
+        "",
+        "## Notes",
+    ]
+    if result.notes:
+        lines.extend(f"- {note}" for note in result.notes)
+    else:
+        lines.append("- None.")
+    lines.append("")
+
+    with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
+
+    with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "result": result.to_dict(),
+                "baseline_results": baseline_rows,
+                "candidate_results": candidate_rows,
+                "validation": validation,
+            },
+            handle,
+            ensure_ascii=False,
+            indent=2,
+        )

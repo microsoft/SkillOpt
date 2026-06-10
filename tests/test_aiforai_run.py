@@ -18,7 +18,7 @@ from skillopt_sleep.aiforai.replay import (
     gate_candidate,
     propose_mock_rules,
 )
-from skillopt_sleep.aiforai.run import run_audit
+from skillopt_sleep.aiforai.run import adopt_latest, run_audit, run_mock_gate
 from skillopt_sleep.aiforai.types import AiforaiSessionDigest, AiforaiTaskRecord
 
 
@@ -499,6 +499,139 @@ class AiforaiReplayGateTests(unittest.TestCase):
         self.assertEqual(decision.action, "reject")
         self.assertIn("family", decision.reason)
         self.assertIn("training_contract", decision.reason)
+
+
+class AiforaiMockRunTests(unittest.TestCase):
+    def test_run_mock_gate_stages_candidate_without_live_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "AIForAI"
+            skill_dir = repo / "ai-model-rd-protocol"
+            skill_dir.mkdir(parents=True)
+            skill_path = skill_dir / "SKILL.md"
+            skill_path.write_text(
+                "---\nname: ai-model-rd-protocol\n---\n\n# Skill\n",
+                encoding="utf-8",
+            )
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+
+            result = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            self.assertTrue(result.accepted)
+            self.assertTrue((Path(result.staging_dir) / "proposed_SKILL.md").exists())
+            self.assertNotIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+
+    def test_adopt_latest_updates_skill_and_writes_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "AIForAI"
+            skill_dir = repo / "ai-model-rd-protocol"
+            skill_dir.mkdir(parents=True)
+            skill_path = skill_dir / "SKILL.md"
+            skill_path.write_text("# Skill\n", encoding="utf-8")
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            result = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            updated = adopt_latest(cfg)
+
+            self.assertEqual(updated, [str(skill_path)])
+            self.assertIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+            self.assertTrue((Path(result.staging_dir) / "backup" / "SKILL.md").exists())
+
+    def test_run_mock_gate_uses_curated_suite_when_no_tasks_are_mined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "AIForAI"
+            skill_dir = repo / "ai-model-rd-protocol"
+            skill_dir.mkdir(parents=True)
+            skill_path = skill_dir / "SKILL.md"
+            skill_path.write_text("# Skill\n", encoding="utf-8")
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+
+            result = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["write a poem"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            self.assertEqual(result.checkable_tasks, 0)
+            self.assertEqual(result.uncheckable_candidates, 1)
+            self.assertTrue(result.accepted)
+            self.assertTrue((Path(result.staging_dir) / "proposed_SKILL.md").exists())
+            self.assertNotIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+
+    def test_adopt_latest_skips_newer_rejected_and_incomplete_staging_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "AIForAI"
+            skill_dir = repo / "ai-model-rd-protocol"
+            skill_dir.mkdir(parents=True)
+            skill_path = skill_dir / "SKILL.md"
+            skill_path.write_text("# Skill\n", encoding="utf-8")
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            accepted = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            rejected_dir = Path(cfg.staging_root) / "99999999T999999Z-run-rejected"
+            rejected_dir.mkdir(parents=True)
+            (rejected_dir / "manifest.json").write_text(
+                json.dumps({"live_skill_path": str(skill_path), "accepted": False}),
+                encoding="utf-8",
+            )
+            (rejected_dir / "proposed_SKILL.md").write_text("# rejected\n", encoding="utf-8")
+
+            incomplete_dir = Path(cfg.staging_root) / "99999999T999999Z-run-incomplete"
+            incomplete_dir.mkdir(parents=True)
+            (incomplete_dir / "manifest.json").write_text(
+                json.dumps({"live_skill_path": str(skill_path), "accepted": True}),
+                encoding="utf-8",
+            )
+
+            updated = adopt_latest(cfg)
+
+            self.assertEqual(updated, [str(skill_path)])
+            self.assertIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+            self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
+            self.assertFalse((incomplete_dir / "backup" / "SKILL.md").exists())
 
 
 if __name__ == "__main__":

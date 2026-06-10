@@ -7,7 +7,7 @@ import json
 import os
 
 from skillopt_sleep.aiforai.config import AiforaiConfig
-from skillopt_sleep.aiforai.run import SUPPORTED_SOURCES, run_audit
+from skillopt_sleep.aiforai.run import SUPPORTED_SOURCES, adopt_latest, run_audit, run_mock_gate
 
 
 def _parse_sources(raw: str) -> tuple[str, ...]:
@@ -40,7 +40,7 @@ def _positive_int_arg(name: str):
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="skillopt_sleep.aiforai",
-        description="AIForAI SkillOpt-Sleep audit tooling",
+        description="AIForAI SkillOpt-Sleep tooling",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -58,6 +58,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default=40,
     )
     audit.add_argument("--json", action="store_true")
+
+    run = sub.add_parser("run", help="harvest trajectories and stage a mock-gated proposal")
+    run.add_argument("--target-skill-repo", required=True)
+    run.add_argument(
+        "--sources",
+        type=_parse_sources,
+        default=_parse_sources("codex,claude,codewhale"),
+    )
+    run.add_argument("--lookback-days", type=_positive_int_arg("lookback-days"), default=7)
+    run.add_argument(
+        "--max-tasks-per-source",
+        type=_positive_int_arg("max-tasks-per-source"),
+        default=40,
+    )
+    run.add_argument("--json", action="store_true")
+
+    adopt = sub.add_parser("adopt", help="adopt the latest accepted staged proposal")
+    adopt.add_argument("--target-skill-repo", required=True)
     return parser
 
 
@@ -81,12 +99,45 @@ def _run_audit_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_mock_gate_command(args: argparse.Namespace) -> int:
+    cfg = AiforaiConfig(
+        target_skill_repo=os.path.abspath(args.target_skill_repo),
+        sources=args.sources,
+        lookback_days=args.lookback_days,
+        max_tasks_per_source=args.max_tasks_per_source,
+    )
+    result = run_mock_gate(cfg)
+    if args.json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(f"[aiforai] run staged: {result.staging_dir}")
+        print(f"[aiforai] accepted: {result.accepted}")
+    return 0
+
+
+def _adopt_command(args: argparse.Namespace) -> int:
+    cfg = AiforaiConfig(
+        target_skill_repo=os.path.abspath(args.target_skill_repo),
+    )
+    updated = adopt_latest(cfg)
+    if not updated:
+        print("[aiforai] no accepted staging proposal to adopt")
+        return 1
+    for path in updated:
+        print(f"[aiforai] adopted: {path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
         if args.cmd == "audit":
             return _run_audit_command(args)
+        if args.cmd == "run":
+            return _run_mock_gate_command(args)
+        if args.cmd == "adopt":
+            return _adopt_command(args)
     except ValueError as exc:
         parser.error(str(exc))
     parser.print_help()

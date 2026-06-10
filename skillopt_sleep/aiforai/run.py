@@ -1,8 +1,13 @@
-"""Audit orchestration for AIForAI SkillOpt-Sleep."""
+"""Audit and staged mock-run orchestration for AIForAI SkillOpt-Sleep."""
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import tempfile
 from collections import Counter
+from pathlib import Path
 from typing import Iterable
 
 from skillopt_sleep.aiforai.config import AiforaiConfig
@@ -13,8 +18,22 @@ from skillopt_sleep.aiforai.harvesters import (
     Harvester,
 )
 from skillopt_sleep.aiforai.mine import mine_tasks, split_tasks
-from skillopt_sleep.aiforai.report import make_staging_dir, write_audit_report
-from skillopt_sleep.aiforai.types import AiforaiRunResult, AiforaiSessionDigest
+from skillopt_sleep.aiforai.regression_suite import curated_regression_tasks
+from skillopt_sleep.aiforai.report import (
+    make_staging_dir,
+    write_audit_report,
+    write_jsonl,
+    write_run_report,
+)
+from skillopt_sleep.aiforai.replay import evaluate_tasks, gate_candidate, propose_mock_rules
+from skillopt_sleep.aiforai.skill_adapter import (
+    apply_learned_rules,
+    current_learned_rules,
+    read_skill,
+    run_aiforai_validators,
+    write_skill,
+)
+from skillopt_sleep.aiforai.types import AiforaiRunResult, AiforaiSessionDigest, AiforaiTaskRecord
 
 
 SUPPORTED_SOURCES = ("codex", "claude", "codewhale")
@@ -39,6 +58,175 @@ def run_audit(
     cfg: AiforaiConfig,
     harvesters: Iterable[Harvester] | None = None,
 ) -> AiforaiRunResult:
+    sessions, notes, sessions_by_source = _harvest_sessions(
+        cfg,
+        harvesters=harvesters,
+        require_nonempty=True,
+    )
+
+    tasks, uncheckable = mine_tasks(
+        sessions,
+        max_tasks_per_source=cfg.max_tasks_per_source,
+    )
+    split_tasks(
+        tasks,
+        val_fraction=cfg.val_fraction,
+        test_fraction=cfg.test_fraction,
+        seed=cfg.seed,
+    )
+
+    tasks_by_source = _task_counts(tasks, sessions_by_source)
+    staging_dir = make_staging_dir(cfg.target_skill_repo, "audit")
+    result = AiforaiRunResult(
+        mode="audit",
+        staging_dir=staging_dir,
+        sessions_by_source=sessions_by_source,
+        tasks_by_source=tasks_by_source,
+        checkable_tasks=len(tasks),
+        uncheckable_candidates=len(uncheckable),
+        accepted=False,
+        notes=notes,
+    )
+    write_audit_report(staging_dir, sessions, tasks, uncheckable, result)
+    return result
+
+
+def run_mock_gate(
+    cfg: AiforaiConfig,
+    *,
+    sessions: Iterable[AiforaiSessionDigest] | None = None,
+    run_validators: bool = True,
+) -> AiforaiRunResult:
+    notes: list[str] = []
+    if sessions is None:
+        selected_sessions, harvest_notes, sessions_by_source = _harvest_sessions(
+            cfg,
+            require_nonempty=False,
+        )
+        notes.extend(harvest_notes)
+    else:
+        selected_sessions = list(sessions)
+        sessions_by_source = _source_counts(selected_sessions, cfg.sources)
+
+    tasks, uncheckable = mine_tasks(
+        selected_sessions,
+        max_tasks_per_source=cfg.max_tasks_per_source,
+    )
+    split_tasks(
+        tasks,
+        val_fraction=cfg.val_fraction,
+        test_fraction=cfg.test_fraction,
+        seed=cfg.seed,
+    )
+
+    eval_tasks = [task for task in tasks if task.split == "val"] or list(tasks)
+    eval_tasks.extend(curated_regression_tasks())
+
+    live_skill = read_skill(cfg.skill_path)
+    learned_rules = current_learned_rules(live_skill)
+    proposed_rules = propose_mock_rules(eval_tasks, live_skill)
+    candidate_skill = apply_learned_rules(live_skill, learned_rules + proposed_rules)
+
+    baseline = evaluate_tasks(eval_tasks, live_skill)
+    candidate = evaluate_tasks(eval_tasks, candidate_skill)
+    gate = gate_candidate(baseline, candidate)
+    validation = (
+        _validate_candidate_skill(cfg, candidate_skill)
+        if run_validators
+        else {"ok": True, "commands": [], "skipped": True}
+    )
+    accepted = gate.accepted and bool(validation.get("ok"))
+
+    notes.append(gate.reason)
+    if run_validators and not validation.get("ok"):
+        notes.append("validators failed")
+
+    staging_dir = make_staging_dir(cfg.target_skill_repo, "run")
+    result = AiforaiRunResult(
+        mode="run",
+        staging_dir=staging_dir,
+        sessions_by_source=sessions_by_source,
+        tasks_by_source=_task_counts(tasks, sessions_by_source),
+        checkable_tasks=len(tasks),
+        uncheckable_candidates=len(uncheckable),
+        accepted=accepted,
+        baseline_score=baseline.aggregate_hard,
+        candidate_score=candidate.aggregate_hard,
+        notes=notes,
+    )
+
+    with open(os.path.join(staging_dir, "manifest.json"), "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "live_skill_path": cfg.skill_path,
+                "accepted": accepted,
+                "has_skill": True,
+            },
+            handle,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    write_jsonl(
+        os.path.join(staging_dir, "task_manifest.jsonl"),
+        [task.to_dict() for task in tasks],
+    )
+    write_jsonl(
+        os.path.join(staging_dir, "uncheckable_candidates.jsonl"),
+        uncheckable,
+    )
+    write_run_report(
+        staging_dir,
+        result,
+        candidate_skill,
+        [row.to_dict() for row in baseline.results],
+        [row.to_dict() for row in candidate.results],
+        validation,
+    )
+    return result
+
+
+def adopt_latest(cfg: AiforaiConfig) -> list[str]:
+    root = Path(cfg.staging_root)
+    if not root.is_dir():
+        return []
+
+    candidates = sorted(
+        (path for path in root.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for staging in candidates:
+        manifest_path = staging / "manifest.json"
+        proposed_path = staging / "proposed_SKILL.md"
+        if not manifest_path.is_file() or not proposed_path.is_file():
+            continue
+
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+
+        if not manifest.get("accepted"):
+            continue
+
+        live_path = str(manifest.get("live_skill_path") or cfg.skill_path)
+        backup_path = staging / "backup" / "SKILL.md"
+        if os.path.exists(live_path):
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(live_path, backup_path)
+
+        write_skill(live_path, proposed_path.read_text(encoding="utf-8"))
+        return [live_path]
+    return []
+
+
+def _harvest_sessions(
+    cfg: AiforaiConfig,
+    *,
+    harvesters: Iterable[Harvester] | None = None,
+    require_nonempty: bool,
+) -> tuple[list[AiforaiSessionDigest], list[str], dict[str, int]]:
     active_harvesters = list(harvesters) if harvesters is not None else default_harvesters(cfg.sources)
     if not active_harvesters:
         requested_sources = ", ".join(cfg.sources) if cfg.sources else "<none>"
@@ -70,12 +258,10 @@ def run_audit(
             )
         sessions.extend(harvested)
 
-    if not sessions:
+    if not sessions and require_nonempty:
         requested_sources = ", ".join(cfg.sources) if cfg.sources else "<none>"
         message = f"No AIForAI sessions were harvested for selected sources: {requested_sources}"
-        failure_notes = [
-            note for note in notes if "harvester failed:" in note
-        ]
+        failure_notes = [note for note in notes if "harvester failed:" in note]
         if failure_notes:
             message = f"{message}. Failures: {'; '.join(failure_notes)}"
         raise ValueError(message)
@@ -84,29 +270,41 @@ def run_audit(
     for source, count in session_counts.items():
         sessions_by_source[source] = count
 
-    tasks, uncheckable = mine_tasks(
-        sessions,
-        max_tasks_per_source=cfg.max_tasks_per_source,
-    )
-    split_tasks(
-        tasks,
-        val_fraction=cfg.val_fraction,
-        test_fraction=cfg.test_fraction,
-        seed=cfg.seed,
-    )
+    return sessions, notes, sessions_by_source
 
-    task_counts = Counter(task.source_agent for task in tasks)
-    tasks_by_source = {source: task_counts.get(source, 0) for source in sessions_by_source}
-    staging_dir = make_staging_dir(cfg.target_skill_repo, "audit")
-    result = AiforaiRunResult(
-        mode="audit",
-        staging_dir=staging_dir,
-        sessions_by_source=sessions_by_source,
-        tasks_by_source=tasks_by_source,
-        checkable_tasks=len(tasks),
-        uncheckable_candidates=len(uncheckable),
-        accepted=False,
-        notes=notes,
-    )
-    write_audit_report(staging_dir, sessions, tasks, uncheckable, result)
-    return result
+
+def _source_counts(
+    sessions: Iterable[AiforaiSessionDigest],
+    configured_sources: Iterable[str],
+) -> dict[str, int]:
+    counts = {source: 0 for source in configured_sources}
+    for source, count in Counter(str(session.source_agent) for session in sessions).items():
+        counts[source] = count
+    return counts
+
+
+def _task_counts(
+    tasks: Iterable[AiforaiTaskRecord],
+    sessions_by_source: dict[str, int],
+) -> dict[str, int]:
+    counts = Counter(task.source_agent for task in tasks)
+    return {source: counts.get(source, 0) for source in sessions_by_source}
+
+
+def _validate_candidate_skill(cfg: AiforaiConfig, candidate_skill: str) -> dict[str, object]:
+    try:
+        with tempfile.TemporaryDirectory(prefix="aiforai-validate-") as tmp:
+            repo_copy = os.path.join(tmp, "repo")
+            shutil.copytree(
+                cfg.target_skill_repo,
+                repo_copy,
+                ignore=shutil.ignore_patterns(".git", ".skillopt-sleep", "__pycache__"),
+            )
+            write_skill(os.path.join(repo_copy, cfg.skill_rel_path), candidate_skill)
+            return run_aiforai_validators(repo_copy)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "commands": [],
+            "error": str(exc),
+        }
