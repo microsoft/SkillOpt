@@ -158,7 +158,7 @@ class CodeWhaleHarvester(Harvester):
                 digest.assistant_finals,
                 digest.tools_used,
                 digest.files_touched,
+                digest.feedback_signals,
                 digest.skill_mentions,
-                digest.event_count > 0,
             )
         )
