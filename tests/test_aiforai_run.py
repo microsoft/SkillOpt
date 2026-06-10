@@ -12,9 +12,14 @@ from skillopt_sleep.aiforai.config import AiforaiConfig
 from skillopt_sleep.aiforai.harvesters import Harvester
 from skillopt_sleep.aiforai.mine import mine_tasks
 from skillopt_sleep.aiforai.regression_suite import curated_regression_tasks
-from skillopt_sleep.aiforai.replay import evaluate_tasks, gate_candidate, propose_mock_rules
+from skillopt_sleep.aiforai.replay import (
+    AiforaiScoreSummary,
+    evaluate_tasks,
+    gate_candidate,
+    propose_mock_rules,
+)
 from skillopt_sleep.aiforai.run import run_audit
-from skillopt_sleep.aiforai.types import AiforaiSessionDigest
+from skillopt_sleep.aiforai.types import AiforaiSessionDigest, AiforaiTaskRecord
 
 
 def _session(
@@ -31,6 +36,31 @@ def _session(
         user_prompts=[prompt],
         assistant_finals=[final] if final else [],
         skill_mentions=["ai-model-rd-protocol"],
+    )
+
+
+def _task(
+    task_id: str,
+    source: str,
+    family: str,
+    *required: str,
+) -> AiforaiTaskRecord:
+    return AiforaiTaskRecord(
+        id=task_id,
+        source_agent=source,
+        source_sessions=[f"{task_id}-session"],
+        project="AIForAI",
+        intent=f"{family} intent",
+        context_excerpt=f"{family} context",
+        task_family=family,
+        outcome="unknown",
+        split="val",
+        reference_kind="rule",
+        judge={
+            "kind": "rule",
+            "checks": [{"op": "contains", "arg": item} for item in required],
+        },
+        origin="curated",
     )
 
 
@@ -276,10 +306,17 @@ class AiforaiReplayGateTests(unittest.TestCase):
     def test_curated_regression_suite_has_required_families(self) -> None:
         tasks = curated_regression_tasks()
         families = {task.task_family for task in tasks}
-
-        self.assertIn("training_contract", families)
-        self.assertIn("data_acquisition", families)
-        self.assertIn("claim_integrity", families)
+        self.assertEqual(
+            families,
+            {
+                "training_contract",
+                "data_acquisition",
+                "dirty_worktree_gate",
+                "claim_integrity",
+                "rag_agent_diagnosis",
+                "cluster_preflight",
+            },
+        )
 
     def test_mock_replay_improves_after_rule_added(self) -> None:
         tasks, _ = mine_tasks([
@@ -299,6 +336,139 @@ class AiforaiReplayGateTests(unittest.TestCase):
 
         self.assertLess(baseline.aggregate_hard, candidate_score.aggregate_hard)
         self.assertTrue(gate_candidate(baseline, candidate_score).accepted)
+
+    def test_boundary_sensitive_contains_keeps_missing_requirements_and_rules(self) -> None:
+        tasks = [
+            _task("dirty-1", "codex", "dirty_worktree_gate", "formal"),
+            _task("rag-1", "claude", "rag_agent_diagnosis", "tool"),
+        ]
+
+        score = evaluate_tasks(tasks, "Use informal notes and tooling summaries.")
+        rules = propose_mock_rules(tasks, "Use informal notes and tooling summaries.")
+
+        self.assertEqual(score.aggregate_hard, 0.0)
+        self.assertIn("missing: formal", score.results[0].fail_reason)
+        self.assertIn("missing: tool", score.results[1].fail_reason)
+        self.assertEqual(
+            rules,
+            [
+                "For dirty_worktree_gate tasks, explicitly include: formal.",
+                "For rag_agent_diagnosis tasks, explicitly include: tool.",
+            ],
+        )
+
+    def test_replay_summaries_report_expected_source_and_family_means(self) -> None:
+        tasks = [
+            _task("codex-train", "codex", "training_contract", "training contract"),
+            _task("codex-rag", "codex", "rag_agent_diagnosis", "trajectory"),
+            _task("claude-train", "claude", "training_contract", "evaluation contract"),
+            _task("claude-cluster", "claude", "cluster_preflight", "artifact"),
+        ]
+
+        score = evaluate_tasks(
+            tasks,
+            "training contract\nevaluation contract\nartifact",
+        )
+
+        self.assertEqual(score.aggregate_hard, 0.75)
+        self.assertEqual(score.by_source, {"codex": 0.5, "claude": 1.0})
+        self.assertEqual(
+            score.by_family,
+            {
+                "training_contract": 1.0,
+                "rag_agent_diagnosis": 0.0,
+                "cluster_preflight": 1.0,
+            },
+        )
+
+    def test_propose_mock_rules_merges_same_family_missing_requirements(self) -> None:
+        tasks = [
+            _task(
+                "train-1",
+                "codex",
+                "training_contract",
+                "training contract",
+                "evaluation contract",
+            ),
+            _task(
+                "train-2",
+                "claude",
+                "training_contract",
+                "evaluation contract",
+                "artifact paths",
+            ),
+        ]
+
+        rules = propose_mock_rules(tasks, "Keep a training contract in the plan.")
+
+        self.assertEqual(
+            rules,
+            [
+                "For training_contract tasks, explicitly include: artifact paths, evaluation contract."
+            ],
+        )
+
+    def test_gate_rejects_tie_without_aggregate_improvement(self) -> None:
+        baseline = AiforaiScoreSummary(
+            aggregate_hard=0.5,
+            aggregate_soft=0.5,
+            by_source={"codex": 0.5},
+            by_family={"training_contract": 0.5},
+        )
+        candidate = AiforaiScoreSummary(
+            aggregate_hard=0.5,
+            aggregate_soft=0.8,
+            by_source={"codex": 0.5},
+            by_family={"training_contract": 0.5},
+        )
+
+        decision = gate_candidate(baseline, candidate)
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.action, "reject")
+        self.assertIn("did not improve", decision.reason)
+
+    def test_gate_rejects_source_slice_regression_despite_aggregate_gain(self) -> None:
+        baseline = AiforaiScoreSummary(
+            aggregate_hard=0.4,
+            aggregate_soft=0.4,
+            by_source={"codex": 0.2, "claude": 0.6},
+            by_family={"training_contract": 0.4},
+        )
+        candidate = AiforaiScoreSummary(
+            aggregate_hard=0.6,
+            aggregate_soft=0.6,
+            by_source={"codex": 0.8, "claude": 0.4},
+            by_family={"training_contract": 0.6},
+        )
+
+        decision = gate_candidate(baseline, candidate)
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.action, "reject")
+        self.assertIn("source", decision.reason)
+        self.assertIn("claude", decision.reason)
+
+    def test_gate_rejects_family_slice_regression_despite_aggregate_gain(self) -> None:
+        baseline = AiforaiScoreSummary(
+            aggregate_hard=0.4,
+            aggregate_soft=0.4,
+            by_source={"codex": 0.4},
+            by_family={"training_contract": 0.6, "cluster_preflight": 0.2},
+        )
+        candidate = AiforaiScoreSummary(
+            aggregate_hard=0.6,
+            aggregate_soft=0.6,
+            by_source={"codex": 0.6},
+            by_family={"training_contract": 0.4, "cluster_preflight": 0.8},
+        )
+
+        decision = gate_candidate(baseline, candidate)
+
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.action, "reject")
+        self.assertIn("family", decision.reason)
+        self.assertIn("training_contract", decision.reason)
 
 
 if __name__ == "__main__":

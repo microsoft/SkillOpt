@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -49,21 +50,18 @@ def propose_mock_rules(
     tasks: list[AiforaiTaskRecord],
     skill: str,
 ) -> list[str]:
-    lower_skill = skill.lower()
-    proposed: list[str] = []
-    seen: set[str] = set()
+    missing_by_family: dict[str, set[str]] = defaultdict(set)
 
     for task in tasks:
-        missing = _missing_required_checks(task, lower_skill)
-        if not missing:
-            continue
-        rule = f"For {task.task_family} tasks, explicitly include: {', '.join(missing)}."
-        key = rule.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        proposed.append(rule)
+        missing_by_family[task.task_family].update(_missing_required_checks(task, skill))
 
+    proposed: list[str] = []
+    for family in sorted(missing_by_family):
+        missing = sorted(missing_by_family[family], key=str.casefold)
+        if missing:
+            proposed.append(
+                f"For {family} tasks, explicitly include: {', '.join(missing)}."
+            )
     return proposed
 
 
@@ -71,16 +69,46 @@ def gate_candidate(
     baseline: AiforaiScoreSummary,
     candidate: AiforaiScoreSummary,
 ) -> AiforaiGateDecision:
+    source_regressions = _slice_regressions(
+        baseline.by_source,
+        candidate.by_source,
+        label="source",
+    )
+    if source_regressions:
+        return AiforaiGateDecision(
+            accepted=False,
+            action="reject",
+            reason=f"candidate regressed source hard-score slices: {source_regressions}",
+        )
+
+    family_regressions = _slice_regressions(
+        baseline.by_family,
+        candidate.by_family,
+        label="family",
+    )
+    if family_regressions:
+        return AiforaiGateDecision(
+            accepted=False,
+            action="reject",
+            reason=f"candidate regressed family hard-score slices: {family_regressions}",
+        )
+
     if candidate.aggregate_hard > baseline.aggregate_hard:
         return AiforaiGateDecision(
             accepted=True,
             action="accept",
-            reason="candidate aggregate hard score improved",
+            reason=(
+                "candidate aggregate hard score improved "
+                f"({baseline.aggregate_hard:.3f} -> {candidate.aggregate_hard:.3f})"
+            ),
         )
     return AiforaiGateDecision(
         accepted=False,
         action="reject",
-        reason="candidate did not improve aggregate hard score",
+        reason=(
+            "candidate did not improve aggregate hard score "
+            f"({baseline.aggregate_hard:.3f} -> {candidate.aggregate_hard:.3f})"
+        ),
     )
 
 
@@ -89,8 +117,7 @@ def _score_task(task: AiforaiTaskRecord, skill: str) -> tuple[float, float, list
     if not required:
         return 0.0, 0.0, ["no local checks"]
 
-    lower_skill = skill.lower()
-    missing = [item for item in required if item.lower() not in lower_skill]
+    missing = _missing_required_checks(task, skill)
     present = len(required) - len(missing)
     soft = present / len(required)
     hard = 1.0 if not missing else 0.0
@@ -111,8 +138,12 @@ def _required_contains_checks(task: AiforaiTaskRecord) -> list[str]:
     return required
 
 
-def _missing_required_checks(task: AiforaiTaskRecord, lower_skill: str) -> list[str]:
-    return [item for item in _required_contains_checks(task) if item.lower() not in lower_skill]
+def _missing_required_checks(task: AiforaiTaskRecord, skill: str) -> list[str]:
+    return [
+        item
+        for item in _required_contains_checks(task)
+        if not _contains_required_text(skill, item)
+    ]
 
 
 def _summarize(results: list[AiforaiReplayResult]) -> AiforaiScoreSummary:
@@ -136,5 +167,31 @@ def _group_mean(results: list[AiforaiReplayResult], attr: str) -> dict[str, floa
         buckets[str(getattr(result, attr))].append(result.hard)
     return {
         key: sum(values) / len(values)
-        for key, values in buckets.items()
+        for key, values in sorted(buckets.items())
     }
+
+
+def _contains_required_text(text: str, needle: str) -> bool:
+    if not needle:
+        return False
+    folded_text = text.casefold()
+    folded_needle = needle.casefold()
+    if folded_needle.isascii():
+        pattern = rf"(?<!\w){re.escape(folded_needle)}(?!\w)"
+        return re.search(pattern, folded_text) is not None
+    return folded_needle in folded_text
+
+
+def _slice_regressions(
+    baseline: dict[str, float],
+    candidate: dict[str, float],
+    *,
+    label: str,
+) -> str:
+    regressions: list[str] = []
+    for key in sorted(set(baseline) & set(candidate)):
+        if candidate[key] < baseline[key]:
+            regressions.append(
+                f"{label}={key} ({baseline[key]:.3f} -> {candidate[key]:.3f})"
+            )
+    return ", ".join(regressions)
