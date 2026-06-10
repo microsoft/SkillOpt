@@ -35,7 +35,7 @@ class CodexHarvester(Harvester):
             updated_at = row.get("updated_at_ms") or row.get("created_at_ms")
             if not within_lookback(updated_at, lookback_days=cfg.lookback_days, now_ms=self.now_ms):
                 continue
-            sessions.append(self._digest_thread(row))
+            sessions.append(self._digest_thread(row, codex_home=cfg.codex_home))
         return sessions
 
     def _thread_rows(self, db_path: str) -> list[dict[str, Any]]:
@@ -51,7 +51,7 @@ class CodexHarvester(Harvester):
         finally:
             con.close()
 
-    def _digest_thread(self, row: dict[str, Any]) -> AiforaiSessionDigest:
+    def _digest_thread(self, row: dict[str, Any], *, codex_home: str = "") -> AiforaiSessionDigest:
         rollout_path = str(row.get("rollout_path") or "")
         user_prompts: list[str] = []
         assistant_finals: list[str] = []
@@ -68,26 +68,33 @@ class CodexHarvester(Harvester):
             if text:
                 text = redact_text(text).strip()
                 mentions.extend(detect_skill_mentions(text))
-            rtype = str(rec.get("type") or rec.get("payload", {}).get("type") or "")
-            if "user" in rtype:
+            rtype = self._record_type(rec)
+            role = self._record_role(rec)
+            if rtype == "message":
+                if role == "user":
+                    if text:
+                        user_prompts.append(text)
+                        feedback.extend(detect_feedback(text))
+                elif role == "assistant" and text:
+                    assistant_finals.append(text)
+            elif "user" in rtype:
                 if text:
                     user_prompts.append(text)
                     feedback.extend(detect_feedback(text))
-            elif "agent" in rtype or "assistant" in rtype or "message" in rtype:
+            elif "agent" in rtype or "assistant" in rtype:
                 if text:
                     assistant_finals.append(text)
-            elif "function_call" in rtype or rec.get("name"):
-                name = str(rec.get("name") or rec.get("payload", {}).get("name") or "")
+            elif "function_call" in rtype or self._record_value(rec, "name"):
+                name = str(self._record_value(rec, "name") or "")
                 if name:
                     tools.append(name)
-                args = str(rec.get("arguments") or rec.get("payload", {}).get("arguments") or "")
+                args = str(self._record_value(rec, "arguments") or "")
                 if args:
                     mentions.extend(detect_skill_mentions(args))
                     files.extend(self._file_like_tokens(args))
-            else:
-                if text:
-                    mentions.extend(detect_skill_mentions(text))
 
+        if rollout_path and codex_home and not self._is_within_codex_home(rollout_path, codex_home):
+            warnings.append(f"rollout_path outside codex_home: {rollout_path}")
         if rollout_path and not os.path.exists(rollout_path):
             warnings.append(f"missing rollout_path: {rollout_path}")
 
@@ -110,17 +117,36 @@ class CodexHarvester(Harvester):
         )
 
     def _record_text(self, rec: dict[str, Any]) -> str:
-        payload = rec.get("payload")
-        if isinstance(payload, dict):
+        for source in (self._payload(rec), rec):
             for key in ("message", "text", "content"):
-                text = flatten_text(payload.get(key))
+                text = flatten_text(source.get(key))
                 if text:
                     return text
-        for key in ("message", "text", "content"):
-            text = flatten_text(rec.get(key))
-            if text:
-                return text
         return ""
+
+    def _record_type(self, rec: dict[str, Any]) -> str:
+        return str(self._record_value(rec, "type") or "")
+
+    def _record_role(self, rec: dict[str, Any]) -> str:
+        return str(self._record_value(rec, "role") or "").lower()
+
+    def _record_value(self, rec: dict[str, Any], key: str) -> Any:
+        payload = self._payload(rec)
+        if key in payload:
+            return payload.get(key)
+        return rec.get(key)
+
+    def _payload(self, rec: dict[str, Any]) -> dict[str, Any]:
+        payload = rec.get("payload")
+        return payload if isinstance(payload, dict) else {}
+
+    def _is_within_codex_home(self, path: str, codex_home: str) -> bool:
+        try:
+            return os.path.commonpath((os.path.realpath(path), os.path.realpath(codex_home))) == os.path.realpath(
+                codex_home
+            )
+        except ValueError:
+            return False
 
     def _file_like_tokens(self, text: str) -> list[str]:
         out: list[str] = []

@@ -73,53 +73,66 @@ class HarvesterBaseTests(unittest.TestCase):
 
 
 class CodexHarvesterTests(unittest.TestCase):
+    def _write_codex_thread(
+        self,
+        *,
+        root: Path,
+        codex_home: Path,
+        session_path: Path,
+        events: list[dict[str, object]],
+        thread_id: str = "thr1",
+    ) -> AiforaiConfig:
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n",
+            encoding="utf-8",
+        )
+        codex_home.mkdir(parents=True, exist_ok=True)
+        db_path = codex_home / "state_5.sqlite"
+        con = sqlite3.connect(db_path)
+        con.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, "
+            "created_at_ms INTEGER, updated_at_ms INTEGER, cwd TEXT NOT NULL, "
+            "title TEXT NOT NULL, git_branch TEXT, model TEXT, reasoning_effort TEXT, "
+            "agent_role TEXT)"
+        )
+        con.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                str(session_path),
+                1_800_000_000_000,
+                1_800_000_001_000,
+                "/repo",
+                "train",
+                "main",
+                "gpt-5.5",
+                "xhigh",
+                "worker",
+            ),
+        )
+        con.commit()
+        con.close()
+        return AiforaiConfig(
+            target_skill_repo=str(root / "AIForAI"),
+            codex_home=str(codex_home),
+            lookback_days=30,
+        )
+
     def test_codex_harvester_reads_threads_and_rollout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             codex_home = root / ".codex"
             session_path = codex_home / "sessions/2026/06/09/rollout.jsonl"
-            session_path.parent.mkdir(parents=True)
-            session_path.write_text(
-                "\n".join(
-                    [
-                        json.dumps({"type": "user_message", "message": "Use ai-model-rd-protocol to plan training"}),
-                        json.dumps({"type": "agent_message", "message": "Need training contract"}),
-                        json.dumps({"type": "function_call", "name": "exec_command", "arguments": "{}"}),
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            db_path = codex_home / "state_5.sqlite"
-            codex_home.mkdir(exist_ok=True)
-            con = sqlite3.connect(db_path)
-            con.execute(
-                "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, "
-                "created_at_ms INTEGER, updated_at_ms INTEGER, cwd TEXT NOT NULL, "
-                "title TEXT NOT NULL, git_branch TEXT, model TEXT, reasoning_effort TEXT, "
-                "agent_role TEXT)"
-            )
-            con.execute(
-                "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    "thr1",
-                    str(session_path),
-                    1_800_000_000_000,
-                    1_800_000_001_000,
-                    "/repo",
-                    "train",
-                    "main",
-                    "gpt-5.5",
-                    "xhigh",
-                    "worker",
-                ),
-            )
-            con.commit()
-            con.close()
-            cfg = AiforaiConfig(
-                target_skill_repo=str(root / "AIForAI"),
-                codex_home=str(codex_home),
-                lookback_days=30,
+            cfg = self._write_codex_thread(
+                root=root,
+                codex_home=codex_home,
+                session_path=session_path,
+                events=[
+                    {"type": "user_message", "message": "Use ai-model-rd-protocol to plan training"},
+                    {"type": "agent_message", "message": "Need training contract"},
+                    {"type": "function_call", "name": "exec_command", "arguments": "{}"},
+                ],
             )
 
             sessions = CodexHarvester(now_ms=1_800_000_010_000).harvest(cfg)
@@ -130,6 +143,96 @@ class CodexHarvesterTests(unittest.TestCase):
             self.assertEqual(sessions[0].cwd, "/repo")
             self.assertEqual(sessions[0].tools_used, ["exec_command"])
             self.assertEqual(sessions[0].skill_mentions, ["ai-model-rd-protocol"])
+
+    def test_codex_harvester_prefers_nested_payload_types_and_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_home = root / ".codex"
+            session_path = codex_home / "sessions/2026/06/10/live-rollout.jsonl"
+            cfg = self._write_codex_thread(
+                root=root,
+                codex_home=codex_home,
+                session_path=session_path,
+                events=[
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "Use ai-model-rd-protocol to plan training",
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Need training contract"}],
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "arguments": '{"cmd": "python /repo/train.py"}',
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "developer",
+                            "content": [{"type": "output_text", "text": "You are Codex"}],
+                        },
+                    },
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "system",
+                            "content": [{"type": "output_text", "text": "System policy"}],
+                        },
+                    },
+                ],
+            )
+
+            sessions = CodexHarvester(now_ms=1_800_000_010_000).harvest(cfg)
+
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(
+                sessions[0].user_prompts,
+                ["Use ai-model-rd-protocol to plan training"],
+            )
+            self.assertEqual(sessions[0].assistant_finals, ["Need training contract"])
+            self.assertEqual(sessions[0].tools_used, ["exec_command"])
+            self.assertEqual(sessions[0].files_touched, ["/repo/train.py"])
+            self.assertEqual(sessions[0].skill_mentions, ["ai-model-rd-protocol"])
+            self.assertNotIn("You are Codex", sessions[0].user_prompts)
+            self.assertNotIn("You are Codex", sessions[0].assistant_finals)
+            self.assertNotIn("System policy", sessions[0].user_prompts)
+            self.assertNotIn("System policy", sessions[0].assistant_finals)
+
+    def test_codex_harvester_warns_for_rollout_outside_codex_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_home = root / ".codex"
+            session_path = root / "external" / "rollout.jsonl"
+            cfg = self._write_codex_thread(
+                root=root,
+                codex_home=codex_home,
+                session_path=session_path,
+                events=[
+                    {"type": "user_message", "message": "Use ai-model-rd-protocol to plan training"},
+                ],
+            )
+
+            sessions = CodexHarvester(now_ms=1_800_000_010_000).harvest(cfg)
+
+            self.assertEqual(len(sessions), 1)
+            self.assertIn(
+                f"rollout_path outside codex_home: {session_path}",
+                sessions[0].parse_warnings,
+            )
 
 
 if __name__ == "__main__":
