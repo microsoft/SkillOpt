@@ -15,6 +15,8 @@ from skillopt_sleep.aiforai.harvesters.base import (
     redact_text,
     within_lookback,
 )
+from skillopt_sleep.aiforai.harvesters.claude import ClaudeHarvester
+from skillopt_sleep.aiforai.harvesters.codewhale import CodeWhaleHarvester
 from skillopt_sleep.aiforai.harvesters.codex import CodexHarvester
 
 
@@ -237,6 +239,89 @@ class CodexHarvesterTests(unittest.TestCase):
                 f"rollout_path outside codex_home: {session_path}",
                 sessions[0].parse_warnings,
             )
+
+
+class ClaudeHarvesterTests(unittest.TestCase):
+    def test_claude_harvester_wraps_project_transcripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_home = root / ".claude"
+            transcript = claude_home / "projects/proj/session1.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "user",
+                                "timestamp": "2026-06-09T00:00:00Z",
+                                "cwd": "/repo",
+                                "gitBranch": "main",
+                                "message": {"role": "user", "content": "Use ai-model-rd-protocol"},
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "assistant",
+                                "timestamp": "2026-06-09T00:01:00Z",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": "final"}],
+                                },
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = AiforaiConfig(target_skill_repo=str(root / "AIForAI"), claude_home=str(claude_home))
+
+            sessions = ClaudeHarvester().harvest(cfg)
+
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].source_agent, "claude")
+            self.assertEqual(sessions[0].cwd, "/repo")
+            self.assertEqual(sessions[0].assistant_finals, ["final"])
+
+
+class CodeWhaleHarvesterTests(unittest.TestCase):
+    def test_codewhale_harvester_reads_runtime_thread_and_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cw_home = root / ".codewhale"
+            ds_home = root / ".deepseek"
+            runtime = cw_home / "tasks/runtime"
+            (runtime / "threads").mkdir(parents=True)
+            (runtime / "events").mkdir(parents=True)
+            (runtime / "threads/thr1.json").write_text(
+                json.dumps({"id": "thr1", "cwd": "/repo", "created_at": "2026-06-09T00:00:00Z"}),
+                encoding="utf-8",
+            )
+            (runtime / "events/thr1.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"role": "user", "content": "请用 ai-model-rd-protocol 做数据获取计划"}),
+                        json.dumps({"role": "assistant", "content": "需要 Data Acquisition Hygiene Gate"}),
+                        json.dumps({"tool": "mcp_k8s-management_run_task"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = AiforaiConfig(
+                target_skill_repo=str(root / "AIForAI"),
+                codewhale_home=str(cw_home),
+                deepseek_home=str(ds_home),
+            )
+
+            sessions = CodeWhaleHarvester().harvest(cfg)
+
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].source_agent, "codewhale")
+            self.assertEqual(sessions[0].session_id, "thr1")
+            self.assertIn("mcp_k8s-management_run_task", sessions[0].tools_used)
+            self.assertEqual(sessions[0].skill_mentions, ["ai-model-rd-protocol"])
 
 
 if __name__ == "__main__":
