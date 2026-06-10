@@ -156,8 +156,6 @@ class CodeWhaleHarvester(Harvester):
             (
                 digest.user_prompts,
                 digest.assistant_finals,
-                digest.tools_used,
-                digest.files_touched,
                 digest.feedback_signals,
                 digest.skill_mentions,
             )

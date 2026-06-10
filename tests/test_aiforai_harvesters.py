@@ -466,6 +466,57 @@ class CodeWhaleHarvesterTests(unittest.TestCase):
             self.assertEqual(sessions[0].event_count, 2)
             self.assertEqual(sessions[0].parse_warnings, [])
 
+    def test_codewhale_harvester_prefers_deepseek_fallback_over_tool_only_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cw_home = root / ".codewhale"
+            ds_home = root / ".deepseek"
+            runtime = cw_home / "tasks/runtime"
+            (runtime / "threads").mkdir(parents=True)
+            (runtime / "events").mkdir(parents=True)
+            (ds_home / "sessions").mkdir(parents=True)
+            (runtime / "threads/thr1.json").write_text(
+                json.dumps({"id": "thr1", "cwd": "/repo", "created_at": "2026-06-09T00:00:00Z"}),
+                encoding="utf-8",
+            )
+            (runtime / "events/thr1.jsonl").write_text(
+                json.dumps({"type": "tool_call", "name": "mcp_k8s-management_run_task"}) + "\n",
+                encoding="utf-8",
+            )
+            deepseek_path = ds_home / "sessions/thr1.json"
+            deepseek_path.write_text(
+                json.dumps(
+                    {
+                        "id": "thr1",
+                        "cwd": "/repo",
+                        "created_at": "2026-06-09T00:00:00Z",
+                        "messages": [
+                            {"role": "user", "content": "Use ai-model-rd-protocol for planning"},
+                            {"role": "assistant", "content": "DeepSeek fallback content"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg = AiforaiConfig(
+                target_skill_repo=str(root / "AIForAI"),
+                codewhale_home=str(cw_home),
+                deepseek_home=str(ds_home),
+            )
+
+            sessions = CodeWhaleHarvester().harvest(cfg)
+
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].source_agent, "codewhale")
+            self.assertEqual(sessions[0].session_id, "thr1")
+            self.assertEqual(sessions[0].raw_path, str(deepseek_path))
+            self.assertEqual(sessions[0].user_prompts, ["Use ai-model-rd-protocol for planning"])
+            self.assertEqual(sessions[0].assistant_finals, ["DeepSeek fallback content"])
+            self.assertEqual(sessions[0].tools_used, [])
+            self.assertEqual(sessions[0].skill_mentions, ["ai-model-rd-protocol"])
+            self.assertEqual(sessions[0].event_count, 2)
+            self.assertEqual(sessions[0].parse_warnings, [])
+
 
 if __name__ == "__main__":
     unittest.main()
