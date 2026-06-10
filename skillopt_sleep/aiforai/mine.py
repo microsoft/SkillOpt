@@ -69,7 +69,7 @@ FAMILY_RULES: list[tuple[str, tuple[str, ...], list[dict]]] = [
     ),
 ]
 
-LOW_SIGNAL_NEEDLES = {"done", "complete", "ready", "status"}
+LOW_SIGNAL_NEEDLES = {"done", "complete", "ready", "status", "完成"}
 
 
 def mine_tasks(
@@ -133,16 +133,28 @@ def classify_family(text: str) -> tuple[str, list[dict]]:
         family, _needles, checks = matches[0]
         return family, checks
 
+    signal_matches = [
+        (
+            family,
+            [needle for needle in needles if needle not in LOW_SIGNAL_NEEDLES],
+            checks,
+        )
+        for family, needles, checks in matches
+    ]
+    signal_families = [
+        family for family, signal_needles, _checks in signal_matches if signal_needles
+    ]
+    if len(signal_families) == 1:
+        family, _signal_needles, checks = next(
+            match for match in signal_matches if match[0] == signal_families[0]
+        )
+        return family, checks
+    if len(signal_families) > 1:
+        return "", []
+
     matches.sort(key=lambda item: len(item[1]), reverse=True)
     top_family, top_needles, top_checks = matches[0]
     second_score = len(matches[1][1])
-    signal_families = [
-        family
-        for family, needles, _checks in matches
-        if any(needle not in LOW_SIGNAL_NEEDLES for needle in needles)
-    ]
-    if len(signal_families) > 1:
-        return "", []
     if len(top_needles) == second_score:
         return "", []
     return top_family, top_checks
