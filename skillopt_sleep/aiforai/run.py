@@ -17,6 +17,9 @@ from skillopt_sleep.aiforai.report import make_staging_dir, write_audit_report
 from skillopt_sleep.aiforai.types import AiforaiRunResult, AiforaiSessionDigest
 
 
+SUPPORTED_SOURCES = ("codex", "claude", "codewhale")
+
+
 def default_harvesters(sources: Iterable[str]) -> list[Harvester]:
     known = {
         "codex": CodexHarvester,
@@ -37,20 +40,49 @@ def run_audit(
     harvesters: Iterable[Harvester] | None = None,
 ) -> AiforaiRunResult:
     active_harvesters = list(harvesters) if harvesters is not None else default_harvesters(cfg.sources)
+    if not active_harvesters:
+        requested_sources = ", ".join(cfg.sources) if cfg.sources else "<none>"
+        raise ValueError(
+            f"No supported AIForAI harvesters selected for sources: {requested_sources}"
+        )
+
     sessions: list[AiforaiSessionDigest] = []
     notes: list[str] = []
     sessions_by_source = {source: 0 for source in cfg.sources}
 
     for harvester in active_harvesters:
         source = str(getattr(harvester, "source_agent", "unknown"))
-        sessions_by_source.setdefault(source, 0)
         try:
             harvested = harvester.harvest(cfg)
         except Exception as exc:
             notes.append(f"{source}: harvester failed: {exc}")
             continue
+
+        harvested_counts = Counter(str(session.source_agent) for session in harvested)
+        if any(emitted_source != source for emitted_source in harvested_counts):
+            source_summary = ", ".join(
+                f"{emitted_source}={count}"
+                for emitted_source, count in harvested_counts.items()
+            )
+            notes.append(
+                f"{source}: harvested session source mismatch; using digest sources "
+                f"({source_summary})"
+            )
         sessions.extend(harvested)
-        sessions_by_source[source] += len(harvested)
+
+    if not sessions:
+        requested_sources = ", ".join(cfg.sources) if cfg.sources else "<none>"
+        message = f"No AIForAI sessions were harvested for selected sources: {requested_sources}"
+        failure_notes = [
+            note for note in notes if "harvester failed:" in note
+        ]
+        if failure_notes:
+            message = f"{message}. Failures: {'; '.join(failure_notes)}"
+        raise ValueError(message)
+
+    session_counts = Counter(str(session.source_agent) for session in sessions)
+    for source, count in session_counts.items():
+        sessions_by_source[source] = count
 
     tasks, uncheckable = mine_tasks(
         sessions,
