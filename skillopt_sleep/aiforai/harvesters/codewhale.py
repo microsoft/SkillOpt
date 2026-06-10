@@ -23,8 +23,18 @@ class CodeWhaleHarvester(Harvester):
     source_agent = "codewhale"
 
     def harvest(self, cfg: AiforaiConfig) -> list[AiforaiSessionDigest]:
-        sessions = self._harvest_runtime(cfg)
-        sessions.extend(self._harvest_deepseek_sessions(cfg, seen={s.session_id for s in sessions}))
+        runtime_sessions = self._harvest_runtime(cfg)
+        fallback_sessions = self._harvest_deepseek_sessions(
+            cfg,
+            seen={s.session_id for s in runtime_sessions if self._has_usable_content(s)},
+        )
+        fallback_ids = {s.session_id for s in fallback_sessions}
+        sessions = [
+            s
+            for s in runtime_sessions
+            if self._has_usable_content(s) or s.session_id not in fallback_ids
+        ]
+        sessions.extend(fallback_sessions)
         return sessions
 
     def _harvest_runtime(self, cfg: AiforaiConfig) -> list[AiforaiSessionDigest]:
@@ -140,3 +150,15 @@ class CodeWhaleHarvester(Harvester):
 
     def _record_text(self, rec: dict[str, Any]) -> str:
         return flatten_text(rec.get("content") or rec.get("message") or rec.get("text"))
+
+    def _has_usable_content(self, digest: AiforaiSessionDigest) -> bool:
+        return any(
+            (
+                digest.user_prompts,
+                digest.assistant_finals,
+                digest.tools_used,
+                digest.files_touched,
+                digest.skill_mentions,
+                digest.event_count > 0,
+            )
+        )
