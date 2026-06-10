@@ -231,7 +231,6 @@ class EnvAdapter(ABC):
             (float 0-1). May include env-specific fields.
         """
 
-    @abstractmethod
     def reflect(
         self,
         results: list[dict],
@@ -241,15 +240,36 @@ class EnvAdapter(ABC):
     ) -> list[dict | None]:
         """Analyze rollout results and produce patches.
 
+        Default implementation: delegate to the shared minibatch reflect
+        stage. Every built-in benchmark uses this unchanged — override only
+        if your environment needs custom reflection logic.
+
         Each returned dict conforms to :class:`~skillopt.types.RawPatch`:
         ``"patch"`` (with ``"edits"`` list) + ``"source_type"``
-        (``"failure"`` or ``"success"``).
-
-        Returns
-        -------
-        list[dict | None]
-            Raw analyst outputs; ``None`` entries are filtered out.
+        (``"failure"`` or ``"success"``); ``None`` entries are filtered out.
         """
+        from skillopt.gradient.reflect import run_minibatch_reflect
+
+        return run_minibatch_reflect(
+            results=results,
+            skill_content=skill_content,
+            prediction_dir=kwargs.get(
+                "prediction_dir", os.path.join(out_dir, "predictions")
+            ),
+            patches_dir=kwargs.get(
+                "patches_dir", os.path.join(out_dir, "patches")
+            ),
+            workers=self.analyst_workers,
+            failure_only=self.failure_only,
+            minibatch_size=self.minibatch_size,
+            edit_budget=self.edit_budget,
+            random_seed=kwargs.get("random_seed"),
+            error_system=self.get_error_minibatch_prompt(),
+            success_system=self.get_success_minibatch_prompt(),
+            step_buffer_context=kwargs.get("step_buffer_context", ""),
+            meta_skill_context=kwargs.get("meta_skill_context", ""),
+            update_mode=getattr(self, "_cfg", {}).get("skill_update_mode", "patch"),
+        )
 
     @abstractmethod
     def get_task_types(self) -> list[str]:

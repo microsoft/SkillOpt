@@ -16,7 +16,6 @@ from skillopt.envs.spreadsheetbench.rollout import (
     run_spreadsheet_batch,
     run_spreadsheet_batch_codegen,
 )
-from skillopt.gradient.reflect import run_minibatch_reflect
 from skillopt.model import get_target_backend, is_target_exec_backend
 
 
@@ -155,38 +154,6 @@ class SpreadsheetBenchAdapter(EnvAdapter):
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
         return results
-
-    def reflect(
-        self,
-        results: list[dict],
-        skill_content: str,
-        out_dir: str,
-        **kwargs,
-    ) -> list[dict | None]:
-        """Analyze rollout results and produce patches (minibatch mode)."""
-        prediction_dir = kwargs.get("prediction_dir", os.path.join(out_dir, "predictions"))
-        patches_dir = kwargs.get("patches_dir", os.path.join(out_dir, "patches"))
-        random_seed = kwargs.get("random_seed")
-        step_buffer_context = kwargs.get("step_buffer_context", "")
-        meta_skill_context = kwargs.get("meta_skill_context", "")
-
-        return run_minibatch_reflect(
-            results=results,
-            skill_content=skill_content,
-            prediction_dir=prediction_dir,
-            patches_dir=patches_dir,
-            workers=self.analyst_workers,
-            failure_only=self.failure_only,
-            minibatch_size=self.minibatch_size,
-            edit_budget=self.edit_budget,
-            random_seed=random_seed,
-            error_system=self.get_error_minibatch_prompt(),
-            success_system=self.get_success_minibatch_prompt(),
-            step_buffer_context=step_buffer_context,
-            meta_skill_context=meta_skill_context,
-            update_mode=getattr(self, "_cfg", {}).get("skill_update_mode", "patch"),
-        )
-
 
     def get_task_types(self) -> list[str]:
         return list(TASK_TYPES)

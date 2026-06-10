@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import os
-
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.envs.docvqa.dataloader import DocVQADataLoader
 from skillopt.envs.docvqa.rollout import run_batch
-from skillopt.gradient.reflect import run_minibatch_reflect
 
 
 class DocVQAAdapter(EnvAdapter):
@@ -83,28 +80,6 @@ class DocVQAAdapter(EnvAdapter):
             diagnostic_instruction=kwargs.get("diagnostic_instruction", ""),
             task_timeout=self.exec_timeout,
         )
-
-    def reflect(self, results: list[dict], skill_content: str, out_dir: str, **kwargs) -> list[dict | None]:
-        prediction_dir = kwargs.get("prediction_dir", os.path.join(out_dir, "predictions"))
-        patches_dir = kwargs.get("patches_dir", os.path.join(out_dir, "patches"))
-        random_seed = kwargs.get("random_seed")
-        step_buffer_context = kwargs.get("step_buffer_context", "")
-        return run_minibatch_reflect(
-            results=results,
-            skill_content=skill_content,
-            prediction_dir=prediction_dir,
-            patches_dir=patches_dir,
-            workers=self.analyst_workers,
-            failure_only=self.failure_only,
-            minibatch_size=self.minibatch_size,
-            edit_budget=self.edit_budget,
-            random_seed=random_seed,
-            error_system=self.get_error_minibatch_prompt(),
-            success_system=self.get_success_minibatch_prompt(),
-            step_buffer_context=step_buffer_context,
-            update_mode=getattr(self, "_cfg", {}).get("skill_update_mode", "patch"),
-        )
-
 
     def get_task_types(self) -> list[str]:
         seen: list[str] = []

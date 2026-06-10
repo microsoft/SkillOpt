@@ -5,8 +5,8 @@ This directory provides scaffold files for adding a new benchmark to SkillOpt.
 ## Files
 
 - `env_template.py` — Environment adapter template (subclasses
-  `EnvAdapter`; implements the 5 abstract methods so the file is
-  instantiable out of the box).
+  `EnvAdapter`; implements the 4 abstract methods so the file is
+  instantiable out of the box — `reflect` is inherited).
 - `loader_template.py` — Data loader template (subclasses
   `SplitDataLoader`; implements `load_split_items` for `.json`/`.jsonl`).
 - `config_template.yaml` — Config file template.
@@ -28,8 +28,8 @@ This directory provides scaffold files for adding a new benchmark to SkillOpt.
    `TemplateBenchmarkLoader → YourBenchmarkLoader`)
    and fix the cross-import in `adapter.py`.
 3. **Implement the TODO blocks** inside `adapter.py:rollout` and the
-   `_normalize_item` helper in `loader.py`. If you want real reflection,
-   uncomment the `run_minibatch_reflect` block in `adapter.py:reflect`.
+   `_normalize_item` helper in `loader.py`. (`reflect` is inherited from
+   `EnvAdapter`; override it only for custom reflection logic.)
 4. **Register** the adapter — add a `try / except ImportError` block in
    `scripts/train.py`'s `_register_builtins()` mapping the registry key
    to your `YourBenchmarkAdapter` class. There is no
