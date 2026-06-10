@@ -62,6 +62,29 @@ class CodexHarvester(Harvester):
         warnings: list[str] = []
         event_count = 0
 
+        def build_digest() -> AiforaiSessionDigest:
+            return AiforaiSessionDigest(
+                source_agent="codex",
+                session_id=str(row.get("id") or os.path.basename(rollout_path)),
+                raw_path=rollout_path,
+                cwd=str(row.get("cwd") or ""),
+                git_branch=str(row.get("git_branch") or ""),
+                started_at=str(row.get("created_at_ms") or ""),
+                ended_at=str(row.get("updated_at_ms") or ""),
+                user_prompts=user_prompts,
+                assistant_finals=assistant_finals[-5:],
+                tools_used=list(dict.fromkeys(tools)),
+                files_touched=list(dict.fromkeys(files))[:40],
+                feedback_signals=list(dict.fromkeys(feedback)),
+                skill_mentions=list(dict.fromkeys(mentions)),
+                event_count=event_count,
+                parse_warnings=warnings,
+            )
+
+        if rollout_path and codex_home and not self._is_within_codex_home(rollout_path, codex_home):
+            warnings.append(f"rollout_path outside codex_home: {rollout_path}")
+            return build_digest()
+
         for rec in iter_jsonl(rollout_path):
             event_count += 1
             text = self._record_text(rec)
@@ -93,28 +116,10 @@ class CodexHarvester(Harvester):
                     mentions.extend(detect_skill_mentions(args))
                     files.extend(self._file_like_tokens(args))
 
-        if rollout_path and codex_home and not self._is_within_codex_home(rollout_path, codex_home):
-            warnings.append(f"rollout_path outside codex_home: {rollout_path}")
         if rollout_path and not os.path.exists(rollout_path):
             warnings.append(f"missing rollout_path: {rollout_path}")
 
-        return AiforaiSessionDigest(
-            source_agent="codex",
-            session_id=str(row.get("id") or os.path.basename(rollout_path)),
-            raw_path=rollout_path,
-            cwd=str(row.get("cwd") or ""),
-            git_branch=str(row.get("git_branch") or ""),
-            started_at=str(row.get("created_at_ms") or ""),
-            ended_at=str(row.get("updated_at_ms") or ""),
-            user_prompts=user_prompts,
-            assistant_finals=assistant_finals[-5:],
-            tools_used=list(dict.fromkeys(tools)),
-            files_touched=list(dict.fromkeys(files))[:40],
-            feedback_signals=list(dict.fromkeys(feedback)),
-            skill_mentions=list(dict.fromkeys(mentions)),
-            event_count=event_count,
-            parse_warnings=warnings,
-        )
+        return build_digest()
 
     def _record_text(self, rec: dict[str, Any]) -> str:
         for source in (self._payload(rec), rec):

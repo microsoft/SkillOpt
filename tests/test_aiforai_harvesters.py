@@ -229,6 +229,10 @@ class CodexHarvesterTests(unittest.TestCase):
             sessions = CodexHarvester(now_ms=1_800_000_010_000).harvest(cfg)
 
             self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].event_count, 0)
+            self.assertEqual(sessions[0].user_prompts, [])
+            self.assertEqual(sessions[0].assistant_finals, [])
+            self.assertEqual(sessions[0].tools_used, [])
             self.assertIn(
                 f"rollout_path outside codex_home: {session_path}",
                 sessions[0].parse_warnings,
