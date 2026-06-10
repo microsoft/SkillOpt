@@ -8,6 +8,7 @@ from pathlib import Path
 from skillopt_sleep.aiforai.harvesters.base import (
     detect_feedback,
     detect_skill_mentions,
+    flatten_text,
     iter_jsonl,
     redact_text,
     within_lookback,
@@ -40,6 +41,24 @@ class HarvesterBaseTests(unittest.TestCase):
 
         self.assertIn("OPENAI_API_KEY=<redacted>", redacted)
         self.assertIn("token=<redacted>", redacted)
+
+    def test_redact_text_masks_structured_secret_values(self) -> None:
+        text = '{"token":"abc123", "api_key": "secret456"}\ntoken: abc123\napi_key = secret456'
+
+        redacted = redact_text(text)
+
+        self.assertIn('"token":"<redacted>"', redacted)
+        self.assertIn('"api_key": "<redacted>"', redacted)
+        self.assertIn("token: <redacted>", redacted)
+        self.assertIn("api_key = <redacted>", redacted)
+
+    def test_flatten_text_ignores_empty_text_before_nested_content(self) -> None:
+        for value in (
+            {"text": None, "content": [{"type": "text", "text": "real"}]},
+            {"text": "", "content": [{"type": "text", "text": "real"}]},
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(flatten_text(value), "real")
 
     def test_within_lookback_accepts_recent_epoch_ms(self) -> None:
         now_ms = 1_800_000_000_000

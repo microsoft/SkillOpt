@@ -13,10 +13,24 @@ from skillopt_sleep.aiforai.config import AiforaiConfig
 from skillopt_sleep.aiforai.types import AiforaiSessionDigest
 
 
-SECRET_PATTERNS = (
-    re.compile(r"(?i)(OPENAI_API_KEY|ANTHROPIC_API_KEY|AZURE_OPENAI_API_KEY|token|api_key)=([^\s]+)"),
-    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+SECRET_KEY_VALUE_PATTERN = re.compile(
+    r"""(?ix)
+    (?P<prefix>
+        (?P<key_quote>["']?)
+        (?P<key>OPENAI_API_KEY|ANTHROPIC_API_KEY|AZURE_OPENAI_API_KEY|token|api_key)
+        (?P=key_quote)
+        \s*[:=]\s*
+    )
+    (?P<value>
+        "(?:[^"\\]|\\.)*"
+        |
+        '(?:[^'\\]|\\.)*'
+        |
+        [^\s,}\]]+
+    )
+    """
 )
+SECRET_LITERAL_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{12,}")
 
 NEGATIVE_PHRASES = (
     "still broken",
@@ -85,15 +99,15 @@ def flatten_text(value: Any) -> str:
     if isinstance(value, list):
         parts: list[str] = []
         for item in value:
-            if isinstance(item, dict):
-                if item.get("type") in {"text", "input_text", "output_text"} and item.get("text"):
-                    parts.append(str(item["text"]))
-                elif item.get("content"):
-                    parts.append(flatten_text(item["content"]))
+            part = flatten_text(item)
+            if part:
+                parts.append(part)
         return "\n".join(part for part in parts if part)
     if isinstance(value, dict):
         if "text" in value:
-            return str(value["text"])
+            text = flatten_text(value["text"])
+            if text:
+                return text
         if "content" in value:
             return flatten_text(value["content"])
     return ""
@@ -120,13 +134,14 @@ def detect_skill_mentions(text: str) -> list[str]:
 
 
 def redact_text(text: str) -> str:
-    redacted = text or ""
-    for pattern in SECRET_PATTERNS:
-        if pattern.pattern.startswith("(?i)("):
-            redacted = pattern.sub(lambda match: f"{match.group(1)}=<redacted>", redacted)
-        else:
-            redacted = pattern.sub("<redacted-secret>", redacted)
-    return redacted
+    def replace_secret_value(match: re.Match[str]) -> str:
+        value = match.group("value")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            return f'{match.group("prefix")}{value[0]}<redacted>{value[-1]}'
+        return f'{match.group("prefix")}<redacted>'
+
+    redacted = SECRET_KEY_VALUE_PATTERN.sub(replace_secret_value, text or "")
+    return SECRET_LITERAL_PATTERN.sub("<redacted-secret>", redacted)
 
 
 def within_lookback(ts_ms: int | float | None, *, lookback_days: int, now_ms: int | None = None) -> bool:
