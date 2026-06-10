@@ -57,7 +57,7 @@ def propose_mock_rules(
 
     proposed: list[str] = []
     for family in sorted(missing_by_family):
-        missing = sorted(missing_by_family[family], key=str.casefold)
+        missing = _dedupe_overlapping_requirements(missing_by_family[family])
         if missing:
             proposed.append(
                 f"For {family} tasks, explicitly include: {', '.join(missing)}."
@@ -143,6 +143,19 @@ def _missing_required_checks(task: AiforaiTaskRecord, skill: str) -> list[str]:
         item
         for item in _required_contains_checks(task)
         if not _contains_required_text(skill, item)
+    ]
+
+
+def _dedupe_overlapping_requirements(requirements: set[str]) -> list[str]:
+    ordered = sorted(requirements, key=lambda item: (item.casefold(), item))
+    return [
+        requirement
+        for requirement in ordered
+        if not any(
+            len(other.casefold()) > len(requirement.casefold())
+            and _contains_required_text(other, requirement)
+            for other in ordered
+        )
     ]
 
 

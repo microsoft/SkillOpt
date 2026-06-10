@@ -408,6 +408,36 @@ class AiforaiReplayGateTests(unittest.TestCase):
             ],
         )
 
+    def test_propose_mock_rules_dedupes_overlapping_family_requirements(self) -> None:
+        tasks = [
+            _task("train-1", "codex", "training_contract", "contract"),
+            _task("train-2", "claude", "training_contract", "training contract"),
+        ]
+
+        rules = propose_mock_rules(tasks, "")
+
+        self.assertEqual(
+            rules,
+            [
+                "For training_contract tasks, explicitly include: training contract."
+            ],
+        )
+
+    def test_propose_mock_rules_preserves_boundary_distinct_requirements(self) -> None:
+        tasks = [
+            _task("rag-1", "codex", "rag_agent_diagnosis", "tool"),
+            _task("rag-2", "claude", "rag_agent_diagnosis", "tooling"),
+        ]
+
+        rules = propose_mock_rules(tasks, "")
+
+        self.assertEqual(
+            rules,
+            [
+                "For rag_agent_diagnosis tasks, explicitly include: tool, tooling."
+            ],
+        )
+
     def test_gate_rejects_tie_without_aggregate_improvement(self) -> None:
         baseline = AiforaiScoreSummary(
             aggregate_hard=0.5,
