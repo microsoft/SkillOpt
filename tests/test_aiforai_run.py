@@ -221,6 +221,20 @@ class AiforaiRunTests(unittest.TestCase):
 
             self.assertFalse(Path(cfg.staging_root).exists())
 
+    def test_run_audit_raises_when_selected_harvesters_return_no_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target_repo = Path(tmp) / "AIForAI"
+            target_repo.mkdir()
+            cfg = AiforaiConfig(
+                target_skill_repo=str(target_repo),
+                sources=("codex",),
+            )
+
+            with self.assertRaisesRegex(ValueError, "No AIForAI sessions were harvested"):
+                run_audit(cfg, harvesters=[StaticHarvester("codex", [])])
+
+            self.assertFalse(Path(cfg.staging_root).exists())
+
     def test_run_audit_counts_sources_from_session_digests_and_notes_mismatches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target_repo = Path(tmp) / "AIForAI"
