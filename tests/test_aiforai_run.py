@@ -798,6 +798,58 @@ class AiforaiMockRunTests(unittest.TestCase):
             self.assertFalse((unsafe_dir / "backup" / "SKILL.md").exists())
             self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
 
+    def test_adopt_latest_skips_newer_symlinked_staging_dirs_and_uses_older_safe_proposal(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, skill_path = self._make_repo(tmp)
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            accepted = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            accepted_proposal = (Path(accepted.staging_dir) / "proposed_SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            external_dir = Path(tmp) / "external-accepted-staging"
+            external_dir.mkdir()
+            external_proposal = "# external overwrite\n"
+            (external_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "live_skill_path": str(skill_path),
+                        "accepted": True,
+                        "has_skill": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (external_dir / "proposed_SKILL.md").write_text(
+                external_proposal,
+                encoding="utf-8",
+            )
+
+            symlink_dir = Path(cfg.staging_root) / "99999999T999999Z-run-symlinked"
+            symlink_dir.symlink_to(external_dir, target_is_directory=True)
+
+            updated = adopt_latest(cfg)
+
+            self.assertEqual(updated, [str(skill_path)])
+            self.assertEqual(skill_path.read_text(encoding="utf-8"), accepted_proposal)
+            self.assertNotEqual(skill_path.read_text(encoding="utf-8"), external_proposal)
+            self.assertFalse((external_dir / "backup" / "SKILL.md").exists())
+            self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
+
     def test_adopt_latest_skips_corrupt_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo, skill_path = self._make_repo(tmp)

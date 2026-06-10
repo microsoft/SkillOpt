@@ -219,7 +219,7 @@ def adopt_latest(cfg: AiforaiConfig) -> list[str]:
     configured_live_path = cfg.skill_path
     allowed_live_path = Path(cfg.skill_path).resolve(strict=False)
     candidates = sorted(
-        (path for path in root.iterdir() if path.is_dir()),
+        (path for path in root.iterdir() if path.is_dir() and not path.is_symlink()),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
