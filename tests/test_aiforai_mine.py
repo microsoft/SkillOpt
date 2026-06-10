@@ -82,6 +82,22 @@ class AiforaiMineTests(unittest.TestCase):
                 self.assertEqual(len(tasks), 1)
                 self.assertEqual(tasks[0].task_family, "training_contract")
 
+    def test_lone_low_signal_claim_integrity_terms_are_uncheckable(self) -> None:
+        prompts = ["status", "完成"]
+
+        for idx, prompt in enumerate(prompts, start=1):
+            with self.subTest(prompt=prompt):
+                tasks, uncheckable = mine_tasks([
+                    _session("codex", prompt, session_id=f"codex-claim-low-signal-{idx}")
+                ])
+
+                self.assertEqual(tasks, [])
+                self.assertEqual(len(uncheckable), 1)
+                self.assertEqual(
+                    uncheckable[0]["reason"],
+                    "no_checkable_aiforai_family",
+                )
+
     def test_real_multi_family_prompt_stays_uncheckable_even_with_status_words(self) -> None:
         tasks, uncheckable = mine_tasks([
             _session(

@@ -129,9 +129,6 @@ def classify_family(text: str) -> tuple[str, list[dict]]:
 
     if not matches:
         return "", []
-    if len(matches) == 1:
-        family, _needles, checks = matches[0]
-        return family, checks
 
     signal_matches = [
         (
@@ -141,6 +138,12 @@ def classify_family(text: str) -> tuple[str, list[dict]]:
         )
         for family, needles, checks in matches
     ]
+    if len(matches) == 1:
+        family, signal_needles, checks = signal_matches[0]
+        if not signal_needles:
+            return "", []
+        return family, checks
+
     signal_families = [
         family for family, signal_needles, _checks in signal_matches if signal_needles
     ]
