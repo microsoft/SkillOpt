@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+from skillopt_sleep.aiforai.config import AiforaiConfig
 from skillopt_sleep.aiforai.harvesters.base import (
     detect_feedback,
     detect_skill_mentions,
@@ -13,6 +15,7 @@ from skillopt_sleep.aiforai.harvesters.base import (
     redact_text,
     within_lookback,
 )
+from skillopt_sleep.aiforai.harvesters.codex import CodexHarvester
 
 
 class HarvesterBaseTests(unittest.TestCase):
@@ -67,6 +70,66 @@ class HarvesterBaseTests(unittest.TestCase):
 
         self.assertTrue(within_lookback(recent_ms, lookback_days=1, now_ms=now_ms))
         self.assertFalse(within_lookback(old_ms, lookback_days=1, now_ms=now_ms))
+
+
+class CodexHarvesterTests(unittest.TestCase):
+    def test_codex_harvester_reads_threads_and_rollout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_home = root / ".codex"
+            session_path = codex_home / "sessions/2026/06/09/rollout.jsonl"
+            session_path.parent.mkdir(parents=True)
+            session_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"type": "user_message", "message": "Use ai-model-rd-protocol to plan training"}),
+                        json.dumps({"type": "agent_message", "message": "Need training contract"}),
+                        json.dumps({"type": "function_call", "name": "exec_command", "arguments": "{}"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            db_path = codex_home / "state_5.sqlite"
+            codex_home.mkdir(exist_ok=True)
+            con = sqlite3.connect(db_path)
+            con.execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, "
+                "created_at_ms INTEGER, updated_at_ms INTEGER, cwd TEXT NOT NULL, "
+                "title TEXT NOT NULL, git_branch TEXT, model TEXT, reasoning_effort TEXT, "
+                "agent_role TEXT)"
+            )
+            con.execute(
+                "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "thr1",
+                    str(session_path),
+                    1_800_000_000_000,
+                    1_800_000_001_000,
+                    "/repo",
+                    "train",
+                    "main",
+                    "gpt-5.5",
+                    "xhigh",
+                    "worker",
+                ),
+            )
+            con.commit()
+            con.close()
+            cfg = AiforaiConfig(
+                target_skill_repo=str(root / "AIForAI"),
+                codex_home=str(codex_home),
+                lookback_days=30,
+            )
+
+            sessions = CodexHarvester(now_ms=1_800_000_010_000).harvest(cfg)
+
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0].source_agent, "codex")
+            self.assertEqual(sessions[0].session_id, "thr1")
+            self.assertEqual(sessions[0].cwd, "/repo")
+            self.assertEqual(sessions[0].tools_used, ["exec_command"])
+            self.assertEqual(sessions[0].skill_mentions, ["ai-model-rd-protocol"])
 
 
 if __name__ == "__main__":
