@@ -10,6 +10,9 @@ from pathlib import Path
 from skillopt_sleep.aiforai.cli import main
 from skillopt_sleep.aiforai.config import AiforaiConfig
 from skillopt_sleep.aiforai.harvesters import Harvester
+from skillopt_sleep.aiforai.mine import mine_tasks
+from skillopt_sleep.aiforai.regression_suite import curated_regression_tasks
+from skillopt_sleep.aiforai.replay import evaluate_tasks, gate_candidate, propose_mock_rules
 from skillopt_sleep.aiforai.run import run_audit
 from skillopt_sleep.aiforai.types import AiforaiSessionDigest
 
@@ -267,6 +270,35 @@ class AiforaiRunTests(unittest.TestCase):
             self.assertEqual(result.tasks_by_source["codex"], 0)
             self.assertEqual(result.tasks_by_source["claude"], 1)
             self.assertTrue(any("mismatch" in note for note in result.notes))
+
+
+class AiforaiReplayGateTests(unittest.TestCase):
+    def test_curated_regression_suite_has_required_families(self) -> None:
+        tasks = curated_regression_tasks()
+        families = {task.task_family for task in tasks}
+
+        self.assertIn("training_contract", families)
+        self.assertIn("data_acquisition", families)
+        self.assertIn("claim_integrity", families)
+
+    def test_mock_replay_improves_after_rule_added(self) -> None:
+        tasks, _ = mine_tasks([
+            AiforaiSessionDigest(
+                source_agent="codex",
+                session_id="s1",
+                raw_path="/tmp/raw",
+                cwd="/repo",
+                user_prompts=["start a training run"],
+            )
+        ])
+
+        baseline = evaluate_tasks(tasks, "")
+        rules = propose_mock_rules(tasks, "")
+        candidate = "\n".join(rules)
+        candidate_score = evaluate_tasks(tasks, candidate)
+
+        self.assertLess(baseline.aggregate_hard, candidate_score.aggregate_hard)
+        self.assertTrue(gate_candidate(baseline, candidate_score).accepted)
 
 
 if __name__ == "__main__":
