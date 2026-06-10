@@ -119,13 +119,27 @@ def run_mock_gate(
         seed=cfg.seed,
     )
 
-    eval_tasks = [task for task in tasks if task.split == "val"] or list(tasks)
-    eval_tasks.extend(curated_regression_tasks())
-
     live_skill = read_skill(cfg.skill_path)
-    learned_rules = current_learned_rules(live_skill)
-    proposed_rules = propose_mock_rules(eval_tasks, live_skill)
-    candidate_skill = apply_learned_rules(live_skill, learned_rules + proposed_rules)
+    real_eval_tasks = [task for task in tasks if task.split == "val"] or list(tasks)
+    curated_tasks = curated_regression_tasks()
+    eval_tasks = list(real_eval_tasks) + curated_tasks
+
+    has_selected_sessions = bool(selected_sessions)
+    has_real_tasks = bool(tasks)
+    if has_selected_sessions and has_real_tasks:
+        learned_rules = current_learned_rules(live_skill)
+        proposed_rules = propose_mock_rules(eval_tasks, live_skill)
+        candidate_skill = apply_learned_rules(live_skill, learned_rules + proposed_rules)
+    else:
+        candidate_skill = live_skill
+        if not has_selected_sessions:
+            notes.append(
+                "curated regression tasks are supplemental only; no harvested sessions were available."
+            )
+        if not has_real_tasks:
+            notes.append(
+                "curated regression tasks are supplemental only; no mined real tasks were available."
+            )
 
     baseline = evaluate_tasks(eval_tasks, live_skill)
     candidate = evaluate_tasks(eval_tasks, candidate_skill)
@@ -135,7 +149,9 @@ def run_mock_gate(
         if run_validators
         else {"ok": True, "commands": [], "skipped": True}
     )
-    accepted = gate.accepted and bool(validation.get("ok"))
+    accepted = has_selected_sessions and has_real_tasks and gate.accepted and bool(
+        validation.get("ok")
+    )
 
     notes.append(gate.reason)
     if run_validators and not validation.get("ok"):
@@ -178,10 +194,19 @@ def run_mock_gate(
     write_run_report(
         staging_dir,
         result,
+        live_skill,
         candidate_skill,
         [row.to_dict() for row in baseline.results],
         [row.to_dict() for row in candidate.results],
         validation,
+        coverage={
+            "sessions_by_source": result.sessions_by_source,
+            "tasks_by_source": result.tasks_by_source,
+            "real_task_count": len(tasks),
+            "curated_task_count": len(curated_tasks),
+            "eval_task_count": len(eval_tasks),
+        },
+        live_skill_path=cfg.skill_path,
     )
     return result
 
@@ -191,6 +216,8 @@ def adopt_latest(cfg: AiforaiConfig) -> list[str]:
     if not root.is_dir():
         return []
 
+    configured_live_path = cfg.skill_path
+    allowed_live_path = Path(cfg.skill_path).resolve(strict=False)
     candidates = sorted(
         (path for path in root.iterdir() if path.is_dir()),
         key=lambda path: path.stat().st_mtime,
@@ -207,17 +234,23 @@ def adopt_latest(cfg: AiforaiConfig) -> list[str]:
         except json.JSONDecodeError:
             continue
 
-        if not manifest.get("accepted"):
+        if manifest.get("accepted") is not True:
             continue
 
-        live_path = str(manifest.get("live_skill_path") or cfg.skill_path)
-        backup_path = staging / "backup" / "SKILL.md"
-        if os.path.exists(live_path):
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(live_path, backup_path)
+        live_path = manifest.get("live_skill_path")
+        if not isinstance(live_path, str) or not live_path.strip():
+            continue
+        resolved_live_path = Path(live_path).resolve(strict=False)
+        if resolved_live_path != allowed_live_path:
+            continue
 
-        write_skill(live_path, proposed_path.read_text(encoding="utf-8"))
-        return [live_path]
+        backup_path = staging / "backup" / "SKILL.md"
+        if os.path.exists(configured_live_path):
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(configured_live_path, backup_path)
+
+        write_skill(configured_live_path, proposed_path.read_text(encoding="utf-8"))
+        return [configured_live_path]
     return []
 
 

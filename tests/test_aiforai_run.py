@@ -502,15 +502,19 @@ class AiforaiReplayGateTests(unittest.TestCase):
 
 
 class AiforaiMockRunTests(unittest.TestCase):
+    def _make_repo(self, root: str, skill_text: str = "# Skill\n") -> tuple[Path, Path]:
+        repo = Path(root) / "AIForAI"
+        skill_dir = repo / "ai-model-rd-protocol"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(skill_text, encoding="utf-8")
+        return repo, skill_path
+
     def test_run_mock_gate_stages_candidate_without_live_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "AIForAI"
-            skill_dir = repo / "ai-model-rd-protocol"
-            skill_dir.mkdir(parents=True)
-            skill_path = skill_dir / "SKILL.md"
-            skill_path.write_text(
+            repo, skill_path = self._make_repo(
+                tmp,
                 "---\nname: ai-model-rd-protocol\n---\n\n# Skill\n",
-                encoding="utf-8",
             )
             cfg = AiforaiConfig(target_skill_repo=str(repo))
 
@@ -534,11 +538,7 @@ class AiforaiMockRunTests(unittest.TestCase):
 
     def test_adopt_latest_updates_skill_and_writes_backup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "AIForAI"
-            skill_dir = repo / "ai-model-rd-protocol"
-            skill_dir.mkdir(parents=True)
-            skill_path = skill_dir / "SKILL.md"
-            skill_path.write_text("# Skill\n", encoding="utf-8")
+            repo, skill_path = self._make_repo(tmp)
             cfg = AiforaiConfig(target_skill_repo=str(repo))
             result = run_mock_gate(
                 cfg,
@@ -560,13 +560,37 @@ class AiforaiMockRunTests(unittest.TestCase):
             self.assertIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
             self.assertTrue((Path(result.staging_dir) / "backup" / "SKILL.md").exists())
 
-    def test_run_mock_gate_uses_curated_suite_when_no_tasks_are_mined(self) -> None:
+    def test_run_mock_gate_rejects_noop_when_no_sessions_are_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "AIForAI"
-            skill_dir = repo / "ai-model-rd-protocol"
-            skill_dir.mkdir(parents=True)
-            skill_path = skill_dir / "SKILL.md"
-            skill_path.write_text("# Skill\n", encoding="utf-8")
+            repo, skill_path = self._make_repo(tmp)
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+
+            result = run_mock_gate(
+                cfg,
+                sessions=[],
+                run_validators=False,
+            )
+
+            self.assertEqual(result.checkable_tasks, 0)
+            self.assertEqual(result.uncheckable_candidates, 0)
+            self.assertFalse(result.accepted)
+            self.assertTrue(any("no harvested sessions" in note for note in result.notes))
+            self.assertTrue(any("no mined real tasks" in note for note in result.notes))
+            staged_skill = (Path(result.staging_dir) / "proposed_SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(staged_skill, skill_path.read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (Path(result.staging_dir) / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(manifest["accepted"])
+            report_text = (Path(result.staging_dir) / "report.md").read_text(encoding="utf-8")
+            self.assertIn("supplemental only", report_text)
+            self.assertNotIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+
+    def test_run_mock_gate_rejects_noop_when_no_real_tasks_are_mined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, skill_path = self._make_repo(tmp)
             cfg = AiforaiConfig(target_skill_repo=str(repo))
 
             result = run_mock_gate(
@@ -585,17 +609,63 @@ class AiforaiMockRunTests(unittest.TestCase):
 
             self.assertEqual(result.checkable_tasks, 0)
             self.assertEqual(result.uncheckable_candidates, 1)
-            self.assertTrue(result.accepted)
+            self.assertFalse(result.accepted)
+            self.assertTrue(any("no mined real tasks" in note for note in result.notes))
             self.assertTrue((Path(result.staging_dir) / "proposed_SKILL.md").exists())
+            self.assertEqual(
+                (Path(result.staging_dir) / "proposed_SKILL.md").read_text(encoding="utf-8"),
+                skill_path.read_text(encoding="utf-8"),
+            )
             self.assertNotIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+
+    def test_run_mock_gate_writes_diff_and_coverage_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _skill_path = self._make_repo(
+                tmp,
+                "---\nname: ai-model-rd-protocol\n---\n\n# Skill\n",
+            )
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+
+            result = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            out_dir = Path(result.staging_dir)
+            self.assertTrue((out_dir / "diff.patch").exists())
+            self.assertTrue((out_dir / "coverage.json").exists())
+
+            coverage = json.loads((out_dir / "coverage.json").read_text(encoding="utf-8"))
+            self.assertEqual(coverage["sessions_by_source"]["codex"], 1)
+            self.assertEqual(coverage["tasks_by_source"]["codex"], 1)
+            self.assertEqual(coverage["real_task_count"], 1)
+            self.assertEqual(coverage["curated_task_count"], len(curated_regression_tasks()))
+            self.assertEqual(
+                coverage["eval_task_count"],
+                coverage["real_task_count"] + coverage["curated_task_count"],
+            )
+
+            diff_text = (out_dir / "diff.patch").read_text(encoding="utf-8")
+            self.assertIn("SKILLOPT-AIFORAI", diff_text)
+            report_text = (out_dir / "report.md").read_text(encoding="utf-8")
+            self.assertIn("Score Movement by Source", report_text)
+            self.assertIn("Score Movement by Family", report_text)
+            self.assertIn("Validators", report_text)
+            self.assertIn("Adopt Instruction", report_text)
+            self.assertIn("Boundary", report_text)
 
     def test_adopt_latest_skips_newer_rejected_and_incomplete_staging_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / "AIForAI"
-            skill_dir = repo / "ai-model-rd-protocol"
-            skill_dir.mkdir(parents=True)
-            skill_path = skill_dir / "SKILL.md"
-            skill_path.write_text("# Skill\n", encoding="utf-8")
+            repo, skill_path = self._make_repo(tmp)
             cfg = AiforaiConfig(target_skill_repo=str(repo))
             accepted = run_mock_gate(
                 cfg,
@@ -632,6 +702,149 @@ class AiforaiMockRunTests(unittest.TestCase):
             self.assertIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
             self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
             self.assertFalse((incomplete_dir / "backup" / "SKILL.md").exists())
+
+    def test_adopt_latest_skips_malicious_accepted_manifest_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, skill_path = self._make_repo(tmp)
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            accepted = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            outside_path = Path(tmp) / "outside-SKILL.md"
+            outside_path.write_text("outside original\n", encoding="utf-8")
+            malicious_dir = Path(cfg.staging_root) / "99999999T999999Z-run-malicious"
+            malicious_dir.mkdir(parents=True)
+            (malicious_dir / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "live_skill_path": str(outside_path),
+                        "accepted": True,
+                        "has_skill": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (malicious_dir / "proposed_SKILL.md").write_text(
+                "outside overwritten\n",
+                encoding="utf-8",
+            )
+
+            updated = adopt_latest(cfg)
+
+            self.assertEqual(updated, [str(skill_path)])
+            self.assertEqual(outside_path.read_text(encoding="utf-8"), "outside original\n")
+            self.assertIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+            self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
+            self.assertFalse((malicious_dir / "backup" / "SKILL.md").exists())
+
+    def test_adopt_latest_skips_corrupt_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, skill_path = self._make_repo(tmp)
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            accepted = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=False,
+            )
+
+            corrupt_dir = Path(cfg.staging_root) / "99999999T999999Z-run-corrupt"
+            corrupt_dir.mkdir(parents=True)
+            (corrupt_dir / "manifest.json").write_text("{not-json", encoding="utf-8")
+            (corrupt_dir / "proposed_SKILL.md").write_text("# corrupt\n", encoding="utf-8")
+
+            updated = adopt_latest(cfg)
+
+            self.assertEqual(updated, [str(skill_path)])
+            self.assertIn("SKILLOPT-AIFORAI", skill_path.read_text(encoding="utf-8"))
+            self.assertTrue((Path(accepted.staging_dir) / "backup" / "SKILL.md").exists())
+            self.assertFalse((corrupt_dir / "backup" / "SKILL.md").exists())
+
+    def test_run_mock_gate_validators_use_repo_copy_and_leave_live_skill_unmodified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, skill_path = self._make_repo(
+                tmp,
+                "---\nname: ai-model-rd-protocol\n---\n\n# Skill\n",
+            )
+            scripts_dir = repo / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "quick_validate.py").write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "",
+                        "skill = Path('ai-model-rd-protocol/SKILL.md').read_text(encoding='utf-8')",
+                        "if 'SKILLOPT-AIFORAI' not in skill:",
+                        "    raise SystemExit('candidate skill not staged into validator repo copy')",
+                        "print('quick_validate ok')",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            tests_dir = repo / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_smoke.py").write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "import unittest",
+                        "",
+                        "",
+                        "class Smoke(unittest.TestCase):",
+                        "    def test_skill_exists(self) -> None:",
+                        "        self.assertTrue(Path('ai-model-rd-protocol/SKILL.md').exists())",
+                        "",
+                        "",
+                        "if __name__ == '__main__':",
+                        "    unittest.main()",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = AiforaiConfig(target_skill_repo=str(repo))
+            original_skill = skill_path.read_text(encoding="utf-8")
+
+            result = run_mock_gate(
+                cfg,
+                sessions=[
+                    AiforaiSessionDigest(
+                        source_agent="codex",
+                        session_id="s1",
+                        raw_path="/tmp/raw",
+                        cwd="/repo",
+                        user_prompts=["start a training run"],
+                    )
+                ],
+                run_validators=True,
+            )
+
+            self.assertTrue(result.accepted)
+            self.assertEqual(skill_path.read_text(encoding="utf-8"), original_skill)
+            validation = json.loads(
+                (Path(result.staging_dir) / "validation.log").read_text(encoding="utf-8")
+            )
+            self.assertTrue(validation["ok"])
+            self.assertTrue(all(command["ok"] for command in validation["commands"]))
 
 
 if __name__ == "__main__":

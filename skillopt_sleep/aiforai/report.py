@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 from collections import Counter
@@ -146,10 +147,14 @@ def write_audit_report(
 def write_run_report(
     out_dir: str,
     result: AiforaiRunResult,
+    live_skill: str,
     proposed_skill: str,
     baseline_rows: list[dict[str, Any]],
     candidate_rows: list[dict[str, Any]],
     validation: dict[str, Any],
+    *,
+    coverage: dict[str, Any],
+    live_skill_path: str,
 ) -> None:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -163,6 +168,23 @@ def write_run_report(
         handle.write(json.dumps(validation, ensure_ascii=False, indent=2))
         handle.write("\n")
 
+    diff_lines = difflib.unified_diff(
+        live_skill.splitlines(keepends=True),
+        proposed_skill.splitlines(keepends=True),
+        fromfile=live_skill_path,
+        tofile=os.path.join(out_dir, "proposed_SKILL.md"),
+    )
+    with open(os.path.join(out_dir, "diff.patch"), "w", encoding="utf-8") as handle:
+        handle.writelines(diff_lines)
+
+    with open(os.path.join(out_dir, "coverage.json"), "w", encoding="utf-8") as handle:
+        json.dump(coverage, handle, ensure_ascii=False, indent=2)
+
+    baseline_by_source = _index_scores(baseline_rows, "source_agent")
+    candidate_by_source = _index_scores(candidate_rows, "source_agent")
+    baseline_by_family = _index_scores(baseline_rows, "task_family")
+    candidate_by_family = _index_scores(candidate_rows, "task_family")
+
     lines = [
         "# AIForAI SkillOpt-Sleep Run Report",
         "",
@@ -173,12 +195,46 @@ def write_run_report(
         f"- checkable_tasks: {result.checkable_tasks}",
         f"- uncheckable_candidates: {result.uncheckable_candidates}",
         "",
-        "## Boundary",
-        "- This run staged a proposal only.",
-        "- Live skill mutation requires explicit adopt.",
+        "## Coverage",
+        f"- sessions_by_source: {_render_counts(coverage.get('sessions_by_source', {}))}",
+        f"- tasks_by_source: {_render_counts(coverage.get('tasks_by_source', {}))}",
+        f"- real_task_count: {coverage.get('real_task_count', 0)}",
+        f"- curated_task_count: {coverage.get('curated_task_count', 0)}",
+        f"- eval_task_count: {coverage.get('eval_task_count', 0)}",
+        "- curated regression tasks are supplemental only and cannot justify acceptance without real harvested coverage.",
         "",
-        "## Notes",
+        "## Score Movement by Source",
     ]
+    lines.extend(_render_score_movement(baseline_by_source, candidate_by_source))
+    lines.extend(
+        [
+            "",
+            "## Score Movement by Family",
+        ]
+    )
+    lines.extend(_render_score_movement(baseline_by_family, candidate_by_family))
+    lines.extend(
+        [
+            "",
+            "## Validators",
+        ]
+    )
+    lines.extend(_render_validator_summary(validation))
+    lines.extend(
+        [
+            "",
+            "## Adopt Instruction",
+            "- Review `proposed_SKILL.md`, `diff.patch`, `coverage.json`, `baseline_results.jsonl`, `candidate_results.jsonl`, and `validation.log` before adoption.",
+            "- Adoption mutates only the configured live skill path if `manifest.json` is accepted and its `live_skill_path` resolves exactly to that configured file.",
+            "",
+            "## Boundary",
+            "- This run staged a proposal only.",
+            "- Live skill mutation requires explicit adopt.",
+            "- `adopt_latest` must not write to any path outside the configured live skill file.",
+            "",
+            "## Notes",
+        ]
+    )
     if result.notes:
         lines.extend(f"- {note}" for note in result.notes)
     else:
@@ -192,6 +248,7 @@ def write_run_report(
         json.dump(
             {
                 "result": result.to_dict(),
+                "coverage": coverage,
                 "baseline_results": baseline_rows,
                 "candidate_results": candidate_rows,
                 "validation": validation,
@@ -200,3 +257,50 @@ def write_run_report(
             ensure_ascii=False,
             indent=2,
         )
+
+
+def _index_scores(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
+    grouped: dict[str, list[float]] = {}
+    for row in rows:
+        name = str(row.get(key) or "unknown")
+        grouped.setdefault(name, []).append(float(row.get("hard") or 0.0))
+    return {
+        name: sum(values) / len(values)
+        for name, values in sorted(grouped.items())
+        if values
+    }
+
+
+def _render_counts(counts: dict[str, Any]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{name}={counts[name]}" for name in sorted(counts))
+
+
+def _render_score_movement(
+    baseline_scores: dict[str, float],
+    candidate_scores: dict[str, float],
+) -> list[str]:
+    keys = sorted(set(baseline_scores) | set(candidate_scores))
+    if not keys:
+        return ["- None."]
+    return [
+        f"- {key}: {baseline_scores.get(key, 0.0):.4f} -> {candidate_scores.get(key, 0.0):.4f}"
+        for key in keys
+    ]
+
+
+def _render_validator_summary(validation: dict[str, Any]) -> list[str]:
+    if not validation.get("commands"):
+        if validation.get("skipped"):
+            return ["- skipped: validators disabled for this run."]
+        return [f"- ok={bool(validation.get('ok'))}: no validator commands recorded."]
+
+    lines: list[str] = [f"- overall_ok: {bool(validation.get('ok'))}"]
+    for command in validation["commands"]:
+        cmd_text = " ".join(str(part) for part in command.get("cmd", []))
+        lines.append(
+            f"- {command.get('name', 'validator')}: ok={bool(command.get('ok'))}, "
+            f"returncode={command.get('returncode')}, cmd={cmd_text}"
+        )
+    return lines
