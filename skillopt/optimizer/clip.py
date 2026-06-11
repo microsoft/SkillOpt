@@ -57,7 +57,7 @@ def rank_and_select(
     # Build the edit pool description for the optimizer
     edits_desc = []
     for i, edit in enumerate(edits):
-        edits_desc.append(f"[{i}] {describe_item(edit, update_mode, max_chars=500)}")
+        edits_desc.append(f"[{i}] {describe_item(edit, update_mode)}")
 
     user = (
         f"## Current Skill\n{skill_content}\n\n"
@@ -74,7 +74,7 @@ def rank_and_select(
     try:
         response, _ = chat_optimizer(
             system=load_prompt(prompt_name), user=user,
-            max_completion_tokens=2048, retries=3, stage="ranking",
+            max_completion_tokens=16384, retries=3, stage="ranking",
         )
         result = extract_json(response)
         if result and "selected_indices" in result:

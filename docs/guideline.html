@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkillOpt — Documentation &amp; Reproduction Guide</title>
+<meta name="description" content="Complete documentation and reproduction guide for SkillOpt: installation, data preparation, training, configuration reference, framework internals, and API reference.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 23 23'%3E%3Crect width='10' height='10' fill='%23F25022'/%3E%3Crect x='13' width='10' height='10' fill='%237FBA00'/%3E%3Crect y='13' width='10' height='10' fill='%2300A4EF'/%3E%3Crect x='13' y='13' width='10' height='10' fill='%23FFB900'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f7f8fb;
+    --sidebar-bg: #fbfcfe;
+    --ink: #1f2733;
+    --muted: #5b6675;
+    --quiet: #8a94a3;
+    --line: #e6e9ef;
+    --line-strong: #d3d9e3;
+    --brand: #4f46e5;
+    --brand-soft: #eef0fe;
+    --accent: #0ea5e9;
+    --green: #16a34a;
+    --amber: #d97706;
+    --red: #dc2626;
+    --code-bg: #0f172a;
+    --code-ink: #e2e8f0;
+    --inline-code-bg: #eef1f6;
+    --inline-code-ink: #b3146b;
+    --sidebar-w: 300px;
+    --toc-w: 220px;
+    --mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background: var(--bg);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Top bar ─────────────────────────────────────────── */
+  header.topbar {
+    position: sticky; top: 0; z-index: 40;
+    height: 56px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 20px;
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar .logo { width: 22px; height: 22px; flex: none; }
+  .topbar .brand { font-weight: 700; font-size: 16px; letter-spacing: -0.01em; }
+  .topbar .brand span { color: var(--brand); }
+  .topbar .tag { color: var(--quiet); font-size: 13px; border-left: 1px solid var(--line-strong); padding-left: 14px; }
+  .topbar .spacer { flex: 1; }
+  .topbar a.gh {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 13px; font-weight: 600; color: var(--muted);
+    text-decoration: none; padding: 6px 12px; border: 1px solid var(--line-strong);
+    border-radius: 8px;
+  }
+  .topbar a.gh:hover { color: var(--brand); border-color: var(--brand); }
+  #menuBtn {
+    display: none; background: none; border: 1px solid var(--line-strong);
+    border-radius: 8px; width: 38px; height: 34px; cursor: pointer; font-size: 18px; color: var(--muted);
+  }
+
+  /* ── Layout ──────────────────────────────────────────── */
+  .layout { display: flex; align-items: flex-start; }
+
+  /* ── Sidebar (left nav) ──────────────────────────────── */
+  nav.sidebar {
+    position: sticky; top: 56px;
+    width: var(--sidebar-w); flex: none;
+    height: calc(100vh - 56px);
+    overflow-y: auto;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--line);
+    padding: 22px 14px 60px 20px;
+  }
+  nav.sidebar .group { margin-bottom: 22px; }
+  nav.sidebar .group > .glabel {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--quiet);
+    margin: 0 0 8px 2px;
+  }
+  nav.sidebar .group > .glabel .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 5px;
+    background: var(--brand-soft); color: var(--brand);
+    font-size: 11px; font-weight: 700;
+  }
+  nav.sidebar a {
+    display: block; text-decoration: none;
+    color: var(--muted); font-size: 13.5px;
+    padding: 5px 10px; border-radius: 7px; margin: 1px 0;
+    border-left: 2px solid transparent;
+  }
+  nav.sidebar a:hover { background: #eef1f6; color: var(--ink); }
+  nav.sidebar a.active {
+    color: var(--brand); background: var(--brand-soft);
+    border-left-color: var(--brand); font-weight: 600;
+  }
+
+  /* ── Content ─────────────────────────────────────────── */
+  main.content {
+    flex: 1; min-width: 0;
+    padding: 38px 46px 120px;
+    max-width: 900px;
+  }
+  main.content section { scroll-margin-top: 72px; }
+  main h1 { font-size: 30px; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 8px; }
+  main h2 {
+    font-size: 23px; letter-spacing: -0.015em; margin: 52px 0 14px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--line);
+  }
+  main section:first-of-type h2 { margin-top: 8px; }
+  main h3 { font-size: 17.5px; margin: 30px 0 10px; letter-spacing: -0.01em; }
+  main h4 { font-size: 15px; margin: 22px 0 8px; color: var(--ink); }
+  main p { margin: 12px 0; color: #2c3645; }
+  main ul, main ol { margin: 12px 0; padding-left: 22px; }
+  main li { margin: 5px 0; }
+  main a { color: var(--brand); text-decoration: none; }
+  main a:hover { text-decoration: underline; }
+  .lead { font-size: 16.5px; color: var(--muted); margin: 6px 0 4px; }
+  .eyebrow { color: var(--brand); font-weight: 700; font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* code */
+  code {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--inline-code-bg); color: var(--inline-code-ink);
+    padding: 2px 6px; border-radius: 5px;
+  }
+  pre {
+    background: var(--code-bg); color: var(--code-ink);
+    border-radius: 12px; padding: 16px 18px; overflow-x: auto;
+    font-family: var(--mono); font-size: 13px; line-height: 1.6;
+    margin: 14px 0; border: 1px solid #1e293b;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+  .tok-c { color: #7c8aa5; }   /* comment */
+  .tok-k { color: #c4b5fd; }   /* keyword */
+  .tok-s { color: #86efac; }   /* string */
+  .tok-f { color: #93c5fd; }   /* flag/path */
+  .tok-n { color: #fca5a5; }   /* number/value */
+
+  /* tables */
+  .table-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { background: var(--bg-soft); font-weight: 700; color: var(--ink); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+  td.def { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+
+  /* callouts */
+  .note { border-radius: 10px; padding: 12px 16px; margin: 16px 0; border: 1px solid; font-size: 14px; }
+  .note p { margin: 4px 0; }
+  .note .nh { font-weight: 700; display: block; margin-bottom: 2px; }
+  .note.info  { background: #eff6ff; border-color: #bfdbfe; }
+  .note.info .nh { color: #1d4ed8; }
+  .note.tip   { background: #ecfdf5; border-color: #a7f3d0; }
+  .note.tip .nh { color: #047857; }
+  .note.warn  { background: #fffbeb; border-color: #fde68a; }
+  .note.warn .nh { color: #b45309; }
+
+  .pill { display:inline-block; font-size: 11px; font-weight:700; padding: 1px 8px; border-radius: 999px; vertical-align: middle; }
+  .pill.def { background:#eef2ff; color:#4338ca; }
+  .pill.opt { background:#f1f5f9; color:#475569; }
+
+  /* card grid */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px,1fr)); gap: 14px; margin: 18px 0; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--bg-soft); }
+  .card h4 { margin: 0 0 6px; font-size: 14.5px; }
+  .card p { margin: 0; font-size: 13px; color: var(--muted); }
+
+  /* anchor link on hover */
+  .anchor { color: var(--quiet); text-decoration: none; font-weight: 400; opacity: 0; margin-left: 8px; font-size: 0.8em; }
+  h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+
+  /* ── Right TOC ───────────────────────────────────────── */
+  aside.toc {
+    position: sticky; top: 56px;
+    width: var(--toc-w); flex: none;
+    height: calc(100vh - 56px); overflow-y: auto;
+    padding: 38px 18px; border-left: 1px solid var(--line);
+  }
+  aside.toc .tl { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--quiet); margin-bottom: 10px; }
+  aside.toc a { display: block; color: var(--muted); text-decoration: none; font-size: 12.5px; padding: 4px 8px; border-left: 2px solid var(--line); line-height: 1.45; }
+  aside.toc a:hover { color: var(--ink); }
+  aside.toc a.active { color: var(--brand); border-left-color: var(--brand); font-weight: 600; }
+
+  .footer-note { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--quiet); font-size: 13px; }
+
+  /* responsive */
+  @media (max-width: 1180px) { aside.toc { display: none; } }
+  @media (max-width: 860px) {
+    #menuBtn { display: inline-block; }
+    nav.sidebar {
+      position: fixed; left: 0; top: 56px; z-index: 35;
+      transform: translateX(-100%); transition: transform 0.22s ease;
+      box-shadow: 0 16px 40px rgba(15,23,42,0.18);
+    }
+    nav.sidebar.open { transform: translateX(0); }
+    main.content { padding: 28px 20px 100px; }
+    .topbar .tag { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <button id="menuBtn" aria-label="Toggle navigation">&#9776;</button>
+  <svg class="logo" viewBox="0 0 23 23"><rect width="10" height="10" fill="#F25022"/><rect x="13" width="10" height="10" fill="#7FBA00"/><rect y="13" width="10" height="10" fill="#00A4EF"/><rect x="13" y="13" width="10" height="10" fill="#FFB900"/></svg>
+  <span class="brand">Skill<span>Opt</span></span>
+  <span class="tag">Documentation &amp; Reproduction Guide</span>
+  <span class="spacer"></span>
+  <a class="gh" href="https://github.com/microsoft/SkillOpt" target="_blank" rel="noopener">GitHub ↗</a>
+  <a class="gh" href="https://arxiv.org/abs/2605.23904" target="_blank" rel="noopener">Paper ↗</a>
+</header>
+
+<div class="layout">
+
+  <!-- ───────────── LEFT NAV ───────────── -->
+  <nav class="sidebar" id="sidebar">
+    <div class="group">
+      <div class="glabel"><span class="num">1</span> Overview</div>
+      <a href="#what-is">What is SkillOpt</a>
+      <a href="#analogy">DL ↔ SkillOpt analogy</a>
+      <a href="#features">Key features</a>
+      <a href="#layout">Repository layout</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">2</span> Installation</div>
+      <a href="#requirements">Requirements</a>
+      <a href="#install">Install the package</a>
+      <a href="#credentials">Configure credentials</a>
+      <a href="#verify">Verify installation</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">3</span> Quick Start</div>
+      <a href="#first-demo">Your first demo</a>
+      <a href="#train">Train a skill</a>
+      <a href="#eval">Evaluate a skill</a>
+      <a href="#outputs">Output structure</a>
+      <a href="#resume">Auto-resume</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">4</span> Run on Your Own Data</div>
+      <a href="#split-dir">Split directory format</a>
+      <a href="#item-schema">Item JSON schema</a>
+      <a href="#split-modes">Split modes</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">5</span> How It Works</div>
+      <a href="#loop">The training loop</a>
+      <a href="#stages">The six per-step stages</a>
+      <a href="#gate">Validation gate</a>
+      <a href="#slow-update">Slow update (momentum)</a>
+      <a href="#meta-skill">Meta skill (memory)</a>
+      <a href="#skill-doc">Skill document anatomy</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">6</span> Configuration</div>
+      <a href="#config-system">Config system</a>
+      <a href="#cfg-model">model.*</a>
+      <a href="#cfg-train">train.*</a>
+      <a href="#cfg-gradient">gradient.*</a>
+      <a href="#cfg-optimizer">optimizer.*</a>
+      <a href="#cfg-evaluation">evaluation.*</a>
+      <a href="#cfg-env">env.*</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">7</span> Benchmarks</div>
+      <a href="#bench-list">Supported benchmarks</a>
+      <a href="#bench-new">Add a new benchmark</a>
+    </div>
+    <div class="group">
+      <div class="glabel"><span class="num">8</span> API Reference</div>
+      <a href="#module-map">Module map</a>
+      <a href="#functions">Core functions</a>
+      <a href="#cli">CLI scripts</a>
+      <a href="#webui">WebUI</a>
+    </div>
+  </nav>
+
+  <!-- ───────────── MAIN CONTENT ───────────── -->
+  <main class="content">
+
+    <span class="eyebrow">Microsoft Research</span>
+    <h1>SkillOpt Documentation &amp; Reproduction Guide</h1>
+    <p class="lead">Train agent skills like you train neural networks — with epochs, (mini-)batch size, learning rates, and validation gates — but without touching any model weights.</p>
+    <p>This guide walks you from a clean checkout to a reproduced result and a full reference for every configuration knob and core function. It is generated from, and kept consistent with, the current state of the codebase.</p>
+
+    <!-- ===================== 1. OVERVIEW ===================== -->
+    <section id="what-is">
+      <h2>1.1 What is SkillOpt <a class="anchor" href="#what-is">#</a></h2>
+      <p><strong>SkillOpt</strong> is a text-space optimizer that improves a <em>frozen</em> language agent by iteratively editing a natural-language <strong>skill document</strong> — never the model weights. The skill document is a Markdown file that conditions a target model as it executes tasks. SkillOpt treats this document as the "weights" and runs a training loop that mirrors deep-learning training: rollout (forward pass), reflect (backward pass / gradients), select &amp; apply edits (optimizer step), and a validation gate (accept/reject).</p>
+      <p>Two roles split every model call:</p>
+      <ul>
+        <li><strong>Target</strong> — executes tasks using the current skill document (the agent being improved).</li>
+        <li><strong>Optimizer</strong> — analyzes the target's trajectories and proposes edits to the skill document.</li>
+      </ul>
+      <p>The same loop drives six benchmarks out of the box (QA, document QA, embodied agents, math, spreadsheet code generation, and tool-augmented QA).</p>
+    </section>
+
+    <section id="analogy">
+      <h2>1.2 Deep-Learning ↔ SkillOpt Analogy <a class="anchor" href="#analogy">#</a></h2>
+      <p>Every concept below maps to a concrete code construct, so deep-learning intuitions transfer directly to hyperparameter tuning.</p>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Deep learning</th><th>SkillOpt</th><th>Where it lives</th></tr></thead>
+        <tbody>
+          <tr><td>Model weights</td><td>Skill document (Markdown)</td><td><code>skillopt/optimizer/skill.py</code></td></tr>
+          <tr><td>Forward pass</td><td>Rollout — target runs tasks</td><td><code>envs/&lt;bench&gt;/rollout.py</code></td></tr>
+          <tr><td>Loss / score</td><td>Task evaluator</td><td><code>envs/&lt;bench&gt;/evaluator.py</code></td></tr>
+          <tr><td>Backprop / gradients</td><td>Reflect → edit patches</td><td><code>gradient/reflect.py</code></td></tr>
+          <tr><td>Gradient aggregation</td><td>Hierarchical patch merge</td><td><code>gradient/aggregate.py</code></td></tr>
+          <tr><td>Gradient clipping</td><td>Rank &amp; select top-k edits</td><td><code>optimizer/clip.py</code></td></tr>
+          <tr><td>Learning rate</td><td><code>optimizer.learning_rate</code> (edits/step)</td><td><code>optimizer/scheduler.py</code></td></tr>
+          <tr><td>LR scheduler</td><td><code>lr_scheduler</code> (cosine/linear/…)</td><td><code>optimizer/scheduler.py</code></td></tr>
+          <tr><td>Optimizer step</td><td>Apply patches to the document</td><td><code>optimizer/skill.py</code></td></tr>
+          <tr><td>Validation set</td><td>Selection split (<code>valid_seen</code>)</td><td><code>evaluation/gate.py</code></td></tr>
+          <tr><td>Early stopping / accept</td><td>Validation gate</td><td><code>evaluation/gate.py</code></td></tr>
+          <tr><td>Momentum</td><td>Slow update (epoch boundary)</td><td><code>optimizer/slow_update.py</code></td></tr>
+          <tr><td>Meta-learning</td><td>Meta skill (cross-epoch memory)</td><td><code>optimizer/meta_skill.py</code></td></tr>
+          <tr><td>Batch / minibatch</td><td><code>batch_size</code> / <code>minibatch_size</code></td><td><code>engine/trainer.py</code></td></tr>
+          <tr><td>Epoch</td><td>Epoch (+ slow update &amp; meta skill)</td><td><code>engine/trainer.py</code></td></tr>
+        </tbody>
+      </table>
+      </div>
+      <div class="note tip"><span class="nh">What transfers from DL</span>
+        <p>Cosine schedule tends to beat constant; moderate learning rates (≈4–16 edits/step) beat very high/low; slow update curbs cross-epoch forgetting; meta-skill memory improves reflection quality. Conversely, bigger rollout batches and many epochs show diminishing returns — skills converge in ~2–4 epochs.</p>
+      </div>
+    </section>
+
+    <section id="features">
+      <h2>1.3 Key Features <a class="anchor" href="#features">#</a></h2>
+      <div class="cards">
+        <div class="card"><h4>Validation gating</h4><p>Every candidate skill is scored on a held-out selection split and only accepted if it beats the current/best skill.</p></div>
+        <div class="card"><h4>Slow update</h4><p>Epoch-boundary longitudinal comparison writes guidance into a protected region — momentum against forgetting. Force-injected or selection-gated.</p></div>
+        <div class="card"><h4>Meta skill</h4><p>Optimizer-side memory that reflects on what worked across epochs and feeds back into reflection.</p></div>
+        <div class="card"><h4>Pluggable backends</h4><p>OpenAI / Azure OpenAI, Anthropic Claude, local Qwen (vLLM), plus Codex/Claude-Code exec backends for the target.</p></div>
+        <div class="card"><h4>Six benchmarks</h4><p>SearchQA, DocVQA, ALFWorld, LiveMathematicianBench, SpreadsheetBench, OfficeQA — each a self-contained env module.</p></div>
+        <div class="card"><h4>Auto-resume</h4><p>Every run is checkpointed step-by-step; re-running the same command continues from the last completed step.</p></div>
+      </div>
+    </section>
+
+    <section id="layout">
+      <h2>1.4 Repository Layout <a class="anchor" href="#layout">#</a></h2>
+<pre><code><span class="tok-c"># top level</span>
+configs/            <span class="tok-c"># YAML configs (_base_ + per-benchmark)</span>
+scripts/            <span class="tok-c"># train.py, eval_only.py CLIs</span>
+ckpt/               <span class="tok-c"># packaged reference skills (e.g. gpt5.5_skill.md)</span>
+docs/               <span class="tok-c"># this guide + mkdocs sources</span>
+skillopt/           <span class="tok-c"># the package</span>
+ ├─ config.py        <span class="tok-c"># YAML loading, _base_ inheritance, flatten</span>
+ ├─ engine/trainer.py<span class="tok-c"># the training loop (ReflACTTrainer)</span>
+ ├─ gradient/        <span class="tok-c"># reflect.py (analyst), aggregate.py (merge)</span>
+ ├─ optimizer/       <span class="tok-c"># skill edits, scheduler, clip, slow_update, meta_skill</span>
+ ├─ evaluation/      <span class="tok-c"># gate.py (accept/reject logic)</span>
+ ├─ model/           <span class="tok-c"># backend clients + routing</span>
+ └─ envs/&lt;benchmark&gt;/ <span class="tok-c"># adapter, dataloader, rollout, evaluator, reflect</span></code></pre>
+    </section>
+
+    <!-- ===================== 2. INSTALLATION ===================== -->
+    <section id="requirements">
+      <h2>2.1 Requirements <a class="anchor" href="#requirements">#</a></h2>
+      <ul>
+        <li>Python ≥ 3.10</li>
+        <li>Credentials for at least one model backend (Azure OpenAI, OpenAI-compatible, Anthropic, or a local Qwen server)</li>
+        <li>Benchmark datasets are <strong>not</strong> bundled — prepare your own splits (see §4)</li>
+      </ul>
+    </section>
+
+    <section id="install">
+      <h2>2.2 Install the Package <a class="anchor" href="#install">#</a></h2>
+      <p><strong>Option A — from PyPI:</strong></p>
+<pre><code><span class="tok-k">pip</span> install skillopt
+
+<span class="tok-c"># Optional extras:</span>
+<span class="tok-k">pip</span> install skillopt[alfworld]   <span class="tok-c"># ALFWorld benchmark</span>
+<span class="tok-k">pip</span> install skillopt[webui]      <span class="tok-c"># Gradio monitoring dashboard</span>
+<span class="tok-k">pip</span> install skillopt[claude]     <span class="tok-c"># Claude model backend</span>
+</code></pre>
+      <p><strong>Option B — from source (for development):</strong></p>
+<pre><code><span class="tok-k">git</span> clone https://github.com/microsoft/SkillOpt.git
+<span class="tok-k">cd</span> SkillOpt
+<span class="tok-k">pip</span> install -e .
+
+<span class="tok-c"># Optional extras (install only what you need):</span>
+<span class="tok-k">pip</span> install -e <span class="tok-s">".[alfworld]"</span>   <span class="tok-c"># ALFWorld benchmark</span>
+<span class="tok-k">pip</span> install -e <span class="tok-s">".[claude]"</span>     <span class="tok-c"># Anthropic Claude backend</span>
+<span class="tok-k">pip</span> install -e <span class="tok-s">".[qwen]"</span>       <span class="tok-c"># local Qwen backend</span>
+<span class="tok-k">pip</span> install -e <span class="tok-s">".[webui]"</span>      <span class="tok-c"># monitoring dashboard</span>
+
+<span class="tok-c"># ALFWorld also needs its data assets:</span>
+<span class="tok-k">alfworld-download</span></code></pre>
+    </section>
+
+    <section id="credentials">
+      <h2>2.3 Configure Credentials <a class="anchor" href="#credentials">#</a></h2>
+      <p>Copy the template and fill in whichever backend you will use:</p>
+<pre><code><span class="tok-k">cp</span> .env.example .env
+<span class="tok-c"># edit .env, then:</span>
+<span class="tok-k">set</span> -a; <span class="tok-k">source</span> .env; <span class="tok-k">set</span> +a</code></pre>
+      <div class="note info"><span class="nh">One env-var family for all OpenAI modes</span>
+        <p>SkillOpt reuses the <code>AZURE_OPENAI_*</code> variable names even for plain OpenAI — there is no separate <code>OPENAI_API_KEY</code> knob. <code>AZURE_OPENAI_ENDPOINT</code> is required for every OpenAI auth mode.</p>
+      </div>
+      <h4>Azure OpenAI (default)</h4>
+<pre><code><span class="tok-k">export</span> AZURE_OPENAI_ENDPOINT=<span class="tok-s">"https://your-resource.openai.azure.com/"</span>
+<span class="tok-k">export</span> AZURE_OPENAI_API_VERSION=<span class="tok-s">"2024-12-01-preview"</span>
+<span class="tok-c"># Auth option 1 — API key:</span>
+<span class="tok-k">export</span> AZURE_OPENAI_API_KEY=<span class="tok-s">"your-key"</span>
+<span class="tok-c"># Auth option 2 — Azure CLI (no key; recommended on Azure VMs):</span>
+<span class="tok-k">export</span> AZURE_OPENAI_AUTH_MODE=azure_cli
+<span class="tok-c"># Auth option 3 — Managed Identity:</span>
+<span class="tok-k">export</span> AZURE_OPENAI_AUTH_MODE=managed_identity
+<span class="tok-k">export</span> AZURE_OPENAI_MANAGED_IDENTITY_CLIENT_ID=<span class="tok-s">"your-client-id"</span></code></pre>
+      <h4>OpenAI-compatible endpoint</h4>
+<pre><code><span class="tok-k">export</span> AZURE_OPENAI_ENDPOINT=<span class="tok-s">"https://api.openai.com/v1"</span>
+<span class="tok-k">export</span> AZURE_OPENAI_API_KEY=<span class="tok-s">"sk-..."</span>
+<span class="tok-k">export</span> AZURE_OPENAI_AUTH_MODE=openai_compatible</code></pre>
+      <h4>Anthropic Claude / local Qwen</h4>
+<pre><code><span class="tok-k">export</span> ANTHROPIC_API_KEY=<span class="tok-s">"sk-ant-..."</span>          <span class="tok-c"># claude_chat backend</span>
+
+<span class="tok-k">export</span> QWEN_CHAT_BASE_URL=<span class="tok-s">"http://localhost:8000/v1"</span> <span class="tok-c"># local vLLM</span>
+<span class="tok-k">export</span> QWEN_CHAT_MODEL=<span class="tok-s">"Qwen/Qwen3.5-4B"</span></code></pre>
+    </section>
+
+    <section id="verify">
+      <h2>2.4 Verify Installation <a class="anchor" href="#verify">#</a></h2>
+<pre><code><span class="tok-k">python</span> -c <span class="tok-s">"import skillopt; print('SkillOpt ready!')"</span></code></pre>
+    </section>
+
+    <!-- ===================== 3. QUICK START ===================== -->
+    <section id="first-demo">
+      <h2>3.1 Your First Demo <a class="anchor" href="#first-demo">#</a></h2>
+      <p><strong>What ships in this repo:</strong> ready-to-use configs and
+      pretrained skills (<code>ckpt/</code>) for six benchmarks, plus
+      lightweight <em>ID manifests</em> under <code>data/</code>. The manifests
+      pin exactly which examples each split uses but do <strong>not</strong>
+      contain the example contents — so you materialize the data once before
+      the first run.</p>
+      <p><strong>Step 1 — materialize the SearchQA splits</strong> (one-time; downloads the ~6.5&nbsp;GB source dataset). The manifest IDs match the <code>key</code> field of the
+      <a href="https://huggingface.co/datasets/lucadiliello/searchqa">lucadiliello/searchqa</a>
+      dataset:</p>
+<pre><code><span class="tok-k">pip</span> install datasets
+<span class="tok-k">python</span> - &lt;&lt;'PY'
+import json, os
+from datasets import load_dataset
+
+ds = load_dataset("lucadiliello/searchqa")
+by_key = {r["key"]: r for split in ds.values() for r in split}
+
+for split in ["train", "val", "test"]:
+    ids = json.load(open(f"data/searchqa_id_split/{split}/items.json"))
+    items = []
+    for x in ids:
+        r = by_key[x["id"]]
+        items.append({"id": r["key"], "question": r["question"],
+                      "context": r["context"], "answers": r["answers"]})
+    os.makedirs(f"data/searchqa_split/{split}", exist_ok=True)
+    json.dump(items, open(f"data/searchqa_split/{split}/items.json", "w"))
+    print(split, len(items))
+PY</code></pre>
+      <p><strong>Step 2 — train</strong> (4 epochs &times; batch 40; see §3.2
+      for the CLI reference):</p>
+<pre><code><span class="tok-k">python</span> scripts/train.py \
+    --config configs/searchqa/default.yaml \
+    --split_dir data/searchqa_split \
+    --azure_openai_endpoint https://your-resource.openai.azure.com/ \
+    --optimizer_model gpt-5.5 \
+    --target_model gpt-5.5</code></pre>
+      <p>Other benchmarks follow the same pattern — materialize from the raw
+      source listed in
+      <a href="https://github.com/microsoft/SkillOpt/blob/main/data/README.md"><code>data/README.md</code></a>
+      (it documents the lookup key per benchmark), then point
+      <code>--split_dir</code> at the result. The one exception is
+      <strong>ALFWorld</strong>, whose bundled
+      <code>data/alfworld_path_split</code> works directly: just
+      <code>pip install -e ".[alfworld]" &amp;&amp; alfworld-download</code> and
+      set <code>$ALFWORLD_DATA</code>.</p>
+      <p>To sanity-check your setup <em>without</em> training, evaluate a
+      packaged pretrained skill instead (§3.3 uses
+      <code>ckpt/searchqa/gpt5.5_skill.md</code>), or launch the monitoring
+      WebUI (§8.4).</p>
+    </section>
+
+    <section id="train">
+      <h2>3.2 Train a Skill <a class="anchor" href="#train">#</a></h2>
+<pre><code><span class="tok-c"># Minimal SearchQA run</span>
+<span class="tok-k">python</span> scripts/train.py \
+    <span class="tok-f">--config</span> configs/searchqa/default.yaml \
+    <span class="tok-f">--split_dir</span> /path/to/your/searchqa_split \
+    <span class="tok-f">--azure_openai_endpoint</span> https://your-resource.openai.azure.com/ \
+    <span class="tok-f">--optimizer_model</span> gpt-5.5 \
+    <span class="tok-f">--target_model</span> gpt-5.5</code></pre>
+      <p>Swap the config for another benchmark (e.g. <code>configs/livemathematicianbench/default.yaml</code>, <code>configs/alfworld/default.yaml</code>). Common CLI arguments:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Argument</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>--config</code></td><td>Benchmark config YAML (required)</td></tr>
+          <tr><td><code>--split_dir</code></td><td>Path to the data split directory</td></tr>
+          <tr><td><code>--azure_openai_endpoint</code></td><td>Azure OpenAI endpoint URL</td></tr>
+          <tr><td><code>--optimizer_model</code> / <code>--target_model</code></td><td>Deployment names for optimizer / target</td></tr>
+          <tr><td><code>--num_epochs</code> / <code>--batch_size</code></td><td>Epochs and rollout batch size</td></tr>
+          <tr><td><code>--out_root</code></td><td>Output directory</td></tr>
+          <tr><td><code>--cfg-options k=v ...</code></td><td>Override any config key (see §6.1)</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="eval">
+      <h2>3.3 Evaluate a Skill <a class="anchor" href="#eval">#</a></h2>
+      <p>Evaluate any skill document (a packaged reference skill, or a trained run's <code>best_skill.md</code>) without training:</p>
+<pre><code><span class="tok-c"># Evaluate the packaged GPT-5.5 SearchQA skill on the test split</span>
+<span class="tok-k">python</span> scripts/eval_only.py \
+  <span class="tok-f">--config</span> configs/searchqa/default.yaml \
+  <span class="tok-f">--skill</span> ckpt/searchqa/gpt5.5_skill.md \
+  <span class="tok-f">--split</span> valid_unseen \
+  <span class="tok-f">--split_dir</span> /path/to/searchqa_split \
+  <span class="tok-f">--azure_openai_endpoint</span> https://your-resource.openai.azure.com/</code></pre>
+      <div class="table-wrap"><table>
+        <thead><tr><th><code>--split</code></th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>valid_unseen</code></td><td>Test set (held-out)</td></tr>
+          <tr><td><code>valid_seen</code></td><td>Validation / selection set</td></tr>
+          <tr><td><code>train</code></td><td>Training set</td></tr>
+          <tr><td><code>all</code></td><td>All splits combined (default)</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="outputs">
+      <h2>3.4 Output Structure <a class="anchor" href="#outputs">#</a></h2>
+<pre><code>outputs/&lt;run_name&gt;/
+ ├─ config.json          <span class="tok-c"># flattened runtime config</span>
+ ├─ history.json         <span class="tok-c"># per-step training history</span>
+ ├─ runtime_state.json   <span class="tok-c"># resume checkpoint</span>
+ ├─ best_skill.md        <span class="tok-c"># best validated skill document</span>
+ ├─ skills/skill_vXXXX.md<span class="tok-c"># skill snapshot per step</span>
+ ├─ steps/step_XXXX/     <span class="tok-c"># per-step artifacts (patches, evals)</span>
+ ├─ slow_update/epoch_XX/<span class="tok-c"># slow-update logs &amp; rollouts</span>
+ └─ meta_skill/epoch_XX/ <span class="tok-c"># meta-skill logs</span></code></pre>
+    </section>
+
+    <section id="resume">
+      <h2>3.5 Auto-Resume <a class="anchor" href="#resume">#</a></h2>
+      <p>Each completed step persists its state to <code>runtime_state.json</code> and a <code>steps/step_XXXX/</code> directory. Re-running the <em>same command</em> against the same <code>out_root</code> detects finished work and continues from the last completed step — including epoch-boundary slow-update and meta-skill stages.</p>
+    </section>
+
+    <!-- ===================== 3. DATA ===================== -->
+    <section id="split-dir">
+      <h2>4.1 Split Directory Format <a class="anchor" href="#split-dir">#</a></h2>
+      <p><strong>Bringing your own dataset takes three steps:</strong>
+      (1) create a split directory with <code>train/ val/ test/</code> item
+      files in the format below; (2) make sure each item carries the fields
+      the closest existing benchmark adapter expects (§4.2); (3) point
+      <code>--split_dir</code> at it and train with that benchmark's config.
+      If no existing adapter matches your task shape (different rollout or
+      scoring logic), write a new benchmark adapter instead — see §7.2.</p>
+
+      <p>With <code>env.split_mode: split_dir</code> (the recommended, deterministic mode), SkillOpt reads a directory containing <code>train/</code>, <code>val/</code>, and <code>test/</code> subfolders, each holding a JSON array of task items:</p>
+<pre><code>data/my_split/
+ ├─ train/items.json   <span class="tok-c"># used for rollout (the "train split")</span>
+ ├─ val/items.json     <span class="tok-c"># selection split → validation gate (valid_seen)</span>
+ └─ test/items.json    <span class="tok-c"># held-out final eval (valid_unseen)</span></code></pre>
+      <div class="note info"><span class="nh">Split naming</span>
+        <p>Internally the splits are referred to as <code>train</code>, <code>valid_seen</code> (validation/selection), and <code>valid_unseen</code> (test). The <code>--split</code> flag of <code>eval_only.py</code> uses these names.</p>
+      </div>
+    </section>
+
+    <section id="item-schema">
+      <h2>4.2 Item JSON Schema <a class="anchor" href="#item-schema">#</a></h2>
+      <p>Required fields depend on the benchmark; consult <code>skillopt/envs/&lt;benchmark&gt;/dataloader.py</code> for the exact contract. A SearchQA item, for example:</p>
+<pre><code>[
+  {
+    <span class="tok-f">"id"</span>:       <span class="tok-s">"unique_item_id"</span>,
+    <span class="tok-f">"question"</span>: <span class="tok-s">"Who wrote the novel ..."</span>,
+    <span class="tok-f">"context"</span>:  <span class="tok-s">"[DOC] relevant passage text ..."</span>,
+    <span class="tok-f">"answers"</span>:  [<span class="tok-s">"expected answer"</span>]
+  }
+]</code></pre>
+      <div class="note warn"><span class="nh">Datasets not included</span>
+        <p>This repository ships no benchmark data. Prepare your own splits in the format above before training.</p>
+      </div>
+    </section>
+
+    <section id="split-modes">
+      <h2>4.3 Split Modes <a class="anchor" href="#split-modes">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th><code>env.split_mode</code></th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><code>split_dir</code></td><td>Use a pre-built directory with explicit <code>train/val/test</code> folders (set <code>env.split_dir</code>). Deterministic and reproducible.</td></tr>
+          <tr><td><code>ratio</code></td><td>Build a deterministic split on the fly from a single <code>env.data_path</code>, using <code>split_seed</code> (and a train:val:test ratio). Convenient for quick experiments.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ===================== 5. HOW IT WORKS ===================== -->
+    <section id="loop">
+      <h2>5.1 The Training Loop <a class="anchor" href="#loop">#</a></h2>
+      <p>The loop lives in <code>ReflACTTrainer</code> (<code>skillopt/engine/trainer.py</code>). Each epoch runs a series of optimization steps over rollout batches, then performs two epoch-boundary stages.</p>
+<pre><code><span class="tok-k">for</span> epoch <span class="tok-k">in</span> epochs:
+    <span class="tok-k">for</span> step <span class="tok-k">in</span> steps:
+        1. Rollout    <span class="tok-c"># target executes a batch of tasks</span>
+        2. Reflect    <span class="tok-c"># optimizer analyzes trajectories → edit patches</span>
+        3. Aggregate  <span class="tok-c"># hierarchically merge similar patches</span>
+        4. Select     <span class="tok-c"># rank &amp; clip edits to the learning rate</span>
+        5. Update     <span class="tok-c"># apply patches → candidate skill</span>
+        6. Gate       <span class="tok-c"># score on selection split → accept / reject</span>
+
+    <span class="tok-c"># epoch boundary (from epoch 2 onward)</span>
+    Slow update   <span class="tok-c"># longitudinal comparison → protected guidance</span>
+    Meta skill    <span class="tok-c"># cross-epoch optimizer memory</span></code></pre>
+    </section>
+
+    <section id="stages">
+      <h2>5.2 The Six Per-Step Stages <a class="anchor" href="#stages">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Stage</th><th>What happens</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td><strong>1. Rollout</strong></td><td>The target model runs each task in the batch with the current skill as context, producing trajectories and scores.</td><td><code>envs/&lt;b&gt;/rollout.py</code></td></tr>
+          <tr><td><strong>2. Reflect</strong></td><td>The optimizer runs an error analyst (and optional success analyst) over minibatches of trajectories, emitting structured edit patches. Runs in parallel across <code>analyst_workers</code>.</td><td><code>gradient/reflect.py</code></td></tr>
+          <tr><td><strong>3. Aggregate</strong></td><td>Semantically similar patches are merged hierarchically to remove redundancy.</td><td><code>gradient/aggregate.py</code> → <code>merge_patches</code></td></tr>
+          <tr><td><strong>4. Select</strong></td><td>Patches are ranked and clipped to the current learning rate (max edits this step), set by the scheduler.</td><td><code>optimizer/clip.py</code> → <code>rank_and_select</code></td></tr>
+          <tr><td><strong>5. Update</strong></td><td>Selected edits are applied to the skill document, producing a candidate skill (patch / rewrite modes).</td><td><code>optimizer/skill.py</code>, <code>update_modes.py</code></td></tr>
+          <tr><td><strong>6. Gate</strong></td><td>The candidate is scored on the selection split and accepted only if it improves (see §5.3).</td><td><code>evaluation/gate.py</code> → <code>evaluate_gate</code></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="gate">
+      <h2>5.3 Validation Gate <a class="anchor" href="#gate">#</a></h2>
+      <p><code>evaluate_gate</code> is a pure decision function. It compares the candidate's selection-set score against the <em>current</em> and <em>best</em> skills:</p>
+      <ul>
+        <li><strong>accept_new_best</strong> — candidate &gt; current <em>and</em> candidate &gt; best → becomes both current and best.</li>
+        <li><strong>accept</strong> — candidate &gt; current but ≤ best → becomes current only.</li>
+        <li><strong>reject</strong> — candidate ≤ current → discarded; current/best unchanged.</li>
+      </ul>
+      <p>The comparison metric is configurable via <code>evaluation.gate_metric</code>:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Metric</th><th>Score used</th></tr></thead>
+        <tbody>
+          <tr><td><code>hard</code> <span class="pill def">default</span></td><td>Exact-match / discrete score</td></tr>
+          <tr><td><code>soft</code></td><td>Partial-credit / continuous score</td></tr>
+          <tr><td><code>mixed</code></td><td>Weighted blend, controlled by <code>gate_mixed_weight</code></td></tr>
+        </tbody>
+      </table></div>
+      <div class="note info"><span class="nh">When to use soft/mixed</span>
+        <p>The <code>soft</code>/<code>mixed</code> metrics (contributed config <code>configs/examples/soft_gate.yaml</code>) help when the selection split is small and rewards are continuous, where a discrete hard gate may reject every candidate and stall training. Paper numbers use the default <code>hard</code> gate.</p>
+      </div>
+    </section>
+
+    <section id="slow-update">
+      <h2>5.4 Slow Update (Momentum) <a class="anchor" href="#slow-update">#</a></h2>
+      <p>At each epoch boundary (from epoch 2), the slow update rolls out both the <em>previous</em> epoch's skill and the <em>current</em> skill on the same sampled tasks, categorizes items (improved / regressed / persistent-fail / stable-success), and asks the optimizer to write a free-form <strong>guidance</strong> block. This guidance lands in a <strong>protected region</strong> of the skill that step-level edits cannot touch — only the slow update overwrites it. It is SkillOpt's analogue of momentum, countering cross-epoch forgetting.</p>
+      <p>Acceptance has two modes, selected by <code>optimizer.slow_update_gate_with_selection</code>:</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Mode</th><th>Behavior</th></tr></thead>
+        <tbody>
+          <tr><td><code>false</code> <span class="pill def">default</span> — force-injected</td><td>Guidance is injected into both current and best skills unconditionally. The longitudinal guidance always persists; it is not gated by step-level selection scores.</td></tr>
+          <tr><td><code>true</code> — gated</td><td>The slow-update candidate is scored on the selection split and accepted/rejected through the same validation gate as step-level updates.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="meta-skill">
+      <h2>5.5 Meta Skill (Optimizer Memory) <a class="anchor" href="#meta-skill">#</a></h2>
+      <p>The meta skill is <strong>optimizer-side memory</strong> — it never modifies the target skill document. At the end of each epoch (skipped for epoch 1), the optimizer compares the previous and current epoch's last-step skills on the same sampled tasks and writes a compact, evidence-based reflection on what kind of edits helped or hurt. That memory is then injected as extra context into the next epoch's reflect / merge / learning-rate / ranking stages, so the optimizer accumulates strategy across the run.</p>
+    </section>
+
+    <section id="skill-doc">
+      <h2>5.6 Skill Document Anatomy <a class="anchor" href="#skill-doc">#</a></h2>
+      <p>A skill document is plain Markdown. Initial skills can be empty (learn from scratch) or seeded with domain knowledge via <code>env.skill_init</code>. During training the document accrues rules, patterns, and edge-case handling through accepted edit patches. A dedicated protected region holds the slow-update guidance, delimited by HTML-comment markers:</p>
+<pre><code><span class="tok-c"># Question Answering Skill</span>
+
+<span class="tok-c">## Learned rules ...</span>
+- When the context contains multiple candidates, prefer ...
+
+<span class="tok-c">&lt;!-- SLOW_UPDATE_START --&gt;</span>
+<span class="tok-c"># (epoch-level longitudinal guidance — only the slow update writes here)</span>
+<span class="tok-c">&lt;!-- SLOW_UPDATE_END --&gt;</span></code></pre>
+      <p>Helpers in <code>optimizer/slow_update.py</code> manage this region: <code>inject_empty_slow_update_field</code> (placeholder at epoch 1), <code>extract_slow_update_field</code> (read), and <code>replace_slow_update_field</code> (overwrite). Step-level edits are blocked from modifying anything inside the markers.</p>
+    </section>
+
+    <!-- ===================== 6. CONFIGURATION ===================== -->
+    <section id="config-system">
+      <h2>6.1 Configuration System <a class="anchor" href="#config-system">#</a></h2>
+      <p>Configs are <strong>structured YAML</strong> with section blocks (<code>model</code>, <code>train</code>, <code>gradient</code>, <code>optimizer</code>, <code>evaluation</code>, <code>env</code>) and <code>_base_</code> inheritance. A benchmark config inherits the shared defaults and overrides only what differs:</p>
+<pre><code><span class="tok-c"># configs/searchqa/default.yaml</span>
+<span class="tok-f">_base_</span>: ../_base_/default.yaml
+<span class="tok-f">train</span>:
+  <span class="tok-f">train_size</span>: <span class="tok-n">400</span>
+  <span class="tok-f">batch_size</span>: <span class="tok-n">40</span>
+<span class="tok-f">optimizer</span>:
+  <span class="tok-f">learning_rate</span>: <span class="tok-n">4</span>
+<span class="tok-f">env</span>:
+  <span class="tok-f">name</span>: searchqa
+  <span class="tok-f">split_dir</span>: data/searchqa_split</code></pre>
+      <p>Override any key at the command line without editing files:</p>
+<pre><code><span class="tok-k">python</span> scripts/train.py --config configs/searchqa/default.yaml \
+  <span class="tok-f">--cfg-options</span> optimizer.learning_rate=<span class="tok-n">16</span> optimizer.lr_scheduler=linear</code></pre>
+      <div class="note info"><span class="nh">Reading the tables below</span>
+        <p>Each section lists the key (relative to its YAML block), type, default (from <code>configs/_base_/default.yaml</code>), allowed values, and meaning. Defaults shown are the shipped base defaults.</p>
+      </div>
+    </section>
+
+    <section id="cfg-model">
+      <h2>6.2 <code>model.*</code> <a class="anchor" href="#cfg-model">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description / options</th></tr></thead>
+        <tbody>
+          <tr><td><code>backend</code></td><td>str</td><td class="def">azure_openai</td><td>High-level backend label for the run.</td></tr>
+          <tr><td><code>optimizer</code></td><td>str</td><td class="def">gpt-5.5</td><td>Optimizer model deployment (writes skill edits).</td></tr>
+          <tr><td><code>target</code></td><td>str</td><td class="def">gpt-5.5</td><td>Target model deployment (executes tasks).</td></tr>
+          <tr><td><code>optimizer_backend</code></td><td>str</td><td class="def">openai_chat</td><td>Client path for the optimizer: <code>openai_chat</code> or <code>claude_chat</code>.</td></tr>
+          <tr><td><code>target_backend</code></td><td>str</td><td class="def">openai_chat</td><td>Client path for the target: <code>openai_chat</code> / <code>claude_chat</code> / <code>qwen_chat</code> / <code>codex_exec</code> / <code>claude_code_exec</code>.</td></tr>
+          <tr><td><code>reasoning_effort</code></td><td>str</td><td class="def">medium</td><td><code>low</code> / <code>medium</code> / <code>high</code> / <code>xhigh</code> / <code>max</code> (or empty).</td></tr>
+          <tr><td><code>rewrite_reasoning_effort</code></td><td>str</td><td class="def">""</td><td>Override effort for full-rewrite calls (empty = inherit).</td></tr>
+          <tr><td><code>rewrite_max_completion_tokens</code></td><td>int</td><td class="def">64000</td><td>Token cap for full-rewrite optimizer calls.</td></tr>
+          <tr><td><code>azure_openai_endpoint</code></td><td>str</td><td class="def">""</td><td>Azure resource URL (or via <code>AZURE_OPENAI_ENDPOINT</code>).</td></tr>
+          <tr><td><code>azure_openai_api_version</code></td><td>str</td><td class="def">2024-12-01-preview</td><td>Azure API version header.</td></tr>
+          <tr><td><code>azure_openai_auth_mode</code></td><td>str</td><td class="def">""</td><td><code>api_key</code> / <code>azure_cli</code> / <code>managed_identity</code> / <code>openai_compatible</code> (empty → env default).</td></tr>
+        </tbody>
+      </table></div>
+      <div class="note info"><span class="nh">Separate optimizer / target endpoints</span>
+        <p>Every <code>azure_openai_*</code> key also has <code>optimizer_azure_openai_*</code> and <code>target_azure_openai_*</code> variants, letting you point the optimizer and target at different Azure resources. Exec backends (<code>codex_exec</code>, <code>claude_code_exec</code>) add their own <code>codex_exec_*</code> / <code>claude_code_exec_*</code> knobs (sandbox, reasoning effort, SDK mode, etc.).</p>
+      </div>
+    </section>
+
+    <section id="cfg-train">
+      <h2>6.3 <code>train.*</code> <a class="anchor" href="#cfg-train">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>DL analogy</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>num_epochs</code></td><td>int</td><td class="def">4</td><td>Epochs</td><td>Number of training epochs.</td></tr>
+          <tr><td><code>train_size</code></td><td>int</td><td class="def">0</td><td>Train-set size</td><td>0 = derive from the dataset split. (Fixed by split size when using <code>split_dir</code>.)</td></tr>
+          <tr><td><code>batch_size</code></td><td>int</td><td class="def">40</td><td>Batch size</td><td>Tasks rolled out per optimization step.</td></tr>
+          <tr><td><code>accumulation</code></td><td>int</td><td class="def">1</td><td>Grad accumulation</td><td>Accumulation rounds per step.</td></tr>
+          <tr><td><code>seed</code></td><td>int</td><td class="def">42</td><td>Random seed</td><td>Reproducibility seed.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="cfg-gradient">
+      <h2>6.4 <code>gradient.*</code> <a class="anchor" href="#cfg-gradient">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>minibatch_size</code></td><td>int</td><td class="def">8</td><td>Trajectories per reflect minibatch.</td></tr>
+          <tr><td><code>merge_batch_size</code></td><td>int</td><td class="def">8</td><td>Patches per merge batch during aggregation.</td></tr>
+          <tr><td><code>analyst_workers</code></td><td>int</td><td class="def">16</td><td>Parallel reflection workers (data parallelism).</td></tr>
+          <tr><td><code>max_analyst_rounds</code></td><td>int</td><td class="def">3</td><td>Max rounds of analyst reflection per step.</td></tr>
+          <tr><td><code>failure_only</code></td><td>bool</td><td class="def">false</td><td>Reflect only on failed trajectories when true.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="cfg-optimizer">
+      <h2>6.5 <code>optimizer.*</code> <a class="anchor" href="#cfg-optimizer">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>DL analogy</th><th>Description / options</th></tr></thead>
+        <tbody>
+          <tr><td><code>learning_rate</code></td><td>int</td><td class="def">4</td><td>Learning rate</td><td>Max edit patches applied per step (the "edit budget").</td></tr>
+          <tr><td><code>min_learning_rate</code></td><td>int</td><td class="def">2</td><td>Min LR</td><td>Floor edit budget for decaying schedulers.</td></tr>
+          <tr><td><code>lr_scheduler</code></td><td>str</td><td class="def">cosine</td><td>LR schedule</td><td><code>constant</code> / <code>linear</code> / <code>cosine</code> / <code>autonomous</code>.</td></tr>
+          <tr><td><code>lr_control_mode</code></td><td>str</td><td class="def">fixed</td><td>—</td><td><code>fixed</code> / <code>autonomous</code> / <code>none</code>.</td></tr>
+          <tr><td><code>skill_update_mode</code></td><td>str</td><td class="def">patch</td><td>—</td><td><code>patch</code> / <code>rewrite_from_suggestions</code> / <code>full_rewrite_minibatch</code>.</td></tr>
+          <tr><td><code>use_slow_update</code></td><td>bool</td><td class="def">true</td><td>Momentum</td><td>Enable epoch-boundary slow update.</td></tr>
+          <tr><td><code>slow_update_samples</code></td><td>int</td><td class="def">20</td><td>—</td><td>Tasks sampled for the longitudinal comparison.</td></tr>
+          <tr><td><code>slow_update_gate_with_selection</code></td><td>bool</td><td class="def">false</td><td>—</td><td><code>false</code> = force-inject guidance; <code>true</code> = gate it on the selection split (see §5.4).</td></tr>
+          <tr><td><code>longitudinal_pair_policy</code></td><td>str</td><td class="def">mixed</td><td>—</td><td><code>mixed</code> / <code>changed</code> / <code>unchanged</code> — which comparison pairs to keep.</td></tr>
+          <tr><td><code>use_meta_skill</code></td><td>bool</td><td class="def">true</td><td>Meta-learning</td><td>Enable cross-epoch optimizer memory.</td></tr>
+          <tr><td><code>use_skill_aware_reflection</code></td><td>bool</td><td class="def">false</td><td>—</td><td>EmbodiSkill-style failure routing: <code>SKILL_DEFECT</code> (rule wrong/missing &rarr; gated body edit) vs <code>EXECUTION_LAPSE</code> (valid rule not followed &rarr; reminder appended to a protected appendix region that step-level edits never modify). Off = baseline-identical; resolved process-wide, works on every benchmark. Not supported with <code>rewrite_from_suggestions</code> / full-rewrite modes.</td></tr>
+          <tr><td><code>skill_aware_appendix_source</code></td><td>str</td><td class="def">both</td><td>—</td><td><code>both</code> (success analyst may also re-emphasize rules) / <code>failure_only</code> (paper-faithful S_app: failure side only).</td></tr>
+          <tr><td><code>skill_aware_consolidate_threshold</code></td><td>int</td><td class="def">0</td><td>—</td><td><code>&gt;0</code>: LLM-compact the appendix once it exceeds N notes (experimental); <code>0</code> = off.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="cfg-evaluation">
+      <h2>6.6 <code>evaluation.*</code> <a class="anchor" href="#cfg-evaluation">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description / options</th></tr></thead>
+        <tbody>
+          <tr><td><code>use_gate</code></td><td>bool</td><td class="def">true</td><td>Validation gating is mandatory in this branch (must remain <code>true</code>).</td></tr>
+          <tr><td><code>gate_metric</code></td><td>str</td><td class="def">hard</td><td><code>hard</code> / <code>soft</code> / <code>mixed</code> — score used by the gate (see §5.3).</td></tr>
+          <tr><td><code>gate_mixed_weight</code></td><td>float</td><td class="def">0.5</td><td>Weight on the soft score when <code>gate_metric = mixed</code>.</td></tr>
+          <tr><td><code>sel_env_num</code></td><td>int</td><td class="def">0</td><td>Selection-split eval size (0 = use full split).</td></tr>
+          <tr><td><code>test_env_num</code></td><td>int</td><td class="def">0</td><td>Test-split eval size (0 = use full split).</td></tr>
+          <tr><td><code>eval_test</code></td><td>bool</td><td class="def">true</td><td>Run a final test evaluation after training.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="note warn"><span class="nh">Gate is required</span>
+        <p>Setting <code>evaluation.use_gate: false</code> raises an error — validation gating cannot be disabled in this branch.</p>
+      </div>
+    </section>
+
+    <section id="cfg-env">
+      <h2>6.7 <code>env.*</code> <a class="anchor" href="#cfg-env">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>name</code></td><td>str</td><td class="def">""</td><td>Benchmark name (<code>searchqa</code>, <code>docvqa</code>, <code>alfworld</code>, …). Selects the env module.</td></tr>
+          <tr><td><code>skill_init</code></td><td>str</td><td class="def">""</td><td>Path to a seed skill (empty = start from scratch).</td></tr>
+          <tr><td><code>split_mode</code></td><td>str</td><td class="def">ratio</td><td><code>ratio</code> or <code>split_dir</code> (see §4.3).</td></tr>
+          <tr><td><code>split_dir</code></td><td>str</td><td class="def">""</td><td>Pre-split directory (when <code>split_mode = split_dir</code>).</td></tr>
+          <tr><td><code>data_path</code></td><td>str</td><td class="def">""</td><td>Single dataset path (when <code>split_mode = ratio</code>).</td></tr>
+          <tr><td><code>split_seed</code></td><td>int</td><td class="def">42</td><td>Seed for deterministic ratio splitting.</td></tr>
+          <tr><td><code>exec_timeout</code></td><td>int</td><td class="def">120</td><td>Per-task target/code-agent timeout (seconds).</td></tr>
+          <tr><td><code>out_root</code></td><td>str</td><td class="def">""</td><td>Output directory for the run.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="note info"><span class="nh">Benchmark-specific env keys</span>
+        <p>Env blocks may carry extra benchmark-specific keys (e.g. <code>max_turns</code>, <code>workers</code>, <code>max_completion_tokens</code>, <code>limit</code>). Unmapped env keys are passed straight through to the benchmark adapter — check the relevant <code>configs/&lt;benchmark&gt;/default.yaml</code>.</p>
+      </div>
+    </section>
+
+    <!-- ===================== 7. BENCHMARKS ===================== -->
+    <section id="bench-list">
+      <h2>7.1 Supported Benchmarks <a class="anchor" href="#bench-list">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Benchmark</th><th>Type</th><th>Config</th></tr></thead>
+        <tbody>
+          <tr><td>SearchQA</td><td>Question answering</td><td><code>configs/searchqa/default.yaml</code></td></tr>
+          <tr><td>DocVQA</td><td>Document QA</td><td><code>configs/docvqa/default.yaml</code></td></tr>
+          <tr><td>ALFWorld</td><td>Embodied agent</td><td><code>configs/alfworld/default.yaml</code></td></tr>
+          <tr><td>LiveMathematicianBench</td><td>Math reasoning</td><td><code>configs/livemathematicianbench/default.yaml</code></td></tr>
+          <tr><td>SpreadsheetBench</td><td>Spreadsheet code generation</td><td><code>configs/spreadsheetbench/default.yaml</code></td></tr>
+          <tr><td>OfficeQA</td><td>Tool-augmented QA</td><td><code>configs/officeqa/default.yaml</code></td></tr>
+        </tbody>
+      </table></div>
+      <p>Each benchmark is a self-contained module under <code>skillopt/envs/&lt;benchmark&gt;/</code> with an <code>adapter.py</code>, <code>dataloader.py</code>, <code>rollout.py</code>, and <code>evaluator.py</code> (some add a custom <code>reflect.py</code>). Packaged reference skills live in <code>ckpt/&lt;benchmark&gt;/</code>.</p>
+    </section>
+
+    <section id="bench-new">
+      <h2>7.2 Add a New Benchmark <a class="anchor" href="#bench-new">#</a></h2>
+      <p>Use <code>skillopt/envs/_template/</code> as a starting point. At minimum, implement:</p>
+      <ol>
+        <li><strong>Dataloader</strong> — read your item JSON into the framework's item dicts (<code>dataloader.py</code>).</li>
+        <li><strong>Rollout</strong> — run the target on one item with the current skill and return a trajectory + score (<code>rollout.py</code>).</li>
+        <li><strong>Evaluator</strong> — score predictions against ground truth (<code>evaluator.py</code>).</li>
+        <li><strong>Adapter</strong> — wire the above into the trainer's expected interface and register the env name (<code>adapter.py</code>).</li>
+      </ol>
+      <p>Then add a <code>configs/&lt;name&gt;/default.yaml</code> inheriting <code>_base_/default.yaml</code> and set <code>env.name</code> to your new benchmark.</p>
+    </section>
+
+    <!-- ===================== 8. API REFERENCE ===================== -->
+    <section id="module-map">
+      <h2>8.1 Module Map <a class="anchor" href="#module-map">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Module</th><th>Responsibility</th></tr></thead>
+        <tbody>
+          <tr><td><code>skillopt/config.py</code></td><td>Load structured YAML, resolve <code>_base_</code> inheritance, flatten to the trainer's flat dict, apply CLI overrides.</td></tr>
+          <tr><td><code>skillopt/engine/trainer.py</code></td><td><code>ReflACTTrainer</code> — orchestrates the whole loop, gating, slow update, meta skill, resume, and artifact writing.</td></tr>
+          <tr><td><code>skillopt/gradient/</code></td><td>Reflection ("backward pass"): <code>reflect.py</code> analysts, <code>aggregate.py</code> patch merging.</td></tr>
+          <tr><td><code>skillopt/optimizer/</code></td><td>The "optimizer": edit application, learning-rate scheduling, edit selection, slow update, meta skill, rewrite modes.</td></tr>
+          <tr><td><code>skillopt/evaluation/gate.py</code></td><td>Pure accept/reject decision and metric selection.</td></tr>
+          <tr><td><code>skillopt/model/</code></td><td>Backend clients (OpenAI/Azure, Claude, Qwen, Codex/Claude-Code exec) and routing.</td></tr>
+          <tr><td><code>skillopt/envs/&lt;b&gt;/</code></td><td>Per-benchmark dataloader, rollout, evaluator, adapter.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="functions">
+      <h2>8.2 Core Functions <a class="anchor" href="#functions">#</a></h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Function</th><th>File</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>load_config</code> / <code>flatten_config</code> / <code>apply_overrides</code></td><td><code>config.py</code></td><td>Load YAML with inheritance; flatten sections; apply <code>key=value</code> overrides.</td></tr>
+          <tr><td><code>run_minibatch_reflect</code></td><td><code>gradient/reflect.py</code></td><td>Run error/success analysts over trajectory minibatches → edit patches.</td></tr>
+          <tr><td><code>merge_patches</code></td><td><code>gradient/aggregate.py</code></td><td>Hierarchically merge semantically similar patches.</td></tr>
+          <tr><td><code>rank_and_select</code></td><td><code>optimizer/clip.py</code></td><td>Rank edits and clip to the learning-rate budget.</td></tr>
+          <tr><td><code>build_scheduler</code></td><td><code>optimizer/scheduler.py</code></td><td>Construct the LR (edit-budget) scheduler: constant/linear/cosine/autonomous.</td></tr>
+          <tr><td><code>decide_autonomous_learning_rate</code></td><td><code>optimizer/lr_autonomous.py</code></td><td>Let the optimizer pick the next learning rate (autonomous mode).</td></tr>
+          <tr><td><code>apply_patch</code> / <code>apply_edit</code></td><td><code>optimizer/skill.py</code></td><td>Apply edits to the skill document (respecting the protected region).</td></tr>
+          <tr><td><code>rewrite_skill_from_suggestions</code></td><td><code>optimizer/rewrite.py</code></td><td>Full-rewrite update mode from accumulated suggestions.</td></tr>
+          <tr><td><code>evaluate_gate</code> / <code>select_gate_score</code></td><td><code>evaluation/gate.py</code></td><td>Accept/reject decision; compute hard/soft/mixed score.</td></tr>
+          <tr><td><code>run_slow_update</code></td><td><code>optimizer/slow_update.py</code></td><td>Produce epoch-boundary longitudinal guidance.</td></tr>
+          <tr><td><code>replace_slow_update_field</code> / <code>extract_slow_update_field</code></td><td><code>optimizer/slow_update.py</code></td><td>Read/overwrite the protected guidance region.</td></tr>
+          <tr><td><code>run_meta_skill</code> / <code>format_meta_skill_context</code></td><td><code>optimizer/meta_skill.py</code></td><td>Generate cross-epoch optimizer memory and render it into reflection context.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section id="cli">
+      <h2>8.3 CLI Scripts <a class="anchor" href="#cli">#</a></h2>
+      <h4>scripts/train.py</h4>
+      <p>Runs a full training loop. Required: <code>--config</code>. Override config via <code>--cfg-options section.key=value …</code> or legacy flat flags (<code>--num_epochs</code>, <code>--batch_size</code>, <code>--optimizer_model</code>, <code>--target_model</code>, <code>--lr_scheduler</code>, <code>--edit_budget</code>, <code>--split_dir</code>, …).</p>
+      <h4>scripts/eval_only.py</h4>
+      <p>Evaluates a skill document without training. Required: <code>--config</code> and <code>--skill</code>. Use <code>--split</code> to choose <code>train</code> / <code>valid_seen</code> / <code>valid_unseen</code> / <code>all</code>.</p>
+<pre><code><span class="tok-k">python</span> scripts/eval_only.py \
+  --config configs/searchqa/default.yaml \
+  --skill outputs/my_run/best_skill.md \
+  --split valid_unseen</code></pre>
+    </section>
+
+    <section id="webui">
+      <h2>8.4 WebUI <a class="anchor" href="#webui">#</a></h2>
+      <p>An optional Gradio dashboard to configure parameters and monitor runs:</p>
+<pre><code><span class="tok-k">pip</span> install -e <span class="tok-s">".[webui]"</span>
+<span class="tok-k">python</span> -m skillopt_webui.app          <span class="tok-c"># http://localhost:7860</span>
+<span class="tok-k">python</span> -m skillopt_webui.app --share  <span class="tok-c"># public share link</span></code></pre>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Flag</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>--port</code></td><td class="def">7860</td><td>Server port.</td></tr>
+          <tr><td><code>--host</code></td><td class="def">0.0.0.0</td><td>Bind address.</td></tr>
+          <tr><td><code>--share</code></td><td class="def">off</td><td>Create a public Gradio share link.</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="footer-note">
+        SkillOpt — Executive Strategy for Self-Evolving Agent Skills ·
+        <a href="https://github.com/microsoft/SkillOpt">github.com/microsoft/SkillOpt</a> ·
+        <a href="https://arxiv.org/abs/2605.23904">arXiv:2605.23904</a><br>
+        This guide reflects the current configuration defaults in <code>configs/_base_/default.yaml</code>. When in doubt, the code is the source of truth.
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ───────────── RIGHT TOC ───────────── -->
+  <aside class="toc" id="toc">
+    <div class="tl">On this page</div>
+    <div id="tocLinks"></div>
+  </aside>
+
+</div>
+
+<script>
+(function () {
+  // Build right-hand "On this page" from <h2> elements
+  var sections = Array.prototype.slice.call(document.querySelectorAll('main.content section[id]'));
+  var tocLinks = document.getElementById('tocLinks');
+  var h2s = Array.prototype.slice.call(document.querySelectorAll('main.content h2'));
+  h2s.forEach(function (h) {
+    var sec = h.closest('section');
+    if (!sec || !sec.id) return;
+    var a = document.createElement('a');
+    a.href = '#' + sec.id;
+    a.textContent = h.textContent.replace(/#$/, '').trim();
+    a.dataset.target = sec.id;
+    tocLinks.appendChild(a);
+  });
+
+  var sideLinks = Array.prototype.slice.call(document.querySelectorAll('nav.sidebar a'));
+  var tocAnchors = Array.prototype.slice.call(tocLinks.querySelectorAll('a'));
+
+  function setActive(id) {
+    sideLinks.forEach(function (a) {
+      a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+    });
+    tocAnchors.forEach(function (a) {
+      a.classList.toggle('active', a.dataset.target === id);
+    });
+  }
+
+  // Scroll spy
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) setActive(e.target.id);
+    });
+  }, { rootMargin: '-64px 0px -75% 0px', threshold: 0 });
+  sections.forEach(function (s) { observer.observe(s); });
+
+  // Mobile sidebar toggle
+  var btn = document.getElementById('menuBtn');
+  var sidebar = document.getElementById('sidebar');
+  btn.addEventListener('click', function () { sidebar.classList.toggle('open'); });
+  sideLinks.forEach(function (a) {
+    a.addEventListener('click', function () { sidebar.classList.remove('open'); });
+  });
+})();
+</script>
+</body>
+</html>

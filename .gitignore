@@ -55,3 +55,8 @@ docs/让*
 .gradio/
 .venv
 .worktrees/
+
+# Local experiment launchers — contain machine-specific endpoints/identities, never commit
+tests/run_*.sh
+tests/launch_*.py
+*.launch.log

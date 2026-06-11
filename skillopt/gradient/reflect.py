@@ -29,6 +29,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from skillopt.model import chat_optimizer
 from skillopt.optimizer.meta_skill import format_meta_skill_context
+from skillopt.optimizer.skill_aware import (
+    augment_error_prompt,
+    augment_success_prompt,
+    extract_appendix_notes,
+    get_skill_aware_appendix_source,
+    is_skill_aware_enabled,
+)
 from skillopt.optimizer.update_modes import (
     get_payload_items,
     is_full_rewrite_minibatch_mode,
@@ -43,19 +50,21 @@ from skillopt.utils import extract_json
 
 # ── Trajectory formatting ────────────────────────────────────────────────────
 
-_MAX_TRAJ_CHARS = 12_000
 
+def _clip_text(value, limit: int | None = None) -> str:
+    """Render optional trajectory fields. Truncation is disabled: the optimizer
+    is given the full content so it can see exactly what the agent saw/did.
 
-def _clip_text(value, limit: int) -> str:
-    """Render optional trajectory fields safely before truncation."""
+    ``limit`` is accepted for backward compatibility but ignored.
+    """
     if value is None:
         return ""
-    return str(value)[:limit]
+    return str(value)
 
 
 def fmt_trajectory(
     conversation: list[dict],
-    max_chars: int = _MAX_TRAJ_CHARS,
+    max_chars: int | None = None,
 ) -> str:
     """Format a conversation list into analyst-readable text.
 
@@ -69,37 +78,32 @@ def fmt_trajectory(
     lines: list[str] = []
     for item in conversation:
         if not isinstance(item, dict):
-            lines.append(f"[agent] {_clip_text(item, 500)}")
+            lines.append(f"[agent] {_clip_text(item)}")
             continue
         if item.get("type") == "tool_call":
-            cmd = _clip_text(item.get("cmd"), 500)
-            obs = _clip_text(item.get("obs"), 800)
+            cmd = _clip_text(item.get("cmd"))
+            obs = _clip_text(item.get("obs"))
             lines.append(f"[action] {cmd}")
             lines.append(f"[obs]    {obs}")
         elif "action" in item and "env_feedback" in item:
             step = item.get("step", "?")
-            reasoning = _clip_text(item.get("reasoning"), 300)
-            action = _clip_text(item.get("action"), 200)
-            feedback = _clip_text(item.get("env_feedback"), 500)
+            reasoning = _clip_text(item.get("reasoning"))
+            action = _clip_text(item.get("action"))
+            feedback = _clip_text(item.get("env_feedback"))
             if reasoning:
                 lines.append(f"[step {step} think] {reasoning}")
             lines.append(f"[step {step} action] {action}")
             lines.append(f"[step {step} obs]    {feedback}")
         elif item.get("role") == "system":
             # Post-execution verification / enrichment info
-            msg = _clip_text(item.get("content"), 2000)
+            msg = _clip_text(item.get("content"))
             lines.append(f"[verification] {msg}")
         else:
-            msg = _clip_text(item.get("content"), 500)
+            msg = _clip_text(item.get("content"))
             role = item.get("role", "agent")
             lines.append(f"[{role}] {msg}")
 
-    text = "\n".join(lines)
-    if len(text) > max_chars:
-        head = text[: max_chars // 2]
-        tail = text[-max_chars // 2 :]
-        text = head + "\n...[middle truncated]...\n" + tail
-    return text
+    return "\n".join(lines)
 
 
 # ── Minibatch trajectory formatting ──────────────────────────────────────────
@@ -157,7 +161,7 @@ def fmt_minibatch_trajectories(
         if reference_text:
             header += (
                 f"\n#### Hidden Reference\n"
-                f"{reference_text[:4000]}\n"
+                f"{reference_text}\n"
             )
 
         # ── Append target context (what the agent saw) ──────────────
@@ -170,7 +174,7 @@ def fmt_minibatch_trajectories(
         if target_prompt:
             header += (
                 f"\n#### Target System Prompt\n"
-                f"{target_prompt[:3000]}\n"
+                f"{target_prompt}\n"
             )
 
         user_prompt = item.get("target_user_prompt", "")
@@ -182,7 +186,7 @@ def fmt_minibatch_trajectories(
         if user_prompt:
             header += (
                 f"\n#### Target User Prompt\n"
-                f"{user_prompt[:3000]}\n"
+                f"{user_prompt}\n"
             )
 
         if os.environ.get("REFLACT_CODEX_TRACE_TO_OPTIMIZER", "0") == "1":
@@ -214,7 +218,7 @@ def fmt_minibatch_trajectories(
         if preview:
             header += (
                 f"\n#### Spreadsheet Preview\n"
-                f"{preview[:3000]}\n"
+                f"{preview}\n"
             )
 
         parts.append(header + "\n" + traj_text)
@@ -261,6 +265,7 @@ def run_error_analyst_minibatch(
     step_buffer_context: str = "",
     meta_skill_context: str = "",
     update_mode: str = "patch",
+    skill_aware_reflection: bool = False,
 ) -> dict | None:
     """Analyze a minibatch of failed trajectories in one optimizer call.
 
@@ -290,6 +295,11 @@ def run_error_analyst_minibatch(
     """
     mode = normalize_update_mode(update_mode)
     actual_system = _resolve_prompt(system_prompt, "analyst_error", mode)
+    # Skill-aware reflection: augment the resolved prompt at runtime so both
+    # env-specific and generic analyst prompts get the defect/lapse instruction.
+    # When the toggle is off this is a no-op (prompt byte-identical to baseline).
+    if skill_aware_reflection and not is_full_rewrite_minibatch_mode(mode):
+        actual_system = augment_error_prompt(actual_system)
 
     trajectories_text = fmt_minibatch_trajectories(items, prediction_dir)
     if not trajectories_text.strip():
@@ -323,16 +333,31 @@ def run_error_analyst_minibatch(
     try:
         response, _ = chat_optimizer(
             system=actual_system, user=user,
-            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 4096,
+            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 16384,
             retries=3,
             stage="analyst",
         )
         result = extract_json(response)
-        if result and "patch" in result:
+        if not result:
+            return None
+        notes = extract_appendix_notes(result) if skill_aware_reflection else []
+        if "patch" in result:
             result["source_type"] = "failure"
             if not is_full_rewrite_minibatch_mode(mode):
                 truncate_payload(result["patch"], edit_budget, mode)
+            if skill_aware_reflection:
+                result["appendix_notes"] = notes
             return result
+        # Skill-aware: a batch may legitimately yield ONLY execution-lapse notes
+        # (no body edit). Return a no-op patch so the notes still reach the
+        # trainer via all_raw_patches; empty edits are dropped from the body
+        # pipeline by _normalise_patches, so body behavior is unchanged.
+        if skill_aware_reflection and notes:
+            return {
+                "source_type": "failure",
+                "patch": {"reasoning": "execution-lapse only", "edits": []},
+                "appendix_notes": notes,
+            }
     except Exception:  # noqa: BLE001
         traceback.print_exc()
     return None
@@ -349,6 +374,8 @@ def run_success_analyst_minibatch(
     step_buffer_context: str = "",
     meta_skill_context: str = "",
     update_mode: str = "patch",
+    skill_aware_reflection: bool = False,
+    emit_appendix_notes: bool = True,
 ) -> dict | None:
     """Analyze a minibatch of successful trajectories in one optimizer call.
 
@@ -368,6 +395,11 @@ def run_success_analyst_minibatch(
     """
     mode = normalize_update_mode(update_mode)
     actual_system = _resolve_prompt(system_prompt, "analyst_success", mode)
+    # Only augment + parse appendix notes on the success side when allowed.
+    # failure_only mode (paper-faithful S_app) suppresses success-side notes.
+    sa_emit = skill_aware_reflection and emit_appendix_notes
+    if sa_emit and not is_full_rewrite_minibatch_mode(mode):
+        actual_system = augment_success_prompt(actual_system)
 
     trajectories_text = fmt_minibatch_trajectories(items, prediction_dir)
     if not trajectories_text.strip():
@@ -398,7 +430,7 @@ def run_success_analyst_minibatch(
     try:
         response, _ = chat_optimizer(
             system=actual_system, user=user,
-            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 4096,
+            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(mode) else 16384,
             retries=3,
             stage="analyst",
         )
@@ -407,6 +439,8 @@ def run_success_analyst_minibatch(
             result["source_type"] = "success"
             if not is_full_rewrite_minibatch_mode(mode):
                 truncate_payload(result["patch"], edit_budget, mode)
+            if sa_emit:
+                result["appendix_notes"] = extract_appendix_notes(result)
             return result
     except Exception:  # noqa: BLE001
         traceback.print_exc()
@@ -453,6 +487,8 @@ def run_minibatch_reflect(
     step_buffer_context: str = "",
     meta_skill_context: str = "",
     update_mode: str = "patch",
+    skill_aware_reflection: bool | None = None,
+    skill_aware_appendix_source: str | None = None,
 ) -> list[dict | None]:
     """Full minibatch reflect stage: group → parallel optimizer calls → patches.
 
@@ -487,6 +523,14 @@ def run_minibatch_reflect(
     list[dict | None]
         Patch dicts (with ``source_type`` "failure" or "success").
     """
+    # Resolve the skill-aware toggle: explicit kwargs win; otherwise fall back
+    # to the process-wide config switch set by the trainer, so the feature is
+    # env-independent and adapters need no per-benchmark wiring.
+    if skill_aware_reflection is None:
+        skill_aware_reflection = is_skill_aware_enabled()
+    if skill_aware_appendix_source is None:
+        skill_aware_appendix_source = get_skill_aware_appendix_source()
+
     os.makedirs(patches_dir, exist_ok=True)
 
     # Separate failure / success
@@ -542,6 +586,7 @@ def run_minibatch_reflect(
             trajectory_memory_context=trajectory_memory_context,
             meta_skill_context=meta_skill_context,
             update_mode=update_mode,
+            skill_aware_reflection=skill_aware_reflection,
         )
         return f"minibatch_fail_{idx:03d}", patch
 
@@ -554,6 +599,8 @@ def run_minibatch_reflect(
             trajectory_memory_context=trajectory_memory_context,
             meta_skill_context=meta_skill_context,
             update_mode=update_mode,
+            skill_aware_reflection=skill_aware_reflection,
+            emit_appendix_notes=(skill_aware_appendix_source != "failure_only"),
         )
         return f"minibatch_succ_{idx:03d}", patch
 

@@ -24,7 +24,7 @@ from collections import defaultdict
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
-from skillopt.evaluation.gate import evaluate_gate, select_gate_score
+from skillopt.evaluation.gate import GateResult, evaluate_gate, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
 from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.clip import rank_and_select
@@ -32,6 +32,17 @@ from skillopt.optimizer.lr_autonomous import decide_autonomous_learning_rate
 from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions
 from skillopt.optimizer.scheduler import build_scheduler
 from skillopt.optimizer.skill import apply_patch_with_report
+from skillopt.optimizer.appendix import (
+    append_to_appendix_field,
+    extract_appendix_notes as extract_appendix_notes_from_skill,
+    inject_empty_appendix_field,
+    _strip_all_appendix_fields,
+)
+from skillopt.optimizer.skill_aware import (
+    configure_skill_aware_reflection,
+    consolidate_appendix_notes,
+    extract_appendix_notes as extract_appendix_notes_from_result,
+)
 from skillopt.optimizer.slow_update import (
     build_comparison_pairs,
     extract_slow_update_field,
@@ -48,6 +59,7 @@ from skillopt.optimizer.update_modes import (
     short_item_summary,
 )
 from skillopt.model import (
+    chat_optimizer,
     configure_azure_openai,
     configure_claude_code_exec,
     configure_codex_exec,
@@ -62,6 +74,74 @@ from skillopt.model import (
     set_optimizer_deployment,
 )
 from skillopt.utils import compute_score, skill_hash
+
+
+# ── Skill-aware reflection: appendix flush ───────────────────────────────────
+
+def _flush_skill_aware_appendix(
+    current_skill: str,
+    all_raw_patches: list,
+    step_rec: dict,
+    step_dir: str,
+    cfg: dict,
+) -> str:
+    """Append this step's EXECUTION_LAPSE notes into the protected appendix.
+
+    Returns the (possibly) updated skill. Must be called on BOTH the normal
+    update path and the skip branches: a lapse-only step yields no body
+    patches by design (analysts return ``edits: []`` carriers), so the skip
+    paths would otherwise silently drop every note of the step.
+    """
+    step_appendix_notes: list[str] = []
+    for rp in all_raw_patches:
+        if isinstance(rp, dict):
+            step_appendix_notes.extend(extract_appendix_notes_from_result(rp))
+    if not step_appendix_notes:
+        return current_skill
+
+    before_notes = extract_appendix_notes_from_skill(current_skill)
+    current_skill = append_to_appendix_field(
+        current_skill, step_appendix_notes,
+    )
+    after_notes = extract_appendix_notes_from_skill(current_skill)
+    n_added = len(after_notes) - len(before_notes)
+    step_rec["n_execution_lapse_notes"] = len(step_appendix_notes)
+    step_rec["n_appendix_notes_added"] = n_added
+    step_rec["n_appendix_notes_total"] = len(after_notes)
+    with open(os.path.join(step_dir, "appendix_notes.json"), "w") as f:
+        json.dump(
+            {
+                "step_notes": step_appendix_notes,
+                "appendix_after": after_notes,
+            },
+            f, indent=2, ensure_ascii=False,
+        )
+    print(
+        f"    [skill-aware] +{n_added} appendix note(s) "
+        f"(total {len(after_notes)}) from {len(step_appendix_notes)} lapse signal(s)"
+    )
+    # Threshold-gated LLM consolidation (paper Eq.11): when the
+    # appendix grows past N notes, compact it with one optimizer
+    # call (dedupe / merge / shorten). 0 disables it. Any failure
+    # leaves the appendix unchanged.
+    consolidate_threshold = int(
+        cfg.get("skill_aware_consolidate_threshold", 0) or 0
+    )
+    if consolidate_threshold > 0 and len(after_notes) > consolidate_threshold:
+        compacted = consolidate_appendix_notes(
+            after_notes, chat_fn=chat_optimizer,
+        )
+        if compacted and len(compacted) < len(after_notes):
+            current_skill = append_to_appendix_field(
+                _strip_all_appendix_fields(current_skill), compacted,
+            )
+            step_rec["n_appendix_notes_consolidated"] = len(compacted)
+            step_rec["n_appendix_notes_total"] = len(compacted)
+            print(
+                f"    [skill-aware] consolidated appendix "
+                f"{len(after_notes)} -> {len(compacted)} notes"
+            )
+    return current_skill
 
 
 # ── Patch normalization ───────────────────────────────────────────────────────
@@ -467,7 +547,7 @@ def _format_step_buffer(buffer: list[dict]) -> str:
 
         # Failure patterns
         for p in entry.get("failure_patterns", []):
-            ids = ", ".join(p["task_ids"][:3])
+            ids = ", ".join(p["task_ids"])
             parts.append(f'  - "{p["pattern"]}" (×{p["count"]}, tasks: {ids})')
 
         # Rejected edits (only present on reject)
@@ -484,7 +564,7 @@ def _format_step_buffer(buffer: list[dict]) -> str:
                     content = e.get("content", "")
                     target = e.get("target", "")
                     if target:
-                        parts.append(f'    {i}. [{op}] target="{target[:80]}" → "{content}"')
+                        parts.append(f'    {i}. [{op}] target="{target}" → "{content}"')
                     else:
                         parts.append(f'    {i}. [{op}] "{content}"')
                 else:
@@ -838,6 +918,16 @@ class ReflACTTrainer:
 
         _save_skill(out_root, 0, skill_init)
 
+        use_skill_aware = cfg.get("use_skill_aware_reflection", False)
+        # Publish the toggle process-wide so run_minibatch_reflect resolves it
+        # from config for EVERY env adapter — no per-benchmark wiring needed.
+        configure_skill_aware_reflection(
+            use_skill_aware,
+            cfg.get("skill_aware_appendix_source", "both"),
+        )
+        if use_skill_aware:
+            current_skill = inject_empty_appendix_field(current_skill)
+
         def _persist_runtime_state(last_completed_step: int) -> None:
             _save_runtime_state(
                 out_root,
@@ -863,11 +953,10 @@ class ReflACTTrainer:
                 sel_cache[sh] = (rec["selection_hard"], rec["selection_soft"])
 
         # ── Baseline evaluation on selection set ─────────────────────────
-        if cfg.get("use_gate") is False:
-            raise ValueError(
-                "Gate validation is mandatory in this branch. Remove "
-                "`evaluation.use_gate=false` from the config."
-            )
+        # `use_gate=False` keeps validation running (selection rollout +
+        # scoring are unconditional below) but force-accepts every candidate
+        # instead of gating it; final skill is chosen manually afterwards.
+        use_gate = cfg.get("use_gate", True) is not False
         gate_metric = str(cfg.get("gate_metric", "hard")).strip().lower()
         if gate_metric not in {"hard", "soft", "mixed"}:
             raise ValueError(
@@ -887,6 +976,8 @@ class ReflACTTrainer:
                 if gate_metric == "mixed"
                 else ""
             )
+            + ("" if use_gate
+               else "  (DISABLED → validation runs, candidates force-accepted)")
         )
         slow_gate_with_selection = bool(
             cfg.get("slow_update_gate_with_selection", False)
@@ -1104,6 +1195,13 @@ class ReflACTTrainer:
 
                 # ── No patches? Skip ─────────────────────────────────────
                 if not all_failure_patches and not all_success_patches:
+                    # Skill-aware: a lapse-only step has no body patches but
+                    # may still carry appendix notes — flush them BEFORE
+                    # skipping, or they would be silently dropped.
+                    if use_skill_aware:
+                        current_skill = _flush_skill_aware_appendix(
+                            current_skill, all_raw_patches, step_rec, step_dir, cfg,
+                        )
                     step_rec["action"] = "skip_no_patches"
                     step_rec["current_score"] = current_score
                     step_rec["best_score"] = best_score
@@ -1292,6 +1390,12 @@ class ReflACTTrainer:
                     is_full_rewrite_minibatch_mode(update_mode)
                     and rewrite_result is None
                 ):
+                    # Skill-aware: flush appendix notes before skipping (see
+                    # the skip_no_patches branch above).
+                    if use_skill_aware:
+                        current_skill = _flush_skill_aware_appendix(
+                            current_skill, all_raw_patches, step_rec, step_dir, cfg,
+                        )
                     step_rec["action"] = "skip_no_rewrite"
                     step_rec["current_score"] = current_score
                     step_rec["best_score"] = best_score
@@ -1346,10 +1450,31 @@ class ReflACTTrainer:
                     cand_soft=cand_soft,
                     metric=gate_metric,
                     mixed_weight=gate_mixed_weight,
-                )
+                ) if use_gate else None
                 cand_gate_score = select_gate_score(
                     cand_hard, cand_soft, gate_metric, gate_mixed_weight,
                 )
+                if not use_gate:
+                    # Validation ran (scores recorded above) but the gate is
+                    # disabled: force-accept the candidate as the new current
+                    # skill. Best-so-far is still tracked for convenience; the
+                    # final skill is selected manually from the trajectory.
+                    if cand_gate_score > best_score:
+                        fa_best_skill = candidate_skill
+                        fa_best_score = cand_gate_score
+                        fa_best_step = global_step
+                    else:
+                        fa_best_skill = best_skill
+                        fa_best_score = best_score
+                        fa_best_step = best_step
+                    gate = GateResult(
+                        action="force_accept",
+                        current_skill=candidate_skill,
+                        current_score=cand_gate_score,
+                        best_skill=fa_best_skill,
+                        best_score=fa_best_score,
+                        best_step=fa_best_step,
+                    )
                 step_rec["gate_metric"] = gate_metric
                 step_rec["candidate_gate_score"] = cand_gate_score
                 step_rec["action"] = gate.action
@@ -1360,10 +1485,17 @@ class ReflACTTrainer:
                 best_skill = gate.best_skill
                 best_score = gate.best_score
                 best_step = gate.best_step
-                if gate.action in {"accept", "accept_new_best"}:
+                if gate.action in {"accept", "accept_new_best", "force_accept"}:
                     current_origin = f"step_{global_step:04d}"
-                if gate.action == "accept_new_best":
+                if gate.action == "accept_new_best" or (
+                    gate.action == "force_accept" and best_step == global_step
+                ):
                     best_origin = current_origin
+
+                if use_skill_aware:
+                    current_skill = _flush_skill_aware_appendix(
+                        current_skill, all_raw_patches, step_rec, step_dir, cfg,
+                    )
 
                 if gate_metric == "hard":
                     score_label = f"hard={cand_hard:.4f}"
@@ -1383,6 +1515,11 @@ class ReflACTTrainer:
                     print(
                         f"    [6/6 EVALUATE] ACCEPT "
                         f"{score_label} > current={prev_current:.4f}"
+                    )
+                elif gate.action == "force_accept":
+                    print(
+                        f"    [6/6 EVALUATE] FORCE-ACCEPT (gate disabled) "
+                        f"{score_label}"
                     )
                 else:
                     print(
@@ -1514,12 +1651,12 @@ class ReflACTTrainer:
                         elif action in {
                             "accept", "accept_new_best", "force_accept",
                         }:
-                            # Force-accept mode: re-apply to both current & best.
+                            # Force-accept mode: re-apply guidance to
+                            # current_skill only. best_skill must remain a
+                            # faithful snapshot of the val-best step and must
+                            # NOT receive force-injected slow-update content.
                             current_skill = replace_slow_update_field(
                                 current_skill, slow_saved["slow_update_content"],
-                            )
-                            best_skill = replace_slow_update_field(
-                                best_skill, slow_saved["slow_update_content"],
                             )
                 elif epoch == 1:
                     # Epoch 1: inject empty placeholder
@@ -1528,7 +1665,7 @@ class ReflACTTrainer:
                     current_origin = f"slow_update_placeholder_epoch_{epoch:02d}"
                     _save_skill(out_root, global_step, current_skill)
                     with open(os.path.join(out_root, "best_skill.md"), "w") as f:
-                        f.write(best_skill if best_score > current_score else current_skill)
+                        f.write(best_skill)
                     with open(slow_done_path, "w") as f:
                         json.dump({"action": "inject_placeholder", "epoch": epoch}, f, indent=2)
                     _persist_runtime_state(global_step)
@@ -1749,15 +1886,14 @@ class ReflACTTrainer:
                         else:
                             # ── Force-accept mode (default) ──────────────────
                             # The epoch-level longitudinal guidance is injected
-                            # into both current_skill and best_skill
-                            # unconditionally — it must not be gated by
-                            # step-level selection scores.
+                            # into current_skill ONLY, so training continues
+                            # with the accumulated slow memory. best_skill is
+                            # left untouched: it must remain a faithful snapshot
+                            # of the val-best step (which may be a pre-slow step
+                            # such as S_0 carrying no slow_update field at all).
                             slow_content = slow_result["slow_update_content"]
                             current_skill = replace_slow_update_field(
                                 current_skill, slow_content,
-                            )
-                            best_skill = replace_slow_update_field(
-                                best_skill, slow_content,
                             )
                             # Update caches so downstream steps use the
                             # slow-update-injected skill for hashing.
@@ -1769,7 +1905,7 @@ class ReflACTTrainer:
 
                             print(
                                 f"    [slow update] force-injected into "
-                                f"current & best "
+                                f"current only "
                                 f"({len(slow_content)} chars), "
                                 f"{slow_time}s"
                             )
@@ -1922,9 +2058,69 @@ class ReflACTTrainer:
         baseline_test_soft = None
         test_hard = None
         test_soft = None
+        final_test_hard = None
+        final_test_soft = None
+        final_selection_hard = None
+        final_selection_soft = None
 
         if cfg["eval_test"]:
             task_types = adapter.get_task_types()
+
+            # ── Final skill validation (valid_seen) + best promotion ─────
+            # The final (last) skill may carry an epoch-end slow_update that
+            # was force-injected WITHOUT a val pass (use_gate=false or
+            # slow_update_gate_with_selection=false), so it never competed for
+            # best. Run one real val on the final skill; if its gate score
+            # beats the incumbent best, PROMOTE it to best so that best is the
+            # true val-argmax over all skills (including the final slow_update).
+            # When final == best, reuse the existing val score (no rollout).
+            try:
+                if skill_hash(current_skill) == skill_hash(best_skill):
+                    final_selection_hard, final_selection_soft = best_score, None
+                    print(
+                        "\n  [final skill == best skill] "
+                        f"final_selection_hard={best_score:.4f} (reused)"
+                    )
+                else:
+                    fval_env, fval_n = _build_eval_env(
+                        split="valid_seen",
+                        env_num=cfg["sel_env_num"],
+                        seed=seed,
+                    )
+                    fval_dir = os.path.join(out_root, "final_selection_eval")
+                    fval_results = adapter.rollout(fval_env, current_skill, fval_dir)
+                    final_selection_hard, final_selection_soft = compute_score(fval_results)
+                    final_gate_score = select_gate_score(
+                        final_selection_hard, final_selection_soft,
+                        gate_metric, gate_mixed_weight,
+                    )
+                    print(
+                        f"\n  [final skill val] items={fval_n} "
+                        f"final_selection_hard={final_selection_hard:.4f} "
+                        f"gate={final_gate_score:.4f} "
+                        f"(best={best_score:.4f})"
+                    )
+                    if final_gate_score > best_score:
+                        # Promote: the final (slow-updated) skill is val-better
+                        # than the incumbent best. Make it the new best so the
+                        # subsequent BEST-skill test rollout evaluates it and
+                        # best/final test scores coincide.
+                        print(
+                            f"  [promote] final {final_gate_score:.4f} > "
+                            f"best {best_score:.4f} → final becomes new best "
+                            f"(step {global_step}, origin {current_origin})"
+                        )
+                        best_skill = current_skill
+                        best_score = final_gate_score
+                        best_step = global_step
+                        best_origin = current_origin
+                        with open(os.path.join(out_root, "best_skill.md"), "w") as f:
+                            f.write(best_skill)
+                        _persist_runtime_state(global_step)
+            except Exception as _e:  # noqa: BLE001
+                final_selection_hard = None
+                final_selection_soft = None
+                print(f"\n  [final skill val FAILED: {_e!r}]")
 
             # Baseline: S_0 on test set (valid_unseen)
             print(f"\n{'='*60}")
@@ -1994,13 +2190,87 @@ class ReflACTTrainer:
                     f, indent=2, ensure_ascii=False,
                 )
 
+            # Final skill (last skill in trajectory) on test set.
+            # Distinct from best_skill: with use_gate=False every candidate is
+            # force-accepted so the final skill is whatever the last step
+            # produced; with use_gate=True it is the last accepted skill, which
+            # may differ from the best-on-val skill. We always evaluate it so
+            # every run reports baseline / best-on-val / final on test.
+            # Guarded so a failure here never prevents summary.json from being
+            # written (the orchestrator's post-hoc safety net fills it in).
+            try:
+                if skill_hash(current_skill) == skill_hash(best_skill):
+                    # Final == best: reuse results, skip a redundant rollout.
+                    final_test_hard, final_test_soft = test_hard, test_soft
+                    final_test_dir = os.path.join(out_root, "test_eval_final")
+                    os.makedirs(final_test_dir, exist_ok=True)
+                    with open(os.path.join(final_test_dir, "summary.json"), "w") as f:
+                        json.dump(
+                            {
+                                k: {
+                                    "total": b["total"],
+                                    "hard_acc": b["hard"] / max(b["total"], 1),
+                                }
+                                for k, b in best_buckets.items()
+                            },
+                            f, indent=2, ensure_ascii=False,
+                        )
+                    print(
+                        "\n  [final skill == best skill] "
+                        f"final_test_hard={final_test_hard:.4f} (reused)"
+                    )
+                else:
+                    print(f"\n{'='*60}")
+                    print("  FINAL SKILL TEST — evaluate last skill on Test set (valid_unseen)")
+                    print(f"{'='*60}")
+                    test_env3, test_n3 = _build_eval_env(
+                        split="valid_unseen",
+                        env_num=cfg["test_env_num"],
+                        seed=seed,
+                    )
+                    print(f"  Test items: {test_n3}")
+                    final_test_dir = os.path.join(out_root, "test_eval_final")
+                    final_test_results = adapter.rollout(test_env3, current_skill, final_test_dir)
+                    final_test_hard, final_test_soft = compute_score(final_test_results)
+                    final_buckets = _compute_task_type_buckets(final_test_results, task_types)
+                    print("\n  === Final Skill Test Results ===")
+                    for task_type in task_types + ["overall"]:
+                        b = final_buckets.get(task_type, {"total": 0, "hard": 0})
+                        t = max(b["total"], 1)
+                        print(
+                            f"    {task_type:<40s}: "
+                            f"hard={b['hard']}/{b['total']}={b['hard']/t:.4f}"
+                        )
+                    with open(os.path.join(final_test_dir, "summary.json"), "w") as f:
+                        json.dump(
+                            {
+                                k: {
+                                    "total": b["total"],
+                                    "hard_acc": b["hard"] / max(b["total"], 1),
+                                }
+                                for k, b in final_buckets.items()
+                            },
+                            f, indent=2, ensure_ascii=False,
+                        )
+            except Exception as _e:  # noqa: BLE001
+                final_test_hard = None
+                final_test_soft = None
+                print(f"\n  [final skill test FAILED: {_e!r}] "
+                      "— will be filled by post-hoc eval")
+
             # Comparison
             delta_hard = (test_hard or 0) - (baseline_test_hard or 0)
-            print(f"\n  === Improvement (best vs baseline) ===")
+            print(f"\n  === Improvement vs baseline (init S_0) ===")
             print(
-                f"    hard: {baseline_test_hard:.4f} -> {test_hard:.4f}  "
+                f"    [2] best-on-val hard: {baseline_test_hard:.4f} -> {test_hard:.4f}  "
                 f"(delta={delta_hard:+.4f})"
             )
+            if final_test_hard is not None:
+                final_delta_hard = (final_test_hard or 0) - (baseline_test_hard or 0)
+                print(
+                    f"    [3] final/last  hard: {baseline_test_hard:.4f} -> {final_test_hard:.4f}  "
+                    f"(delta={final_delta_hard:+.4f})"
+                )
 
         # ── Global summary ───────────────────────────────────────────────
         total_wall = time.time() - t_loop_start
@@ -2032,6 +2302,8 @@ class ReflACTTrainer:
                 skill_hash(skill_init), (None, None),
             )[0],
             "best_selection_hard": best_score,
+            "final_selection_hard": final_selection_hard,
+            "final_selection_soft": final_selection_soft,
             "best_step": best_step,
             "current_origin": current_origin,
             "best_origin": best_origin,
@@ -2044,9 +2316,16 @@ class ReflACTTrainer:
             "baseline_test_soft": baseline_test_soft,
             "test_hard": test_hard,
             "test_soft": test_soft,
+            "final_test_hard": final_test_hard,
+            "final_test_soft": final_test_soft,
             "test_delta_hard": (
                 (test_hard or 0) - (baseline_test_hard or 0)
                 if test_hard is not None
+                else None
+            ),
+            "final_test_delta_hard": (
+                (final_test_hard or 0) - (baseline_test_hard or 0)
+                if final_test_hard is not None
                 else None
             ),
             "total_wall_time_s": round(total_wall, 1),
@@ -2069,8 +2348,22 @@ class ReflACTTrainer:
                     f"    epoch {es['epoch']}: accept={es['accepts']} reject={es['rejects']} "
                     f"best={es['best_score_at_epoch_end']:.4f}"
                 )
+        if baseline_test_hard is not None:
+            print("\n  === TEST scores (3 skills, split=valid_unseen) ===")
+            print(
+                f"    [1] init/baseline (S_0)          : "
+                f"test_hard={baseline_test_hard:.4f}"
+            )
         if test_hard is not None:
-            print(f"  test_hard={test_hard:.4f} test_soft={test_soft:.4f}")
+            print(
+                f"    [2] best-on-val (step {best_step})".ljust(37)
+                + f": test_hard={test_hard:.4f} test_soft={test_soft:.4f}"
+            )
+        if final_test_hard is not None:
+            print(
+                f"    [3] final/last skill             : "
+                f"test_hard={final_test_hard:.4f} test_soft={final_test_soft:.4f}"
+            )
         if token_summary.get("_total"):
             t = token_summary["_total"]
             print(

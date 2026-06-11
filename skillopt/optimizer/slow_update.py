@@ -91,18 +91,21 @@ def replace_slow_update_field(skill: str, new_content: str) -> str:
 # ── Comparison text builder ─────────────────────────────────────────────────
 
 
-# NOTE: The character limits below (whole-trajectory cap + the per-field caps in
-# _read_trajectory and the comparison metadata) only trim the comparison samples
-# fed to the slow-update optimizer. They exist to cut token usage and speed up the
-# call; they do NOT affect what gets written into the skill. If you need richer
-# context for the longitudinal comparison, feel free to raise them.
-_MAX_TRAJ_CHARS = 3000
+# NOTE: Character-length limits on the comparison samples fed to the slow-update /
+# meta-skill optimizer have been REMOVED. Previously a whole-trajectory cap plus
+# per-field caps (cmd/obs/reasoning/etc.) and comparison-metadata caps
+# (task/answer/fail_reason) trimmed this context to save optimizer tokens and
+# speed up the call. They never affected what gets written into the skill — only
+# how much longitudinal context the optimizer sees. We now pass everything through
+# at full length: the comparison input is as long as the source data is.
 
 
-def _clip_text(value, limit: int) -> str:
+def _clip_text(value, limit: int | None = None) -> str:
+    # Truncation disabled: return the full text. The `limit` argument is kept only
+    # for call-site compatibility and is intentionally ignored (see NOTE above).
     if value is None:
         return ""
-    return str(value)[:limit]
+    return str(value)
 
 
 def _read_trajectory(rollout_dir: str, task_id: str) -> str:
@@ -122,35 +125,32 @@ def _read_trajectory(rollout_dir: str, task_id: str) -> str:
     for entry in conversation:
         if not isinstance(entry, dict):
             continue
-        # Per-field caps (cmd/obs/reasoning/etc.) keep each trajectory compact to
-        # save tokens / time; raise them if you want fuller step detail.
+        # Per-field truncation removed: feed each step's full cmd/obs/reasoning/
+        # action/feedback/content (see NOTE above).
         if entry.get("type") == "tool_call":
-            cmd = _clip_text(entry.get("cmd"), 500)
-            obs = _clip_text(entry.get("obs"), 800)
+            cmd = _clip_text(entry.get("cmd"))
+            obs = _clip_text(entry.get("obs"))
             lines.append(f"[action] {cmd}")
             lines.append(f"[obs]    {obs}")
         elif "action" in entry and "env_feedback" in entry:
             step = entry.get("step", "?")
-            reasoning = _clip_text(entry.get("reasoning"), 300)
-            action = _clip_text(entry.get("action"), 200)
-            feedback = _clip_text(entry.get("env_feedback"), 500)
+            reasoning = _clip_text(entry.get("reasoning"))
+            action = _clip_text(entry.get("action"))
+            feedback = _clip_text(entry.get("env_feedback"))
             if reasoning:
                 lines.append(f"[step {step} think] {reasoning}")
             lines.append(f"[step {step} action] {action}")
             lines.append(f"[step {step} obs]    {feedback}")
         elif entry.get("role") == "system":
-            msg = _clip_text(entry.get("content"), 1000)
+            msg = _clip_text(entry.get("content"))
             lines.append(f"[verification] {msg}")
         else:
-            msg = _clip_text(entry.get("content"), 500)
+            msg = _clip_text(entry.get("content"))
             role = entry.get("role", "agent")
             lines.append(f"[{role}] {msg}")
 
-    text = "\n".join(lines)
-    if len(text) > _MAX_TRAJ_CHARS:
-        half = _MAX_TRAJ_CHARS // 2
-        text = text[:half] + "\n...[truncated]...\n" + text[-half:]
-    return text
+    # Whole-trajectory truncation removed: return the full formatted trajectory.
+    return "\n".join(lines)
 
 
 # ── Structured comparison pairs ─────────────────────────────────────────────
@@ -228,7 +228,7 @@ def save_comparison_pairs(pairs: list[dict], out_path: str) -> None:
     for p in pairs:
         slim.append({
             "id": p["id"],
-            "task": p["task"][:300],
+            "task": p["task"],
             "category": p["category"],
             "prev": p["prev"],
             "curr": p["curr"],
@@ -276,16 +276,16 @@ def format_comparison_text(pairs: list[dict]) -> str:
             prev = e["prev"]
             curr = e["curr"]
             lines.append(
-                f"\n#### Task {e['id']}: {e['task'][:300]}\n"
+                f"\n#### Task {e['id']}: {e['task']}\n"
                 f"- Prev epoch: {'PASS' if prev['hard'] else 'FAIL'} "
-                f"(soft={prev['soft']:.2f}) — answer: {str(prev['predicted_answer'])[:200]}\n"
+                f"(soft={prev['soft']:.2f}) — answer: {str(prev['predicted_answer'])}\n"
                 f"- Curr epoch: {'PASS' if curr['hard'] else 'FAIL'} "
-                f"(soft={curr['soft']:.2f}) — answer: {str(curr['predicted_answer'])[:200]}"
+                f"(soft={curr['soft']:.2f}) — answer: {str(curr['predicted_answer'])}"
             )
             if curr.get("fail_reason"):
-                lines.append(f"- Curr fail reason: {curr['fail_reason'][:300]}")
+                lines.append(f"- Curr fail reason: {curr['fail_reason']}")
             if prev.get("fail_reason") and not prev["hard"]:
-                lines.append(f"- Prev fail reason: {prev['fail_reason'][:300]}")
+                lines.append(f"- Prev fail reason: {prev['fail_reason']}")
 
             if show_traj:
                 if e.get("prev_trajectory"):

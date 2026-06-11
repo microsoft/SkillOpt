@@ -14,25 +14,62 @@ if TYPE_CHECKING:
 SLOW_UPDATE_START = "<!-- SLOW_UPDATE_START -->"
 SLOW_UPDATE_END = "<!-- SLOW_UPDATE_END -->"
 
+# Skill-aware reflection (EmbodiSkill S_app) appendix region. Like the slow
+# update region, it is protected: step-level analyst edits must not modify it.
+APPENDIX_START = "<!-- APPENDIX_START -->"
+APPENDIX_END = "<!-- APPENDIX_END -->"
 
-def _is_in_slow_update_region(skill: str, target: str) -> bool:
-    """Check if *target* text falls within the protected slow update region."""
-    start_idx = skill.find(SLOW_UPDATE_START)
-    end_idx = skill.find(SLOW_UPDATE_END)
-    if start_idx == -1 or end_idx == -1:
+# All protected (start, end) marker pairs. Step-level edits cannot target text
+# inside any of these regions, and `append` / `insert_after`-fallback ops are
+# inserted before the earliest-occurring region so protected blocks stay at the
+# document tail. With only the slow-update region present, every helper reduces
+# to the original slow-update-only behavior (byte-identical skill output).
+_PROTECTED_REGIONS: tuple[tuple[str, str], ...] = (
+    (SLOW_UPDATE_START, SLOW_UPDATE_END),
+    (APPENDIX_START, APPENDIX_END),
+)
+
+
+def _earliest_protected_start(skill: str) -> int:
+    """Index of the earliest protected-region start marker, or -1 if none."""
+    positions = [
+        idx
+        for idx in (skill.find(start) for start, _ in _PROTECTED_REGIONS)
+        if idx != -1
+    ]
+    return min(positions) if positions else -1
+
+
+def _is_in_protected_region(skill: str, target: str) -> bool:
+    """Check if *target* text falls within any protected region."""
+    if not target:
         return False
     target_idx = skill.find(target)
     if target_idx == -1:
         return False
-    region_end = end_idx + len(SLOW_UPDATE_END)
-    return start_idx <= target_idx < region_end
+    for start_marker, end_marker in _PROTECTED_REGIONS:
+        start_idx = skill.find(start_marker)
+        end_idx = skill.find(end_marker)
+        if start_idx == -1 or end_idx == -1:
+            continue
+        region_end = end_idx + len(end_marker)
+        if start_idx <= target_idx < region_end:
+            return True
+    return False
+
+
+def _is_in_slow_update_region(skill: str, target: str) -> bool:
+    """Backward-compatible alias kept for any external callers/tests."""
+    return _is_in_protected_region(skill, target)
 
 
 def _strip_slow_update_markers(text: str) -> str:
-    """Remove any SLOW_UPDATE markers from edit content to prevent duplication."""
+    """Remove any protected-region markers from edit content to prevent duplication."""
     return (
         text.replace(SLOW_UPDATE_START, "")
             .replace(SLOW_UPDATE_END, "")
+            .replace(APPENDIX_START, "")
+            .replace(APPENDIX_END, "")
     )
 
 
@@ -54,27 +91,27 @@ def _apply_edit_with_report(skill: str, edit: EditType | dict) -> tuple[str, dic
         "status": "unknown",
     }
 
-    if target and _is_in_slow_update_region(skill, target):
-        report["status"] = "skipped_protected_slow_update_region"
+    if target and _is_in_protected_region(skill, target):
+        report["status"] = "skipped_protected_region"
         return skill, report
 
     if op == "append":
-        su_start = skill.find(SLOW_UPDATE_START)
-        if su_start != -1:
-            before = skill[:su_start].rstrip()
-            after = skill[su_start:]
-            report["status"] = "applied_append_before_slow_update"
+        prot_start = _earliest_protected_start(skill)
+        if prot_start != -1:
+            before = skill[:prot_start].rstrip()
+            after = skill[prot_start:]
+            report["status"] = "applied_append_before_protected_region"
             return before + "\n\n" + content + "\n\n" + after, report
         report["status"] = "applied_append"
         return skill.rstrip() + "\n\n" + content + "\n", report
 
     if op == "insert_after":
         if not target or target not in skill:
-            su_start = skill.find(SLOW_UPDATE_START)
-            if su_start != -1:
-                before = skill[:su_start].rstrip()
-                after = skill[su_start:]
-                report["status"] = "applied_insert_after_fallback_before_slow_update"
+            prot_start = _earliest_protected_start(skill)
+            if prot_start != -1:
+                before = skill[:prot_start].rstrip()
+                after = skill[prot_start:]
+                report["status"] = "applied_insert_after_fallback_before_protected_region"
                 return before + "\n\n" + content + "\n\n" + after, report
             report["status"] = "applied_insert_after_fallback_append"
             return skill.rstrip() + "\n\n" + content + "\n", report

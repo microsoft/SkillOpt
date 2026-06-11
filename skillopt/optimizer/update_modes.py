@@ -70,7 +70,7 @@ def truncate_payload(container: dict, max_items: int, mode: str | None) -> dict:
     return container
 
 
-def describe_item(item: dict, mode: str | None, *, max_chars: int = 240) -> str:
+def describe_item(item: dict, mode: str | None, *, max_chars: int | None = None) -> str:
     if not isinstance(item, dict):
         return ""
     if is_full_rewrite_minibatch_mode(mode):
@@ -84,7 +84,7 @@ def describe_item(item: dict, mode: str | None, *, max_chars: int = 240) -> str:
             parts.append(f"support={item.get('support_count')}")
         new_skill = str(item.get("new_skill", "")).strip()
         if new_skill:
-            parts.append(f"new_skill_preview={new_skill[:120]!r}")
+            parts.append(f"new_skill_preview={new_skill!r}")
         text = "  ".join(parts)
     elif is_rewrite_mode(mode):
         parts = [
@@ -109,28 +109,27 @@ def describe_item(item: dict, mode: str | None, *, max_chars: int = 240) -> str:
         if item.get("support_count") is not None:
             parts.append(f"support={item.get('support_count')}")
         text = "  ".join(parts)
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 3].rstrip() + "..."
+    # Truncation disabled: the optimizer is given the full item description.
+    return text
 
 
-def short_item_summary(item: dict, mode: str | None, *, max_chars: int = 200) -> dict[str, Any]:
+def short_item_summary(item: dict, mode: str | None, *, max_chars: int | None = None) -> dict[str, Any]:
     if is_full_rewrite_minibatch_mode(mode):
         return {
-            "title": str(item.get("title", ""))[:max_chars],
+            "title": str(item.get("title", "")),
             "change_summary": [
-                str(x)[:max_chars] for x in item.get("change_summary", [])[:3]
+                str(x) for x in item.get("change_summary", [])
             ] if isinstance(item.get("change_summary"), list) else [],
             "source_type": item.get("source_type", ""),
         }
     if is_rewrite_mode(mode):
         return {
             "type": item.get("type", "?"),
-            "title": str(item.get("title", ""))[:max_chars],
-            "instruction": str(item.get("instruction", ""))[:max_chars],
+            "title": str(item.get("title", "")),
+            "instruction": str(item.get("instruction", "")),
         }
     return {
         "op": item.get("op", "?"),
-        "content": str(item.get("content", ""))[:max_chars],
+        "content": str(item.get("content", "")),
         "target": item.get("target", ""),
     }

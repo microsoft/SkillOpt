@@ -46,7 +46,7 @@ def _merge_batch(
         response, _ = chat_optimizer(
             system=system_prompt,
             user=user,
-            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(update_mode) else 4096,
+            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(update_mode) else 16384,
             retries=3,
             stage="merge",
         )
@@ -231,7 +231,7 @@ def merge_patches(
         response, _ = chat_optimizer(
             system=merge_final_prompt,
             user=user,
-            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(update_mode) else 4096,
+            max_completion_tokens=64000 if is_full_rewrite_minibatch_mode(update_mode) else 16384,
             retries=3,
             stage="merge",
         )

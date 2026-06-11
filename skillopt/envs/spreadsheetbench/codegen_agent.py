@@ -54,8 +54,8 @@ def _build_eval_feedback(verify_report: str) -> str:
     output and whether each cell is correct or wrong.
     """
     import re
-    lines = ["Your code executed successfully but produced incorrect results.",
-             "The following cells have wrong values:"]
+    wrong_lines = []
+    n_correct = 0
     for raw_line in verify_report.splitlines():
         raw_line = raw_line.strip()
         if not raw_line:
@@ -68,9 +68,14 @@ def _build_eval_feedback(verify_report: str) -> str:
         if m:
             cell, got_val, mark = m.groups()
             if mark == "✗":
-                lines.append(f"  {cell}: your output = {got_val} (WRONG)")
+                wrong_lines.append(f"  {cell}: your output = {got_val} (WRONG)")
             else:
-                lines.append(f"  {cell}: correct ✓")
+                n_correct += 1
+    lines = ["Your code executed successfully but produced incorrect results.",
+             "The following cells have wrong values:"]
+    lines.extend(wrong_lines)
+    if n_correct:
+        lines.append(f"  ({n_correct} other cells are correct.)")
     lines.append(
         "\nPlease analyze the spreadsheet data more carefully and fix the code. "
         "Return a complete corrected Python script inside a ```python``` block."

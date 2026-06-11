@@ -26,7 +26,9 @@ from concurrent.futures import (
 import openpyxl
 
 from skillopt.envs.spreadsheetbench.react_agent import run_react
-from skillopt.envs.spreadsheetbench.evaluator import evaluate, _generate_cell_names
+from skillopt.envs.spreadsheetbench.evaluator import (
+    evaluate, _generate_cell_names, _compare_cell_value,
+)
 from skillopt.envs.spreadsheetbench.executor import run_generated_code
 
 
@@ -87,6 +89,21 @@ def _find_test_cases(task_dir: str) -> list[tuple[str, str, str]]:
 
 # ── Auto-verify helper ──────────────────────────────────────────────────────
 
+# The official SpreadsheetBench evaluator never serialises cells to text — it
+# compares in memory and returns only a pass/fail bool. The per-cell report
+# below is a repo-local training aid (fed back to the model on retry and saved
+# into the trajectory for reflection). On most tasks the answer range is a
+# handful of cells, so the full report is tiny. But a few tasks have answer
+# ranges spanning tens of thousands of cells (e.g. 80-42 =
+# 'Consolidate_ALL'!A2:L8000 ≈ 96k cells); dumping every cell explodes the
+# report to several MB, floods the model's context and bloats conversation
+# files. We therefore apply the same head+tail character truncation the rest of
+# the codebase uses for oversized trajectory text (cf. reflect.py / slow_update.py
+# `text[:half] + "...[truncated]...\n" + text[-half:]`): keep the first and last
+# `_MAX_REPORT_CHARS // 2` chars so both the leading and trailing wrong cells
+# stay visible. Small reports are unchanged.
+_MAX_REPORT_CHARS = 12000      # head+tail char budget (~6000 head + 6000 tail)
+
 
 def _auto_verify_output(
     pred_path: str,
@@ -97,7 +114,8 @@ def _auto_verify_output(
 
     Returns a human-readable verification report that can be appended to the
     trajectory so the error analyst can see exactly what went wrong (e.g.
-    ``cell A1: got=None, expected=420``).
+    ``cell A1: got=None, expected=420``). Oversized reports are head+tail
+    truncated to `_MAX_REPORT_CHARS` chars, matching the rest of the codebase.
     """
     if not os.path.exists(pred_path):
         return "Verification: output file does not exist."
@@ -129,11 +147,28 @@ def _auto_verify_output(
                 lines.append(f"  Sheet '{sheet_name}' NOT FOUND in output.")
                 continue
 
+            n_empty_correct = 0   # empty-on-both correct cells collapsed to a count
             for cn in cell_names:
                 gv = ws_gold[cn].value if ws_gold else "N/A"
                 pv = ws_pred[cn].value
-                match = "✓" if repr(gv) == repr(pv) else "✗"
+                # Use the official cell comparator so this report's ✓/✗ agrees
+                # with the real scorer (evaluate). repr() equality would wrongly
+                # flag e.g. 5 vs 5.0 or None vs "" as mismatches and mislead the
+                # model into "fixing" cells that already pass scoring.
+                ok_cell = ws_gold is not None and _compare_cell_value(gv, pv)
+                # Collapse only cells that are correct AND empty on both sides
+                # (got=None, expected=None ✓): pure noise. Every other cell —
+                # including non-empty correct cells — is listed in full; the
+                # final head+tail char cap keeps the report bounded.
+                if ok_cell and gv in (None, "") and pv in (None, ""):
+                    n_empty_correct += 1
+                    continue
+                match = "✓" if ok_cell else "✗"
                 lines.append(f"  {sheet_name}!{cn}: got={pv!r}, expected={gv!r} {match}")
+            if n_empty_correct:
+                lines.append(
+                    f"  (+{n_empty_correct} empty cells correct, omitted)"
+                )
 
         # Also check if any cells in the output contain formula strings
         formula_cells = []
@@ -159,7 +194,17 @@ def _auto_verify_output(
         wb_pred.close()
         wb_gold.close()
 
-    return "\n".join(lines)
+    report = "\n".join(lines)
+    # Head+tail truncation, matching reflect.py / slow_update.py: keep the first
+    # and last half so both leading and trailing wrong cells remain visible.
+    if len(report) > _MAX_REPORT_CHARS:
+        half = _MAX_REPORT_CHARS // 2
+        report = (
+            report[:half]
+            + f"\n  ...[verification report truncated, {len(report)} chars total]...\n"
+            + report[-half:]
+        )
+    return report
 
 
 # ── Per-task worker ──────────────────────────────────────────────────────────

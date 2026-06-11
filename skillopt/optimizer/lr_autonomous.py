@@ -48,7 +48,7 @@ def decide_autonomous_learning_rate(
     items = get_payload_items(merged_patch, update_mode)
     available = len(items)
     item_lines = [
-        f"[{idx}] {describe_item(item, update_mode, max_chars=700)}"
+        f"[{idx}] {describe_item(item, update_mode)}"
         for idx, item in enumerate(items)
     ]
     user = (
@@ -76,7 +76,7 @@ def decide_autonomous_learning_rate(
         response, _ = chat_optimizer(
             system=load_prompt("lr_autonomous"),
             user=user,
-            max_completion_tokens=2048,
+            max_completion_tokens=16384,
             retries=3,
             stage="lr_autonomous",
         )

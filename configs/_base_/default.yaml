@@ -81,6 +81,9 @@ optimizer:
   slow_update_gate_with_selection: false
   longitudinal_pair_policy: mixed  # mixed / changed / unchanged
   use_meta_skill: true
+  use_skill_aware_reflection: false  # EmbodiSkill: split failures into SKILL_DEFECT (edit body) vs EXECUTION_LAPSE (protected appendix)
+  skill_aware_appendix_source: both  # both = success+failure emit appendix notes; failure_only = only EXECUTION_LAPSE (paper-faithful)
+  skill_aware_consolidate_threshold: 0  # 0 = off; >0 = LLM-consolidate the appendix when its note count exceeds N
 
 evaluation:
   use_gate: true

@@ -245,6 +245,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--longitudinal_pair_policy", type=str,
                    choices=["mixed", "changed", "unchanged"])
     p.add_argument("--use_meta_skill", type=_BOOL)
+    p.add_argument("--use_skill_aware_reflection", type=_BOOL)
+    p.add_argument("--skill_aware_appendix_source", type=str,
+                   choices=["both", "failure_only"])
+    p.add_argument("--skill_aware_consolidate_threshold", type=int)
     p.add_argument("--data_path", type=str)
     p.add_argument("--split_mode", type=str,
                    choices=["ratio", "split_dir"])
@@ -360,6 +364,9 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "slow_update_samples": "optimizer.slow_update_samples",
     "longitudinal_pair_policy": "optimizer.longitudinal_pair_policy",
     "use_meta_skill": "optimizer.use_meta_skill",
+    "use_skill_aware_reflection": "optimizer.use_skill_aware_reflection",
+    "skill_aware_appendix_source": "optimizer.skill_aware_appendix_source",
+    "skill_aware_consolidate_threshold": "optimizer.skill_aware_consolidate_threshold",
     "use_gate": "evaluation.use_gate",
     "sel_env_num": "evaluation.sel_env_num",
     "test_env_num": "evaluation.test_env_num",
@@ -527,6 +534,7 @@ def main() -> None:
     print(f"  minibatch_size: {cfg.get('minibatch_size')}")
     print(f"  seed:           {cfg.get('seed')}")
     print(f"  meta_skill:     {cfg.get('use_meta_skill', False)}")
+    print(f"  skill_aware_reflection: {cfg.get('use_skill_aware_reflection', False)}")
     print(f"  slow_update:    {cfg.get('use_slow_update', False)}")
     print(f"  out_root:       {cfg.get('out_root')}")
     print(f"{'='*60}\n")

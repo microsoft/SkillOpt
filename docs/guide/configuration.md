@@ -61,6 +61,36 @@ optimizer:
   use_meta_skill: true           # Cross-epoch strategy memory
 ```
 
+### Skill-Aware Reflection (optional, off by default)
+
+EmbodiSkill-style failure routing: the failure analyst classifies each
+failure pattern as **SKILL_DEFECT** (the rule is wrong or missing → normal
+gated body edit) or **EXECUTION_LAPSE** (a valid rule exists but was not
+followed → a short reminder appended to a protected appendix region inside
+the skill that step-level edits can never modify).
+
+```yaml
+optimizer:
+  use_skill_aware_reflection: false    # Master switch (default off = baseline-identical)
+  skill_aware_appendix_source: both    # both | failure_only (paper-faithful S_app)
+  skill_aware_consolidate_threshold: 0 # >0: LLM-compact the appendix past N notes (experimental)
+```
+
+Notes:
+
+- The switch is resolved process-wide from the config
+  (`configure_skill_aware_reflection`), so it applies to every benchmark
+  with no per-adapter wiring.
+- `failure_only` restricts appendix notes to the failure analyst, matching
+  the original S_app formulation; `both` additionally lets the success
+  analyst re-emphasize existing rules.
+- Appendix notes bypass the validation gate by design and accumulate with
+  order-preserving dedup; lapse-only steps (no body edits) still flush
+  their notes.
+- Not supported together with `skill_update_mode=rewrite_from_suggestions`
+  or the full-rewrite modes: whole-document rewrites can drop the appendix
+  region.
+
 ### Evaluation
 
 ```yaml

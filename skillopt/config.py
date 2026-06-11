@@ -119,6 +119,9 @@ _FLATTEN_MAP: dict[str, str] = {
     "optimizer.slow_update_gate_with_selection": "slow_update_gate_with_selection",
     "optimizer.longitudinal_pair_policy": "longitudinal_pair_policy",
     "optimizer.use_meta_skill": "use_meta_skill",
+    "optimizer.use_skill_aware_reflection": "use_skill_aware_reflection",
+    "optimizer.skill_aware_appendix_source": "skill_aware_appendix_source",
+    "optimizer.skill_aware_consolidate_threshold": "skill_aware_consolidate_threshold",
     "evaluation.use_gate": "use_gate",
     "evaluation.gate_metric": "gate_metric",
     "evaluation.gate_mixed_weight": "gate_mixed_weight",
@@ -188,13 +191,6 @@ def flatten_config(cfg: dict) -> dict:
         return dict(cfg)
 
     flat: dict[str, Any] = {}
-
-    evaluation_section = cfg.get("evaluation", {})
-    if isinstance(evaluation_section, dict) and evaluation_section.get("use_gate") is False:
-        raise ValueError(
-            "Gate validation is mandatory in this branch. Remove "
-            "`evaluation.use_gate: false` from the config."
-        )
 
     # Apply the explicit mapping
     for dotted, flat_key in _FLATTEN_MAP.items():
