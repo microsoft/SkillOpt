@@ -45,8 +45,8 @@ _TOOL_SCHEMA = {
     "type": "object",
     "properties": {
         "project": {"type": "string", "description": "Project dir to evolve (default: cwd)."},
-        "backend": {"type": "string", "enum": ["mock", "claude", "codex"],
-                     "description": "mock = no API spend (default); claude/codex = real."},
+        "backend": {"type": "string", "enum": ["mock", "claude", "codex", "copilot"],
+                     "description": "mock = no API spend (default); claude/codex/copilot = real."},
         "scope": {"type": "string", "enum": ["invoked", "all"]},
     },
     "additionalProperties": False,

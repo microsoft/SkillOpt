@@ -9,7 +9,7 @@
 Common flags:
     --project PATH      project to evolve (default: cwd)
     --scope all|invoked harvest scope (default: invoked)
-    --backend mock|anthropic
+    --backend mock|claude|codex|copilot
     --model NAME
     --lookback-hours N
     --auto-adopt
@@ -34,7 +34,7 @@ from skillopt_sleep.staging import latest_staging, adopt as adopt_staging
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
-    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex"])
+    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex", "copilot"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")

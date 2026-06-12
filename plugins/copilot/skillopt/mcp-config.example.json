@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "skillopt": {
+      "command": "python3",
+      "args": ["plugins/copilot/skillopt/mcp_server.py"],
+      "env": {
+        "SKILLOPT_REPO": "${workspaceFolder}"
+      }
+    }
+  }
+}

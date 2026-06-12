@@ -24,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
@@ -698,6 +699,218 @@ class CodexCliBackend(CliBackend):
             except Exception:
                 pass
 
+def resolve_copilot_path(explicit: str = "") -> str:
+    """Find the GitHub Copilot CLI (`copilot`) binary."""
+    if explicit:
+        return explicit
+    env = os.environ.get("SKILLOPT_SLEEP_COPILOT_PATH")
+    if env:
+        return env
+    import shutil
+    found = shutil.which("copilot")
+    return found or "copilot"
+
+
+class CopilotCliBackend(CliBackend):
+    """Drives the GitHub Copilot CLI in non-interactive mode.
+
+    Uses ``copilot -p <prompt> --output-format json`` and parses the emitted
+    JSONL event stream, returning the concatenated ``assistant.message``
+    content. The plain-text / ``--silent`` modes do not reliably stream the
+    response to stdout on all platforms, so JSONL is used for robust capture.
+
+    The call runs in a clean temp cwd with streaming disabled and tools allowed
+    (so non-interactive mode never blocks on a permission prompt); ``_call``'s
+    prompts ask for final-answer text only, so no tool use is expected there,
+    while ``attempt_with_tools`` exposes real, cross-platform callable shims in
+    the working directory for honest tool-call detection.
+
+    Startup overhead is minimised: each invocation points ``COPILOT_HOME`` at a
+    dedicated, isolated config dir (no user ``mcp-config.json``, so the user's
+    MCP servers — including this project's own — are NOT spawned, avoiding a
+    slow recursive launch), and built-in MCP servers / custom instructions are
+    disabled. Auth is read from the OS credential store / token env vars, which
+    live outside ``COPILOT_HOME``, so isolation does not break authentication.
+    Set ``SKILLOPT_SLEEP_COPILOT_HOME`` to override the isolated home, or set it
+    empty / ``SKILLOPT_SLEEP_COPILOT_FULL_ENV=1`` to use the user's real
+    environment instead.
+    """
+
+    name = "copilot"
+
+    def __init__(self, model: str = "", copilot_path: str = "", timeout: int = 240) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_COPILOT_MODEL", ""),
+                         timeout=timeout)
+        self.copilot_path = resolve_copilot_path(copilot_path)
+        self.full_env = os.environ.get("SKILLOPT_SLEEP_COPILOT_FULL_ENV", "") == "1"
+        # Stable isolated home so first-run setup is cached across calls.
+        if self.full_env:
+            self.copilot_home = ""
+        else:
+            self.copilot_home = os.environ.get("SKILLOPT_SLEEP_COPILOT_HOME") or os.path.join(
+                tempfile.gettempdir(), "skillopt_sleep_copilot_home"
+            )
+            try:
+                os.makedirs(self.copilot_home, exist_ok=True)
+            except Exception:
+                self.copilot_home = ""
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_copilot_")
+        cmd = [
+            self.copilot_path, "-p", prompt,
+            "--output-format", "json",
+            "--stream", "off",
+            "--no-color",
+            "--log-level", "none",
+            "--allow-all-tools",
+            "-C", clean_cwd,
+        ]
+        if not self.full_env:
+            # Drop unneeded startup work: no built-in (github) MCP server and no
+            # AGENTS.md / custom-instruction loading. With an isolated home that
+            # has no mcp-config.json, no user MCP servers spawn either.
+            cmd += ["--disable-builtin-mcps", "--no-custom-instructions"]
+        if self.model:
+            cmd += ["--model", self.model]
+        env = os.environ.copy()
+        if self.copilot_home:
+            env["COPILOT_HOME"] = self.copilot_home
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                encoding="utf-8", errors="replace", env=env,
+            )
+        except Exception:
+            return ""
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(clean_cwd, ignore_errors=True)
+            except Exception:
+                pass
+        return self._parse_jsonl_response(proc.stdout or "")
+
+    @staticmethod
+    def _parse_jsonl_response(raw: str) -> str:
+        parts: List[str] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get("type") == "assistant.message":
+                content = (obj.get("data") or {}).get("content")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+        return "\n".join(parts).strip()
+
+    def attempt_with_tools(self, task, skill, memory, tools):
+        # Expose REAL, callable tool shims in the working directory so the
+        # gbrain quick-answerer judge (tool_called=search) is validated
+        # honestly: we detect each call from the shim's log, not from a
+        # self-reported marker. The Copilot CLI is the Windows-validated
+        # backend, so the shims must be cross-platform — a bash `#!/usr/bin/env
+        # bash` + chmod shim does NOT execute via `./tool` under PowerShell/cmd,
+        # so on Windows we emit a `.cmd` batch shim instead.
+        import shutil
+        import stat
+        work = tempfile.mkdtemp(prefix="skillopt_sleep_copilottools_")
+        calllog = os.path.join(work, "_tool_calls.log")
+        tool_names = tools or ["search"]
+        is_windows = os.name == "nt"
+        try:
+            for tname in tool_names:
+                if is_windows:
+                    shim = os.path.join(work, f"{tname}.cmd")
+                    with open(shim, "w") as f:
+                        # `%~n0` is the script's own base name (the tool name);
+                        # writing it keeps the calllog line == tool name so the
+                        # honest-detection match below works unchanged.
+                        f.write(
+                            "@echo off\n"
+                            f'echo %~n0>>"{calllog}"\n'
+                            "echo (search results: 3 relevant notes found; use them to answer)\n"
+                        )
+                else:
+                    shim = os.path.join(work, tname)
+                    with open(shim, "w") as f:
+                        f.write(
+                            "#!/usr/bin/env bash\n"
+                            f'echo "{tname}" >> "{calllog}"\n'
+                            'echo "(search results: 3 relevant notes found; use them to answer)"\n'
+                        )
+                    os.chmod(shim, os.stat(shim).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            if is_windows:
+                tool_hint = (
+                    "You have shell tools available in the current directory: "
+                    + ", ".join(f"{t}.cmd" for t in tool_names)
+                    + " (each callable as `" + tool_names[0] + "` or `.\\"
+                    + tool_names[0] + "`). When the skill says to look something "
+                    "up or search before answering, you MUST actually run the "
+                    "tool (e.g. `" + tool_names[0] + " \"query\"`) before giving "
+                    "your final answer."
+                )
+            else:
+                tool_hint = (
+                    "You have shell tools available in the current directory: "
+                    + ", ".join(f"./{t}" for t in tool_names)
+                    + ". When the skill says to look something up or search before "
+                    "answering, you MUST actually run the tool (e.g. `./search \"query\"`) "
+                    "before giving your final answer."
+                )
+            prompt = (
+                "You are completing a task. Apply the skill and memory rules EXACTLY, "
+                "including any rule about searching/looking up before answering. "
+                "Treat a 'Learned preferences' block as HARD CONSTRAINTS that override "
+                "earlier conflicting skill text.\n\n"
+                f"{tool_hint}\n\n"
+                f"# Skill\n{skill or '(none)'}\n\n# Memory\n{memory or '(none)'}\n\n"
+                f"# Task\n{task.intent}\n\n{task.context_excerpt}\n\n"
+                "Return ONLY the final answer text."
+            )
+            cmd = [
+                self.copilot_path, "-p", prompt,
+                "--output-format", "json",
+                "--stream", "off",
+                "--no-color",
+                "--log-level", "none",
+                "--allow-all-tools",
+                "-C", work,
+            ]
+            if not self.full_env:
+                cmd += ["--disable-builtin-mcps", "--no-custom-instructions"]
+            if self.model:
+                cmd += ["--model", self.model]
+            env = os.environ.copy()
+            if self.copilot_home:
+                env["COPILOT_HOME"] = self.copilot_home
+            resp = ""
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=self.timeout, cwd=work, env=env,
+                )
+                resp = self._parse_jsonl_response(proc.stdout or "")
+            except Exception:
+                resp = ""
+            self._tokens += len(prompt) // 4 + len(resp) // 4
+            called: List[str] = []
+            if os.path.exists(calllog):
+                with open(calllog) as f:
+                    logged = {ln.strip() for ln in f if ln.strip()}
+                called = [t for t in tool_names if t in logged]
+            return resp, called
+        finally:
+            try:
+                shutil.rmtree(work, ignore_errors=True)
+            except Exception:
+                pass
+
+
 class DualBackend(Backend):
     """Route operations to two backends, à la SkillOpt's target vs optimizer.
 
@@ -753,6 +966,8 @@ def get_backend(
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
         return CodexCliBackend(model=model, codex_path=codex_path)
+    if n in {"copilot", "github_copilot", "copilot_cli", "gh_copilot"}:
+        return CopilotCliBackend(model=model)
     return MockBackend()
 
 

@@ -134,7 +134,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="SkillOpt-Sleep validation experiment")
     ap.add_argument("--persona", default="researcher", choices=list(PERSONAS.keys()))
     ap.add_argument("--nights", type=int, default=4)
-    ap.add_argument("--backend", default="mock", choices=["mock", "claude", "codex"])
+    ap.add_argument("--backend", default="mock", choices=["mock", "claude", "codex", "copilot"])
     ap.add_argument("--model", default="", help="backend model override")
     ap.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     ap.add_argument("--edit-budget", type=int, default=4)
