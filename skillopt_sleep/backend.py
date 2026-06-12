@@ -720,8 +720,10 @@ class CopilotCliBackend(CliBackend):
     response to stdout on all platforms, so JSONL is used for robust capture.
 
     The call runs in a clean temp cwd with streaming disabled and tools allowed
-    (so non-interactive mode never blocks on a permission prompt); the prompts
-    ask for final-answer text only, so no tool use is expected.
+    (so non-interactive mode never blocks on a permission prompt); ``_call``'s
+    prompts ask for final-answer text only, so no tool use is expected there,
+    while ``attempt_with_tools`` exposes real, cross-platform callable shims in
+    the working directory for honest tool-call detection.
 
     Startup overhead is minimised: each invocation points ``COPILOT_HOME`` at a
     dedicated, isolated config dir (no user ``mcp-config.json``, so the user's
@@ -805,6 +807,108 @@ class CopilotCliBackend(CliBackend):
                 if isinstance(content, str) and content:
                     parts.append(content)
         return "\n".join(parts).strip()
+
+    def attempt_with_tools(self, task, skill, memory, tools):
+        # Expose REAL, callable tool shims in the working directory so the
+        # gbrain quick-answerer judge (tool_called=search) is validated
+        # honestly: we detect each call from the shim's log, not from a
+        # self-reported marker. The Copilot CLI is the Windows-validated
+        # backend, so the shims must be cross-platform — a bash `#!/usr/bin/env
+        # bash` + chmod shim does NOT execute via `./tool` under PowerShell/cmd,
+        # so on Windows we emit a `.cmd` batch shim instead.
+        import shutil
+        import stat
+        work = tempfile.mkdtemp(prefix="skillopt_sleep_copilottools_")
+        calllog = os.path.join(work, "_tool_calls.log")
+        tool_names = tools or ["search"]
+        is_windows = os.name == "nt"
+        try:
+            for tname in tool_names:
+                if is_windows:
+                    shim = os.path.join(work, f"{tname}.cmd")
+                    with open(shim, "w") as f:
+                        # `%~n0` is the script's own base name (the tool name);
+                        # writing it keeps the calllog line == tool name so the
+                        # honest-detection match below works unchanged.
+                        f.write(
+                            "@echo off\n"
+                            f'echo %~n0>>"{calllog}"\n'
+                            "echo (search results: 3 relevant notes found; use them to answer)\n"
+                        )
+                else:
+                    shim = os.path.join(work, tname)
+                    with open(shim, "w") as f:
+                        f.write(
+                            "#!/usr/bin/env bash\n"
+                            f'echo "{tname}" >> "{calllog}"\n'
+                            'echo "(search results: 3 relevant notes found; use them to answer)"\n'
+                        )
+                    os.chmod(shim, os.stat(shim).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            if is_windows:
+                tool_hint = (
+                    "You have shell tools available in the current directory: "
+                    + ", ".join(f"{t}.cmd" for t in tool_names)
+                    + " (each callable as `" + tool_names[0] + "` or `.\\"
+                    + tool_names[0] + "`). When the skill says to look something "
+                    "up or search before answering, you MUST actually run the "
+                    "tool (e.g. `" + tool_names[0] + " \"query\"`) before giving "
+                    "your final answer."
+                )
+            else:
+                tool_hint = (
+                    "You have shell tools available in the current directory: "
+                    + ", ".join(f"./{t}" for t in tool_names)
+                    + ". When the skill says to look something up or search before "
+                    "answering, you MUST actually run the tool (e.g. `./search \"query\"`) "
+                    "before giving your final answer."
+                )
+            prompt = (
+                "You are completing a task. Apply the skill and memory rules EXACTLY, "
+                "including any rule about searching/looking up before answering. "
+                "Treat a 'Learned preferences' block as HARD CONSTRAINTS that override "
+                "earlier conflicting skill text.\n\n"
+                f"{tool_hint}\n\n"
+                f"# Skill\n{skill or '(none)'}\n\n# Memory\n{memory or '(none)'}\n\n"
+                f"# Task\n{task.intent}\n\n{task.context_excerpt}\n\n"
+                "Return ONLY the final answer text."
+            )
+            cmd = [
+                self.copilot_path, "-p", prompt,
+                "--output-format", "json",
+                "--stream", "off",
+                "--no-color",
+                "--log-level", "none",
+                "--allow-all-tools",
+                "-C", work,
+            ]
+            if not self.full_env:
+                cmd += ["--disable-builtin-mcps", "--no-custom-instructions"]
+            if self.model:
+                cmd += ["--model", self.model]
+            env = os.environ.copy()
+            if self.copilot_home:
+                env["COPILOT_HOME"] = self.copilot_home
+            resp = ""
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=self.timeout, cwd=work, env=env,
+                )
+                resp = self._parse_jsonl_response(proc.stdout or "")
+            except Exception:
+                resp = ""
+            self._tokens += len(prompt) // 4 + len(resp) // 4
+            called: List[str] = []
+            if os.path.exists(calllog):
+                with open(calllog) as f:
+                    logged = {ln.strip() for ln in f if ln.strip()}
+                called = [t for t in tool_names if t in logged]
+            return resp, called
+        finally:
+            try:
+                shutil.rmtree(work, ignore_errors=True)
+            except Exception:
+                pass
 
 
 class DualBackend(Backend):

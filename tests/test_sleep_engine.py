@@ -489,6 +489,53 @@ class TestCopilotBackend(unittest.TestCase):
                 else:
                     os.environ["SKILLOPT_SLEEP_COPILOT_HOME"] = prev
 
+    def test_attempt_with_tools_honest_detection(self):
+        # End-to-end (no real CLI): a tiny per-OS stub stands in for `copilot`.
+        # It runs the local `search` shim the backend writes into its work dir
+        # (so the calllog is written — honest detection) then prints one JSONL
+        # assistant.message. Proves both the JSONL parse and that the tool call
+        # is detected from the shim's log, not from a self-reported marker.
+        import shutil
+        import stat
+
+        from skillopt_sleep.backend import CopilotCliBackend
+
+        stub_dir = tempfile.mkdtemp(prefix="skillopt_sleep_stub_")
+        try:
+            if os.name == "nt":
+                stub = os.path.join(stub_dir, "copilot.cmd")
+                with open(stub, "w") as f:
+                    # The backend writes `search.cmd`; run it (explicit `.\` so
+                    # cmd's `call` resolves it from the cwd reliably) so the
+                    # calllog is populated, then emit the JSONL line. None of
+                    # `{ } " :` need escaping in batch echo (no > < | & ^ %).
+                    f.write(
+                        "@echo off\n"
+                        'call .\\search.cmd "q" >nul 2>&1\n'
+                        'echo {"type":"assistant.message","data":{"content":"Paris"}}\n'
+                    )
+            else:
+                stub = os.path.join(stub_dir, "copilot")
+                with open(stub, "w") as f:
+                    f.write(
+                        "#!/usr/bin/env bash\n"
+                        './search "q" >/dev/null 2>&1\n'
+                        "echo '{\"type\":\"assistant.message\",\"data\":{\"content\":\"Paris\"}}'\n"
+                    )
+                os.chmod(
+                    stub,
+                    os.stat(stub).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+                )
+
+            be = CopilotCliBackend(copilot_path=stub, timeout=60)
+            task = TaskRecord(id="t1", project="p", intent="What is the capital of France?")
+            resp, called = be.attempt_with_tools(task, skill="", memory="", tools=["search"])
+
+            self.assertEqual(resp, "Paris")  # JSONL parsed via _parse_jsonl_response
+            self.assertEqual(called, ["search"])  # shim ran; detected from calllog
+        finally:
+            shutil.rmtree(stub_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
