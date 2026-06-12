@@ -418,5 +418,77 @@ class TestFullCycleAndAdopt(unittest.TestCase):
                 self.assertIn("answer", f.read().lower())
 
 
+class TestCopilotBackend(unittest.TestCase):
+    """Pure-logic tests for CopilotCliBackend — no `copilot` CLI required."""
+
+    def test_alias_resolution(self):
+        from skillopt_sleep.backend import CopilotCliBackend, get_backend
+        for name in ("copilot", "github_copilot", "copilot_cli", "gh_copilot"):
+            self.assertIsInstance(get_backend(name), CopilotCliBackend, name)
+
+    def test_parse_jsonl_concatenates_assistant_messages(self):
+        from skillopt_sleep.backend import CopilotCliBackend
+        raw = "\n".join([
+            '{"type":"session.info","data":{}}',
+            '{"type":"assistant.message","data":{"content":"hello"}}',
+            'not-json-noise',
+            '{"type":"user.message","data":{"content":"ignored"}}',
+            '{"type":"assistant.message","data":{"content":"world"}}',
+        ])
+        self.assertEqual(CopilotCliBackend._parse_jsonl_response(raw), "hello\nworld")
+
+    def test_parse_jsonl_ignores_non_assistant_and_blank(self):
+        from skillopt_sleep.backend import CopilotCliBackend
+        self.assertEqual(CopilotCliBackend._parse_jsonl_response(""), "")
+        self.assertEqual(
+            CopilotCliBackend._parse_jsonl_response('{"type":"result","data":{"content":"x"}}'),
+            "",
+        )
+        # assistant.message with empty/missing content contributes nothing
+        self.assertEqual(
+            CopilotCliBackend._parse_jsonl_response(
+                '{"type":"assistant.message","data":{"content":""}}\n'
+                '{"type":"assistant.message","data":{}}'
+            ),
+            "",
+        )
+
+    def test_isolated_home_by_default(self):
+        from skillopt_sleep.backend import CopilotCliBackend
+        be = CopilotCliBackend()
+        self.assertFalse(be.full_env)
+        self.assertTrue(be.copilot_home)  # an isolated COPILOT_HOME is set
+
+    def test_full_env_opt_out(self):
+        from skillopt_sleep.backend import CopilotCliBackend
+        prev = os.environ.get("SKILLOPT_SLEEP_COPILOT_FULL_ENV")
+        os.environ["SKILLOPT_SLEEP_COPILOT_FULL_ENV"] = "1"
+        try:
+            be = CopilotCliBackend()
+            self.assertTrue(be.full_env)
+            self.assertEqual(be.copilot_home, "")  # real user environment used
+        finally:
+            if prev is None:
+                os.environ.pop("SKILLOPT_SLEEP_COPILOT_FULL_ENV", None)
+            else:
+                os.environ["SKILLOPT_SLEEP_COPILOT_FULL_ENV"] = prev
+
+    def test_home_override_env(self):
+        from skillopt_sleep.backend import CopilotCliBackend
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "myhome")
+            prev = os.environ.get("SKILLOPT_SLEEP_COPILOT_HOME")
+            os.environ["SKILLOPT_SLEEP_COPILOT_HOME"] = target
+            try:
+                be = CopilotCliBackend()
+                self.assertEqual(be.copilot_home, target)
+                self.assertTrue(os.path.isdir(target))  # created on init
+            finally:
+                if prev is None:
+                    os.environ.pop("SKILLOPT_SLEEP_COPILOT_HOME", None)
+                else:
+                    os.environ["SKILLOPT_SLEEP_COPILOT_HOME"] = prev
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
