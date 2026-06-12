@@ -24,6 +24,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
@@ -698,6 +699,114 @@ class CodexCliBackend(CliBackend):
             except Exception:
                 pass
 
+def resolve_copilot_path(explicit: str = "") -> str:
+    """Find the GitHub Copilot CLI (`copilot`) binary."""
+    if explicit:
+        return explicit
+    env = os.environ.get("SKILLOPT_SLEEP_COPILOT_PATH")
+    if env:
+        return env
+    import shutil
+    found = shutil.which("copilot")
+    return found or "copilot"
+
+
+class CopilotCliBackend(CliBackend):
+    """Drives the GitHub Copilot CLI in non-interactive mode.
+
+    Uses ``copilot -p <prompt> --output-format json`` and parses the emitted
+    JSONL event stream, returning the concatenated ``assistant.message``
+    content. The plain-text / ``--silent`` modes do not reliably stream the
+    response to stdout on all platforms, so JSONL is used for robust capture.
+
+    The call runs in a clean temp cwd with streaming disabled and tools allowed
+    (so non-interactive mode never blocks on a permission prompt); the prompts
+    ask for final-answer text only, so no tool use is expected.
+
+    Startup overhead is minimised: each invocation points ``COPILOT_HOME`` at a
+    dedicated, isolated config dir (no user ``mcp-config.json``, so the user's
+    MCP servers — including this project's own — are NOT spawned, avoiding a
+    slow recursive launch), and built-in MCP servers / custom instructions are
+    disabled. Auth is read from the OS credential store / token env vars, which
+    live outside ``COPILOT_HOME``, so isolation does not break authentication.
+    Set ``SKILLOPT_SLEEP_COPILOT_HOME`` to override the isolated home, or set it
+    empty / ``SKILLOPT_SLEEP_COPILOT_FULL_ENV=1`` to use the user's real
+    environment instead.
+    """
+
+    name = "copilot"
+
+    def __init__(self, model: str = "", copilot_path: str = "", timeout: int = 240) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_COPILOT_MODEL", ""),
+                         timeout=timeout)
+        self.copilot_path = resolve_copilot_path(copilot_path)
+        self.full_env = os.environ.get("SKILLOPT_SLEEP_COPILOT_FULL_ENV", "") == "1"
+        # Stable isolated home so first-run setup is cached across calls.
+        if self.full_env:
+            self.copilot_home = ""
+        else:
+            self.copilot_home = os.environ.get("SKILLOPT_SLEEP_COPILOT_HOME") or os.path.join(
+                tempfile.gettempdir(), "skillopt_sleep_copilot_home"
+            )
+            try:
+                os.makedirs(self.copilot_home, exist_ok=True)
+            except Exception:
+                self.copilot_home = ""
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_copilot_")
+        cmd = [
+            self.copilot_path, "-p", prompt,
+            "--output-format", "json",
+            "--stream", "off",
+            "--no-color",
+            "--log-level", "none",
+            "--allow-all-tools",
+            "-C", clean_cwd,
+        ]
+        if not self.full_env:
+            # Drop unneeded startup work: no built-in (github) MCP server and no
+            # AGENTS.md / custom-instruction loading. With an isolated home that
+            # has no mcp-config.json, no user MCP servers spawn either.
+            cmd += ["--disable-builtin-mcps", "--no-custom-instructions"]
+        if self.model:
+            cmd += ["--model", self.model]
+        env = os.environ.copy()
+        if self.copilot_home:
+            env["COPILOT_HOME"] = self.copilot_home
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                encoding="utf-8", errors="replace", env=env,
+            )
+        except Exception:
+            return ""
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(clean_cwd, ignore_errors=True)
+            except Exception:
+                pass
+        return self._parse_jsonl_response(proc.stdout or "")
+
+    @staticmethod
+    def _parse_jsonl_response(raw: str) -> str:
+        parts: List[str] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get("type") == "assistant.message":
+                content = (obj.get("data") or {}).get("content")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+        return "\n".join(parts).strip()
+
+
 class DualBackend(Backend):
     """Route operations to two backends, à la SkillOpt's target vs optimizer.
 
@@ -753,6 +862,8 @@ def get_backend(
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
         return CodexCliBackend(model=model, codex_path=codex_path)
+    if n in {"copilot", "github_copilot", "copilot_cli", "gh_copilot"}:
+        return CopilotCliBackend(model=model)
     return MockBackend()
 
 

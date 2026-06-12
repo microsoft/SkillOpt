@@ -45,8 +45,17 @@ Ask Copilot things like *"run the sleep cycle"*, *"what did the last sleep
 propose?"*, *"adopt the staged sleep proposal"*. Copilot calls the MCP tools:
 `sleep_status`, `sleep_dry_run`, `sleep_run`, `sleep_adopt`, `sleep_harvest`.
 
-Each tool takes optional `project`, `backend` (`mock`/`claude`/`codex`), and
-`scope` arguments. Default backend is `mock` (no API spend).
+Each tool takes optional `project`, `backend` (`mock`/`claude`/`codex`/`copilot`), and
+`scope` arguments. Default backend is `mock` (no API spend). The `copilot`
+backend drives the GitHub Copilot CLI (`copilot -p ... --output-format json`)
+and requires the `copilot` CLI to be installed and authenticated.
+
+For speed, the `copilot` backend runs each call against an isolated
+`COPILOT_HOME` with built-in MCP servers and custom instructions disabled, so
+your user MCP servers (including this project's own) are not spawned per call
+(~5x faster). Override with `SKILLOPT_SLEEP_COPILOT_HOME=<dir>`, pick a model
+with `SKILLOPT_SLEEP_COPILOT_MODEL`, or set `SKILLOPT_SLEEP_COPILOT_FULL_ENV=1`
+to use your real Copilot environment instead.
 
 ## Verify the server directly (no Copilot needed)
 
