@@ -21,14 +21,14 @@ This directory provides scaffold files for adding a new benchmark to SkillOpt.
    ```bash
    cd skillopt/envs/your_benchmark
    mv env_template.py    adapter.py
-   mv loader_template.py loader.py
+   mv loader_template.py dataloader.py
    ```
    …and inside each file rename the classes
    (`TemplateBenchmarkEnv → YourBenchmarkAdapter`,
    `TemplateBenchmarkLoader → YourBenchmarkLoader`)
    and fix the cross-import in `adapter.py`.
 3. **Implement the TODO blocks** inside `adapter.py:rollout` and the
-   `_normalize_item` helper in `loader.py`. If you want real reflection,
+   `_normalize_item` helper in `dataloader.py`. If you want real reflection,
    uncomment the `run_minibatch_reflect` block in `adapter.py:reflect`.
 4. **Register** the adapter — add a `try / except ImportError` block in
    `scripts/train.py`'s `_register_builtins()` mapping the registry key

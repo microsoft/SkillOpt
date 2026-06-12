@@ -36,7 +36,7 @@ touch skillopt/envs/docfaithful/__init__.py
 
 ## Step 2 — Implement the data loader
 
-`skillopt/envs/docfaithful/loader.py`:
+`skillopt/envs/docfaithful/dataloader.py`:
 
 ```python
 from __future__ import annotations
@@ -165,7 +165,7 @@ import os
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
-from skillopt.envs.docfaithful.loader import DocFaithfulDataLoader
+from skillopt.envs.docfaithful.dataloader import DocFaithfulDataLoader
 from skillopt.envs.docfaithful.rollout import run_batch
 from skillopt.gradient.reflect import run_minibatch_reflect
 
