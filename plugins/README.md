@@ -44,7 +44,7 @@ Copilot: register `plugins/copilot/mcp_server.py` as an MCP server.
 ## What one "night" does
 
 ```
-harvest ~/.claude (or session) transcripts → mine recurring tasks → replay offline
+harvest Claude Code / Codex Desktop transcripts → mine recurring tasks → replay offline
    → consolidate (reflect → bounded edit → GATE on real held-out tasks)
    → stage proposal → (you) adopt
 ```
@@ -53,10 +53,10 @@ Nothing live changes until you adopt; every adopt backs up first.
 
 ## Controls (work on all platforms)
 
-`--gate on|off` · `--rollouts-k K` (multi-rollout contrastive reflection) ·
-`--budget-tokens/--budget-minutes` · `--preferences "..."` · separate
-optimizer/target models (`--optimizer-model` / `--target-model`) · slow-update
-long-term memory. Full guide:
+`--source claude|codex|auto` · `--gate on|off` · `--rollouts-k K`
+(multi-rollout contrastive reflection) · `--budget-tokens/--budget-minutes` ·
+`--preferences "..."` · separate optimizer/target models (`--optimizer-model` /
+`--target-model`) · slow-update long-term memory. Full guide:
 [`../docs/sleep/CONTROLLABLE_DREAMING.md`](../docs/sleep/CONTROLLABLE_DREAMING.md).
 
 ## Does it actually work?

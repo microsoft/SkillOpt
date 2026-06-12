@@ -9,7 +9,8 @@
 Common flags:
     --project PATH      project to evolve (default: cwd)
     --scope all|invoked harvest scope (default: invoked)
-    --backend mock|anthropic
+    --backend mock|claude|codex
+    --source claude|codex|auto
     --model NAME
     --lookback-hours N
     --auto-adopt
@@ -25,10 +26,11 @@ from typing import Any, Dict
 
 from skillopt_sleep.config import load_config
 from skillopt_sleep.cycle import run_sleep_cycle
-from skillopt_sleep.harvest import harvest
+from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.mine import mine
+from skillopt_sleep.staging import adopt as adopt_staging
+from skillopt_sleep.staging import latest_staging
 from skillopt_sleep.state import SleepState
-from skillopt_sleep.staging import latest_staging, adopt as adopt_staging
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -38,6 +40,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
+    p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
+    p.add_argument("--source", default="", choices=["", "claude", "codex", "auto"],
+                   help="session transcript source")
     p.add_argument("--lookback-hours", type=int, default=0)
     p.add_argument("--edit-budget", type=int, default=0)
     p.add_argument("--auto-adopt", action="store_true")
@@ -59,6 +64,10 @@ def _cfg_from_args(args) -> Any:
         overrides["codex_path"] = os.path.abspath(args.codex_path)
     if getattr(args, "claude_home", ""):
         overrides["claude_home"] = os.path.abspath(args.claude_home)
+    if getattr(args, "codex_home", ""):
+        overrides["codex_home"] = os.path.abspath(args.codex_home)
+    if getattr(args, "source", ""):
+        overrides["transcript_source"] = args.source
     if getattr(args, "lookback_hours", 0):
         overrides["lookback_hours"] = args.lookback_hours
     if getattr(args, "edit_budget", 0):
@@ -143,12 +152,7 @@ def cmd_adopt(args) -> int:
 
 def cmd_harvest(args) -> int:
     cfg = _cfg_from_args(args)
-    digests = harvest(
-        cfg.transcripts_dir,
-        scope=cfg.get("projects", "invoked"),
-        invoked_project=cfg.get("invoked_project", ""),
-        limit=cfg.get("max_tasks_per_night", 40) * 3,
-    )
+    digests = harvest_for_config(cfg, limit=cfg.get("max_tasks_per_night", 40) * 3)
     tasks = mine(digests, max_tasks=cfg.get("max_tasks_per_night", 40),
                  holdout_fraction=cfg.get("holdout_fraction", 0.34), seed=cfg.get("seed", 42))
     if args.json:

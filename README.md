@@ -67,7 +67,7 @@ Dreams** (offline consolidation; review-then-adopt), and the **agent sleep**
 idea (short-term experience → long-term competence). One "night":
 
 ```
-harvest session transcripts → mine recurring tasks → replay offline
+harvest Claude Code / Codex Desktop transcripts → mine recurring tasks → replay offline
    → consolidate (reflect → bounded edit → GATE on real held-out tasks)
    → stage proposal → (you) adopt
 ```
@@ -95,6 +95,11 @@ positive, and the gate blocks regressions
 > documented in [`docs/sleep/CONTROLLABLE_DREAMING.md`](docs/sleep/CONTROLLABLE_DREAMING.md).
 
 Deterministic proof (no API key): `python -m skillopt_sleep.experiments.run_experiment --persona researcher --assert-improves`.
+
+For local sleep cycles, transcript source and replay backend are separate knobs:
+use `--source claude` for Claude Code transcripts, `--source codex` for Codex
+Desktop archived sessions under `~/.codex/archived_sessions`, and
+`--backend codex` only when you want the replay/optimizer to spend Codex budget.
 
 ---
 

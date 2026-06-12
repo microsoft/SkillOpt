@@ -8,18 +8,17 @@ external dependencies.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
-
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List
 
 # ── Stage 1: harvest ──────────────────────────────────────────────────────────
 
 @dataclass
 class SessionDigest:
-    """A normalized summary of one Claude Code session transcript.
+    """A normalized summary of one local agent session transcript.
 
-    Produced by :mod:`skillopt_sleep.harvest` from a ``<sessionId>.jsonl``
-    transcript plus ``history.jsonl`` entries.
+    Produced by source-specific harvesters from Claude Code transcripts or
+    Codex Desktop archived sessions.
     """
 
     session_id: str
