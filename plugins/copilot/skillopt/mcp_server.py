@@ -122,7 +122,7 @@ _COMMON_PROPS = {
     "config": {"type": "string",
                "description": "Path to a benchmark YAML config (e.g. configs/searchqa/default.yaml). See skillopt_list_configs."},
     "env": {"type": "string", "description": "Override the environment/adapter name (e.g. searchqa, alfworld)."},
-    "backend": {"type": "string", "description": "Model backend (e.g. openai, claude, codex, qwen)."},
+    "backend": {"type": "string", "description": "Model backend (e.g. azure_openai, claude, codex, qwen, minimax)."},
     "optimizer_model": {"type": "string", "description": "Model used for reflection/skill rewriting (the optimizer)."},
     "target_model": {"type": "string", "description": "Model used to execute tasks (the target)."},
     "out_root": {"type": "string", "description": "Output directory root for run artifacts."},
