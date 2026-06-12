@@ -14,28 +14,35 @@ as the Claude Code plugin (`skillopt_sleep`), wrapped for Codex.
 ## What Codex supports (and what we use)
 
 Codex (`@openai/codex`) extends via **`AGENTS.md`** instructions, **skills** at
-`~/.agents/skills/<name>/SKILL.md`, and **custom prompts** at
-`~/.codex/prompts/<name>.md` (invoked as `/<name>`). This integration ships all
-three, plus a shared runner.
+`~/.agents/skills/<name>/SKILL.md`, and plugins that can distribute skills.
+Custom prompts are deprecated in Codex, so this integration is skill-first: the
+installed `skillopt-sleep` skill contains the launch commands and operating
+rules. The shared runner remains a plain shell entrypoint that the skill calls.
 
 ## Install
 
 ```bash
 git clone <repo-url> SkillOpt-Sleep
 cd SkillOpt-Sleep
-bash plugins/codex/install.sh          # installs the /sleep prompt + skill
+bash plugins/codex/install.sh          # installs the skill
 export SKILLOPT_SLEEP_REPO="$(pwd)"    # so the runner is found from anywhere
 ```
+
+If a previous install created `~/.codex/prompts/sleep.md`, the installer moves
+that deprecated prompt aside with a `.skillopt-legacy*.bak` suffix.
 
 Requires Python ≥ 3.10 and the `codex` CLI on PATH.
 
 ## Use
 
+Mention `$skillopt-sleep` where Codex supports explicit skill mentions, or ask
+Codex in natural language:
+
 ```text
-/sleep status      # what's happened
-/sleep dry-run     # safe preview, stages nothing
-/sleep run         # full cycle, stages a reviewed proposal (no live edits)
-/sleep adopt       # apply the staged proposal (with backup)
+Use the skillopt-sleep skill to run status for this project.
+Use the skillopt-sleep skill to run a dry-run for this project.
+Use the skillopt-sleep skill to run the full cycle for this project with the Codex backend.
+Use the skillopt-sleep skill to adopt the latest staged proposal.
 ```
 
 Or call the engine directly:
@@ -53,7 +60,7 @@ identically — see [`../../docs/sleep/CONTROLLABLE_DREAMING.md`](../../docs/sle
 
 - Codex's `exec` runs shell, so the real-tool-loop replay (e.g. the
   `tool_called: search` benchmark seed) works natively.
-- Codex's standalone *plugin-package manifest* format is not yet a stable public
-  spec; this integration uses the documented `AGENTS.md` + skills + prompts
-  mechanisms, which are stable. If/when a `codex plugin` package format ships,
-  we'll add a one-file manifest.
+- This integration no longer installs a `.codex/prompts` slash command. Skills
+  are the reusable Codex workflow surface; mention `skillopt-sleep` explicitly
+  or ask for a sleep/dream/offline self-improvement run and Codex can load the
+  skill.

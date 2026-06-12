@@ -22,7 +22,7 @@ literature (short-term experience → long-term competence).
 | Platform | Folder | Mechanism | Status |
 |---|---|---|---|
 | **Claude Code** | [`claude-code/`](claude-code) | `.claude-plugin` + `/sleep` command + skill + hooks | full, installable |
-| **Codex** | [`codex/`](codex) | `~/.codex/prompts/sleep.md` + `~/.agents/skills` + `AGENTS.md` | full |
+| **Codex** | [`codex/`](codex) | user-level `skillopt-sleep` skill + shared runner | full |
 | **Copilot** | [`copilot/`](copilot) | MCP server (`sleep_*` tools) + `copilot-instructions` | full (MCP) |
 
 All three call the **same** [`plugins/run-sleep.sh`](run-sleep.sh) → `python -m

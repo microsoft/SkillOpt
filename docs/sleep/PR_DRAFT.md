@@ -15,7 +15,7 @@ Synthesizes SkillOpt (validation-gated bounded text edits), Claude Dreams
 Shipped as plugins for **three agents**, one engine + three thin shells:
 
 - **Claude Code** — `.claude-plugin` + `/sleep` command + skill + hooks
-- **Codex** — `~/.codex/prompts/sleep.md` + `~/.agents/skills` + `install.sh`
+- **Codex** — user-level `skillopt-sleep` skill + shared runner + `install.sh`
 - **Copilot** — a stdlib-only MCP server exposing `sleep_*` tools
 
 ## Design notes
