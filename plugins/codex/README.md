@@ -41,13 +41,18 @@ Requires Python ≥ 3.10 and the `codex` CLI on PATH.
 Or call the engine directly:
 
 ```bash
-python -m skillopt_sleep run --project "$(pwd)" --backend codex
+python -m skillopt_sleep dry-run --project "$(pwd)" --source codex --backend mock
+python -m skillopt_sleep run --project "$(pwd)" --source codex --backend codex
 ```
 
-Default backend is `mock` (no API spend). `--backend codex` uses your Codex
-budget for real improvement. All the controllable knobs (`--gate on|off`,
-`--rollouts-k`, `--budget-tokens`, `--preferences`, optimizer/target split) work
-identically — see [`../../docs/sleep/CONTROLLABLE_DREAMING.md`](../../docs/sleep/CONTROLLABLE_DREAMING.md).
+`--source codex` reads Codex Desktop archived sessions from
+`~/.codex/archived_sessions`. Use `--codex-home /path/to/.codex` to point at a
+different Codex home, or `--source auto` to try Codex archives first and fall
+back to Claude Code transcripts. Default backend is `mock` (no API spend).
+`--backend codex` uses your Codex budget for real improvement. All the
+controllable knobs (`--gate on|off`, `--rollouts-k`, `--budget-tokens`,
+`--preferences`, optimizer/target split) work identically — see
+[`../../docs/sleep/CONTROLLABLE_DREAMING.md`](../../docs/sleep/CONTROLLABLE_DREAMING.md).
 
 ## Notes / status
 

@@ -12,7 +12,6 @@ from typing import List, Tuple
 
 from skillopt_sleep.types import EditRecord
 
-
 LEARNED_START = "<!-- SKILLOPT-SLEEP:LEARNED START -->"
 LEARNED_END = "<!-- SKILLOPT-SLEEP:LEARNED END -->"
 _BANNER = (
@@ -79,7 +78,7 @@ def apply_edits(doc: str, edits: List[EditRecord]) -> Tuple[str, List[EditRecord
     anchor substring.
     """
     lines = current_learned_lines(doc)
-    norm_set = {_norm(l) for l in lines}
+    norm_set = {_norm(line) for line in lines}
     applied: List[EditRecord] = []
 
     for e in edits:
@@ -92,31 +91,31 @@ def apply_edits(doc: str, edits: List[EditRecord]) -> Tuple[str, List[EditRecord
             applied.append(e)
         elif op == "delete":
             anchor = _norm(e.anchor or e.content)
-            keep = [l for l in lines if anchor not in _norm(l)]
+            keep = [line for line in lines if anchor not in _norm(line)]
             if len(keep) != len(lines):
                 lines = keep
-                norm_set = {_norm(l) for l in lines}
+                norm_set = {_norm(line) for line in lines}
                 applied.append(e)
         elif op == "replace":
             anchor = _norm(e.anchor)
             new_lines = []
             changed = False
-            for l in lines:
-                if anchor and anchor in _norm(l):
+            for line in lines:
+                if anchor and anchor in _norm(line):
                     new_lines.append(e.content.strip())
                     changed = True
                 else:
-                    new_lines.append(l)
+                    new_lines.append(line)
             if changed:
                 lines = new_lines
-                norm_set = {_norm(l) for l in lines}
+                norm_set = {_norm(line) for line in lines}
                 applied.append(e)
 
     return set_learned(doc, lines), applied
 
 
 def ensure_skill_scaffold(doc: str, *, name: str, description: str) -> str:
-    """Ensure a SKILL.md has YAML frontmatter so Claude Code loads it."""
+    """Ensure a SKILL.md has YAML frontmatter so local agents load it."""
     if doc.lstrip().startswith("---"):
         return doc
     fm = (
@@ -125,6 +124,6 @@ def ensure_skill_scaffold(doc: str, *, name: str, description: str) -> str:
         f"description: {description}\n"
         "---\n\n"
         f"# {name}\n\n"
-        "Preferences and procedures learned from your past Claude Code sessions.\n"
+        "Preferences and procedures learned from your past local agent sessions.\n"
     )
     return fm + doc

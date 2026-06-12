@@ -22,11 +22,14 @@ finds the engine and a Python ≥ 3.10 automatically:
 ```bash
 # point at the repo if it isn't auto-detected from CWD:
 export SKILLOPT_SLEEP_REPO=/path/to/SkillOpt-Sleep
-bash "$SKILLOPT_SLEEP_REPO/plugins/run-sleep.sh" <action> --project "$(pwd)"
+bash "$SKILLOPT_SLEEP_REPO/plugins/run-sleep.sh" <action> --project "$(pwd)" --source codex
 ```
 
-`<action>` ∈ `status | dry-run | run | adopt | harvest`. Use `--backend codex`
-for real improvement on the user's own Codex budget (default `mock` = no spend).
+`<action>` ∈ `status | dry-run | run | adopt | harvest`. `--source codex`
+reads Codex Desktop archived sessions from `~/.codex/archived_sessions`; use
+`--codex-home /path/to/.codex` if the archive lives elsewhere. Use
+`--backend codex` for real improvement on the user's own Codex budget (default
+`mock` = no spend).
 
 ## Steps
 

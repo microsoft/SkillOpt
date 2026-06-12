@@ -13,17 +13,19 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
-
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
+CODEX_HOME = os.path.expanduser("~/.codex")
 
 
 DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
+    "codex_home": CODEX_HOME,
+    "transcript_source": "claude",  # "claude" | "codex" | "auto"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -93,6 +95,10 @@ class SleepConfig:
     @property
     def transcripts_dir(self) -> str:
         return os.path.join(self.data["claude_home"], "projects")
+
+    @property
+    def codex_archived_sessions_dir(self) -> str:
+        return os.path.join(self.data["codex_home"], "archived_sessions")
 
     @property
     def history_path(self) -> str:

@@ -10,18 +10,18 @@ CI use. With backend="anthropic" it spends the user's budget for real lift.
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from skillopt_sleep.backend import get_backend
 from skillopt_sleep.config import SleepConfig, load_config
 from skillopt_sleep.consolidate import consolidate
-from skillopt_sleep.harvest import harvest
+from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import mine
+from skillopt_sleep.staging import adopt as adopt_staging
+from skillopt_sleep.staging import write_staging
 from skillopt_sleep.state import SleepState, _now_iso
-from skillopt_sleep.staging import write_staging, adopt as adopt_staging
 from skillopt_sleep.types import SessionDigest, SleepReport, TaskRecord
 
 
@@ -117,10 +117,8 @@ def run_sleep_cycle(
         n_sessions = 0
     else:
         since = state.last_harvest_for(project)
-        digests = harvest(
-            cfg.transcripts_dir,
-            scope=cfg.get("projects", "invoked"),
-            invoked_project=cfg.get("invoked_project", ""),
+        digests = harvest_for_config(
+            cfg,
             since_iso=since,
             limit=cfg.get("max_tasks_per_night", 40) * 3,
         )
@@ -151,7 +149,7 @@ def run_sleep_cycle(
     if not skill:
         skill = ensure_skill_scaffold(
             "", name=cfg.get("managed_skill_name", "skillopt-sleep-learned"),
-            description="Preferences and procedures learned from past Claude Code sessions.",
+            description="Preferences and procedures learned from past local agent sessions.",
         )
 
     report = SleepReport(

@@ -4,6 +4,23 @@ The sleep engine is no longer a single fixed pipeline. It is a controllable
 offline "dream / imagination" loop the user steers. This documents the knobs
 added in the four-stage refactor and how they map to the user's design.
 
+## Transcript sources
+
+Sleep separates the source of past sessions from the backend used to replay and
+optimize tasks:
+
+```bash
+python -m skillopt_sleep dry-run --project "$(pwd)" --source claude --backend mock
+python -m skillopt_sleep dry-run --project "$(pwd)" --source codex --backend mock
+python -m skillopt_sleep run --project "$(pwd)" --source codex --backend codex
+```
+
+`--source claude` reads Claude Code transcripts from `~/.claude/projects`.
+`--source codex` reads Codex Desktop archives from
+`~/.codex/archived_sessions`. `--source auto` tries Codex archives first, then
+falls back to Claude Code transcripts. Use `--codex-home /path/to/.codex` or
+`--claude-home /path/to/.claude` to point at non-default homes.
+
 ## The mental model
 
 > Sleep = an offline imagination rollout. Re-run the user's real

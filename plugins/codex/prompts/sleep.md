@@ -6,9 +6,11 @@
 Run the SkillOpt-Sleep offline self-evolution cycle. Action: $ARGUMENTS
 (empty → "status").
 
-Use the bundled runner via shell:
+Use the bundled runner via shell. If $ARGUMENTS is empty, use `status`. If the
+arguments do not already include `--source`, add `--source codex` so Codex
+Desktop sessions are harvested from `~/.codex/archived_sessions`.
 
-    bash "${SKILLOPT_SLEEP_REPO:?set SKILLOPT_SLEEP_REPO to the repo root}/plugins/run-sleep.sh" $ARGUMENTS --project "$(pwd)"
+    bash "${SKILLOPT_SLEEP_REPO:?set SKILLOPT_SLEEP_REPO to the repo root}/plugins/run-sleep.sh" <action-and-args> --project "$(pwd)" --source codex
 
 Then:
 - For `run`/`dry-run`: read the staged `report.md` and show the held-out
