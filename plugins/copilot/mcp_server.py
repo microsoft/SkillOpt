@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -45,8 +46,13 @@ _TOOL_SCHEMA = {
     "type": "object",
     "properties": {
         "project": {"type": "string", "description": "Project dir to evolve (default: cwd)."},
-        "backend": {"type": "string", "enum": ["mock", "claude", "codex"],
-                     "description": "mock = no API spend (default); claude/codex = real."},
+        "backend": {"type": "string", "enum": ["mock", "claude", "codex", "opencode"],
+                     "description": "mock = no API spend (default); claude/codex/opencode = real."},
+        "model": {"type": "string", "description": "Backend-specific model override."},
+        "source": {"type": "string", "enum": ["claude", "opencode"],
+                    "description": "Transcript source to harvest."},
+        "opencode_db": {"type": "string", "description": "Override path to opencode.db."},
+        "opencode_path": {"type": "string", "description": "Override path to the OpenCode CLI binary."},
         "scope": {"type": "string", "enum": ["invoked", "all"]},
     },
     "additionalProperties": False,
@@ -54,12 +60,20 @@ _TOOL_SCHEMA = {
 
 
 def _run_engine(action: str, args: dict) -> str:
-    py = sys.executable or "python3"
+    py = _python_executable()
     cmd = [py, "-m", "skillopt_sleep", action]
     if args.get("project"):
         cmd += ["--project", str(args["project"])]
     if args.get("backend"):
         cmd += ["--backend", str(args["backend"])]
+    if args.get("model"):
+        cmd += ["--model", str(args["model"])]
+    if args.get("source"):
+        cmd += ["--source", str(args["source"])]
+    if args.get("opencode_db"):
+        cmd += ["--opencode-db", str(args["opencode_db"])]
+    if args.get("opencode_path"):
+        cmd += ["--opencode-path", str(args["opencode_path"])]
     if args.get("scope"):
         cmd += ["--scope", str(args["scope"])]
     try:
@@ -69,6 +83,30 @@ def _run_engine(action: str, args: dict) -> str:
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
     return out + (("\n[stderr]\n" + err) if err else "")
+
+
+def _python_executable() -> str:
+    candidates = [sys.executable, "python3.12", "python3.11", "python3.10", "python3"]
+    seen = set()
+    for cand in candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        exe = cand if os.path.isabs(cand) else shutil.which(cand)
+        if not exe:
+            continue
+        try:
+            proc = subprocess.run(
+                [exe, "-c", "import sys; print('%d%d' % sys.version_info[:2])"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            continue
+        if proc.returncode == 0 and int((proc.stdout or "0").strip() or "0") >= 310:
+            return exe
+    return sys.executable or "python3"
 
 
 def _result(id_, result):

@@ -18,6 +18,7 @@ from skillopt_sleep.backend import get_backend
 from skillopt_sleep.config import SleepConfig, load_config
 from skillopt_sleep.consolidate import consolidate
 from skillopt_sleep.harvest import harvest
+from skillopt_sleep.harvest_opencode import harvest_opencode
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import mine
 from skillopt_sleep.state import SleepState, _now_iso
@@ -108,6 +109,7 @@ def run_sleep_cycle(
         cfg.get("backend", "mock"),
         model=cfg.get("model", ""),
         codex_path=cfg.get("codex_path", ""),
+        opencode_path=cfg.get("opencode_path", ""),
     )
 
     # ── 1+2. harvest + mine (unless seed_tasks injected) ─────────────────
@@ -117,13 +119,22 @@ def run_sleep_cycle(
         n_sessions = 0
     else:
         since = state.last_harvest_for(project)
-        digests = harvest(
-            cfg.transcripts_dir,
-            scope=cfg.get("projects", "invoked"),
-            invoked_project=cfg.get("invoked_project", ""),
-            since_iso=since,
-            limit=cfg.get("max_tasks_per_night", 40) * 3,
-        )
+        if cfg.get("transcript_source", "claude") == "opencode":
+            digests = harvest_opencode(
+                cfg.opencode_db_path,
+                scope=cfg.get("projects", "invoked"),
+                invoked_project=cfg.get("invoked_project", ""),
+                since_iso=since,
+                limit=cfg.get("max_tasks_per_night", 40) * 3,
+            )
+        else:
+            digests = harvest(
+                cfg.transcripts_dir,
+                scope=cfg.get("projects", "invoked"),
+                invoked_project=cfg.get("invoked_project", ""),
+                since_iso=since,
+                limit=cfg.get("max_tasks_per_night", 40) * 3,
+            )
         n_sessions = len(digests)
         # When a real backend is configured, use it to mine checkable tasks from
         # the transcripts (rubric/rule judges); otherwise fall back to the

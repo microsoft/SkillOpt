@@ -100,6 +100,7 @@ def main(argv=None) -> int:
     ap.add_argument("--target-backend", default="claude")
     ap.add_argument("--target-model", default="sonnet")
     ap.add_argument("--codex-path", default="")
+    ap.add_argument("--opencode-path", default="")
     ap.add_argument("--data-root", default="")
     ap.add_argument("--seeds", default="brief-writer")
     ap.add_argument("--nights", type=int, default=2)
@@ -115,8 +116,18 @@ def main(argv=None) -> int:
         print("ERROR: gbrain-evals skillopt-v1 data not found; pass --data-root", file=sys.stderr)
         return 2
 
-    source = get_backend(args.source_backend, model=args.source_model, codex_path=args.codex_path)
-    target = get_backend(args.target_backend, model=args.target_model, codex_path=args.codex_path)
+    source = get_backend(
+        args.source_backend,
+        model=args.source_model,
+        codex_path=args.codex_path,
+        opencode_path=args.opencode_path,
+    )
+    target = get_backend(
+        args.target_backend,
+        model=args.target_model,
+        codex_path=args.codex_path,
+        opencode_path=args.opencode_path,
+    )
 
     seeds = [s.strip() for s in args.seeds.split(",") if s.strip()] or available_seeds(data_root)
     results = []

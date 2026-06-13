@@ -1,6 +1,6 @@
-# SkillOpt-Sleep — plugins for Claude Code, Codex, and Copilot
+# SkillOpt-Sleep — plugins for Claude Code, Codex, Copilot, and OpenCode
 
-One engine, three thin shells. **SkillOpt-Sleep** gives a local coding agent a
+One engine, four thin shells. **SkillOpt-Sleep** gives a local coding agent a
 nightly **sleep cycle**: it reviews your past sessions offline, replays your
 recurring tasks on your own API budget, and consolidates what it learns into
 **validated** long-term memory and skills — behind a held-out gate, staged for
@@ -17,15 +17,16 @@ literature (short-term experience → long-term competence).
 > **zero dependency** on the paper's `skillopt/` experiment package (the
 > validation gate is vendored). You can ship/use it without the research stack.
 
-## The three integrations
+## The integrations
 
 | Platform | Folder | Mechanism | Status |
 |---|---|---|---|
 | **Claude Code** | [`claude-code/`](claude-code) | `.claude-plugin` + `/sleep` command + skill + hooks | full, installable |
 | **Codex** | [`codex/`](codex) | `~/.codex/prompts/sleep.md` + `~/.agents/skills` + `AGENTS.md` | full |
 | **Copilot** | [`copilot/`](copilot) | MCP server (`sleep_*` tools) + `copilot-instructions` | full (MCP) |
+| **OpenCode** | [`opencode/`](opencode) | `/sleep` command + skill + MCP server (`sleep_*` tools) | full, native SQLite transcript mining |
 
-All three call the **same** [`plugins/run-sleep.sh`](run-sleep.sh) → `python -m
+All integrations call the **same** [`plugins/run-sleep.sh`](run-sleep.sh) → `python -m
 skillopt_sleep`, so behaviour is identical everywhere. Per-platform setup is in
 each folder's README.
 
@@ -40,11 +41,12 @@ git clone <repo-url> && cd SkillOpt-Sleep
 ```
 Codex: `bash plugins/codex/install.sh`.
 Copilot: register `plugins/copilot/mcp_server.py` as an MCP server.
+OpenCode: `bash plugins/opencode/install.sh`.
 
 ## What one "night" does
 
 ```
-harvest ~/.claude (or session) transcripts → mine recurring tasks → replay offline
+harvest Claude/OpenCode transcripts → mine recurring tasks → replay offline
    → consolidate (reflect → bounded edit → GATE on real held-out tasks)
    → stage proposal → (you) adopt
 ```

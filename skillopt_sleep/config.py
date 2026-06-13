@@ -19,11 +19,14 @@ from typing import Any, Dict, List, Optional
 
 HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
+OPENCODE_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 
 
 DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
+    "opencode_db": OPENCODE_DB,
+    "transcript_source": "claude",  # "claude" | "opencode"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -34,10 +37,11 @@ DEFAULTS: Dict[str, Any] = {
     "val_fraction": 0.34,         # real tasks reserved to gate updates
     "test_fraction": 0.0,         # real tasks reserved as the final held-out measure
     # ── optimizer ──────────────────────────────────────────────────────────
-    "backend": "mock",            # "mock" | "claude" | "codex"
+    "backend": "mock",            # "mock" | "claude" | "codex" | "opencode"
     "model": "",                  # backend-specific; "" => backend default
     "gate_mode": "on",            # "on" (validation-gated) | "off" (greedy, no hard filter)
     "codex_path": "",             # "" => auto-detect the real @openai/codex binary
+    "opencode_path": "",          # "" => PATH/SKILLOPT_SLEEP_OPENCODE_PATH
     "edit_budget": 4,             # textual learning rate (max edits/night)
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
     "gate_mixed_weight": 0.5,
@@ -93,6 +97,10 @@ class SleepConfig:
     @property
     def transcripts_dir(self) -> str:
         return os.path.join(self.data["claude_home"], "projects")
+
+    @property
+    def opencode_db_path(self) -> str:
+        return self.data.get("opencode_db", OPENCODE_DB)
 
     @property
     def history_path(self) -> str:

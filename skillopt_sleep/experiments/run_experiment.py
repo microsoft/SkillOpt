@@ -51,7 +51,7 @@ def _score_holdout(backend, tasks: List[TaskRecord], skill: str, memory: str,
 
 def run(persona: str = "researcher", nights: int = 4, backend_name: str = "mock",
         edit_budget: int = 4, seed: int = 42, model: str = "", codex_path: str = "",
-        limit_tasks: int = 0) -> dict:
+        opencode_path: str = "", limit_tasks: int = 0) -> dict:
     from skillopt_sleep.mine import assign_splits
 
     make = PERSONAS.get(persona, researcher_persona)
@@ -59,7 +59,7 @@ def run(persona: str = "researcher", nights: int = 4, backend_name: str = "mock"
     if limit_tasks and limit_tasks < len(items):
         items = items[:limit_tasks]
     tasks = assign_splits(items, holdout_fraction=0.34, seed=seed)
-    backend = get_backend(backend_name, model=model, codex_path=codex_path)
+    backend = get_backend(backend_name, model=model, codex_path=codex_path, opencode_path=opencode_path)
     is_mock = (backend.name == "mock")
 
     # start from an empty managed skill + empty memory
@@ -134,9 +134,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="SkillOpt-Sleep validation experiment")
     ap.add_argument("--persona", default="researcher", choices=list(PERSONAS.keys()))
     ap.add_argument("--nights", type=int, default=4)
-    ap.add_argument("--backend", default="mock", choices=["mock", "claude", "codex"])
+    ap.add_argument("--backend", default="mock", choices=["mock", "claude", "codex", "opencode"])
     ap.add_argument("--model", default="", help="backend model override")
     ap.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
+    ap.add_argument("--opencode-path", default="", help="path to the OpenCode CLI binary")
     ap.add_argument("--edit-budget", type=int, default=4)
     ap.add_argument("--limit-tasks", type=int, default=0, help="cap #tasks (control API cost)")
     ap.add_argument("--json", action="store_true")
@@ -146,7 +147,7 @@ def main(argv=None) -> int:
 
     res = run(args.persona, nights=args.nights, backend_name=args.backend,
               edit_budget=args.edit_budget, model=args.model,
-              codex_path=args.codex_path, limit_tasks=args.limit_tasks)
+              codex_path=args.codex_path, opencode_path=args.opencode_path, limit_tasks=args.limit_tasks)
 
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))

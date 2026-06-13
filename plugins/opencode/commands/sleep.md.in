@@ -1,0 +1,34 @@
+---
+description: Run SkillOpt-Sleep for this project
+agent: build
+---
+
+Use the `skillopt-sleep` skill to handle this request.
+
+User arguments: $ARGUMENTS
+
+Interpret the first argument as the action:
+
+- Empty or `status`: show current SkillOpt-Sleep state.
+- `dry-run`: preview a cycle without staging a proposal.
+- `run`: run a full cycle and stage a reviewed proposal.
+- `adopt`: apply the latest staged proposal, with backup.
+- `harvest`: list mined recurring tasks for debugging.
+
+If the `skillopt-sleep` MCP tools are available, prefer them:
+
+- `sleep_status` for `status`
+- `sleep_dry_run` for `dry-run`
+- `sleep_run` for `run`
+- `sleep_adopt` for `adopt`
+- `sleep_harvest` for `harvest`
+
+Always pass the current workspace path as `project` and `source: "opencode"`. If the user includes `--backend opencode`, `--backend claude`, `--backend codex`, or `--backend mock`, pass that backend through. If the user asks for real/model-backed learning in OpenCode, use `backend: "opencode"`. If the user provides `--model provider/model-id`, pass it as `model`. Otherwise use the tool default.
+
+If MCP tools are unavailable, run the shared shell runner from this installed SkillOpt repo:
+
+```bash
+SKILLOPT_SLEEP_REPO="@REPO_ROOT@" bash "@REPO_ROOT@/plugins/run-sleep.sh" <action> --source opencode --project "$(pwd)" [--backend <mock|opencode|claude|codex>]
+```
+
+Report the held-out baseline -> candidate score and staged proposal path when present. Do not adopt a staged proposal unless the user explicitly requested `adopt`.
