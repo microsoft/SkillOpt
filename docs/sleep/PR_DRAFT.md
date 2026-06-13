@@ -1,5 +1,5 @@
 TITLE:
-Add SkillOpt-Sleep: nightly offline self-evolution plugins (Claude Code, Codex, Copilot)
+Add SkillOpt-Sleep: nightly offline self-evolution plugins (Claude Code, Codex, Copilot, OpenCode)
 
 BODY:
 ## Summary
@@ -12,11 +12,12 @@ Synthesizes SkillOpt (validation-gated bounded text edits), Claude Dreams
 (offline consolidation; review-then-adopt), and the agent-sleep idea
 (short-term experience -> long-term competence).
 
-Shipped as plugins for **three agents**, one engine + three thin shells:
+Shipped as plugins for **four agents**, one engine + four thin shells:
 
 - **Claude Code** — `.claude-plugin` + `/sleep` command + skill + hooks
 - **Codex** — `~/.codex/prompts/sleep.md` + `~/.agents/skills` + `install.sh`
 - **Copilot** — a stdlib-only MCP server exposing `sleep_*` tools
+- **OpenCode** — `/sleep` command + skill + MCP server with native SQLite transcript mining
 
 ## Design notes
 
@@ -40,14 +41,15 @@ and `docs/sleep/plugin_load_test.md`.
 
 ## Tests
 
-- 29 deterministic unit tests (`tests/test_sleep_engine.py`), no API key required.
+- 30 deterministic unit tests (`tests/test_sleep_engine.py`), no API key required.
 - `python -m skillopt_sleep.experiments.run_experiment --persona researcher --assert-improves`
   proves held-out lift and that the gate blocks a harmful edit.
 
 ## Test plan
 
-- [ ] `python -m unittest tests.test_sleep_engine` (29 pass)
+- [ ] `python -m unittest tests.test_sleep_engine` (30 pass)
 - [ ] `python -m skillopt_sleep.experiments.run_experiment --persona researcher --assert-improves`
 - [ ] Claude Code: `/plugin marketplace add ./plugins/claude-code` -> `/sleep status`
 - [ ] Codex: `bash plugins/codex/install.sh`
 - [ ] Copilot: MCP server `tools/list` returns the `sleep_*` tools
+- [ ] OpenCode: `bash plugins/opencode/install.sh` then `/sleep status`

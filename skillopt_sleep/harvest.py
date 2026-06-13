@@ -108,6 +108,10 @@ def _is_meta_prompt(text: str) -> bool:
         return True
     if t.startswith("[Pasted text") or t.startswith("Caveat:"):
         return True
+    if t.startswith("[Compressed conversation section]") or t.startswith("▣ DCP"):
+        return True
+    if "\n▣ DCP" in t or "\n▣ Compression #" in t:
+        return True
     return False
 
 

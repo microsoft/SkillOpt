@@ -9,8 +9,10 @@
 Common flags:
     --project PATH      project to evolve (default: cwd)
     --scope all|invoked harvest scope (default: invoked)
-    --backend mock|anthropic
+    --source claude|opencode session source to harvest
+    --backend mock|claude|codex|opencode
     --model NAME
+    --opencode-db PATH  OpenCode SQLite database override
     --lookback-hours N
     --auto-adopt
     --json              machine-readable output
@@ -26,6 +28,7 @@ from typing import Any, Dict
 from skillopt_sleep.config import load_config
 from skillopt_sleep.cycle import run_sleep_cycle
 from skillopt_sleep.harvest import harvest
+from skillopt_sleep.harvest_opencode import harvest_opencode
 from skillopt_sleep.mine import mine
 from skillopt_sleep.state import SleepState
 from skillopt_sleep.staging import latest_staging, adopt as adopt_staging
@@ -34,10 +37,13 @@ from skillopt_sleep.staging import latest_staging, adopt as adopt_staging
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
-    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex"])
+    p.add_argument("--source", default="", choices=["", "claude", "opencode"], help="session source to harvest")
+    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex", "opencode"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
+    p.add_argument("--opencode-path", default="", help="path to the OpenCode CLI binary")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
+    p.add_argument("--opencode-db", default="", help="override ~/.local/share/opencode/opencode.db")
     p.add_argument("--lookback-hours", type=int, default=0)
     p.add_argument("--edit-budget", type=int, default=0)
     p.add_argument("--auto-adopt", action="store_true")
@@ -51,14 +57,20 @@ def _cfg_from_args(args) -> Any:
         overrides["projects"] = "invoked"
     if args.scope:
         overrides["projects"] = args.scope
+    if getattr(args, "source", ""):
+        overrides["transcript_source"] = args.source
     if args.backend:
         overrides["backend"] = args.backend
     if args.model:
         overrides["model"] = args.model
     if getattr(args, "codex_path", ""):
         overrides["codex_path"] = os.path.abspath(args.codex_path)
+    if getattr(args, "opencode_path", ""):
+        overrides["opencode_path"] = os.path.abspath(args.opencode_path)
     if getattr(args, "claude_home", ""):
         overrides["claude_home"] = os.path.abspath(args.claude_home)
+    if getattr(args, "opencode_db", ""):
+        overrides["opencode_db"] = os.path.abspath(args.opencode_db)
     if getattr(args, "lookback_hours", 0):
         overrides["lookback_hours"] = args.lookback_hours
     if getattr(args, "edit_budget", 0):
@@ -143,12 +155,20 @@ def cmd_adopt(args) -> int:
 
 def cmd_harvest(args) -> int:
     cfg = _cfg_from_args(args)
-    digests = harvest(
-        cfg.transcripts_dir,
-        scope=cfg.get("projects", "invoked"),
-        invoked_project=cfg.get("invoked_project", ""),
-        limit=cfg.get("max_tasks_per_night", 40) * 3,
-    )
+    if cfg.get("transcript_source", "claude") == "opencode":
+        digests = harvest_opencode(
+            cfg.opencode_db_path,
+            scope=cfg.get("projects", "invoked"),
+            invoked_project=cfg.get("invoked_project", ""),
+            limit=cfg.get("max_tasks_per_night", 40) * 3,
+        )
+    else:
+        digests = harvest(
+            cfg.transcripts_dir,
+            scope=cfg.get("projects", "invoked"),
+            invoked_project=cfg.get("invoked_project", ""),
+            limit=cfg.get("max_tasks_per_night", 40) * 3,
+        )
     tasks = mine(digests, max_tasks=cfg.get("max_tasks_per_night", 40),
                  holdout_fraction=cfg.get("holdout_fraction", 0.34), seed=cfg.get("seed", 42))
     if args.json:

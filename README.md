@@ -72,13 +72,14 @@ harvest session transcripts → mine recurring tasks → replay offline
    → stage proposal → (you) adopt
 ```
 
-**Plugins for three agents** (one engine, three thin shells — see [`plugins/`](plugins/)):
+**Plugins for four agents** (one engine, four thin shells - see [`plugins/`](plugins/)):
 
 | Platform | Folder | Install |
 |---|---|---|
 | **Claude Code** | [`plugins/claude-code`](plugins/claude-code) | `/plugin marketplace add ./plugins/claude-code` → `/sleep` |
 | **Codex** | [`plugins/codex`](plugins/codex) | `bash plugins/codex/install.sh` → `/sleep` |
 | **Copilot** | [`plugins/copilot`](plugins/copilot) | register `plugins/copilot/mcp_server.py` as an MCP server |
+| **OpenCode** | [`plugins/opencode`](plugins/opencode) | `bash plugins/opencode/install.sh` → `/sleep` + MCP tools |
 
 **Validated on real models.** On the public
 [gbrain-evals](https://github.com/garrytan/gbrain-evals) `skillopt-v1` benchmark,

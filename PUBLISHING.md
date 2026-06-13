@@ -1,9 +1,10 @@
 # Publishing SkillOpt-Sleep — how people install and use it
 
 This is the open-source SkillOpt-Sleep tool: a nightly offline "sleep cycle" for
-local coding agents, shipped as plugins for **Claude Code**, **Codex**, and
-**Copilot**. One engine ([`skillopt_sleep/`](skillopt_sleep)), three thin shells
-([`plugins/`](plugins)), decoupled from the research code.
+local coding agents, shipped as plugins for **Claude Code**, **Codex**,
+**Copilot**, and **OpenCode**. One engine
+([`skillopt_sleep/`](skillopt_sleep)), four thin shells ([`plugins/`](plugins)),
+decoupled from the research code.
 
 ## How end users install it
 
@@ -41,8 +42,17 @@ git clone https://github.com/microsoft/SkillOpt.git
 # the clone. Then ask Copilot to "run the sleep cycle".
 ```
 
-Requirements for all three: Python ≥ 3.10, and the corresponding agent CLI on
-PATH. The default backend is `mock` (no API spend); `--backend claude|codex`
+### OpenCode
+
+```bash
+git clone https://github.com/microsoft/SkillOpt.git
+cd SkillOpt
+bash plugins/opencode/install.sh          # installs /sleep, skill, and MCP server
+# then restart OpenCode and run:  /sleep status
+```
+
+Requirements for all four: Python >= 3.10, and the corresponding agent CLI on
+PATH. The default backend is `mock` (no API spend); `--backend claude|codex|opencode`
 uses the user's own budget.
 
 ## Wider distribution (optional, maintainer steps)
@@ -50,7 +60,7 @@ uses the user's own budget.
 1. **GitHub Release.** Tag the milestone so users can pin a version:
    ```bash
    gh release create sleep-v0.1.0 --title "SkillOpt-Sleep v0.1.0" \
-     --notes "Nightly offline self-evolution plugins for Claude Code, Codex, Copilot."
+      --notes "Nightly offline self-evolution plugins for Claude Code, Codex, Copilot, OpenCode."
    ```
 
 2. **Official Claude Code plugin marketplace.** To appear in the public

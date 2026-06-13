@@ -124,13 +124,14 @@ def run_seed(backend, seed: str, skill: str, tasks: List, *,
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Run gbrain-evals skillopt-v1 with SkillOpt-Sleep")
-    ap.add_argument("--backend", default="mock", choices=["mock", "claude", "codex"])
+    ap.add_argument("--backend", default="mock", choices=["mock", "claude", "codex", "opencode"])
     ap.add_argument("--model", default="")
     ap.add_argument("--optimizer-backend", default="", help="route reflect/judge here (dual)")
     ap.add_argument("--optimizer-model", default="")
     ap.add_argument("--target-backend", default="", help="route attempt here (dual)")
     ap.add_argument("--target-model", default="")
     ap.add_argument("--codex-path", default="")
+    ap.add_argument("--opencode-path", default="")
     ap.add_argument("--data-root", default="", help="path to eval/data/skillopt-v1")
     ap.add_argument("--seeds", default="", help="comma list; default = all available")
     ap.add_argument("--nights", type=int, default=3)
@@ -159,7 +160,7 @@ def main(argv=None) -> int:
         backend=args.backend, model=args.model,
         optimizer_backend=args.optimizer_backend, optimizer_model=args.optimizer_model,
         target_backend=args.target_backend, target_model=args.target_model,
-        codex_path=args.codex_path, preferences=args.preferences,
+        codex_path=args.codex_path, opencode_path=args.opencode_path, preferences=args.preferences,
     )
 
     results = []

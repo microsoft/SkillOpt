@@ -106,16 +106,32 @@ def run_one(cfg: Dict[str, Any], data_root: str, codex_path: str,
                 optimizer_backend=cfg["optimizer_backend"], optimizer_model=cfg.get("optimizer_model", ""),
                 target_backend=cfg["target_backend"], target_model=cfg.get("target_model", ""),
                 codex_path=codex_path,
+                opencode_path=cfg.get("opencode_path", ""),
             )
         else:
-            be = get_backend(cfg["backend"], model=cfg.get("model", ""), codex_path=codex_path)
+            be = get_backend(
+                cfg["backend"],
+                model=cfg.get("model", ""),
+                codex_path=codex_path,
+                opencode_path=cfg.get("opencode_path", ""),
+            )
         r = bench_seed(be, seed, skill, tasks, nights=cfg["nights"],
                        limit_replay=limit_replay, limit_holdout=limit_holdout)
         out = {"baseline": r["held_out_before"], "after": r["held_out_after"],
                "improved": r["improved"], "tokens": be.tokens_used()}
     else:
-        src = get_backend(cfg["source_backend"], model=cfg.get("source_model", ""), codex_path=codex_path)
-        tgt = get_backend(cfg["target_backend"], model=cfg.get("target_model", ""), codex_path=codex_path)
+        src = get_backend(
+            cfg["source_backend"],
+            model=cfg.get("source_model", ""),
+            codex_path=codex_path,
+            opencode_path=cfg.get("opencode_path", ""),
+        )
+        tgt = get_backend(
+            cfg["target_backend"],
+            model=cfg.get("target_model", ""),
+            codex_path=codex_path,
+            opencode_path=cfg.get("opencode_path", ""),
+        )
         r = transfer_seed(seed, skill, tasks, source=src, target=tgt, nights=cfg["nights"],
                           edit_budget=4, limit_replay=limit_replay, limit_holdout=limit_holdout,
                           do_direct=False)

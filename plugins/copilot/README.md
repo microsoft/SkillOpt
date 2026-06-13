@@ -45,8 +45,8 @@ Ask Copilot things like *"run the sleep cycle"*, *"what did the last sleep
 propose?"*, *"adopt the staged sleep proposal"*. Copilot calls the MCP tools:
 `sleep_status`, `sleep_dry_run`, `sleep_run`, `sleep_adopt`, `sleep_harvest`.
 
-Each tool takes optional `project`, `backend` (`mock`/`claude`/`codex`), and
-`scope` arguments. Default backend is `mock` (no API spend).
+Each tool takes optional `project`, `backend` (`mock`/`claude`/`codex`/`opencode`),
+`model`, `source`, and `scope` arguments. Default backend is `mock` (no API spend).
 
 ## Verify the server directly (no Copilot needed)
 

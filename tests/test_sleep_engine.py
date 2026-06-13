@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
-from skillopt_sleep.backend import MockBackend, exact_score, keyword_soft_score
+from skillopt_sleep.backend import MockBackend, OpenCodeCliBackend, exact_score, get_backend, keyword_soft_score
 from skillopt_sleep.config import load_config
 from skillopt_sleep.consolidate import consolidate
 from skillopt_sleep.cycle import run_sleep_cycle
@@ -66,6 +68,8 @@ class TestHarvest(unittest.TestCase):
     def test_meta_prompt_filter(self):
         self.assertTrue(_is_meta_prompt("/clear"))
         self.assertTrue(_is_meta_prompt("<system-reminder>x</system-reminder>"))
+        self.assertTrue(_is_meta_prompt("[Compressed conversation section]\nold context"))
+        self.assertTrue(_is_meta_prompt("follow-up\n▣ DCP | compacted context"))
         self.assertFalse(_is_meta_prompt("please refactor the auth module"))
 
     def test_digest_real_transcript_if_present(self):
@@ -88,6 +92,154 @@ class TestHarvest(unittest.TestCase):
         if d is not None:
             self.assertIsInstance(d.session_id, str)
             self.assertGreaterEqual(d.n_user_turns + d.n_assistant_turns, 0)
+
+
+class TestOpenCodeHarvest(unittest.TestCase):
+    def _make_db(self, path: str, project: str) -> None:
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                create table project (id text primary key, worktree text);
+                create table session (
+                    id text primary key,
+                    project_id text,
+                    directory text,
+                    title text,
+                    time_created integer,
+                    time_updated integer,
+                    path text,
+                    metadata text
+                );
+                create table message (
+                    id text primary key,
+                    session_id text,
+                    time_created integer,
+                    time_updated integer,
+                    data text
+                );
+                create table part (
+                    id text primary key,
+                    message_id text,
+                    session_id text,
+                    time_created integer,
+                    time_updated integer,
+                    data text
+                );
+                """
+            )
+            conn.execute("insert into project values (?, ?)", ("p1", project))
+            conn.execute(
+                "insert into session values (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("s1", "p1", project, "Fix parser", 1_700_000_000_000, 1_700_000_100_000,
+                 json.dumps({"cwd": project}), json.dumps({"gitBranch": "main"})),
+            )
+            messages = [
+                ("m1", "user", 1_700_000_000_100),
+                ("m2", "assistant", 1_700_000_000_200),
+            ]
+            for mid, role, ts in messages:
+                conn.execute(
+                    "insert into message values (?, ?, ?, ?, ?)",
+                    (mid, "s1", ts, ts, json.dumps({"role": role})),
+                )
+            parts = [
+                ("pt1", "m1", 1_700_000_000_101, {"type": "text", "text": "Please fix the parser"}),
+                ("pt2", "m1", 1_700_000_000_102, {"type": "text", "text": "still broken"}),
+                ("pt3", "m2", 1_700_000_000_201, {"type": "tool", "tool": "edit", "state": {"input": {"filePath": "skillopt_sleep/parser.py"}}}),
+                ("pt4", "m2", 1_700_000_000_202, {"type": "text", "text": "Fixed it."}),
+            ]
+            for pid, mid, ts, data in parts:
+                conn.execute(
+                    "insert into part values (?, ?, ?, ?, ?, ?)",
+                    (pid, mid, "s1", ts, ts, json.dumps(data)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_harvest_opencode_digest(self):
+        from skillopt_sleep.harvest_opencode import harvest_opencode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = os.path.join(tmp, "proj")
+            os.mkdir(project)
+            db = os.path.join(tmp, "opencode.db")
+            self._make_db(db, project)
+
+            digests = harvest_opencode(db, scope="invoked", invoked_project=project)
+            self.assertEqual(len(digests), 1)
+            d = digests[0]
+            self.assertEqual(d.session_id, "s1")
+            self.assertEqual(d.project, project)
+            self.assertEqual(d.git_branch, "main")
+            self.assertEqual(d.n_user_turns, 1)
+            self.assertEqual(d.n_assistant_turns, 1)
+            self.assertEqual(d.user_prompts, ["Please fix the parser\nstill broken"])
+            self.assertIn("neg:still broken", d.feedback_signals)
+            self.assertEqual(d.assistant_finals, ["Fixed it."])
+            self.assertEqual(d.tools_used, ["edit"])
+            self.assertEqual(d.files_touched, ["skillopt_sleep/parser.py"])
+            self.assertEqual(d.raw_path, "opencode://s1")
+
+            self.assertEqual(harvest_opencode(db, since_iso="2023-11-20T00:00:00Z"), [])
+
+
+class TestOpenCodeBackend(unittest.TestCase):
+    def test_get_backend_opencode(self):
+        backend = get_backend("opencode", model="anthropic/claude-sonnet-4-6", opencode_path="/bin/opencode")
+        self.assertIsInstance(backend, OpenCodeCliBackend)
+        self.assertEqual(backend.name, "opencode")
+        self.assertEqual(backend.model, "anthropic/claude-sonnet-4-6")
+        self.assertEqual(backend.opencode_path, "/bin/opencode")
+
+    def test_opencode_call_uses_isolated_run(self):
+        calls = []
+
+        def fake_run(cmd, capture_output, text, timeout, cwd, env):
+            calls.append({"cmd": cmd, "cwd": cwd, "env": env, "timeout": timeout})
+            return type("Proc", (), {"stdout": "\x1b[31mfinal answer\x1b[0m\n", "stderr": "", "returncode": 0})()
+
+        backend = OpenCodeCliBackend(model="anthropic/claude-sonnet-4-6", opencode_path="/bin/opencode", timeout=7)
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            out = backend._call("hello")
+
+        self.assertEqual(out, "final answer")
+        self.assertEqual(len(calls), 1)
+        cmd = calls[0]["cmd"]
+        self.assertEqual(cmd[:5], ["/bin/opencode", "run", "--pure", "--format", "default"])
+        self.assertIn("--dir", cmd)
+        self.assertIn("--title", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("anthropic/claude-sonnet-4-6", cmd)
+        self.assertEqual(cmd[-1], "hello")
+        self.assertEqual(calls[0]["timeout"], 7)
+        self.assertEqual(calls[0]["env"]["OPENCODE_DISABLE_CLAUDE_CODE"], "1")
+        self.assertEqual(calls[0]["env"]["OPENCODE_DISABLE_DEFAULT_PLUGINS"], "1")
+        self.assertIn("skillopt_sleep_opencode_", calls[0]["env"]["XDG_DATA_HOME"])
+        permission = json.loads(calls[0]["env"]["OPENCODE_PERMISSION"])
+        self.assertEqual(permission["edit"], "deny")
+        self.assertEqual(permission["bash"], "deny")
+
+    def test_opencode_tool_attempt_allows_temp_bash(self):
+        calls = []
+
+        def fake_run(cmd, capture_output, text, timeout, cwd, env):
+            calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+            with open(os.path.join(cwd, "_tool_calls.log"), "w") as f:
+                f.write("search\n")
+            return type("Proc", (), {"stdout": "answer", "stderr": "", "returncode": 0})()
+
+        task = TaskRecord(id="t1", project="/p", intent="look this up", context_excerpt="")
+        backend = OpenCodeCliBackend(opencode_path="/bin/opencode")
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            out, called = backend.attempt_with_tools(task, "Use search first", "", ["search"])
+
+        self.assertEqual(out, "answer")
+        self.assertEqual(called, ["search"])
+        self.assertIn("--dangerously-skip-permissions", calls[0]["cmd"])
+        permission = json.loads(calls[0]["env"]["OPENCODE_PERMISSION"])
+        self.assertEqual(permission["bash"], "allow")
 
 
 class TestMine(unittest.TestCase):

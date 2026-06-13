@@ -12,8 +12,7 @@ Two implementations:
                       Reads optional `reference` exact answers and a tiny
                       rule-table so the loop provably improves and the gate
                       provably blocks regressions.
-  * AnthropicBackend — uses the user's ANTHROPIC_API_KEY via the `claude`
-                       CLI or the anthropic SDK (lazy-imported). Real lift.
+  * CLI backends    — drive Claude, Codex, or OpenCode CLIs for real lift.
 
 The backend never touches live config; it only returns text/edits that the
 consolidation stage gates and stages.
@@ -23,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -254,7 +254,7 @@ def _extract_json(raw: str, kind: str):
 
 
 class CliBackend(Backend):
-    """Common logic for real CLI-driven backends (claude / codex).
+    """Common logic for real CLI-driven backends (claude / codex / opencode).
 
     Subclasses implement only ``_call(prompt) -> str``. This base owns the
     prompts (attempt / judge / reflect), JSON parsing, a response cache (so
@@ -698,6 +698,146 @@ class CodexCliBackend(CliBackend):
             except Exception:
                 pass
 
+
+def resolve_opencode_path(explicit: str = "") -> str:
+    """Find the OpenCode CLI binary."""
+    if explicit:
+        return explicit
+    env = os.environ.get("SKILLOPT_SLEEP_OPENCODE_PATH")
+    if env:
+        return env
+    return shutil.which("opencode") or "opencode"
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text or "")
+
+
+class OpenCodeCliBackend(CliBackend):
+    """Drives OpenCode non-interactively via `opencode run`."""
+
+    name = "opencode"
+
+    def __init__(self, model: str = "", opencode_path: str = "", timeout: int = 240) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_OPENCODE_MODEL", ""), timeout=timeout)
+        self.opencode_path = resolve_opencode_path(opencode_path)
+
+    def _isolated_env(self, root: str, *, allow_bash: bool = False) -> Dict[str, str]:
+        """Isolate replay sessions while preserving OpenCode auth credentials."""
+        env = dict(os.environ)
+        config_dir = os.path.join(root, "config")
+        data_home = os.path.join(root, "data")
+        cache_home = os.path.join(root, "cache")
+        os.makedirs(config_dir, exist_ok=True)
+        os.makedirs(os.path.join(data_home, "opencode"), exist_ok=True)
+        os.makedirs(cache_home, exist_ok=True)
+
+        auth_src = os.path.expanduser("~/.local/share/opencode/auth.json")
+        auth_dst = os.path.join(data_home, "opencode", "auth.json")
+        if os.path.exists(auth_src):
+            try:
+                shutil.copy2(auth_src, auth_dst)
+            except Exception:
+                pass
+
+        env.update({
+            "OPENCODE_CONFIG_DIR": config_dir,
+            "XDG_DATA_HOME": data_home,
+            "XDG_CACHE_HOME": cache_home,
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
+            "OPENCODE_DISABLE_AUTOCOMPACT": "1",
+            "OPENCODE_PERMISSION": json.dumps({
+                "edit": "deny",
+                "bash": "allow" if allow_bash else "deny",
+                "webfetch": "deny",
+                "websearch": "deny",
+            }),
+        })
+        return env
+
+    def _run_opencode(self, prompt: str, workdir: str, *, allow_bash: bool = False) -> str:
+        cmd = [
+            self.opencode_path,
+            "run",
+            "--pure",
+            "--format", "default",
+            "--dir", workdir,
+            "--title", "SkillOpt-Sleep replay",
+        ]
+        if allow_bash:
+            cmd.append("--dangerously-skip-permissions")
+        if self.model:
+            cmd += ["--model", self.model]
+        cmd.append(prompt)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=workdir,
+                env=self._isolated_env(os.path.dirname(workdir), allow_bash=allow_bash),
+            )
+        except Exception:
+            return ""
+        return _strip_ansi(proc.stdout or "").strip()
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        import tempfile
+        root = tempfile.mkdtemp(prefix="skillopt_sleep_opencode_")
+        work = os.path.join(root, "work")
+        os.makedirs(work, exist_ok=True)
+        try:
+            return self._run_opencode(prompt, work)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def attempt_with_tools(self, task, skill, memory, tools):
+        import tempfile, stat
+        root = tempfile.mkdtemp(prefix="skillopt_sleep_opencode_tools_")
+        work = os.path.join(root, "work")
+        os.makedirs(work, exist_ok=True)
+        calllog = os.path.join(work, "_tool_calls.log")
+        try:
+            for tname in (tools or ["search"]):
+                shim = os.path.join(work, tname)
+                with open(shim, "w") as f:
+                    f.write(
+                        "#!/usr/bin/env bash\n"
+                        f'echo "{tname}" >> "{calllog}"\n'
+                        'echo "(search results: 3 relevant notes found; use them to answer)"\n'
+                    )
+                os.chmod(shim, os.stat(shim).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            tool_hint = (
+                "Shell tools are available in the working directory: "
+                + ", ".join(f"./{t}" for t in (tools or ["search"]))
+                + ". When the skill says to look something up or search before "
+                "answering, you MUST actually run the tool before giving your final answer."
+            )
+            prompt = (
+                "Complete the task. Apply the skill and memory rules EXACTLY, "
+                "including any rule about searching before answering. Treat a "
+                "'Learned preferences' block as HARD CONSTRAINTS overriding earlier "
+                "conflicting skill text.\n\n"
+                f"{tool_hint}\n\n# Skill\n{skill or '(none)'}\n\n# Memory\n{memory or '(none)'}\n\n"
+                f"# Task\n{task.intent}\n\n{task.context_excerpt}\n\nReturn ONLY the final answer."
+            )
+            resp = self._run_opencode(prompt, work, allow_bash=True)
+            self._tokens += len(prompt) // 4 + len(resp) // 4
+            called: List[str] = []
+            if os.path.exists(calllog):
+                with open(calllog) as f:
+                    logged = {ln.strip() for ln in f if ln.strip()}
+                called = [t for t in (tools or ["search"]) if t in logged]
+            return resp, called
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class DualBackend(Backend):
     """Route operations to two backends, à la SkillOpt's target vs optimizer.
 
@@ -747,12 +887,15 @@ def get_backend(
     model: str = "",
     claude_path: str = "claude",
     codex_path: str = "",
+    opencode_path: str = "",
 ) -> Backend:
     n = (name or "mock").strip().lower()
     if n in {"claude", "anthropic", "claude_cli", "claude_code"}:
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
         return CodexCliBackend(model=model, codex_path=codex_path)
+    if n in {"opencode", "opencode_cli"}:
+        return OpenCodeCliBackend(model=model, opencode_path=opencode_path)
     return MockBackend()
 
 
@@ -765,6 +908,7 @@ def build_backend(
     target_backend: str = "",
     target_model: str = "",
     codex_path: str = "",
+    opencode_path: str = "",
     preferences: str = "",
 ) -> Backend:
     """Build a single or dual backend.
@@ -776,11 +920,21 @@ def build_backend(
     """
     has_split = any([optimizer_backend, optimizer_model, target_backend, target_model])
     if not has_split:
-        be = get_backend(backend, model=model, codex_path=codex_path)
+        be = get_backend(backend, model=model, codex_path=codex_path, opencode_path=opencode_path)
         be.preferences = preferences
         return be
-    tgt = get_backend(target_backend or backend, model=target_model or model, codex_path=codex_path)
-    opt = get_backend(optimizer_backend or backend, model=optimizer_model or model, codex_path=codex_path)
+    tgt = get_backend(
+        target_backend or backend,
+        model=target_model or model,
+        codex_path=codex_path,
+        opencode_path=opencode_path,
+    )
+    opt = get_backend(
+        optimizer_backend or backend,
+        model=optimizer_model or model,
+        codex_path=codex_path,
+        opencode_path=opencode_path,
+    )
     opt.preferences = preferences  # reflect runs on the optimizer
     dual = DualBackend(target=tgt, optimizer=opt)
     dual.preferences = preferences
