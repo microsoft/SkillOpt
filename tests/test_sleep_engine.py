@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from skillopt_sleep.backend import MockBackend, exact_score, keyword_soft_score
 from skillopt_sleep.config import load_config
@@ -18,9 +19,9 @@ from skillopt_sleep.cycle import run_sleep_cycle
 from skillopt_sleep.experiments.personas import programmer_persona, researcher_persona
 from skillopt_sleep.harvest import _detect_feedback, _is_meta_prompt, digest_transcript
 from skillopt_sleep.memory import apply_edits, current_learned_lines, extract_learned, set_learned
-from skillopt_sleep.mine import assign_splits, heuristic_mine
+from skillopt_sleep.mine import assign_splits, filter_tasks_for_target, heuristic_mine, mine
 from skillopt_sleep.staging import adopt
-from skillopt_sleep.types import EditRecord, SessionDigest, TaskRecord
+from skillopt_sleep.types import EditRecord, SessionDigest, SleepReport, TaskRecord
 
 
 class TestScoring(unittest.TestCase):
@@ -180,6 +181,208 @@ class TestHarvest(unittest.TestCase):
         self.assertEqual(digests[0].session_id, "rollout-yoshi")
         self.assertEqual(digests[0].user_prompts, ["fix Yoshi"])
 
+    def test_cli_exposes_limits_progress_and_target_skill_path(self):
+        from skillopt_sleep.__main__ import _cfg_from_args
+
+        with tempfile.TemporaryDirectory() as project:
+            Args = type("Args", (), {
+                "project": project,
+                "scope": "",
+                "backend": "codex",
+                "model": "",
+                "codex_path": "",
+                "claude_home": "",
+                "codex_home": "",
+                "source": "codex",
+                "lookback_hours": 0,
+                "edit_budget": 2,
+                "max_sessions": 5,
+                "max_tasks": 3,
+                "target_skill_path": ".agents/skills/taste-skill/SKILL.md",
+                "progress": True,
+                "auto_adopt": False,
+            })
+
+            cfg = _cfg_from_args(Args())
+
+            self.assertEqual(cfg.get("backend"), "codex")
+            self.assertEqual(cfg.get("max_sessions_per_night"), 5)
+            self.assertEqual(cfg.get("max_tasks_per_night"), 3)
+            self.assertTrue(cfg.get("progress"))
+            self.assertEqual(
+                cfg.managed_skill_path(),
+                os.path.join(project, ".agents/skills/taste-skill/SKILL.md"),
+            )
+
+    def test_cli_report_payload_includes_rejected_edits(self):
+        from skillopt_sleep.__main__ import _report_payload
+
+        report = SleepReport(
+            night=1,
+            project="/p",
+            edits=[EditRecord("skill", "add", "accepted rule")],
+            rejected_edits=[EditRecord("skill", "add", "rejected rule")],
+        )
+        outcome = type("Outcome", (), {"staging_dir": "", "adopted": False})()
+
+        payload = _report_payload(report, outcome)
+
+        self.assertEqual(payload["n_accepted_edits"], 1)
+        self.assertEqual(payload["n_rejected_edits"], 1)
+        self.assertEqual(payload["rejected_edits"][0]["content"], "rejected rule")
+
+    def test_tasks_file_roundtrip_and_split_assignment(self):
+        from skillopt_sleep.tasks_file import load_tasks_file, make_tasks_payload, write_tasks_file
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tasks.json")
+            payload = make_tasks_payload(
+                [
+                    TaskRecord(id="t1", project="/p", intent="configure MCP server"),
+                    TaskRecord(id="t2", project="/p", intent="resolve Git conflict"),
+                ],
+                project="/p",
+                transcript_source="codex",
+                n_sessions=2,
+                target_skill_path="/p/.agents/skills/yoshi-monorepo/SKILL.md",
+            )
+
+            written = write_tasks_file(path, payload)
+            tasks, meta = load_tasks_file(written, holdout_fraction=0.5, seed=1)
+
+        self.assertEqual(meta["target_skill_path"], "/p/.agents/skills/yoshi-monorepo/SKILL.md")
+        self.assertEqual([t.id for t in tasks], ["t1", "t2"])
+        self.assertIn("val", {t.split for t in tasks})
+
+    def test_cfg_uses_tasks_file_target_skill_path_metadata(self):
+        from skillopt_sleep.__main__ import _cfg_from_args
+
+        Args = type("Args", (), {
+            "project": "/repo/Yoshi",
+            "scope": "",
+            "backend": "",
+            "model": "",
+            "codex_path": "",
+            "claude_home": "",
+            "codex_home": "",
+            "source": "",
+            "lookback_hours": 0,
+            "edit_budget": 0,
+            "max_sessions": 0,
+            "max_tasks": 0,
+            "target_skill_path": "",
+            "progress": False,
+            "auto_adopt": False,
+        })
+
+        cfg = _cfg_from_args(Args(), task_meta={
+            "target_skill_path": ".agents/skills/yoshi-monorepo/SKILL.md",
+        })
+
+        self.assertEqual(
+            cfg.managed_skill_path(),
+            "/repo/Yoshi/.agents/skills/yoshi-monorepo/SKILL.md",
+        )
+
+    def test_cmd_run_uses_tasks_file_without_harvest(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from skillopt_sleep.__main__ import cmd_run
+        from skillopt_sleep.tasks_file import make_tasks_payload, write_tasks_file
+
+        with tempfile.TemporaryDirectory() as project, tempfile.TemporaryDirectory() as home:
+            target = os.path.join(project, ".agents/skills/yoshi-monorepo/SKILL.md")
+            os.makedirs(os.path.dirname(target))
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("# Yoshi Monorepo\n")
+            tasks_path = os.path.join(home, "reviewed-tasks.json")
+            write_tasks_file(
+                tasks_path,
+                make_tasks_payload(
+                    [
+                        TaskRecord(id="t1", project=project, intent="configure MCP server"),
+                        TaskRecord(id="t2", project=project, intent="resolve Git conflict"),
+                    ],
+                    project=project,
+                    n_sessions=2,
+                    target_skill_path=target,
+                ),
+            )
+            Args = type("Args", (), {
+                "project": project,
+                "scope": "",
+                "backend": "mock",
+                "model": "",
+                "codex_path": "",
+                "claude_home": os.path.join(home, ".claude"),
+                "codex_home": "",
+                "source": "",
+                "lookback_hours": 0,
+                "edit_budget": 2,
+                "max_sessions": 5,
+                "max_tasks": 3,
+                "target_skill_path": "",
+                "tasks_file": tasks_path,
+                "progress": False,
+                "auto_adopt": False,
+                "json": True,
+            })
+
+            out = StringIO()
+            with redirect_stdout(out):
+                rc = cmd_run(Args(), dry=True)
+            payload = json.loads(out.getvalue())
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["n_sessions"], 0)
+        self.assertEqual(payload["n_tasks"], 2)
+        self.assertEqual(payload["tasks_file"], tasks_path)
+
+    def test_cmd_run_refuses_unreviewed_tasks_file_for_real_backend(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from skillopt_sleep.__main__ import cmd_run
+        from skillopt_sleep.tasks_file import make_tasks_payload, write_tasks_file
+
+        with tempfile.TemporaryDirectory() as project, tempfile.TemporaryDirectory() as home:
+            tasks_path = os.path.join(home, "reviewed-tasks.json")
+            write_tasks_file(
+                tasks_path,
+                make_tasks_payload(
+                    [TaskRecord(id="t1", project=project, intent="configure MCP server")],
+                    project=project,
+                    target_skill_path=os.path.join(project, ".agents/skills/yoshi-monorepo/SKILL.md"),
+                ),
+            )
+            Args = type("Args", (), {
+                "project": project,
+                "scope": "",
+                "backend": "codex",
+                "model": "",
+                "codex_path": "",
+                "claude_home": os.path.join(home, ".claude"),
+                "codex_home": "",
+                "source": "",
+                "lookback_hours": 0,
+                "edit_budget": 2,
+                "max_sessions": 0,
+                "max_tasks": 0,
+                "target_skill_path": "",
+                "tasks_file": tasks_path,
+                "progress": False,
+                "auto_adopt": False,
+                "json": True,
+            })
+
+            err = StringIO()
+            with redirect_stderr(err):
+                rc = cmd_run(Args(), dry=True)
+
+        self.assertEqual(rc, 2)
+        self.assertIn("unreviewed tasks file", err.getvalue())
+
 
 class TestMine(unittest.TestCase):
     def _digest(self, prompts, feedback):
@@ -219,6 +422,59 @@ class TestMine(unittest.TestCase):
                 self.assertEqual(t.origin, "real")
         # and val/test are disjoint (a task is in exactly one split)
         self.assertTrue(any(t.split == "val" for t in tasks))
+
+    def test_target_filter_prefers_matching_skill_terms(self):
+        skill = """# Yoshi Monorepo
+
+## MCP Setup Requests
+Configure Codex MCP servers from linked setup docs.
+
+## Local Git Conflicts
+Resolve local Git conflicts during merge, rebase, or cherry-pick.
+"""
+        tasks = [
+            TaskRecord(id="ios", project="/p", intent="polish SwiftUI onboarding spacing"),
+            TaskRecord(id="mcp", project="/p", intent="configure an MCP server from docs"),
+            TaskRecord(id="git", project="/p", intent="resolve a local Git conflict"),
+            TaskRecord(id="api", project="/p", intent="deploy the Rails API with Kamal"),
+        ]
+
+        filtered = filter_tasks_for_target(
+            tasks,
+            skill,
+            ".agents/skills/yoshi-monorepo/SKILL.md",
+        )
+
+        self.assertEqual({t.id for t in filtered}, {"mcp", "git"})
+
+    def test_mine_oversamples_before_target_filtering(self):
+        skill = """# Yoshi Monorepo
+
+## MCP Setup Requests
+Configure Codex MCP servers.
+
+## Local Git Conflicts
+Resolve local Git conflicts.
+"""
+        digests = [
+            self._digest(["polish SwiftUI onboarding spacing"], ["neg:missed"]),
+            self._digest(["configure an MCP server from docs"], ["neg:missed"]),
+            self._digest(["resolve a local Git conflict"], ["neg:missed"]),
+        ]
+
+        tasks = mine(
+            digests,
+            max_tasks=2,
+            candidate_limit=3,
+            target_skill_text=skill,
+            target_skill_path=".agents/skills/yoshi-monorepo/SKILL.md",
+            seed=42,
+        )
+
+        self.assertEqual({t.intent for t in tasks}, {
+            "configure an MCP server from docs",
+            "resolve a local Git conflict",
+        })
 
 
 class TestConsolidateGate(unittest.TestCase):
@@ -366,6 +622,39 @@ class TestMultiObjectiveAndPrefs(unittest.TestCase):
         self.assertGreaterEqual(r.latency_ms, 0.0)
 
 
+class TestCodexBackend(unittest.TestCase):
+    def test_codex_cli_backend_runs_exec_in_project_dir(self):
+        from skillopt_sleep.backend import CodexCliBackend
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            out_path = cmd[cmd.index("-o") + 1]
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+
+            class Proc:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Proc()
+
+        with tempfile.TemporaryDirectory() as project:
+            expected_project = os.path.abspath(project)
+            backend = CodexCliBackend(codex_path="codex", project_dir=project)
+
+            with mock.patch("skillopt_sleep.backend.subprocess.run", side_effect=fake_run):
+                self.assertEqual(backend._call("hello"), "ok")
+
+            self.assertEqual(len(calls), 1)
+            cmd, kwargs = calls[0]
+            self.assertEqual(kwargs["cwd"], expected_project)
+            self.assertIn("-C", cmd)
+            self.assertEqual(cmd[cmd.index("-C") + 1], expected_project)
+
+
 class TestMultiRolloutAndBudget(unittest.TestCase):
     def test_rolloutset_stats(self):
         from skillopt_sleep.rollout import RolloutSet
@@ -507,6 +796,33 @@ class TestFullCycleAndAdopt(unittest.TestCase):
             self.assertTrue(os.path.exists(live_skill))
             with open(live_skill) as f:
                 self.assertIn("answer", f.read().lower())
+
+    def test_cycle_can_target_repo_scoped_skill_path(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            target = os.path.join(proj, ".agents/skills/taste-skill/SKILL.md")
+            cfg = load_config(
+                invoked_project=proj,
+                projects="invoked",
+                backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                target_skill_path=target,
+                auto_adopt=False,
+            )
+            tasks = assign_splits(programmer_persona(), holdout_fraction=0.34, seed=42)
+
+            outcome = run_sleep_cycle(cfg, seed_tasks=tasks)
+
+            self.assertTrue(outcome.report.accepted)
+            manifest_path = os.path.join(outcome.staging_dir, "manifest.json")
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+            self.assertEqual(manifest["live_skill_path"], target)
+            self.assertFalse(os.path.exists(target))
+
+            updated = adopt(outcome.staging_dir)
+
+            self.assertIn(target, updated)
+            self.assertTrue(os.path.exists(target))
 
 
 if __name__ == "__main__":

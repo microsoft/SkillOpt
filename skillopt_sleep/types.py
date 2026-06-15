@@ -135,6 +135,7 @@ class SleepReport:
     candidate_score: float = 0.0
     accepted: bool = False
     gate_action: str = ""
+    no_edits_reason: str = ""
     edits: List[EditRecord] = field(default_factory=list)
     rejected_edits: List[EditRecord] = field(default_factory=list)
     tokens_used: int = 0

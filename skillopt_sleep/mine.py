@@ -15,8 +15,10 @@ basis of the deterministic experiment.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
-from typing import Any, Callable, List, Optional
+from collections import Counter
+from typing import Any, Callable, List, Optional, Set, Tuple
 
 from skillopt_sleep.types import SessionDigest, TaskRecord
 
@@ -37,6 +39,99 @@ def _looks_negative(signals: List[str]) -> bool:
 
 def _looks_positive(signals: List[str]) -> bool:
     return any(s.startswith("pos:") for s in signals)
+
+
+_TARGET_STOPWORDS = {
+    "about", "after", "again", "agent", "agents", "all", "also", "always",
+    "and", "any", "are", "before", "being", "but", "can", "codex",
+    "current", "default", "docs", "does", "done", "each", "file", "files",
+    "for", "from", "have", "into", "keep", "must", "not", "only", "path",
+    "paths", "project", "read", "repo", "request", "requests", "rule",
+    "rules", "same", "should", "skill", "skills", "source", "start",
+    "task", "tasks", "that", "the", "their", "then", "this", "unless",
+    "update", "user", "users", "when", "with", "work", "workflow",
+}
+
+
+def _target_tokens(text: str) -> List[str]:
+    tokens: List[str] = []
+    for raw in re.findall(r"[\w][\w.-]*", (text or "").lower(), flags=re.UNICODE):
+        parts = [raw] + re.split(r"[\W_]+", raw, flags=re.UNICODE)
+        for part in parts:
+            if len(part) < 3 or part.isdigit() or part in _TARGET_STOPWORDS:
+                continue
+            tokens.append(part)
+    return tokens
+
+
+def _expand_target_keywords(keywords: Set[str]) -> None:
+    if "mcp" in keywords:
+        keywords.update({
+            "configure", "configuration", "connect", "connected", "enable",
+            "enabled", "install", "installed", "server", "servers",
+            "настрой", "настроить", "подключи", "подключить",
+        })
+    if {"conflict", "conflicts"} & keywords:
+        keywords.update({
+            "cherry", "conflict", "conflicts", "git", "merge", "rebase",
+            "unmerged", "конфликт", "конфликты",
+        })
+
+
+def target_task_keywords(
+    target_skill_text: str,
+    target_skill_path: str = "",
+    *,
+    limit: int = 180,
+) -> Tuple[Set[str], Set[str]]:
+    """Return (strong, weak) keywords that describe a target skill."""
+    path_text = (target_skill_path or "").replace(os.sep, " ")
+    headings = "\n".join(re.findall(r"(?m)^#+\s+(.+)$", target_skill_text or ""))
+    strong = set(_target_tokens(path_text + "\n" + headings))
+    weak = set(strong)
+    counts = Counter(_target_tokens(target_skill_text or ""))
+    for token, _count in counts.most_common(limit):
+        weak.add(token)
+    _expand_target_keywords(strong)
+    _expand_target_keywords(weak)
+    return strong, weak
+
+
+def _task_search_text(task: TaskRecord) -> str:
+    return "\n".join([
+        task.intent or "",
+        task.context_excerpt or "",
+        " ".join(task.tags or []),
+    ])
+
+
+def filter_tasks_for_target(
+    tasks: List[TaskRecord],
+    target_skill_text: str,
+    target_skill_path: str = "",
+) -> List[TaskRecord]:
+    """Prefer tasks whose language overlaps the explicit target skill.
+
+    If nothing matches, return the original list. This keeps a target run useful
+    even when transcripts are too sparse or the skill is too generic.
+    """
+    strong, weak = target_task_keywords(target_skill_text, target_skill_path)
+    if not tasks or not (strong or weak):
+        return tasks
+
+    ranked = []
+    for idx, task in enumerate(tasks):
+        tokens = set(_target_tokens(_task_search_text(task)))
+        strong_hits = tokens & strong
+        weak_hits = tokens & weak
+        if not strong_hits and len(weak_hits) < 2:
+            continue
+        score = len(strong_hits) * 3 + len(weak_hits)
+        ranked.append((score, idx, task))
+    if not ranked:
+        return tasks
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [task for _score, _idx, task in ranked]
 
 
 def heuristic_mine(
@@ -192,11 +287,15 @@ def mine(
     digests: List[SessionDigest],
     *,
     max_tasks: int = 40,
+    candidate_limit: int = 0,
     holdout_fraction: float = 0.34,
     seed: int = 42,
     llm_miner: Optional[Callable[[List[SessionDigest]], List[TaskRecord]]] = None,
+    target_skill_text: str = "",
+    target_skill_path: str = "",
 ) -> List[TaskRecord]:
     """Top-level miner. Uses ``llm_miner`` if provided, else heuristic."""
+    candidate_limit = candidate_limit or max_tasks
     tasks: List[TaskRecord] = []
     if llm_miner is not None:
         try:
@@ -204,7 +303,10 @@ def mine(
         except Exception:
             tasks = []
     if not tasks:
-        tasks = heuristic_mine(digests, max_tasks=max_tasks)
+        tasks = heuristic_mine(digests, max_tasks=candidate_limit)
     tasks = dedup_tasks(tasks)
+    if target_skill_text or target_skill_path:
+        tasks = filter_tasks_for_target(tasks, target_skill_text, target_skill_path)
+    tasks = tasks[:max_tasks]
     tasks = assign_splits(tasks, holdout_fraction=holdout_fraction, seed=seed)
     return tasks

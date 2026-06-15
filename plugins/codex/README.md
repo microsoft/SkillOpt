@@ -49,17 +49,42 @@ Or call the engine directly:
 
 ```bash
 python -m skillopt_sleep dry-run --project "$(pwd)" --source codex --backend mock
-python -m skillopt_sleep run --project "$(pwd)" --source codex --backend codex
+python -m skillopt_sleep run --project "$(pwd)" --source codex --backend codex \
+  --max-sessions 5 --max-tasks 3 --progress
+python -m skillopt_sleep run --project "$(pwd)" --source codex --backend codex \
+  --target-skill-path .agents/skills/example/SKILL.md \
+  --max-sessions 5 --max-tasks 3 --progress
 ```
 
 `--source codex` reads Codex Desktop archived sessions from
 `~/.codex/archived_sessions`. Use `--codex-home /path/to/.codex` to point at a
 different Codex home, or `--source auto` to try Codex archives first and fall
 back to Claude Code transcripts. Default backend is `mock` (no API spend).
-`--backend codex` uses your Codex budget for real improvement. All the
+`--backend codex` uses your Codex budget for real improvement. Bound live runs
+with `--max-sessions` and `--max-tasks`; add `--progress` because Codex-backed
+mining, replay, and reflection can be slow and otherwise quiet. Use
+`--target-skill-path` to stage/adopt into a repo-scoped Codex skill such as
+`.agents/skills/<name>/SKILL.md`; target runs over-sample mined tasks and
+prefer tasks that match the target skill's path, headings, and content. All the
 controllable knobs (`--gate on|off`, `--rollouts-k`, `--budget-tokens`,
 `--preferences`, optimizer/target split) work identically — see
 [the SkillOpt-Sleep guide section](https://microsoft.github.io/SkillOpt/docs/guideline.html#sleep).
+
+For privacy-sensitive projects, split the run into reviewable steps:
+
+```bash
+python -m skillopt_sleep harvest --project "$(pwd)" --source codex \
+  --target-skill-path .agents/skills/example/SKILL.md \
+  --max-sessions 5 --max-tasks 3 \
+  --output reviewed-tasks.json
+
+python -m skillopt_sleep dry-run --project "$(pwd)" --backend codex \
+  --tasks-file reviewed-tasks.json --progress --json
+```
+
+Inspect/redact the JSON and set `"reviewed": true` before using a real backend.
+`--tasks-file` skips archive harvest/mining and replays only the reviewed JSON
+tasks; real backends refuse task files still marked `"reviewed": false`.
 
 ## Notes / status
 

@@ -9,6 +9,10 @@
 Common flags:
     --project PATH      project to evolve (default: cwd)
     --scope all|invoked harvest scope (default: invoked)
+    --max-sessions N    cap transcript sessions per run
+    --max-tasks N       cap mined tasks per run
+    --target-skill-path PATH explicit live SKILL.md to stage/adopt
+    --tasks-file PATH   reviewed TaskRecord JSON file to replay instead of harvesting
     --backend mock|claude|codex
     --source claude|codex|auto
     --model NAME
@@ -31,6 +35,35 @@ from skillopt_sleep.mine import mine
 from skillopt_sleep.staging import adopt as adopt_staging
 from skillopt_sleep.staging import latest_staging
 from skillopt_sleep.state import SleepState
+from skillopt_sleep.tasks_file import load_tasks_file, make_tasks_payload, write_tasks_file
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _report_payload(rep, outcome) -> Dict[str, Any]:
+    return {
+        "night": rep.night,
+        "accepted": rep.accepted,
+        "gate_action": rep.gate_action,
+        "no_edits_reason": getattr(rep, "no_edits_reason", ""),
+        "baseline": rep.baseline_score,
+        "candidate": rep.candidate_score,
+        "n_tasks": rep.n_tasks,
+        "n_sessions": rep.n_sessions,
+        "n_accepted_edits": len(rep.edits),
+        "n_rejected_edits": len(rep.rejected_edits),
+        "edits": [e.__dict__ for e in rep.edits],
+        "rejected_edits": [e.__dict__ for e in rep.rejected_edits],
+        "notes": rep.notes,
+        "staging_dir": outcome.staging_dir,
+        "adopted": outcome.adopted,
+    }
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -45,11 +78,21 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="session transcript source")
     p.add_argument("--lookback-hours", type=int, default=0)
     p.add_argument("--edit-budget", type=int, default=0)
+    p.add_argument("--max-sessions", type=int, default=0,
+                   help="cap harvested sessions before mining; default derives from max tasks")
+    p.add_argument("--max-tasks", type=int, default=0,
+                   help="cap mined tasks for this run")
+    p.add_argument("--target-skill-path", default="",
+                   help="explicit live SKILL.md path to evolve/stage/adopt")
+    p.add_argument("--tasks-file", default="",
+                   help="reviewed TaskRecord JSON file to replay instead of harvesting")
+    p.add_argument("--progress", action="store_true",
+                   help="print phase progress to stderr")
     p.add_argument("--auto-adopt", action="store_true")
     p.add_argument("--json", action="store_true")
 
 
-def _cfg_from_args(args) -> Any:
+def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
     overrides: Dict[str, Any] = {}
     if args.project:
         overrides["invoked_project"] = os.path.abspath(args.project)
@@ -72,30 +115,63 @@ def _cfg_from_args(args) -> Any:
         overrides["lookback_hours"] = args.lookback_hours
     if getattr(args, "edit_budget", 0):
         overrides["edit_budget"] = args.edit_budget
+    if getattr(args, "max_sessions", 0):
+        overrides["max_sessions_per_night"] = args.max_sessions
+    if getattr(args, "max_tasks", 0):
+        overrides["max_tasks_per_night"] = args.max_tasks
+    target_skill_path = getattr(args, "target_skill_path", "")
+    if not target_skill_path and task_meta:
+        target_skill_path = str(task_meta.get("target_skill_path") or "")
+    if target_skill_path:
+        path = os.path.expanduser(target_skill_path)
+        if args.project and not os.path.isabs(path):
+            path = os.path.join(os.path.abspath(args.project), path)
+        overrides["target_skill_path"] = os.path.abspath(path)
+    if getattr(args, "progress", False):
+        overrides["progress"] = True
     if getattr(args, "auto_adopt", False):
         overrides["auto_adopt"] = True
     return load_config(**overrides)
 
 
 def cmd_run(args, dry: bool = False) -> int:
-    cfg = _cfg_from_args(args)
-    outcome = run_sleep_cycle(cfg, dry_run=dry)
+    task_meta: Dict[str, Any] = {}
+    tasks = None
+    if getattr(args, "tasks_file", ""):
+        # Load once before config so target_skill_path can default from metadata.
+        tasks, task_meta = load_tasks_file(args.tasks_file)
+    cfg = _cfg_from_args(args, task_meta=task_meta)
+    if getattr(args, "tasks_file", ""):
+        tasks, task_meta = load_tasks_file(
+            args.tasks_file,
+            holdout_fraction=cfg.get("holdout_fraction", 0.34),
+            seed=cfg.get("seed", 42),
+        )
+        if cfg.get("backend", "mock") != "mock" and task_meta.get("reviewed") is not True:
+            print(
+                "[sleep] refusing real-backend replay from an unreviewed tasks file; "
+                "inspect/redact it and set \"reviewed\": true first",
+                file=sys.stderr,
+            )
+            return 2
+    outcome = run_sleep_cycle(cfg, seed_tasks=tasks, dry_run=dry)
     rep = outcome.report
     if args.json:
-        print(json.dumps({
-            "night": rep.night, "accepted": rep.accepted,
-            "gate_action": rep.gate_action,
-            "baseline": rep.baseline_score, "candidate": rep.candidate_score,
-            "n_tasks": rep.n_tasks, "n_sessions": rep.n_sessions,
-            "edits": [e.__dict__ for e in rep.edits],
-            "staging_dir": outcome.staging_dir, "adopted": outcome.adopted,
-        }, ensure_ascii=False, indent=2))
+        payload = _report_payload(rep, outcome)
+        if task_meta:
+            payload["tasks_file"] = task_meta.get("tasks_file", "")
+            payload["tasks_reviewed"] = task_meta.get("reviewed", False)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(f"[sleep] night {rep.night}: {rep.n_sessions} sessions -> {rep.n_tasks} tasks")
         print(f"[sleep] held-out {rep.baseline_score:.3f} -> {rep.candidate_score:.3f} "
               f"=> {rep.gate_action} (accepted={rep.accepted})")
         for e in rep.edits:
             print(f"   + [{e.target}/{e.op}] {e.content}")
+        if rep.rejected_edits:
+            print("[sleep] rejected by gate:")
+            for e in rep.rejected_edits:
+                print(f"   - [{e.target}/{e.op}] {e.content}")
         if outcome.staging_dir:
             print(f"[sleep] staged: {outcome.staging_dir}")
             if not outcome.adopted:
@@ -152,16 +228,42 @@ def cmd_adopt(args) -> int:
 
 def cmd_harvest(args) -> int:
     cfg = _cfg_from_args(args)
-    digests = harvest_for_config(cfg, limit=cfg.get("max_tasks_per_night", 40) * 3)
-    tasks = mine(digests, max_tasks=cfg.get("max_tasks_per_night", 40),
-                 holdout_fraction=cfg.get("holdout_fraction", 0.34), seed=cfg.get("seed", 42))
+    session_limit = cfg.get("max_sessions_per_night", 0) or cfg.get("max_tasks_per_night", 40) * 3
+    target_skill_path = cfg.managed_skill_path() if cfg.get("target_skill_path", "") else ""
+    target_skill_text = _read_text(target_skill_path) if target_skill_path else ""
+    max_tasks = cfg.get("max_tasks_per_night", 40)
+    candidate_limit = max_tasks
+    if cfg.get("target_task_filter", True) and target_skill_text:
+        candidate_limit = max(max_tasks, max_tasks * 3)
+    digests = harvest_for_config(cfg, limit=session_limit)
+    tasks = mine(
+        digests,
+        max_tasks=max_tasks,
+        candidate_limit=candidate_limit,
+        holdout_fraction=cfg.get("holdout_fraction", 0.34),
+        seed=cfg.get("seed", 42),
+        target_skill_text=target_skill_text,
+        target_skill_path=target_skill_path,
+    )
+    payload = make_tasks_payload(
+        tasks,
+        project=cfg.get("invoked_project") or os.getcwd(),
+        transcript_source=cfg.get("transcript_source", ""),
+        n_sessions=len(digests),
+        target_skill_path=target_skill_path,
+    )
+    output_path = ""
+    if getattr(args, "output", ""):
+        output_path = write_tasks_file(args.output, payload)
     if args.json:
-        print(json.dumps({
-            "n_sessions": len(digests),
-            "tasks": [t.to_dict() for t in tasks],
-        }, ensure_ascii=False, indent=2))
+        json_payload = dict(payload)
+        if output_path:
+            json_payload["output"] = output_path
+        print(json.dumps(json_payload, ensure_ascii=False, indent=2))
     else:
         print(f"[sleep] {len(digests)} sessions -> {len(tasks)} tasks")
+        if output_path:
+            print(f"[sleep] wrote reviewed-task draft: {output_path}")
         for t in tasks:
             print(f"  [{t.split}/{t.outcome}] {t.intent[:90]}")
     return 0
@@ -207,6 +309,7 @@ def main(argv=None) -> int:
     p_adopt.add_argument("--staging", default="", help="specific staging dir")
     p_harvest = sub.add_parser("harvest", help="debug: show mined tasks")
     _add_common(p_harvest)
+    p_harvest.add_argument("--output", default="", help="write mined tasks JSON for review")
     p_sched = sub.add_parser("schedule", help="install a nightly cron entry for this project")
     _add_common(p_sched)
     p_sched.add_argument("--hour", type=int, default=3)

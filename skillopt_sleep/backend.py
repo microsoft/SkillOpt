@@ -315,6 +315,8 @@ class CliBackend(Backend):
         self.timeout = timeout
         self._tokens = 0
         self._cache: Dict[str, str] = {}
+        self.last_call_error = ""
+        self.last_reflect_raw = ""
 
     # subclasses override --------------------------------------------------
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
@@ -691,15 +693,25 @@ class CodexCliBackend(CliBackend):
 
     name = "codex"
 
-    def __init__(self, model: str = "", codex_path: str = "", timeout: int = 240,
-                 sandbox: str = "read-only") -> None:
+    def __init__(
+        self,
+        model: str = "",
+        codex_path: str = "",
+        timeout: int = 240,
+        sandbox: str = "read-only",
+        project_dir: str = "",
+    ) -> None:
         super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_CODEX_MODEL", ""),
                          timeout=timeout)
         self.codex_path = resolve_codex_path(codex_path)
         self.sandbox = sandbox
+        self.project_dir = (
+            os.path.abspath(os.path.expanduser(project_dir)) if project_dir else ""
+        )
 
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
         import tempfile
+        self.last_call_error = ""
         out_path = tempfile.NamedTemporaryFile(
             prefix="codex_last_", suffix=".txt", delete=False
         ).name
@@ -708,18 +720,39 @@ class CodexCliBackend(CliBackend):
             "--color", "never", "--sandbox", self.sandbox,
             "-o", out_path,
         ]
+        if self.project_dir:
+            cmd[3:3] = ["-C", self.project_dir]
         if self.model:
             cmd += ["-m", self.model]
         cmd += ["--", prompt]
+        proc = None
         try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
-        except Exception:
-            return ""
-        try:
-            with open(out_path, encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            return ""
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    cwd=self.project_dir or None,
+                )
+            except subprocess.TimeoutExpired:
+                self.last_call_error = f"codex exec timed out after {self.timeout}s"
+                return ""
+            except Exception as exc:
+                self.last_call_error = f"codex exec failed: {exc}"
+                return ""
+            try:
+                with open(out_path, encoding="utf-8") as f:
+                    out = f.read().strip()
+                if out:
+                    return out
+            except Exception as exc:
+                self.last_call_error = f"could not read codex output file: {exc}"
+            stdout = (proc.stdout or "").strip() if proc is not None else ""
+            stderr = (proc.stderr or "").strip() if proc is not None else ""
+            if proc is not None and proc.returncode != 0 and not self.last_call_error:
+                self.last_call_error = f"codex exec exited {proc.returncode}: {stderr[:500]}"
+            return stdout or stderr
         finally:
             try:
                 os.unlink(out_path)
@@ -1025,12 +1058,13 @@ def get_backend(
     claude_path: str = "claude",
     codex_path: str = "",
     azure_endpoint: str = "",
+    project_dir: str = "",
 ) -> Backend:
     n = (name or "mock").strip().lower()
     if n in {"claude", "anthropic", "claude_cli", "claude_code"}:
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
-        return CodexCliBackend(model=model, codex_path=codex_path)
+        return CodexCliBackend(model=model, codex_path=codex_path, project_dir=project_dir)
     if n in {"azure", "azure_openai", "aoai"}:
         return AzureOpenAIBackend(deployment=model, endpoint=azure_endpoint)
     if n in {"azure-responses", "azure_responses", "aoai-responses", "responses"}:
@@ -1050,6 +1084,7 @@ def build_backend(
     codex_path: str = "",
     azure_endpoint: str = "",
     preferences: str = "",
+    project_dir: str = "",
 ) -> Backend:
     """Build a single or dual backend.
 
@@ -1060,13 +1095,21 @@ def build_backend(
     """
     has_split = any([optimizer_backend, optimizer_model, target_backend, target_model])
     if not has_split:
-        be = get_backend(backend, model=model, codex_path=codex_path, azure_endpoint=azure_endpoint)
+        be = get_backend(
+            backend,
+            model=model,
+            codex_path=codex_path,
+            azure_endpoint=azure_endpoint,
+            project_dir=project_dir,
+        )
         be.preferences = preferences
         return be
     tgt = get_backend(target_backend or backend, model=target_model or model,
-                      codex_path=codex_path, azure_endpoint=azure_endpoint)
+                      codex_path=codex_path, azure_endpoint=azure_endpoint,
+                      project_dir=project_dir)
     opt = get_backend(optimizer_backend or backend, model=optimizer_model or model,
-                      codex_path=codex_path, azure_endpoint=azure_endpoint)
+                      codex_path=codex_path, azure_endpoint=azure_endpoint,
+                      project_dir=project_dir)
     opt.preferences = preferences  # reflect runs on the optimizer
     dual = DualBackend(target=tgt, optimizer=opt)
     dual.preferences = preferences

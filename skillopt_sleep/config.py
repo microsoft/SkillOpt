@@ -51,6 +51,9 @@ DEFAULTS: Dict[str, Any] = {
     "evolve_memory": True,        # consolidate CLAUDE.md
     "evolve_skill": True,         # consolidate the managed SKILL.md
     "llm_mine": True,             # use the backend to mine checkable tasks (real backends)
+    "target_skill_path": "",      # explicit SKILL.md target for repo-scoped agents
+    "target_task_filter": True,   # prefer mined tasks matching target_skill_path/text
+    "progress": False,            # print phase progress to stderr
     # ── adoption / safety ──────────────────────────────────────────────────
     "auto_adopt": False,          # default: stage + require explicit `adopt`
     "managed_skill_name": "skillopt-sleep-learned",
@@ -113,6 +116,13 @@ class SleepConfig:
         return os.path.join(self.data["claude_home"], "skills")
 
     def managed_skill_path(self) -> str:
+        target = self.data.get("target_skill_path") or ""
+        if target:
+            target = os.path.expanduser(str(target))
+            if not os.path.isabs(target):
+                base = self.data.get("invoked_project") or os.getcwd()
+                target = os.path.join(base, target)
+            return os.path.abspath(target)
         return os.path.join(
             self.skills_dir, self.data["managed_skill_name"], "SKILL.md"
         )
