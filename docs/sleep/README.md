@@ -53,8 +53,8 @@ correctness signal; the validation gate still governs what ships.
 
 ## Results
 
-> 📊 **Full study — the complete 18-cell deployment grid, replay-policy ablations,
-> night-by-night progression, the gate-safety stress test, and analysis — is in
+> 📊 **More results & analysis — the gate-safety stress test, experience-replay
+> scaling, and the dream-diversity ablation — are in
 > [`docs/sleep/RESULTS.md`](RESULTS.md).** The highlights:
 
 **Protocol (identical for every row below).** 5 nights × 10 new real "today" tasks
