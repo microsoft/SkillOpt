@@ -143,14 +143,21 @@ def digest_pi_session(path: str, project: str = "") -> Optional[SessionDigest]:
             if text.strip():
                 assistant_finals.append(_redact_secrets(text).strip())
         elif role == "toolResult":
-            # Per-call outcome signal — pi records whether the call failed.
+            # Corroborating tool-name source: pi records the resolved tool name
+            # on the result, which catches calls even when the toolCall block's
+            # `name` was absent. (toolName extraction only; see note below on isError.)
             tool_name = msg.get("toolName")
             if isinstance(tool_name, str) and tool_name:
                 tools.append(_sanitize_tool_name(tool_name))
-            if msg.get("isError"):
-                feedback.append(
-                    "neg:tool_error:" + _sanitize_tool_name(str(tool_name or "tool"))
-                )
+            # NOTE: pi also carries `isError` (bool) here — whether that one tool
+            # invocation failed mechanically. We deliberately do NOT surface it
+            # as a feedback signal: intermediate tool errors are normal in
+            # agentic coding and are frequently followed by recovery and a
+            # successful final result. Treating every recovered error as
+            # `neg:` feedback would mislabel successful sessions as failures and
+            # poison the miner's task-outcome labels. Task outcome should be
+            # inferred from the user's judgment of the *final* result (the
+            # lexical feedback phrases above), not from transient tool mechanics.
 
     if project and not _project_matches(session_project or "", "invoked", project):
         return None

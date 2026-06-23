@@ -51,7 +51,9 @@ def test_digest_full_session(tmp_path):
     assert d.n_assistant_turns == 2
     assert "bash" in d.tools_used                 # from toolCall block
     assert any("works" in f for f in d.feedback_signals)   # pos feedback
-    assert any(f.startswith("neg:tool_error") for f in d.feedback_signals)  # isError surfaced
+    assert all(
+        not f.startswith("neg:tool_error") for f in d.feedback_signals
+    )  # isError deliberately NOT surfaced (recovered errors ≠ task failure)
     assert all("private reasoning" not in f for f in d.feedback_signals)
     # thinking blocks must not leak into finals
     assert "private reasoning" not in " ".join(d.assistant_finals)
