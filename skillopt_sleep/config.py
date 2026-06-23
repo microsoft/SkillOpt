@@ -42,6 +42,7 @@ DEFAULTS: Dict[str, Any] = {
     "model": "",                  # backend-specific; "" => backend default
     "gate_mode": "on",            # "on" (validation-gated) | "off" (greedy, no hard filter)
     "codex_path": "",             # "" => auto-detect the real @openai/codex binary
+    "pi_path": "",                # "" => use `pi` on PATH
     "edit_budget": 4,             # textual learning rate (max edits/night)
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
     "gate_mixed_weight": 0.5,

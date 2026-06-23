@@ -114,6 +114,7 @@ def run_sleep_cycle(
         cfg.get("backend", "mock"),
         model=cfg.get("model", ""),
         codex_path=cfg.get("codex_path", ""),
+        pi_path=cfg.get("pi_path", ""),
         project_dir=project,
     )
     _progress(cfg, f"night {night}: project={project} backend={backend.name}")
