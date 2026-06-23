@@ -94,6 +94,32 @@ class TestExtractJsonTolerantFallback:
         text = 'The literal string "{op: delete}" appears in prose, not as JSON.'
         assert extract_json(text) is None
 
+    def test_single_quoted_and_backticked_prose_returns_none(self) -> None:
+        """Regression: pseudo-JSON in single quotes / backticks / bare prose must
+        not be repaired into a bogus dict (the string-aware scan only skips
+        double-quoted prose; the JSON-like guard catches the rest)."""
+        for text in (
+            "The literal string '{op: delete}' appears in prose, not JSON.",
+            "The inline code `{op: delete}` appears in prose, not JSON.",
+            "The literal string 'set it to {x: 1}' appears in prose.",
+            "A bare mapping {op: delete} written in prose.",
+        ):
+            assert extract_json(text) is None, text
+
+    def test_json_string_values_with_quotes_still_repair(self) -> None:
+        """The JSON-like guard must NOT reject legitimate objects whose string
+        values contain single quotes or backticks."""
+        pytest.importorskip("json_repair")
+        assert extract_json('{"msg": "it\'s a test",}') == {"msg": "it's a test"}
+        assert extract_json('{"code": "use `backtick` here",}') == {"code": "use `backtick` here"}
+
+    def test_no_warning_on_quoted_prose(self, recwarn: pytest.WarningsRecorder) -> None:
+        """Prose pseudo-JSON (no real candidate) must not warn even without
+        json_repair installed — the JSON-like guard returns None before import."""
+        assert extract_json("The inline code `{op: delete}` appears in prose.") is None
+        assert extract_json("A bare mapping {op: delete} in prose.") is None
+        assert [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)] == []
+
     def test_no_warning_on_plain_text(self, recwarn: pytest.WarningsRecorder) -> None:
         """No json_repair warning for ordinary no-JSON replies (no candidate)."""
         assert extract_json("Just plain text without JSON.") is None
