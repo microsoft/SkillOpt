@@ -94,6 +94,16 @@ python -m skillopt_webui.app
 
 ---
 
+## Acknowledgements
+
+We thank the community contributors who help improve SkillOpt. In particular:
+
+- [@samuelgoofus-boop](https://github.com/samuelgoofus-boop) — Windows robustness for the Claude/Codex backends (argv-overflow / `WinError 206`, subprocess UTF-8 encoding, tolerant JSON parsing, and test-eval directory creation) in [#77](https://github.com/microsoft/SkillOpt/pull/77).
+
+Contributions of all sizes are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## Citation
 
 ```bibtex
