@@ -53,6 +53,7 @@ all = [
     "alfworld>=0.4.0",
     "gymnasium>=0.29.0",
     "claude-agent-sdk>=0.1.0",
+    "json_repair>=0.61.0",
 ]
 
 [project.scripts]

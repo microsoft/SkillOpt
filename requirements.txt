@@ -7,10 +7,6 @@ azure-identity>=1.15.0
 azure-core>=1.30.0
 httpx>=0.27.0
 
-# Tolerant JSON repair for free-form output from non-OpenAI backends
-# (Claude/Qwen); without it extract_json() drops malformed analyst edits.
-json_repair>=0.61.0
-
 # ── Optional: ALFWorld benchmark ──────────────────
 # alfworld>=0.4.0
 # gymnasium>=0.29.0
@@ -20,6 +16,12 @@ json_repair>=0.61.0
 
 # ── Optional: Qwen local model (via vLLM) ────────
 # vllm>=0.4.0
+
+# ── Optional: tolerant JSON repair for free-form output from non-OpenAI
+#    backends (Claude/Qwen). Without it extract_json() falls back safely and
+#    drops a malformed analyst edit instead of repairing it. Installed by the
+#    `claude`, `qwen`, and `all` extras in pyproject.toml.
+# json_repair>=0.61.0
 
 # ── Optional: WebUI dashboard ────────────────────
 # gradio>=4.0.0

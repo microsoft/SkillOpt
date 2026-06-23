@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from skillopt.utils.json_utils import extract_json, extract_json_array
+from skillopt.utils.json_utils import (
+    _top_level_brace_objects,
+    extract_json,
+    extract_json_array,
+)
 
 
 class TestExtractJson:
@@ -59,6 +63,52 @@ class TestExtractJson:
         """Code fences without valid JSON content should not match."""
         text = "```\nplain code block\n```"
         assert extract_json(text) is None
+
+
+class TestTopLevelBraceObjects:
+    """_top_level_brace_objects — string/escape-aware top-level object scan."""
+
+    def test_single_clean_object(self) -> None:
+        assert _top_level_brace_objects('{"a": 1}') == ['{"a": 1}']
+
+    def test_two_top_level_objects(self) -> None:
+        assert _top_level_brace_objects('{"a":1}\n{"b":2}') == ['{"a":1}', '{"b":2}']
+
+    def test_brace_inside_quoted_prose_is_ignored(self) -> None:
+        """A '{' inside a quoted string must NOT start an object (the bug)."""
+        # Brace-shaped content inside a string, with no real object → no spans.
+        assert _top_level_brace_objects('label is "set it to {x: 1}" done') == []
+
+    def test_real_object_after_quoted_brace(self) -> None:
+        """Quoted-prose braces are skipped; a later real object is still found."""
+        text = 'note "{wrong: 1}" then actual {"edit": "right"}'
+        assert _top_level_brace_objects(text) == ['{"edit": "right"}']
+
+
+class TestExtractJsonTolerantFallback:
+    """extract_json — json_repair fallback for malformed non-OpenAI output."""
+
+    def test_prose_pseudo_json_returns_none(self) -> None:
+        """Regression: brace-shaped prose inside quotes must not be 'repaired'
+        into a bogus dict. It returned {'op': 'delete'} before the fix."""
+        text = 'The literal string "{op: delete}" appears in prose, not as JSON.'
+        assert extract_json(text) is None
+
+    def test_no_warning_on_plain_text(self, recwarn: pytest.WarningsRecorder) -> None:
+        """No json_repair warning for ordinary no-JSON replies (no candidate)."""
+        assert extract_json("Just plain text without JSON.") is None
+        assert extract_json("") is None
+        assert [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)] == []
+
+    def test_trailing_comma_repaired_when_available(self) -> None:
+        """With json_repair installed, a single malformed object is repaired."""
+        pytest.importorskip("json_repair")
+        assert extract_json('{"edit": "add", "text": "x",}') == {"edit": "add", "text": "x"}
+
+    def test_two_malformed_objects_too_ambiguous(self) -> None:
+        """Multiple top-level objects are ambiguous → None, never guess."""
+        pytest.importorskip("json_repair")
+        assert extract_json('{"first": true,} noise {"second": true,}') is None
 
 
 class TestExtractJsonArray:
