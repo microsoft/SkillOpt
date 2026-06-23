@@ -252,13 +252,25 @@ def _run_claude_print(*, system: str, prompt: str, model: str, tools: list[dict[
         if CLAUDE_SETTING_SOURCES:
             cmd.extend(["--setting-sources", CLAUDE_SETTING_SOURCES])
         if system:
-            cmd.extend(["--append-system-prompt", system])
+            # Write the system prompt to a file, not argv: here the skill being
+            # optimized IS the system prompt, and SkillOpt grows it over training,
+            # so past ~30 KB it would re-hit the Windows argv cap (WinError 206).
+            # The CLI reads it via --append-system-prompt-file.
+            system_path = os.path.join(temp_dir, "system_prompt.txt")
+            with open(system_path, "w", encoding="utf-8") as system_fh:
+                system_fh.write(system)
+            cmd.extend(["--append-system-prompt-file", system_path])
         if effort:
             cmd.extend(["--effort", effort])
         structured_output = bool(return_message)
         if structured_output:
             cmd.extend(["--schema", _assistant_message_schema_wrapper()])
-        proc = subprocess.run(cmd + [prompt_for_cli], capture_output=True, text=True, timeout=timeout or 300, cwd=temp_dir)
+        # Feed the prompt via stdin (and the system prompt via a file, above), not
+        # argv: on Windows the whole command line is capped at ~32 KB and large
+        # optimizer prompts / grown skills overflow it → [WinError 206]. Pin UTF-8
+        # so a zh-CN default codepage (cp936) can't raise UnicodeEncodeError on
+        # emoji / non-GBK glyphs before the CLI even starts.
+        proc = subprocess.run(cmd, input=prompt_for_cli, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout or 300, cwd=temp_dir)
         stderr_text = (proc.stderr or "").strip()
         if proc.returncode != 0:
             _check_claude_error(stderr_text, model)
