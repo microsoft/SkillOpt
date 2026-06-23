@@ -71,6 +71,25 @@ def _top_level_brace_objects(text: str) -> list[str]:
     return spans
 
 
+def _looks_json_like(span: str) -> bool:
+    """Heuristic: does ``span`` look like an intended JSON object (vs. prose)?
+
+    A genuine JSON object's first non-space character after ``{`` is either ``"``
+    (a string key) or ``}`` (an empty object). Prose pseudo-objects that the
+    repair pass would otherwise fabricate into bogus dicts — ``{op: delete}``,
+    ``{x: 1}`` quoted in single quotes or backticks, etc. — start with a bare
+    word and are rejected. This complements the string-aware scan, which only
+    skips *double*-quoted prose; single-quoted / backticked / unquoted prose
+    braces are caught here instead. Legitimate repair targets (trailing commas,
+    unescaped quotes inside string values) all begin with ``"`` and pass.
+    """
+    inner = span.strip()
+    if not (inner.startswith("{") and inner.endswith("}")):
+        return False
+    after_brace = inner[1:].lstrip()
+    return after_brace[:1] in ('"', '}')
+
+
 def extract_json(text: str) -> dict | None:
     """Extract a JSON object from LLM response text.
 
@@ -110,6 +129,12 @@ def extract_json(text: str) -> dict | None:
             candidate = objs[0]
         # 0 or >1 top-level objects → too ambiguous to repair safely → None
     if not candidate:
+        return None
+    # Final guard: only repair spans that actually look like an intended JSON
+    # object. Prose pseudo-objects in single quotes / backticks / bare text
+    # (e.g. `{op: delete}`) reach here because the scan only skips double-quoted
+    # prose; repairing them would fabricate a wrong dict (worse than None).
+    if not _looks_json_like(candidate):
         return None
     try:
         from json_repair import repair_json

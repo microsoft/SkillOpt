@@ -28,6 +28,7 @@ from skillopt.model import (
     configure_azure_openai,
     configure_claude_code_exec,
     configure_codex_exec,
+    configure_minimax_chat,
     set_reasoning_effort,
     set_target_backend,
     set_target_deployment,
@@ -137,7 +138,7 @@ def parse_args() -> argparse.Namespace:
     # Legacy flat overrides
     p.add_argument("--env", type=str)
     p.add_argument("--backend", type=str,
-                   choices=["azure_openai", "codex", "codex_exec", "claude", "claude_chat", "claude_code_exec"])
+                   choices=["azure_openai", "codex", "codex_exec", "claude", "claude_chat", "claude_code_exec", "minimax", "minimax_chat"])
     p.add_argument("--optimizer_model", type=str)
     p.add_argument("--target_model", type=str)
     p.add_argument("--optimizer_backend", type=str)
@@ -179,6 +180,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--claude_code_exec_use_sdk", type=str)
     p.add_argument("--claude_code_exec_effort", type=str)
     p.add_argument("--claude_code_exec_max_thinking_tokens", type=int)
+    p.add_argument("--minimax_base_url", type=str)
+    p.add_argument("--minimax_api_key", type=str)
+    p.add_argument("--minimax_model", type=str)
+    p.add_argument("--minimax_temperature", type=float)
+    p.add_argument("--minimax_max_tokens", type=int)
+    p.add_argument("--minimax_enable_thinking", type=_BOOL)
     p.add_argument("--out_root", type=str)
     p.add_argument("--data_path", type=str)
     p.add_argument("--split_mode", type=str,
@@ -254,6 +261,12 @@ def main() -> None:
                 "claude_code_exec_use_sdk": "model.claude_code_exec_use_sdk",
                 "claude_code_exec_effort": "model.claude_code_exec_effort",
                 "claude_code_exec_max_thinking_tokens": "model.claude_code_exec_max_thinking_tokens",
+                "minimax_base_url": "model.minimax_base_url",
+                "minimax_api_key": "model.minimax_api_key",
+                "minimax_model": "model.minimax_model",
+                "minimax_temperature": "model.minimax_temperature",
+                "minimax_max_tokens": "model.minimax_max_tokens",
+                "minimax_enable_thinking": "model.minimax_enable_thinking",
                 "seed": "train.seed",
                 "test_env_num": "evaluation.test_env_num",
                 "env": "env.name",
@@ -311,6 +324,9 @@ def main() -> None:
         elif backend == "claude_code_exec":
             cfg.setdefault("optimizer_backend", "openai_chat")
             cfg.setdefault("target_backend", "claude_code_exec")
+        elif backend in {"minimax", "minimax_chat"}:
+            cfg.setdefault("optimizer_backend", "openai_chat")
+            cfg.setdefault("target_backend", "minimax_chat")
         else:
             cfg.setdefault("optimizer_backend", "openai_chat")
             cfg.setdefault("target_backend", "openai_chat")
@@ -336,6 +352,15 @@ def main() -> None:
             and not _has_model_override("model.target", "target_model")
         ):
             cfg["target_model"] = default_model_for_backend("claude_chat")
+    if cfg.get("target_backend") == "minimax_chat":
+        if (
+            str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            and not _has_model_override("model.target", "target_model")
+        ):
+            cfg["target_model"] = (
+                cfg.get("minimax_model")
+                or default_model_for_backend("minimax_chat")
+            )
 
     if not cfg.get("out_root"):
         env = cfg.get("env", "unknown")
@@ -401,6 +426,16 @@ def main() -> None:
         effort=cfg.get("claude_code_exec_effort", cfg.get("reasoning_effort", "medium")),
         max_thinking_tokens=cfg.get("claude_code_exec_max_thinking_tokens", 16384),
     )
+    configure_minimax_chat(
+        base_url=cfg.get("minimax_base_url") or None,
+        api_key=cfg.get("minimax_api_key") or None,
+        temperature=cfg.get("minimax_temperature"),
+        max_tokens=cfg.get("minimax_max_tokens"),
+        enable_thinking=cfg.get("minimax_enable_thinking"),
+    )
+    minimax_model_cfg = cfg.get("minimax_model")
+    if minimax_model_cfg and cfg.get("target_backend") == "minimax_chat":
+        set_target_deployment(str(minimax_model_cfg))
     set_reasoning_effort(cfg.get("reasoning_effort", "") or None)
 
     # Build adapter
