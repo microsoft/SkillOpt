@@ -1,4 +1,4 @@
-# SkillOpt-Sleep — plugins for Claude Code, Codex, and Copilot
+# SkillOpt-Sleep — plugins for Claude Code, Codex, Copilot, and Devin
 
 **Your coding agent forgets everything between sessions. SkillOpt-Sleep fixes
 that.** While you sleep, it reviews what you did today, notices the rules you
@@ -8,7 +8,7 @@ only the rules that actually make it score better on *your own* past tasks. You
 wake up to an agent that's better at *your* work, and you approve every change
 before it sticks.
 
-One engine, three thin shells. It synthesizes **SkillOpt** (validation-gated
+One engine, four thin shells. It synthesizes **SkillOpt** (validation-gated
 bounded text optimization — the research in this repo), **Claude Dreams**
 (offline consolidation; input never mutated; review-then-adopt), and the **agent
 sleep** idea (short-term experience → long-term competence).
@@ -25,6 +25,7 @@ sleep** idea (short-term experience → long-term competence).
 | **Claude Code** | [`claude-code/`](claude-code) | `.claude-plugin` + `/skillopt-sleep` command + skill + hooks | full, installable |
 | **Codex** | [`codex/`](codex) | user-level `skillopt-sleep` skill + shared runner | full |
 | **Copilot** | [`copilot/`](copilot) | MCP server (`sleep_*` tools) + `copilot-instructions` | full (MCP) |
+| **Devin** | [`devin/`](devin) | MCP server (`sleep_*` tools) + Devin ATIF-v1.7 harvest + `.devin/rules` | full (MCP) |
 
 ## Install (pick your agent)
 
@@ -33,6 +34,7 @@ sleep** idea (short-term experience → long-term competence).
 | **Claude Code** | `/plugin marketplace add microsoft/SkillOpt` → `/plugin install skillopt-sleep` | `/skillopt-sleep status` |
 | **Codex** | `git clone` → `bash plugins/codex/install.sh` | `/skillopt-sleep status` |
 | **Copilot** | `git clone` → register `plugins/copilot/mcp_server.py` as an MCP server | ask "run the sleep cycle" |
+| **Devin** | `git clone` → `devin mcp add skillopt-sleep -- python3 plugins/devin/mcp_server.py` | ask "run the sleep cycle" |
 
 Requirements: Python ≥ 3.10 and the agent's CLI on PATH. All three call the same
 [`run-sleep.sh`](run-sleep.sh) → `python -m skillopt_sleep`, so behaviour is

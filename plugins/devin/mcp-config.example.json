@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "skillopt-sleep": {
+      "command": "python3",
+      "args": ["/abs/path/to/SkillOpt/plugins/devin/mcp_server.py"],
+      "env": {
+        "SKILLOPT_DEVIN_CLAUDE_HOME": "~/.skillopt-sleep-devin"
+      }
+    }
+  }
+}
