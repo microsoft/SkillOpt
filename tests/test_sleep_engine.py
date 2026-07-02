@@ -1147,6 +1147,32 @@ class MockRewardHackingBackend(MockBackend):
                 break
         return edits
 
+class MockBeneficialBackend(MockBackend):
+    def attempt(self, task: TaskRecord, skill: str, memory: str, sample_id: int = 0) -> str:
+        ctx = (skill or "") + "\n" + (memory or "")
+        # If the beneficial artifact is present:
+        if "Always think step-by-step" in ctx:
+            if "rule:__beneficial__" in task.tags:
+                return str(task.reference) # improves the train task
+            if "rule:real" in task.tags:
+                return str(task.reference) # improves the real held-out task
+                
+        # Baseline behavior (without the rule)
+        if "rule:__beneficial__" in task.tags:
+            return "I am missing input" # baseline fails the train task
+        if "rule:real" in task.tags:
+            return "baseline fails too" # baseline fails the real task
+            
+        return super().attempt(task, skill, memory, sample_id)
+
+    def reflect(self, failures, successes, skill, memory, **kwargs):
+        edits = []
+        for task, _ in failures:
+            if "rule:__beneficial__" in task.tags:
+                edits.append(EditRecord("skill", "add", "Always think step-by-step", rationale="beneficial"))
+                break
+        return edits
+
 class TestVerifierDiscipline(unittest.TestCase):
     def test_gate_rejects_reward_hacking_edit(self):
         be = MockRewardHackingBackend()
@@ -1157,8 +1183,26 @@ class TestVerifierDiscipline(unittest.TestCase):
         res = consolidate(be, tasks, "", "", edit_budget=4, gate_metric="hard", night=1)
         
         self.assertFalse(res.accepted)
+        self.assertEqual(res.gate_action, "reject")
+        self.assertEqual(res.holdout_baseline, 1.0)
+        self.assertEqual(res.holdout_candidate, 1.0) # final state reverts to baseline
         self.assertGreater(len(res.rejected_edits), 0)
         self.assertIn("placeholder", res.rejected_edits[0].content)
+
+    def test_gate_accepts_beneficial_edit(self):
+        be = MockBeneficialBackend()
+        train_task = TaskRecord(id="t2", project="/p", intent="train", reference="ABCDEF", reference_kind="exact", tags=["rule:__beneficial__"], split="train")
+        val_task = TaskRecord(id="v2", project="/p", intent="val", reference="UVWXYZ", reference_kind="exact", tags=["rule:real"], split="val")
+        tasks = [train_task, val_task]
+
+        res = consolidate(be, tasks, "", "", edit_budget=4, gate_metric="hard", night=1)
+        
+        self.assertTrue(res.accepted)
+        self.assertEqual(res.gate_action, "accept_new_best")
+        self.assertEqual(res.holdout_baseline, 0.0)
+        self.assertEqual(res.holdout_candidate, 1.0)
+        self.assertGreater(len(res.applied_edits), 0)
+        self.assertIn("step-by-step", res.applied_edits[0].content)
 
 class TestDiagnosticsRedaction(unittest.TestCase):
     """diagnostics.json surfaces backend stderr / optimizer replies / task
