@@ -69,13 +69,15 @@ def _report_payload(rep, outcome) -> Dict[str, Any]:
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
-    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex", "copilot"])
+    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex", "copilot", "pi"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
+    p.add_argument("--pi-path", default="", help="path to the pi binary (default: pi on PATH)")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
     p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
-    p.add_argument("--source", default="", choices=["", "claude", "codex", "auto"],
+    p.add_argument("--source", default="", choices=["", "claude", "codex", "pi", "auto"],
                    help="session transcript source")
+    p.add_argument("--pi-home", default="", help="override ~/.pi for pi-coding-agent session harvest")
     p.add_argument("--lookback-hours", type=int, default=None,
                    help="harvest window in hours; 0 = scan full history")
     p.add_argument("--edit-budget", type=int, default=0)
@@ -106,10 +108,14 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["model"] = args.model
     if getattr(args, "codex_path", ""):
         overrides["codex_path"] = os.path.abspath(args.codex_path)
+    if getattr(args, "pi_path", ""):
+        overrides["pi_path"] = args.pi_path
     if getattr(args, "claude_home", ""):
         overrides["claude_home"] = os.path.abspath(args.claude_home)
     if getattr(args, "codex_home", ""):
         overrides["codex_home"] = os.path.abspath(args.codex_home)
+    if getattr(args, "pi_home", ""):
+        overrides["pi_home"] = os.path.abspath(args.pi_home)
     if getattr(args, "source", ""):
         overrides["transcript_source"] = args.source
     lh = getattr(args, "lookback_hours", None)
