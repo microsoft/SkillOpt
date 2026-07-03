@@ -555,7 +555,12 @@ class ClaudeCliBackend(CliBackend):
     def __init__(self, model: str = "", claude_path: str = "claude", timeout: int = 180) -> None:
         super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_CLAUDE_MODEL", "") or "sonnet",
                          timeout=timeout)
-        self.claude_path = claude_path
+        # On Windows the npm-installed `claude` is a .cmd shim; CreateProcess
+        # cannot resolve it by bare name (WinError 2), so every call would
+        # silently return "" and the whole cycle scores 0.0. shutil.which
+        # honors PATHEXT and returns the full claude.CMD path.
+        import shutil as _shutil
+        self.claude_path = _shutil.which(claude_path) or claude_path
 
     # Known CLI error prefixes that indicate auth or config failures.
     # When detected, we log a warning so the user doesn't mistake a
@@ -614,11 +619,14 @@ class ClaudeCliBackend(CliBackend):
         ]
         if self.model:
             cmd += ["--model", self.model]
-        cmd += ["--", prompt]
+        # Prompt goes via stdin, not argv: the Windows .cmd shim routes through
+        # cmd.exe whose command line caps at ~8K chars — reflect/judge prompts
+        # exceed that. `claude -p` with no positional prompt reads stdin.
         clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_claude_")
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                input=prompt,
             )
         except Exception:
             return ""
@@ -677,10 +685,10 @@ class ClaudeCliBackend(CliBackend):
             ]
             if self.model:
                 cmd += ["--model", self.model]
-            cmd += ["--", prompt]
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=self.timeout, cwd=work,
+                    input=prompt,
                 )
                 resp = (proc.stdout or "").strip()
                 self._detect_cli_error(resp, proc.stderr or "")
