@@ -109,6 +109,13 @@ def _is_meta_prompt(text: str) -> bool:
         return True
     if t.startswith("[Pasted text") or t.startswith("Caveat:"):
         return True
+    # Expanded slash-command prompts (Claude Code injects the full command
+    # body as a user message, wrapped in <command-message>/<command-name>
+    # tags or rendered as "# /<name> — ..." headers). Not a user intent.
+    if "<command-message>" in t[:200] or "<command-name>" in t[:200]:
+        return True
+    if t.startswith("# /"):
+        return True
     return False
 
 
@@ -129,6 +136,31 @@ _REPLAY_PROMPT_MARKERS = (
     "## TASK\n",
     "## SKILL\n",
 )
+
+
+# Sessions written by OTHER tools' sub-agents (memory observers, critic
+# sub-agents, plugin self-invocations). These are multi-turn, so the
+# single-turn heuristic in _is_headless_replay never catches them. If the
+# FIRST user prompt matches any marker, the whole session is
+# machine-generated, not a real user task.
+_AGENT_SESSION_MARKERS = (
+    "You are a Claude-Mem",              # claude-mem observer agent
+    "Hello memory agent",                # claude-mem observer continuation
+    "You are driving **SkillOpt-Sleep**",  # this plugin's own command body
+) + tuple(
+    # users can add markers for their own tools' agent prompts
+    p.strip()
+    for p in os.environ.get("SKILLOPT_SLEEP_AGENT_MARKERS", "").split(",")
+    if p.strip()
+)
+
+
+def _is_agent_session(digest: "SessionDigest") -> bool:
+    """Detect transcripts written by other tools' sub-agents (see markers)."""
+    if not digest.user_prompts:
+        return False
+    first = digest.user_prompts[0]
+    return any(marker in first for marker in _AGENT_SESSION_MARKERS)
 
 
 def _is_headless_replay(digest: "SessionDigest") -> bool:
@@ -279,8 +311,12 @@ def harvest(
 
     paths: List[str] = []
     for root, _dirs, files in os.walk(transcripts_dir):
+        # Sub-agent sidechain transcripts (<session>/subagents/agent-*.jsonl)
+        # are Claude-authored prompts, not user tasks — never harvest them.
+        if os.path.basename(root) == "subagents":
+            continue
         for fn in files:
-            if fn.endswith(".jsonl"):
+            if fn.endswith(".jsonl") and not fn.startswith("agent-"):
                 paths.append(os.path.join(root, fn))
     # newest first by mtime
     paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
@@ -291,6 +327,8 @@ def harvest(
             continue
         if _is_headless_replay(d):
             continue  # Issue #62: skip engine's own headless replay sessions
+        if _is_agent_session(d):
+            continue  # skip other tools' sub-agent transcripts (claude-mem etc.)
         if not _project_matches(d.project or "", scope, invoked_project):
             continue
         if since_iso and d.ended_at and d.ended_at < since_iso:
