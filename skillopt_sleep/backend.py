@@ -29,6 +29,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
 
+# On Windows, console-attached children (cmd.exe shims, python) allocate a
+# visible console window when the parent has none — a nightly cycle making
+# hundreds of CLI calls strobes cmd windows and steals focus from the user.
+# CREATE_NO_WINDOW suppresses that; harmless 0 elsewhere.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
 
 def skill_hash(content: str) -> str:
     import hashlib
@@ -625,7 +631,7 @@ class ClaudeCliBackend(CliBackend):
         clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_claude_")
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=clean_cwd,
                 input=prompt,
             )
         except Exception:
@@ -687,7 +693,7 @@ class ClaudeCliBackend(CliBackend):
                 cmd += ["--model", self.model]
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=self.timeout, cwd=work,
+                    cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=work,
                     input=prompt,
                 )
                 resp = (proc.stdout or "").strip()
@@ -787,6 +793,7 @@ class CodexCliBackend(CliBackend):
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
+                    creationflags=_NO_WINDOW,
                     text=True,
                     timeout=self.timeout,
                     cwd=self.project_dir or None,
@@ -904,7 +911,7 @@ class CodexCliBackend(CliBackend):
             self.last_call_error = ""
             proc = None
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, cwd=work)
+                proc = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=work)
             except subprocess.TimeoutExpired:
                 self.last_call_error = f"codex exec (tools) timed out after {self.timeout}s"
             except Exception as exc:  # noqa: BLE001
@@ -1014,7 +1021,7 @@ class CopilotCliBackend(CliBackend):
             env["COPILOT_HOME"] = self.copilot_home
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=clean_cwd,
                 encoding="utf-8", errors="replace", env=env,
             )
         except Exception:
@@ -1127,7 +1134,7 @@ class CopilotCliBackend(CliBackend):
             resp = ""
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True, encoding="utf-8",
+                    cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, encoding="utf-8",
                     errors="replace", timeout=self.timeout, cwd=work, env=env,
                 )
                 resp = self._parse_jsonl_response(proc.stdout or "")
