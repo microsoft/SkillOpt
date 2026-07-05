@@ -211,7 +211,7 @@ class TestHarvest(unittest.TestCase):
             self.assertTrue(cfg.get("progress"))
             self.assertEqual(
                 cfg.managed_skill_path(),
-                os.path.join(project, ".agents/skills/taste-skill/SKILL.md"),
+                os.path.abspath(os.path.join(project, ".agents/skills/taste-skill/SKILL.md")),
             )
 
     def test_cli_report_payload_includes_rejected_edits(self):
@@ -281,7 +281,7 @@ class TestHarvest(unittest.TestCase):
 
         self.assertEqual(
             cfg.managed_skill_path(),
-            "/repo/Yoshi/.agents/skills/yoshi-monorepo/SKILL.md",
+            os.path.abspath("/repo/Yoshi/.agents/skills/yoshi-monorepo/SKILL.md"),
         )
 
     def test_cmd_run_uses_tasks_file_without_harvest(self):
@@ -912,7 +912,7 @@ class TestFullCycleAndAdopt(unittest.TestCase):
 
     def test_cycle_can_target_repo_scoped_skill_path(self):
         with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
-            target = os.path.join(proj, ".agents/skills/taste-skill/SKILL.md")
+            target = os.path.abspath(os.path.join(proj, ".agents/skills/taste-skill/SKILL.md"))
             cfg = load_config(
                 invoked_project=proj,
                 projects="invoked",

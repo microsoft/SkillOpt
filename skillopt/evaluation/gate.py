@@ -43,11 +43,55 @@ class GateResult:
     best_step: int
 
 
+def compute_semantic_density(
+    skill_content: str,
+    leading_words: list[str] | None = None,
+) -> float:
+    """Compute the semantic density of leading words in a skill document."""
+    if not skill_content or not skill_content.strip():
+        return 0.0
+    if leading_words is None:
+        leading_words = [
+            "MUST", "ALWAYS", "NEVER", "ONLY", "CRITICAL", "IMPORTANT",
+            "RESOLVE", "PREFER", "ENSURE", "STRICT", "VERIFY"
+        ]
+    
+    # Strip metadata comments to focus purely on instruction text
+    skill = skill_content
+    for start, end in [
+        ("<!-- SLOW_UPDATE_START -->", "<!-- SLOW_UPDATE_END -->"),
+        ("<!-- APPENDIX_START -->", "<!-- APPENDIX_END -->")
+    ]:
+        while True:
+            s_idx = skill.find(start)
+            if s_idx == -1:
+                break
+            e_idx = skill.find(end, s_idx)
+            if e_idx == -1:
+                skill = skill[:s_idx] + skill[s_idx + len(start):]
+                break
+            skill = skill[:s_idx] + skill[e_idx + len(end):]
+
+    import re
+    words = re.findall(r'[a-zA-Z0-9]+', skill.lower())
+    if not words:
+        return 0.0
+    
+    leading_set = {w.lower() for w in leading_words}
+    leading_count = sum(1 for w in words if w in leading_set)
+    return leading_count / len(words)
+
+
 def select_gate_score(
     hard: float,
     soft: float,
     metric: GateMetric = "hard",
     mixed_weight: float = 0.5,
+    *,
+    skill_content: str = "",
+    use_semantic_density: bool = False,
+    semantic_density_weight: float = 0.05,
+    leading_words: list[str] | None = None,
 ) -> float:
     """Project (hard, soft) onto a single comparison metric.
 
@@ -60,17 +104,32 @@ def select_gate_score(
     mixed_weight
         For ``"mixed"``: weight given to ``soft``. Must be in ``[0, 1]``.
         Ignored for ``"hard"`` / ``"soft"``.
+    skill_content
+        The raw skill document content.
+    use_semantic_density
+        Whether to adjust the score based on semantic density of leading words.
+    semantic_density_weight
+        Scaling weight for the semantic density bonus.
+    leading_words
+        Optional custom list of high-influence words to prioritize.
     """
     if metric == "hard":
-        return float(hard)
-    if metric == "soft":
-        return float(soft)
-    if metric == "mixed":
+        score = float(hard)
+    elif metric == "soft":
+        score = float(soft)
+    elif metric == "mixed":
         w = max(0.0, min(1.0, float(mixed_weight)))
-        return (1.0 - w) * float(hard) + w * float(soft)
-    raise ValueError(
-        f"unknown gate metric {metric!r}; expected 'hard', 'soft', or 'mixed'"
-    )
+        score = (1.0 - w) * float(hard) + w * float(soft)
+    else:
+        raise ValueError(
+            f"unknown gate metric {metric!r}; expected 'hard', 'soft', or 'mixed'"
+        )
+
+    if use_semantic_density:
+        density = compute_semantic_density(skill_content, leading_words)
+        score += float(semantic_density_weight) * density
+
+    return score
 
 
 def evaluate_gate(
@@ -86,6 +145,9 @@ def evaluate_gate(
     cand_soft: float = 0.0,
     metric: GateMetric = "hard",
     mixed_weight: float = 0.5,
+    use_semantic_density: bool = False,
+    semantic_density_weight: float = 0.05,
+    leading_words: list[str] | None = None,
 ) -> GateResult:
     """Pure gate decision: compare candidate score to current/best.
 
@@ -111,6 +173,12 @@ def evaluate_gate(
         the original gate behavior.
     mixed_weight
         Weight on ``soft`` when ``metric == "mixed"``.
+    use_semantic_density
+        Whether to adjust the score based on semantic density of leading words.
+    semantic_density_weight
+        Scaling weight for the semantic density bonus.
+    leading_words
+        Optional custom list of high-influence words to prioritize.
 
     Returns
     -------
@@ -118,7 +186,16 @@ def evaluate_gate(
         Updated state; the caller decides what to do with it (print,
         mutate trainer state, log, etc.).
     """
-    cand_score = select_gate_score(cand_hard, cand_soft, metric, mixed_weight)
+    cand_score = select_gate_score(
+        cand_hard,
+        cand_soft,
+        metric,
+        mixed_weight,
+        skill_content=candidate_skill,
+        use_semantic_density=use_semantic_density,
+        semantic_density_weight=semantic_density_weight,
+        leading_words=leading_words,
+    )
 
     if cand_score > current_score:
         if cand_score > best_score:
