@@ -149,7 +149,7 @@ def _record_urlopen(
     return recorder
 
 
-def test_chat_target_omits_chat_template_kwargs_when_thinking_disabled(
+def test_chat_target_sends_explicit_false_when_thinking_disabled(
     monkeypatch: pytest.MonkeyPatch,
     isolate_qwen_state: tuple[Any, Any],
 ) -> None:
@@ -167,7 +167,7 @@ def test_chat_target_omits_chat_template_kwargs_when_thinking_disabled(
 
     assert text == "<answer>yes</answer>"
     assert usage["total_tokens"] == 3
-    assert "chat_template_kwargs" not in recorder.calls[0]["payload"]
+    assert recorder.calls[0]["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert recorder.calls[0]["timeout"] == 10.0
 
 
@@ -224,4 +224,4 @@ def test_configure_qwen_chat_runtime_toggle_controls_payload(
     model_module.chat_target("system", "user", max_completion_tokens=128, retries=1)
 
     assert recorder.calls[0]["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
-    assert "chat_template_kwargs" not in recorder.calls[1]["payload"]
+    assert recorder.calls[1]["payload"]["chat_template_kwargs"] == {"enable_thinking": False}

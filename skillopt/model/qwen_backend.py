@@ -191,8 +191,9 @@ def _chat_messages_impl(
         "messages": _json_safe(messages),
         "max_tokens": min(max_completion_tokens, config.max_tokens),
     }
-    if config.enable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": True}
+    # Always send an explicit value: omitting it leaves thinking mode to the
+    # vLLM server / chat-template default, which varies across deployments (#90).
+    payload["chat_template_kwargs"] = {"enable_thinking": bool(config.enable_thinking)}
     if config.temperature is not None:
         payload["temperature"] = config.temperature
     if tools:
