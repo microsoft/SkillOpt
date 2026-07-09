@@ -21,6 +21,7 @@ CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
 PI_HOME = os.path.expanduser("~/.pi")
 CURSOR_HOME = os.path.expanduser("~/.cursor")
+HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
 
 
 DEFAULTS: Dict[str, Any] = {
@@ -29,10 +30,11 @@ DEFAULTS: Dict[str, Any] = {
     "codex_home": CODEX_HOME,
     "pi_home": PI_HOME,
     "cursor_home": CURSOR_HOME,
+    "hermes_home": HERMES_HOME,
     "vscode_workspace_storage": "",  # "" => auto-detect platform defaults
-    # Explicit sources also include copilot, cursor, and pi. ``auto`` keeps
-    # the established Codex-then-Claude precedence for backward compatibility.
-    "transcript_source": "claude",
+    # Explicit sources also include copilot, cursor, pi, and hermes. ``auto``
+    # keeps the established Codex-then-Claude precedence for backward compatibility.
+    "transcript_source": "claude",  # "claude" | "codex" | "auto" | "hermes"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -43,7 +45,7 @@ DEFAULTS: Dict[str, Any] = {
     "val_fraction": 0.34,         # real tasks reserved to gate updates
     "test_fraction": 0.0,         # real tasks reserved as the final held-out measure
     # ── optimizer ──────────────────────────────────────────────────────────
-    "backend": "mock",            # "mock" | "claude" | "codex" | "copilot" | "cursor" | "pi"
+    "backend": "mock",            # "mock" | "claude" | "codex" | "copilot" | "cursor" | "pi" | "hermes"
     "model": "",                  # backend-specific; "" => backend default
     # Dual-backend split (both empty => single backend above plays all roles).
     # target = the model whose skill is deployed (runs `attempt` rollouts);
@@ -66,7 +68,8 @@ DEFAULTS: Dict[str, Any] = {
     "dream_rollouts": 1,          # >1 => multi-rollout contrastive reflection per task
     "dream_factor": 0,            # >0 => add N synthetic variants of each task to the dream
     "recall_k": 0,                # >0 => recall the K most-similar past tasks into the dream
-    "evolve_memory": True,        # consolidate CLAUDE.md
+    "memory_filename": "CLAUDE.md",  # project memory file ("AGENTS.md" for Codex/Hermes)
+    "evolve_memory": True,        # consolidate memory file
     "evolve_skill": True,         # consolidate the managed SKILL.md
     "llm_mine": True,             # use the backend to mine checkable tasks (real backends)
     "target_skill_path": "",      # explicit SKILL.md target for repo-scoped agents

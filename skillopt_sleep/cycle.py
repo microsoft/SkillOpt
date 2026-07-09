@@ -279,7 +279,7 @@ def run_sleep_cycle(
                    "evolve_skill", "evolve_memory")})
 
     # ── live skill/memory docs ───────────────────────────────────────────
-    live_memory_path = os.path.join(project, "CLAUDE.md")
+    live_memory_path = os.path.join(project, cfg.get("memory_filename", "CLAUDE.md"))
     live_skill_path = cfg.managed_skill_path()
     _progress(cfg, f"live skill: {live_skill_path}")
     raw_skill = _read(live_skill_path)
