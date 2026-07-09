@@ -13,8 +13,8 @@ Common flags:
     --max-tasks N       cap mined tasks per run
     --target-skill-path PATH explicit live SKILL.md to stage/adopt
     --tasks-file PATH   reviewed TaskRecord JSON file to replay instead of harvesting
-    --backend mock|claude|codex|copilot|cursor|pi|handoff|azure_openai
-    --source claude|codex|copilot|cursor|pi|auto
+    --backend mock|claude|codex|copilot|cursor|pi|hermes|handoff|azure_openai
+    --source claude|codex|copilot|cursor|pi|auto|hermes
     --vscode-workspace-storage PATH
     --model NAME
     --lookback-hours N
@@ -73,7 +73,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
     p.add_argument("--backend", default="",
                    choices=["", "mock", "claude", "codex", "copilot", "cursor", "pi",
-                            "handoff", "azure_openai"])
+                            "hermes", "handoff", "azure_openai"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--cursor-path", default="", help="path to the Cursor Agent CLI")
@@ -83,7 +83,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cursor-home", default="", help="override ~/.cursor for Cursor session harvest")
     p.add_argument("--pi-home", default="", help="override ~/.pi for Pi session harvest")
     p.add_argument("--source", default="",
-                   choices=["", "claude", "codex", "copilot", "cursor", "pi", "auto"],
+                   choices=["", "claude", "codex", "copilot", "cursor", "pi", "auto", "hermes"],
                    help="session transcript source")
     p.add_argument("--vscode-workspace-storage", default="",
                    help="override VS Code User/workspaceStorage root for copilot source")
