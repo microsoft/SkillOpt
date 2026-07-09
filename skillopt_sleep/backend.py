@@ -1369,6 +1369,77 @@ class AzureResponsesBackend(AzureOpenAIBackend):
         return ""
 
 
+# ── Hermes CLI backend ─────────────────────────────────────────────────────────
+
+class HermesBackend(CliBackend):
+    """Drives Hermes Agent CLI: `hermes --profile <name> chat -q "<prompt>"`."""
+
+    name = "hermes"
+
+    def __init__(self, model: str = "", timeout: int = 180) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_HERMES_MODEL", ""),
+                         timeout=timeout)
+        self.hermes_bin = os.environ.get("HERMES_BIN", "hermes")
+        self.hermes_profile = os.environ.get("SKILLOPT_SLEEP_HERMES_PROFILE",
+                                            os.environ.get("HERMES_TARGET_PROFILE", "default"))
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        import re
+        import tempfile
+        cmd = [
+            self.hermes_bin,
+            "--profile", self.hermes_profile,
+            "chat", "-Q", "-q", prompt,
+        ]
+        clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_hermes_")
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=clean_cwd,
+                env={**os.environ, "HERMES_NO_COLOR": "1"},
+            )
+        except Exception:
+            return ""
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(clean_cwd, ignore_errors=True)
+            except Exception:
+                pass
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            self.last_call_error = stderr[:500] if stderr else f"Hermes CLI exited with code {proc.returncode}"
+            return ""
+        raw = (proc.stdout or "").strip()
+        # Strip known CLI boilerplate (notices, warnings, session IDs, tracebacks)
+        skip_prefixes = (
+            "Bitwarden Secrets Manager:",
+            "Warning: Unknown",
+            "session_id:",
+        )
+        lines = raw.split("\n")
+        body: list[str] = []
+        in_traceback = False
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if any(stripped.startswith(p) for p in skip_prefixes):
+                continue
+            if stripped.startswith("Exception") or stripped.startswith("Traceback"):
+                in_traceback = True
+                continue
+            if in_traceback:
+                continue
+            body.append(line)
+        result = "\n".join(body).strip()
+        self._tokens += len(prompt) // 4 + len(result) // 4
+        return result
+
+
 def get_backend(
     name: str,
     *,
@@ -1383,6 +1454,8 @@ def get_backend(
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
         return CodexCliBackend(model=model, codex_path=codex_path, project_dir=project_dir)
+    if n in {"hermes", "hermes_chat", "hermes_cli"}:
+        return HermesBackend(model=model)
     if n in {"azure", "azure_openai", "aoai"}:
         return AzureOpenAIBackend(deployment=model, endpoint=azure_endpoint)
     if n in {"azure-responses", "azure_responses", "aoai-responses", "responses"}:

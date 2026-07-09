@@ -49,10 +49,10 @@ CLAUDE_CODE_EXEC_MAX_THINKING_TOKENS = max(
 def set_optimizer_backend(backend: str) -> None:
     global OPTIMIZER_BACKEND
     OPTIMIZER_BACKEND = normalize_backend_name(backend or "openai_chat")
-    if OPTIMIZER_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat"}:
+    if OPTIMIZER_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "hermes_chat"}:
         raise ValueError(
             f"Unsupported optimizer backend: {OPTIMIZER_BACKEND!r}. "
-            "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', and 'minimax_chat'."
+            "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', and 'hermes_chat'."
         )
     os.environ["OPTIMIZER_BACKEND"] = OPTIMIZER_BACKEND
 
@@ -64,10 +64,10 @@ def get_optimizer_backend() -> str:
 def set_target_backend(backend: str) -> None:
     global TARGET_BACKEND
     TARGET_BACKEND = normalize_backend_name(backend or "openai_chat")
-    if TARGET_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "codex_exec", "claude_code_exec"}:
+    if TARGET_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "codex_exec", "claude_code_exec", "hermes_chat"}:
         raise ValueError(
             f"Unsupported target backend: {TARGET_BACKEND!r}. "
-            "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', 'codex_exec', and 'claude_code_exec'."
+            "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', 'codex_exec', 'claude_code_exec', and 'hermes_chat'."
         )
     os.environ["TARGET_BACKEND"] = TARGET_BACKEND
 
