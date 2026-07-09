@@ -1282,5 +1282,152 @@ class TestDiagnosticsRedaction(unittest.TestCase):
         self.assertIn("REDACTED", joined)
 
 
+class TestHermesBackendCli(unittest.TestCase):
+    """Hermes CLI backend: command construction, error capture, output filtering."""
+
+    def test_backend_registered_in_get_backend(self):
+        """`get_backend("hermes")` returns HermesBackend, not MockBackend."""
+        from skillopt_sleep.backend import HermesBackend, get_backend
+
+        for alias in ("hermes", "hermes_chat", "hermes_cli"):
+            be = get_backend(alias)
+            self.assertIsInstance(be, HermesBackend, f"alias={alias}")
+            self.assertEqual(be.name, "hermes")
+
+    def test_command_includes_profile_and_quiet_flags(self):
+        """The constructed command must include --profile, -Q, -q."""
+        from skillopt_sleep.backend import HermesBackend
+
+        be = HermesBackend(timeout=5)
+        be.hermes_profile = "test-profile"
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+
+            class FakeProc:
+                stdout = "OK"
+                stderr = ""
+                returncode = 0
+
+            return FakeProc()
+
+        with unittest.mock.patch("subprocess.run", side_effect=fake_run):
+            be._call("test prompt")
+
+        cmd = captured["cmd"]
+        self.assertIn("--profile", cmd)
+        self.assertIn("test-profile", cmd)
+        self.assertIn("-Q", cmd)
+        self.assertIn("-q", cmd)
+        self.assertIn("test prompt", cmd)
+        self.assertEqual(captured["env"].get("HERMES_NO_COLOR"), "1")
+
+    def test_cli_error_captured_in_last_call_error(self):
+        """Non-zero exit codes must set last_call_error, not return error text."""
+        from skillopt_sleep.backend import HermesBackend
+
+        be = HermesBackend(timeout=5)
+
+        def fake_run(cmd, **kwargs):
+            class FakeProc:
+                stdout = ""
+                stderr = "Error: invalid profile"
+                returncode = 1
+
+            return FakeProc()
+
+        with unittest.mock.patch("subprocess.run", side_effect=fake_run):
+            result = be._call("test prompt")
+
+        self.assertEqual(result, "")
+        self.assertIn("invalid profile", be.last_call_error)
+
+    def test_output_filters_boilerplate(self):
+        """CLI notices, warnings, session IDs, and tracebacks are stripped."""
+        from skillopt_sleep.backend import HermesBackend
+
+        be = HermesBackend(timeout=5)
+
+        def fake_run(cmd, **kwargs):
+            class FakeProc:
+                stdout = (
+                    "Bitwarden Secrets Manager: applied 1 secret\n"
+                    "Warning: Unknown toolsets: mcp-codegraph\n"
+                    "\n"
+                    "session_id: 20260709_000000_000000\n"
+                    "42\n"
+                    "Exception ignored in:\n"
+                    "Traceback (most recent call last):\n"
+                    "  File \"x.py\", line 1, in f\n"
+                    "RuntimeError: loop is closed\n"
+                )
+                stderr = ""
+                returncode = 0
+
+            return FakeProc()
+
+        with unittest.mock.patch("subprocess.run", side_effect=fake_run):
+            result = be._call("what is 6*7?")
+
+        self.assertEqual(result.strip(), "42")
+
+    def test_output_preserves_multiline_response(self):
+        """Multi-line model responses are preserved after boilerplate filtering."""
+        from skillopt_sleep.backend import HermesBackend
+
+        be = HermesBackend(timeout=5)
+
+        def fake_run(cmd, **kwargs):
+            class FakeProc:
+                stdout = (
+                    "Warning: Unknown toolsets: mcp-codegraph, messaging\n"
+                    "\n"
+                    "Line one\n"
+                    "Line two\n"
+                    "  indented line three\n"
+                )
+                stderr = ""
+                returncode = 0
+
+            return FakeProc()
+
+        with unittest.mock.patch("subprocess.run", side_effect=fake_run):
+            result = be._call("multi-line test")
+
+        lines = result.strip().split("\n")
+        self.assertIn("Line one", lines)
+        self.assertIn("Line two", lines)
+        self.assertIn("  indented line three", lines)
+
+    def test_hermes_home_overridable(self):
+        """SKILLOPT_SLEEP_HERMES_PROFILE and HERMES_BIN are read from env."""
+        from skillopt_sleep.backend import HermesBackend
+
+        env = {
+            "HERMES_BIN": "/custom/path/hermes",
+            "SKILLOPT_SLEEP_HERMES_PROFILE": "pro",
+        }
+        with unittest.mock.patch.dict(os.environ, env, clear=False):
+            be = HermesBackend(timeout=5)
+            self.assertEqual(be.hermes_bin, "/custom/path/hermes")
+            self.assertEqual(be.hermes_profile, "pro")
+
+    def test_hermes_home_falls_back_to_default(self):
+        """Without env overrides, hermes_profile defaults to HERMES_TARGET_PROFILE or 'default'."""
+        from skillopt_sleep.backend import HermesBackend
+
+        env = os.environ.copy()
+        env.pop("HERMES_BIN", None)
+        env.pop("SKILLOPT_SLEEP_HERMES_PROFILE", None)
+        env.pop("HERMES_TARGET_PROFILE", None)
+
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            be = HermesBackend(timeout=5)
+            self.assertEqual(be.hermes_bin, "hermes")
+            self.assertEqual(be.hermes_profile, "default")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

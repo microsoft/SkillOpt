@@ -19,12 +19,14 @@ from typing import Any, Dict, Optional
 HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
+HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
 
 
 DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
     "codex_home": CODEX_HOME,
+    "hermes_home": HERMES_HOME,
     "transcript_source": "claude",  # "claude" | "codex" | "auto"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
@@ -48,7 +50,8 @@ DEFAULTS: Dict[str, Any] = {
     "dream_rollouts": 1,          # >1 => multi-rollout contrastive reflection per task
     "dream_factor": 0,            # >0 => add N synthetic variants of each task to the dream
     "recall_k": 0,                # >0 => recall the K most-similar past tasks into the dream
-    "evolve_memory": True,        # consolidate CLAUDE.md
+    "memory_filename": "CLAUDE.md",  # project memory file ("AGENTS.md" for Codex/Hermes)
+    "evolve_memory": True,        # consolidate memory file
     "evolve_skill": True,         # consolidate the managed SKILL.md
     "llm_mine": True,             # use the backend to mine checkable tasks (real backends)
     "target_skill_path": "",      # explicit SKILL.md target for repo-scoped agents
