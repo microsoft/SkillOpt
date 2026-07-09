@@ -222,8 +222,34 @@ def chat_target(
     stage: str = "target",
     reasoning_effort: str | None = None,
     timeout: float | None = None,
-) -> tuple[str, dict[str, int]]:
+) -> tuple[str, dict[int]]:
     del reasoning_effort
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    return _chat_messages_impl(
+        messages,
+        max_completion_tokens,
+        retries,
+        stage,
+        timeout=timeout,
+    )
+
+
+def chat_optimizer(
+    system: str,
+    user: str,
+    max_completion_tokens: int = 16384,
+    retries: int = 5,
+    stage: str = "optimizer",
+    reasoning_effort: str | None = None,
+    timeout: float | None = None,
+) -> tuple[str, dict[int]]:
+    """Optimizer chat call. Backend stores the trained skill; uses the same
+    MiniMax-proxied OpenAI-compat endpoint as `chat_target`. Added in the
+    parallel-training fix; previously missing in skillopt 0.2.0's
+    miniamax backend, which forced the dispatcher into _openai.chat_optimizer
+    (Azure) and produced "[skip] no usable patches" for any user running
+    optimizer+target on `minimax_chat`.
+    """
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _chat_messages_impl(
         messages,

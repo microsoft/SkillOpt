@@ -105,6 +105,16 @@ def chat_optimizer(
             reasoning_effort=reasoning_effort,
             timeout=timeout,
         )
+    if get_optimizer_backend() == "minimax_chat":
+        return _minimax.chat_optimizer(
+            system=system,
+            user=user,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            timeout=timeout,
+        )
     return _openai.chat_optimizer(
         system=system,
         user=user,
@@ -194,6 +204,18 @@ def chat_optimizer_messages(
         )
     if get_optimizer_backend() == "qwen_chat":
         return _qwen.chat_optimizer_messages(
+            messages=messages,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_choice=tool_choice,
+            return_message=return_message,
+            timeout=timeout,
+        )
+    if get_optimizer_backend() == "minimax_chat":
+        return _minimax.chat_target_messages(
             messages=messages,
             max_completion_tokens=max_completion_tokens,
             retries=retries,
