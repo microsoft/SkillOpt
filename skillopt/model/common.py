@@ -26,6 +26,7 @@ _BACKEND_DEFAULT_MODELS = {
     "claude_code_exec": "claude-sonnet-4-6",
     "qwen_chat": "Qwen/Qwen3.5-4B",
     "minimax_chat": "MiniMax-M2.7",
+    "openai_compatible": "gpt-4o-mini",
 }
 
 _BACKEND_ALIASES = {
@@ -44,6 +45,10 @@ _BACKEND_ALIASES = {
     "qwen_chat": "qwen_chat",
     "minimax": "minimax_chat",
     "minimax_chat": "minimax_chat",
+    "openai_compatible": "openai_compatible",
+    "openai_compatible_chat": "openai_compatible",
+    "openai-compatible": "openai_compatible",
+    "compat": "openai_compatible",
 }
 
 
