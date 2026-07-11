@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
-from skillopt_sleep.backend import get_backend
+from skillopt_sleep.backend import Backend, get_backend
 from skillopt_sleep.config import SleepConfig, load_config
 from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.harvest_sources import harvest_for_config
@@ -94,6 +94,7 @@ def run_sleep_cycle(
     seed_tasks: Optional[List[TaskRecord]] = None,
     dry_run: bool = False,
     clock: Optional[float] = None,
+    backend: Optional[Backend] = None,
 ) -> CycleOutcome:
     """Run one full sleep cycle and return the outcome.
 
@@ -104,6 +105,8 @@ def run_sleep_cycle(
         inject a known persona instead of harvesting ~/.claude).
     dry_run : harvest+mine+replay but DO NOT stage/adopt (report only).
     clock : fixed epoch seconds for deterministic timestamps in tests.
+    backend : optional pre-built Backend; the handoff driver passes one so
+        it can inspect the backend's pending calls after the run.
     """
     cfg = cfg or load_config()
     state = SleepState.load(cfg.state_path)
@@ -111,7 +114,7 @@ def run_sleep_cycle(
     project = _project_paths(cfg)
     started = _now_iso(clock)
 
-    backend = get_backend(
+    backend = backend or get_backend(
         cfg.get("backend", "mock"),
         model=cfg.get("model", ""),
         codex_path=cfg.get("codex_path", ""),

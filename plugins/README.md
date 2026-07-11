@@ -22,7 +22,7 @@ sleep** idea (short-term experience → long-term competence).
 
 | Platform | Folder | Mechanism | Status |
 |---|---|---|---|
-| **Claude Code** | [`claude-code/`](claude-code) | `.claude-plugin` + `/skillopt-sleep` command + skill + hooks | full, installable |
+| **Claude Code** | [`claude-code/`](claude-code) | `.claude-plugin` + `/skillopt-sleep` + `/skillopt-sleep-handoff` commands + skill + hooks | full, installable |
 | **Codex** | [`codex/`](codex) | user-level `skillopt-sleep` skill + shared runner | full |
 | **Copilot** | [`copilot/`](copilot) | MCP server (`sleep_*` tools) + `copilot-instructions` | full (MCP) |
 | **Devin** | [`devin/`](devin) | MCP server (`sleep_*` tools) + Devin ATIF-v1.7 harvest + `.devin/rules` | full (MCP) |
@@ -149,6 +149,47 @@ The reward can weight not just correctness but **cost and speed**, so a skill ca
 learn to be cheaper and faster, not only more accurate. *What it does for you:*
 "answer directly instead of opening five files" becomes a learned habit.
 
+### `--backend handoff` — session-executed calls (no API subprocess)
+
+For subscription seats and environments where the engine shouldn't spawn
+`claude -p` / API calls itself. The engine still runs every deterministic
+stage (harvest → mine → replay scoring → gate → stage), but each model call
+(attempt / judge / reflect) is written to a prompt file that **your own agent
+session answers between engine runs**:
+
+```bash
+python -m skillopt_sleep run --backend handoff --project "$(pwd)"
+# exit 3 => .skillopt-sleep-handoff/PROMPTS.md + pending.json were written
+#   answer each prompt (each in a FRESH context) into answers/<id>.md
+# re-run the same command => it resumes from the answers and either
+#   finishes (exit 0) or stages the next prompt batch (exit 3)
+```
+
+A typical night converges in 3–6 rounds: baseline attempts → reflect →
+candidate re-scoring per accepted edit. Resume is stateless — replay is
+deterministic and answers are cached by prompt hash, so re-running skips
+everything already answered. Mined tasks are pinned to
+`.skillopt-sleep-handoff/tasks.json` on the first round, so the sessions that
+answer the prompts can't shift the task set and invalidate earlier answers.
+On a completed real run the handoff directory is archived to
+`.skillopt-sleep-handoff.night<N>.done`.
+
+On Claude Code, `/skillopt-sleep-handoff run` drives the whole loop for you,
+answering each prompt in an isolated fresh-context subagent.
+
+**Integrity rule:** answer every prompt in a fresh context (a subagent with no
+conversation history). Answering from a session that has already seen the
+mined tasks and their references contaminates the held-out gate and fakes the
+improvement score.
+
+*What it does for you:* the sleep cycle runs entirely on your interactive
+session's subscription budget — no API key, no headless subprocess — while the
+gate, splits, and staging discipline stay in the engine.
+
+Limitations: `--rollouts-k > 1` gives no contrastive spread (identical prompt
+→ identical answer file), and tool-loop tasks fall back to the single-shot
+`TOOL_CALL:` marker convention.
+
 ### `schedule` / `unschedule` — set it and forget it
 
 Built-in nightly scheduling (no manual cron):
@@ -176,7 +217,7 @@ schedule, if you trust it).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--backend mock\|claude\|codex\|copilot` | `mock` | who runs/optimizes (mock = free) |
+| `--backend mock\|claude\|codex\|copilot\|handoff` | `mock` | who runs/optimizes (mock = free; handoff = your own session answers) |
 | `--preferences "..."` | – | your house rules, as a prior |
 | `--gate on\|off` | `on` | strict held-out gate vs. greedy |
 | `--rollouts-k K` | `1` | multi-rollout contrastive reflection |

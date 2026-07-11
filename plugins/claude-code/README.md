@@ -60,6 +60,9 @@ they shell out to the CLIs you already have.
 /skillopt-sleep run         # full cycle: stages a reviewed proposal (still no live edits)
 /skillopt-sleep status      # see history + the latest staged proposal
 /skillopt-sleep adopt       # apply the staged proposal to CLAUDE.md / SKILL.md (with backup)
+
+/skillopt-sleep-handoff run # same cycle, but THIS session answers the model calls
+                            # (no claude -p subprocess, no API key — subscription-friendly)
 ```
 
 Or call the engine directly (Python ≥ 3.10):
@@ -73,6 +76,26 @@ python -m skillopt_sleep run --project "$(pwd)" --backend codex    # real lift v
 Default backend is **`mock`** — deterministic, no API spend — so you can try the
 plumbing for free. Switch to `--backend claude` or `--backend codex` for genuine
 improvement on your own budget.
+
+### Handoff mode (session answers the model calls)
+
+`--backend handoff` runs the cycle without any model subprocess: the engine
+executes the deterministic stages and writes every model call it needs to
+`.skillopt-sleep-handoff/PROMPTS.md` + `pending.json` (exit code 3). You (or
+the `/skillopt-sleep-handoff` command, which automates the loop with isolated
+fresh-context subagents) write each raw answer to `answers/<id>.md` and re-run
+the same command; it resumes from the answers and either finishes or stages
+the next batch. Typically 3–6 rounds per night.
+
+```bash
+python -m skillopt_sleep run --backend handoff --project "$(pwd)"
+# ... answer .skillopt-sleep-handoff/PROMPTS.md into answers/<id>.md ...
+python -m skillopt_sleep run --backend handoff --project "$(pwd)"   # resume
+```
+
+Answer every prompt in a **fresh context** — a session that has already seen
+the mined tasks and their references would contaminate the held-out gate.
+Details: [the plugins README](../README.md#--backend-handoff--session-executed-calls-no-api-subprocess).
 
 ## Does it actually improve? (real models, public benchmark)
 

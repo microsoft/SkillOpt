@@ -1390,6 +1390,13 @@ def get_backend(
         return AzureResponsesBackend(deployment=model, endpoints=eps)
     if n in {"copilot", "github_copilot", "copilot_cli", "gh_copilot"}:
         return CopilotCliBackend(model=model)
+    if n in {"handoff", "session", "file"}:
+        # Lazy import: handoff_backend imports CliBackend from this module.
+        from skillopt_sleep.handoff_backend import HandoffBackend
+        hdir = os.environ.get("SKILLOPT_SLEEP_HANDOFF_DIR", "") or os.path.join(
+            project_dir or os.getcwd(), ".skillopt-sleep-handoff"
+        )
+        return HandoffBackend(model=model, handoff_dir=hdir)
     return MockBackend()
 
 

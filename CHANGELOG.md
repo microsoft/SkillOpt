@@ -4,6 +4,19 @@ All notable changes to SkillOpt are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and the format is based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- **Handoff backend** (`--backend handoff`) for SkillOpt-Sleep — runs the
+  sleep cycle with no model subprocess or API key: the engine writes each
+  pending model call to `PROMPTS.md`/`pending.json` (exit code 3) and the
+  user's own agent session answers into `answers/<id>.md`; re-running the
+  same command resumes statelessly from the answers (typically 3–6 rounds
+  per night). Mined tasks are pinned per night so answering sessions cannot
+  shift the task set. Ships a `/skillopt-sleep-handoff` Claude Code command
+  that automates the loop with fresh-context subagents to protect the
+  held-out gate.
+
 ## [0.2.0] — 2026-07-02
 
 The headline of this release is **SkillOpt-Sleep**: a nightly offline

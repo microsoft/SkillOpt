@@ -13,7 +13,7 @@ Common flags:
     --max-tasks N       cap mined tasks per run
     --target-skill-path PATH explicit live SKILL.md to stage/adopt
     --tasks-file PATH   reviewed TaskRecord JSON file to replay instead of harvesting
-    --backend mock|claude|codex|copilot
+    --backend mock|claude|codex|copilot|handoff
     --source claude|codex|auto
     --model NAME
     --lookback-hours N
@@ -69,7 +69,8 @@ def _report_payload(rep, outcome) -> Dict[str, Any]:
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
-    p.add_argument("--backend", default="", choices=["", "mock", "claude", "codex", "copilot"])
+    p.add_argument("--backend", default="",
+                   choices=["", "mock", "claude", "codex", "copilot", "handoff"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
@@ -156,7 +157,14 @@ def cmd_run(args, dry: bool = False) -> int:
                 file=sys.stderr,
             )
             return 2
+    if cfg.get("backend", "mock") == "handoff":
+        return _run_handoff(cfg, args, seed_tasks=tasks, task_meta=task_meta, dry=dry)
     outcome = run_sleep_cycle(cfg, seed_tasks=tasks, dry_run=dry)
+    _print_run_report(outcome, args, task_meta)
+    return 0
+
+
+def _print_run_report(outcome, args, task_meta: Dict[str, Any]) -> None:
     rep = outcome.report
     if args.json:
         payload = _report_payload(rep, outcome)
@@ -180,6 +188,187 @@ def cmd_run(args, dry: bool = False) -> int:
                 print("[sleep] review it, then: python -m skillopt_sleep adopt")
         if outcome.adopted:
             print(f"[sleep] auto-adopted: {', '.join(outcome.adopted_paths)}")
+
+
+def _handoff_dir_for(cfg) -> str:
+    project = cfg.get("invoked_project") or os.getcwd()
+    return os.environ.get("SKILLOPT_SLEEP_HANDOFF_DIR", "") or os.path.join(
+        project, ".skillopt-sleep-handoff"
+    )
+
+
+def _redact_deep(obj):
+    """Redact secret-looking substrings in every string of a JSON-like tree."""
+    from skillopt_sleep.staging import redact_secrets
+    if isinstance(obj, str):
+        return redact_secrets(obj)
+    if isinstance(obj, list):
+        return [_redact_deep(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _redact_deep(v) for k, v in obj.items()}
+    return obj
+
+
+def _flush_handoff(backend, args) -> int:
+    prompts_path = backend.flush_pending()
+    if args.json:
+        print(json.dumps({
+            "handoff_pending": len(backend.pending),
+            "prompts": prompts_path,
+            "answers_dir": backend.answers_dir,
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(f"[sleep] handoff: {len(backend.pending)} model call(s) need answers")
+        print(f"[sleep] prompts: {prompts_path}")
+        print(f"[sleep] write each raw answer to {backend.answers_dir}/<id>.md, "
+              "then re-run this exact command to resume")
+    return 3
+
+
+def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
+    """Harvest + mine with the same knobs as run_sleep_cycle (harvest window,
+    target-skill filter, candidate-limit bump, LLM mining — routed through the
+    handoff files like every other model call), then pin the result to
+    ``tasks.json``. Session digests are pinned too, so the sessions created
+    while answering prompts cannot change what gets mined between rounds.
+
+    Returns ``(exit_code, tasks)``; ``tasks is None`` means exit now.
+    """
+    import time
+
+    from skillopt_sleep.handoff_backend import PendingCalls
+    from skillopt_sleep.state import SleepState, _now_iso
+    from skillopt_sleep.types import SessionDigest
+
+    project = cfg.get("invoked_project") or os.getcwd()
+    state = SleepState.load(cfg.state_path)
+    started = _now_iso()
+
+    digests_path = os.path.join(backend.handoff_dir, "digests.json")
+    digests = None
+    if os.path.exists(digests_path):
+        try:
+            with open(digests_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            known = set(SessionDigest.__dataclass_fields__)
+            digests = [SessionDigest(**{k: v for k, v in d.items() if k in known})
+                       for d in raw]
+        except Exception:
+            # Corrupted/truncated pin (e.g. an interrupted earlier round):
+            # fall back to a fresh harvest instead of crashing the run.
+            print("[sleep] handoff: digests.json unreadable — re-harvesting",
+                  file=sys.stderr)
+            digests = None
+    if digests is None:
+        since = state.last_harvest_for(project)
+        lookback_hours = cfg.get("lookback_hours", 72)
+        if since is None and lookback_hours and lookback_hours > 0:
+            since = _now_iso(time.time() - lookback_hours * 3600)
+        max_tasks = cfg.get("max_tasks_per_night", 40)
+        session_limit = cfg.get("max_sessions_per_night", 0) or max_tasks * 3
+        digests = harvest_for_config(cfg, since_iso=since, limit=session_limit)
+        os.makedirs(backend.handoff_dir, exist_ok=True)
+        with open(digests_path, "w", encoding="utf-8") as f:
+            json.dump(_redact_deep([d.to_dict() for d in digests]), f,
+                      ensure_ascii=False, indent=2)
+
+    max_tasks = cfg.get("max_tasks_per_night", 40)
+    session_limit = cfg.get("max_sessions_per_night", 0) or max_tasks * 3
+    target_skill_path = cfg.managed_skill_path() if cfg.get("target_skill_path", "") else ""
+    target_skill_text = _read_text(target_skill_path) if target_skill_path else ""
+    candidate_limit = max_tasks
+    if cfg.get("target_task_filter", True) and target_skill_text:
+        candidate_limit = max(max_tasks, max_tasks * 3)
+    llm_miner = None
+    if cfg.get("llm_mine", True):
+        try:
+            from skillopt_sleep.llm_miner import make_llm_miner
+            llm_miner = make_llm_miner(
+                backend, max_sessions=session_limit, max_tasks=candidate_limit,
+            )
+        except Exception:
+            llm_miner = None
+    try:
+        tasks = mine(
+            digests,
+            max_tasks=max_tasks,
+            candidate_limit=candidate_limit,
+            holdout_fraction=cfg.get("holdout_fraction", 0.34),
+            seed=cfg.get("seed", 42),
+            llm_miner=llm_miner,
+            target_skill_text=target_skill_text,
+            target_skill_path=target_skill_path,
+        )
+    except PendingCalls:
+        tasks = []
+    if backend.pending:
+        # LLM mining needs answers before the task set can be pinned.
+        return _flush_handoff(backend, args), None
+    if not tasks:
+        print("[sleep] handoff: no tasks mined — nothing to consolidate")
+        if not dry:
+            # Advance the harvest window like run_sleep_cycle's no-tasks
+            # branch, or every later run re-scans the same stale window.
+            state.set_last_harvest(project, started)
+            state.save()
+        return 0, None
+    payload = make_tasks_payload(
+        tasks,
+        project=project,
+        transcript_source=cfg.get("transcript_source", ""),
+        n_sessions=len(digests),
+        target_skill_path=target_skill_path,
+    )
+    # NOT marked reviewed: feeding this snapshot back through --tasks-file
+    # with a real backend must still hit the human-review gate above. The
+    # driver itself loads it directly, with the same trust as in-cycle mining.
+    write_tasks_file(snapshot, _redact_deep(payload))
+    print(f"[sleep] handoff: pinned {len(tasks)} tasks -> {snapshot}")
+    return 0, tasks
+
+
+def _run_handoff(cfg, args, *, seed_tasks, task_meta: Dict[str, Any], dry: bool) -> int:
+    """Drive the handoff backend: run until model calls are needed, then
+    write the prompt batch and exit 3; on a fully-answered run, finish
+    normally. Session digests and mined tasks are pinned under the handoff
+    dir on the first rounds so wall-clock time between rounds (including
+    the very sessions that answer the prompts) cannot change the task set
+    and invalidate earlier answers.
+    """
+    from skillopt_sleep.handoff_backend import HandoffBackend, PendingCalls
+
+    hdir = _handoff_dir_for(cfg)
+    backend = HandoffBackend(model=cfg.get("model", ""), handoff_dir=hdir)
+    tasks = seed_tasks
+    if tasks is None:
+        snapshot = os.path.join(hdir, "tasks.json")
+        if os.path.exists(snapshot):
+            tasks, _meta = load_tasks_file(
+                snapshot,
+                holdout_fraction=cfg.get("holdout_fraction", 0.34),
+                seed=cfg.get("seed", 42),
+            )
+        else:
+            rc, tasks = _handoff_mine_and_pin(cfg, args, backend, snapshot, dry)
+            if tasks is None:
+                return rc
+    outcome = None
+    try:
+        outcome = run_sleep_cycle(cfg, seed_tasks=tasks, dry_run=dry, backend=backend)
+    except PendingCalls:
+        pass
+    if backend.pending:
+        return _flush_handoff(backend, args)
+    _print_run_report(outcome, args, task_meta)
+    # A completed real run ends the night: archive the handoff dir so the
+    # next night re-harvests instead of replaying the pinned snapshot.
+    if not dry and outcome.staging_dir and os.path.isdir(hdir):
+        import time
+        done = f"{hdir}.night{outcome.report.night}.done"
+        if os.path.exists(done):
+            done = f"{done}.{int(time.time())}"
+        os.rename(hdir, done)
+        print(f"[sleep] handoff: archived round data -> {done}")
     return 0
 
 

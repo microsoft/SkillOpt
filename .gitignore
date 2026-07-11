@@ -24,6 +24,9 @@ logs/
 external/
 # SkillOpt-Sleep runtime state (staging proposals, config, diagnostics, cron logs)
 .skillopt-sleep/
+# SkillOpt-Sleep handoff-backend round data (prompts/answers derived from transcripts)
+.skillopt-sleep-handoff/
+.skillopt-sleep-handoff.night*.done/
 
 /BabyVision/
 /MMRB/
