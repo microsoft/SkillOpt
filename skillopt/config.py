@@ -158,7 +158,7 @@ def _load_yaml(path: str, _visited: set[str] | None = None) -> dict:
         raise ValueError(f"Circular _base_ inheritance: {abs_path}")
     _visited.add(abs_path)
 
-    with open(abs_path) as f:
+    with open(abs_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
 
     base_ref = cfg.pop("_base_", None)
