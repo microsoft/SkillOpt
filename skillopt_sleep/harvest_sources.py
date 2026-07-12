@@ -5,6 +5,7 @@ from typing import Optional
 
 from skillopt_sleep.harvest import harvest
 from skillopt_sleep.harvest_codex import harvest_codex
+from skillopt_sleep.harvest_pi import harvest_pi
 from skillopt_sleep.types import SessionDigest
 
 
@@ -21,6 +22,14 @@ def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) 
             since_iso=since_iso,
             limit=limit,
         )
+    if source == "pi":
+        return harvest_pi(
+            cfg.pi_sessions_dir,
+            scope=scope,
+            invoked_project=invoked_project,
+            since_iso=since_iso,
+            limit=limit,
+        )
     if source == "auto":
         codex_digests = harvest_codex(
             cfg.codex_archived_sessions_dir,
@@ -31,6 +40,15 @@ def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) 
         )
         if codex_digests:
             return codex_digests
+        pi_digests = harvest_pi(
+            cfg.pi_sessions_dir,
+            scope=scope,
+            invoked_project=invoked_project,
+            since_iso=since_iso,
+            limit=limit,
+        )
+        if pi_digests:
+            return pi_digests
 
     return harvest(
         cfg.transcripts_dir,

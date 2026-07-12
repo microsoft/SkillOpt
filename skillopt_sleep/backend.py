@@ -545,6 +545,89 @@ class CliBackend(Backend):
         return self._tokens
 
 
+# ── Pi CLI backend ────────────────────────────────────────────────
+
+
+class PiCliBackend(CliBackend):
+    """Drives the authenticated `pi` CLI: pi -p "<prompt>".
+
+    pi (the pi coding agent) speaks the open Agent Skills standard and supports
+    a `-p` / `--print` headless mode, so it slots in alongside the claude/codex
+    CLI backends. Using pi here means the replay model is whatever the user has
+    configured in pi (e.g. `zai/glm-5.2`), keeping source and backend on the same
+    agent — which is the design intent of `--source pi`.
+    """
+
+    name = "pi"
+
+    def __init__(self, model: str = "", pi_path: str = "pi", timeout: int = 180) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_PI_MODEL", ""),
+                         timeout=timeout)
+        self.pi_path = pi_path
+
+    _CLI_ERROR_MARKERS = (
+        "Not logged in",
+        "Authentication required",
+        "Invalid API key",
+        "Unauthorized",
+        "provider not found",
+        "no provider",
+    )
+
+    def _detect_cli_error(self, stdout: str, stderr: str) -> None:
+        import logging
+        check_stdout = stdout if len(stdout) < 300 else ""
+        combined = check_stdout + "\n" + stderr
+        for marker in self._CLI_ERROR_MARKERS:
+            if marker.lower() in combined.lower():
+                logging.getLogger("skillopt_sleep").warning(
+                    "pi CLI returned a likely auth/config error: %s",
+                    combined[:200].replace("\n", " "),
+                )
+                self.last_call_error = combined[:500]
+                return
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        # Run ISOLATED so the ambient pi environment does not leak into the
+        # optimizer/target call: disable tools, skills, and context files, and
+        # run from a clean temp cwd so no project AGENTS.md is picked up.
+        #   --no-tools             no tool use during replay
+        #   --no-skills            do not load the user's installed skills
+        #   --no-context-files     do not load AGENTS.md/CLAUDE.md
+        #   --no-session           ephemeral; do not write to session history
+        #   --no-extensions        skip extension discovery
+        import shutil
+        self.last_call_error = ""
+        cmd = [self.pi_path, "-p", "--no-session"]
+        cmd += ["--no-tools", "--no-skills", "--no-context-files", "--no-extensions"]
+        if self.model:
+            cmd += ["--model", self.model]
+        cmd += [prompt]
+        clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_pi_")
+        try:
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                )
+            except subprocess.TimeoutExpired:
+                self.last_call_error = f"pi CLI timed out after {self.timeout}s"
+                return ""
+            except Exception as exc:
+                self.last_call_error = f"pi CLI failed: {exc}"
+                return ""
+        finally:
+            try:
+                shutil.rmtree(clean_cwd, ignore_errors=True)
+            except Exception:
+                pass
+        out = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        self._detect_cli_error(out, stderr)
+        if proc.returncode != 0 and not self.last_call_error:
+            self.last_call_error = f"pi CLI exited {proc.returncode}: {stderr[:500]}"
+        return out
+
+
 # ── Claude Code CLI backend ───────────────────────────────────────────────────
 
 class ClaudeCliBackend(CliBackend):
@@ -1375,10 +1458,13 @@ def get_backend(
     model: str = "",
     claude_path: str = "claude",
     codex_path: str = "",
+    pi_path: str = "",
     azure_endpoint: str = "",
     project_dir: str = "",
 ) -> Backend:
     n = (name or "mock").strip().lower()
+    if n in {"pi", "pi_cli", "pi_coding_agent", "pi-coding-agent"}:
+        return PiCliBackend(model=model, pi_path=pi_path or "pi")
     if n in {"claude", "anthropic", "claude_cli", "claude_code"}:
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:

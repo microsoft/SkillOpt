@@ -19,13 +19,15 @@ from typing import Any, Dict, Optional
 HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
+PI_HOME = os.path.expanduser("~/.pi")
 
 
 DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
     "codex_home": CODEX_HOME,
-    "transcript_source": "claude",  # "claude" | "codex" | "auto"
+    "pi_home": PI_HOME,
+    "transcript_source": "claude",  # "claude" | "codex" | "pi" | "auto"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -40,6 +42,7 @@ DEFAULTS: Dict[str, Any] = {
     "model": "",                  # backend-specific; "" => backend default
     "gate_mode": "on",            # "on" (validation-gated) | "off" (greedy, no hard filter)
     "codex_path": "",             # "" => auto-detect the real @openai/codex binary
+    "pi_path": "",                # "" => use `pi` on PATH
     "edit_budget": 4,             # textual learning rate (max edits/night)
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
     "gate_mixed_weight": 0.5,
@@ -106,6 +109,10 @@ class SleepConfig:
     @property
     def codex_archived_sessions_dir(self) -> str:
         return os.path.join(self.data["codex_home"], "archived_sessions")
+
+    @property
+    def pi_sessions_dir(self) -> str:
+        return os.path.join(self.data["pi_home"], "agent", "sessions")
 
     @property
     def history_path(self) -> str:
