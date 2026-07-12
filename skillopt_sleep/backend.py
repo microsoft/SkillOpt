@@ -541,7 +541,7 @@ class CliBackend(Backend):
         return self._tokens
 
 
-# ── Claude Code CLI backend ───────────────────────────────────────
+# ── Pi CLI backend ────────────────────────────────────────────────
 
 
 class PiCliBackend(CliBackend):
@@ -593,6 +593,7 @@ class PiCliBackend(CliBackend):
         #   --no-session           ephemeral; do not write to session history
         #   --no-extensions        skip extension discovery
         import shutil
+        self.last_call_error = ""
         cmd = [self.pi_path, "-p", "--no-session"]
         cmd += ["--no-tools", "--no-skills", "--no-context-files", "--no-extensions"]
         if self.model:
@@ -600,18 +601,26 @@ class PiCliBackend(CliBackend):
         cmd += [prompt]
         clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_pi_")
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
-            )
-        except Exception:
-            return ""
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
+                )
+            except subprocess.TimeoutExpired:
+                self.last_call_error = f"pi CLI timed out after {self.timeout}s"
+                return ""
+            except Exception as exc:
+                self.last_call_error = f"pi CLI failed: {exc}"
+                return ""
         finally:
             try:
                 shutil.rmtree(clean_cwd, ignore_errors=True)
             except Exception:
                 pass
         out = (proc.stdout or "").strip()
-        self._detect_cli_error(out, proc.stderr or "")
+        stderr = (proc.stderr or "").strip()
+        self._detect_cli_error(out, stderr)
+        if proc.returncode != 0 and not self.last_call_error:
+            self.last_call_error = f"pi CLI exited {proc.returncode}: {stderr[:500]}"
         return out
 
 

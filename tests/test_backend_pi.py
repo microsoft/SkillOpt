@@ -7,9 +7,10 @@ from skillopt_sleep.backend import PiCliBackend, get_backend
 
 
 class _FakeProc:
-    def __init__(self, stdout: str, stderr: str = ""):
+    def __init__(self, stdout: str, stderr: str = "", returncode: int = 0):
         self.stdout = stdout
         self.stderr = stderr
+        self.returncode = returncode
 
 
 def test_get_backend_pi_aliases():
@@ -62,3 +63,21 @@ def test_call_detects_auth_error_and_logs():
         out = be._call("hi")
     assert out == ""  # empty stdout
     assert "Authentication required" in be.last_call_error
+
+
+def test_call_records_nonzero_exit():
+    be = PiCliBackend()
+    proc = _FakeProc("", stderr="pi: unknown option", returncode=2)
+    with mock.patch("skillopt_sleep.backend.subprocess.run", return_value=proc):
+        assert be._call("hi") == ""
+    assert "exited 2" in be.last_call_error
+
+
+def test_call_records_timeout():
+    be = PiCliBackend(timeout=1)
+    with mock.patch(
+        "skillopt_sleep.backend.subprocess.run",
+        side_effect=__import__("subprocess").TimeoutExpired("pi", 1),
+    ):
+        assert be._call("hi") == ""
+    assert "timed out" in be.last_call_error
