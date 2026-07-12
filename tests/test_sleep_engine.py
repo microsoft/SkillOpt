@@ -1118,6 +1118,36 @@ class TestClaudeCliBackendBare(unittest.TestCase):
         # But it's also recorded for detection
         self.assertIn("Not logged in", getattr(be, "last_call_error", ""))
 
+    def test_spawn_failure_sets_last_call_error(self):
+        """When subprocess.run raises FileNotFoundError, _call must set
+        last_call_error and log a warning instead of silently returning ''."""
+        from skillopt_sleep.backend import ClaudeCliBackend
+        be = ClaudeCliBackend(
+            claude_path="/nonexistent/claude-binary",
+            timeout=3,
+        )
+        result = be._call("test prompt")
+        self.assertEqual(result, "")
+        self.assertIn("Claude CLI spawn failed", be.last_call_error)
+
+    def test_attempt_tools_spawn_failure_sets_last_call_error(self):
+        """When subprocess.run raises in attempt_with_tools, last_call_error
+        must be set and a warning logged."""
+        from skillopt_sleep.backend import ClaudeCliBackend
+        from skillopt_sleep.types import TaskRecord
+        be = ClaudeCliBackend(
+            claude_path="/nonexistent/claude-binary",
+            timeout=3,
+        )
+        task = TaskRecord(
+            id="t1", project="/p", intent="test",
+            reference="ref", reference_kind="exact",
+            tags=[], split="train",
+        )
+        resp, called = be.attempt_with_tools(task, "", "", tools=["search"])
+        self.assertEqual(resp, "")
+        self.assertIn("Claude CLI spawn failed", be.last_call_error)
+
 
 
 
