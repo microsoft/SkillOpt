@@ -615,6 +615,9 @@ class ClaudeCliBackend(CliBackend):
         #   --exclude-dynamic-...     drop per-machine cwd/env/memory/git sections
         #   cwd=<clean temp>          no project CLAUDE.md
         import tempfile
+        # Reset per call so a prior failure does not make a later successful
+        # call look failed in persisted diagnostics (matches CodexCliBackend).
+        self.last_call_error = ""
         cmd = [self.claude_path, "-p", "--output-format", "text"]
         if os.environ.get("ANTHROPIC_API_KEY"):
             cmd.append("--bare")
@@ -657,6 +660,7 @@ class ClaudeCliBackend(CliBackend):
         # validated honestly: we detect the call from the shim's log, not from
         # a self-reported marker. Other tools are stubbed the same way.
         import tempfile, shutil, stat
+        self.last_call_error = ""
         work = tempfile.mkdtemp(prefix="skillopt_sleep_tools_")
         calllog = os.path.join(work, "_tool_calls.log")
         try:

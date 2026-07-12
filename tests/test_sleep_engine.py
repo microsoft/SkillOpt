@@ -1148,6 +1148,26 @@ class TestClaudeCliBackendBare(unittest.TestCase):
         self.assertEqual(resp, "")
         self.assertIn("Claude CLI spawn failed", be.last_call_error)
 
+    def test_last_call_error_cleared_on_next_success(self):
+        """A prior failure must not make a later successful call look failed:
+        _call resets last_call_error at the start of each call."""
+        from unittest import mock
+        from skillopt_sleep.backend import ClaudeCliBackend
+        be = ClaudeCliBackend(claude_path="claude", timeout=3)
+        # First call fails to spawn -> error recorded.
+        with mock.patch("skillopt_sleep.backend.subprocess.run",
+                        side_effect=FileNotFoundError("no claude")):
+            self.assertEqual(be._call("p1"), "")
+        self.assertIn("Claude CLI spawn failed", be.last_call_error)
+        # Next call succeeds -> stale error must be cleared.
+
+        class _OK:
+            stdout = "answer"
+            stderr = ""
+        with mock.patch("skillopt_sleep.backend.subprocess.run", return_value=_OK()):
+            self.assertEqual(be._call("p2"), "answer")
+        self.assertEqual(be.last_call_error, "")
+
 
 
 
