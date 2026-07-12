@@ -1,4 +1,5 @@
 """Tests for the OpenAI-compatible Qwen chat backend."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -14,7 +15,6 @@ import pytest
 
 from skillopt.envs.searchqa.evaluator import extract_answer
 
-
 _QWEN_CONFIG_ENV_KEYS = (
     "BASE_URL",
     "API_KEY",
@@ -22,11 +22,10 @@ _QWEN_CONFIG_ENV_KEYS = (
     "TIMEOUT_SECONDS",
     "MAX_TOKENS",
     "ENABLE_THINKING",
+    "USE_MAX_COMPLETION_TOKENS",
 )
 _ENV_KEYS = ("OPTIMIZER_BACKEND", "TARGET_BACKEND") + tuple(
-    f"{prefix}QWEN_CHAT_{key}"
-    for prefix in ("", "OPTIMIZER_", "TARGET_")
-    for key in _QWEN_CONFIG_ENV_KEYS
+    f"{prefix}QWEN_CHAT_{key}" for prefix in ("", "OPTIMIZER_", "TARGET_") for key in _QWEN_CONFIG_ENV_KEYS
 )
 
 
@@ -225,3 +224,75 @@ def test_configure_qwen_chat_runtime_toggle_controls_payload(
 
     assert recorder.calls[0]["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
     assert "chat_template_kwargs" not in recorder.calls[1]["payload"]
+
+
+def test_chat_target_uses_max_tokens_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    isolate_qwen_state: tuple[Any, Any],
+) -> None:
+    model_module, qwen_backend = isolate_qwen_state
+    _use_qwen_target(model_module, qwen_backend, enable_thinking=False)
+    recorder = _record_urlopen(monkeypatch, qwen_backend)
+
+    model_module.chat_target("system", "user", max_completion_tokens=128, retries=1)
+
+    payload = recorder.calls[0]["payload"]
+    assert payload["max_tokens"] == 128
+    assert "max_completion_tokens" not in payload
+
+
+def test_chat_target_uses_max_completion_tokens_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    isolate_qwen_state: tuple[Any, Any],
+) -> None:
+    model_module, qwen_backend = isolate_qwen_state
+    _use_qwen_target(model_module, qwen_backend, enable_thinking=False)
+    qwen_backend.TARGET_CONFIG.use_max_completion_tokens = True
+    recorder = _record_urlopen(monkeypatch, qwen_backend)
+
+    model_module.chat_target("system", "user", max_completion_tokens=128, retries=1)
+
+    payload = recorder.calls[0]["payload"]
+    assert payload["max_completion_tokens"] == 128
+    assert "max_tokens" not in payload
+
+
+def test_configure_qwen_chat_toggles_max_completion_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    isolate_qwen_state: tuple[Any, Any],
+) -> None:
+    model_module, qwen_backend = isolate_qwen_state
+    _use_qwen_target(model_module, qwen_backend, enable_thinking=False)
+    recorder = _record_urlopen(monkeypatch, qwen_backend)
+
+    model_module.configure_qwen_chat(target_use_max_completion_tokens=True)
+    model_module.chat_target("system", "user", max_completion_tokens=128, retries=1)
+    model_module.configure_qwen_chat(target_use_max_completion_tokens=False)
+    model_module.chat_target("system", "user", max_completion_tokens=128, retries=1)
+
+    assert "max_completion_tokens" in recorder.calls[0]["payload"]
+    assert "max_tokens" in recorder.calls[1]["payload"]
+
+
+def test_temperature_omitted_when_env_is_blank(
+    monkeypatch: pytest.MonkeyPatch,
+    isolate_qwen_state: tuple[Any, Any],
+) -> None:
+    _model_module, qwen_backend = isolate_qwen_state
+    # Explicit blank means "omit", not "fall back to 0.7".
+    monkeypatch.setenv("TARGET_QWEN_CHAT_TEMPERATURE", "")
+    assert qwen_backend._resolve_temperature("target") is None
+    monkeypatch.setenv("TARGET_QWEN_CHAT_TEMPERATURE", "off")
+    assert qwen_backend._resolve_temperature("target") is None
+
+
+def test_temperature_resolves_float_and_default(
+    monkeypatch: pytest.MonkeyPatch,
+    isolate_qwen_state: tuple[Any, Any],
+) -> None:
+    _model_module, qwen_backend = isolate_qwen_state
+    monkeypatch.delenv("QWEN_CHAT_TEMPERATURE", raising=False)
+    monkeypatch.delenv("TARGET_QWEN_CHAT_TEMPERATURE", raising=False)
+    assert qwen_backend._resolve_temperature("target") == 0.7
+    monkeypatch.setenv("TARGET_QWEN_CHAT_TEMPERATURE", "0.2")
+    assert qwen_backend._resolve_temperature("target") == 0.2
