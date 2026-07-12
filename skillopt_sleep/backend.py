@@ -620,7 +620,12 @@ class ClaudeCliBackend(CliBackend):
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=self.timeout, cwd=clean_cwd,
             )
-        except Exception:
+        except Exception as exc:
+            import logging
+            self.last_call_error = f"Claude CLI spawn failed: {exc}"
+            logging.getLogger("skillopt_sleep").warning(
+                "Claude CLI could not be executed: %s", exc,
+            )
             return ""
         finally:
             try:
@@ -684,7 +689,12 @@ class ClaudeCliBackend(CliBackend):
                 )
                 resp = (proc.stdout or "").strip()
                 self._detect_cli_error(resp, proc.stderr or "")
-            except Exception:
+            except Exception as exc:
+                import logging
+                self.last_call_error = f"Claude CLI spawn failed: {exc}"
+                logging.getLogger("skillopt_sleep").warning(
+                    "Claude CLI could not be executed: %s", exc,
+                )
                 resp = ""
             self._tokens += len(prompt) // 4 + len(resp) // 4
             called: List[str] = []
