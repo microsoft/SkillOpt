@@ -36,6 +36,9 @@ TARGET_DEPLOYMENT = os.environ.get(
     "TARGET_DEPLOYMENT",
     default_model_for_backend("minimax_chat"),
 )
+# Optimizer role can point at a different MiniMax model than the target; falls
+# back to TARGET_DEPLOYMENT when unset so single-model setups are unaffected.
+OPTIMIZER_DEPLOYMENT = os.environ.get("OPTIMIZER_DEPLOYMENT", "")
 
 _config_lock = threading.Lock()
 tracker = TokenTracker()
@@ -222,7 +225,7 @@ def chat_target(
     stage: str = "target",
     reasoning_effort: str | None = None,
     timeout: float | None = None,
-) -> tuple[str, dict[int]]:
+) -> tuple[str, dict[str, int]]:
     del reasoning_effort
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _chat_messages_impl(
@@ -242,7 +245,7 @@ def chat_optimizer(
     stage: str = "optimizer",
     reasoning_effort: str | None = None,
     timeout: float | None = None,
-) -> tuple[str, dict[int]]:
+) -> tuple[str, dict[str, int]]:
     """Optimizer chat call. Backend stores the trained skill; uses the same
     MiniMax-proxied OpenAI-compat endpoint as `chat_target`. Added in the
     parallel-training fix; previously missing in skillopt 0.2.0's
@@ -256,6 +259,7 @@ def chat_optimizer(
         max_completion_tokens,
         retries,
         stage,
+        deployment=OPTIMIZER_DEPLOYMENT or None,
         timeout=timeout,
     )
 
@@ -285,6 +289,35 @@ def chat_target_messages(
     )
 
 
+def chat_optimizer_messages(
+    messages: list[dict[str, Any]],
+    max_completion_tokens: int = 16384,
+    retries: int = 5,
+    stage: str = "optimizer",
+    reasoning_effort: str | None = None,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    return_message: bool = False,
+    timeout: float | None = None,
+) -> tuple[Any, dict[str, int]]:
+    """Optimizer-role message API. Same endpoint as ``chat_target_messages`` but
+    honours ``OPTIMIZER_DEPLOYMENT`` so optimizer and target can use distinct
+    MiniMax models; falls back to the target deployment when unset."""
+    del reasoning_effort
+    return _chat_messages_impl(
+        messages,
+        max_completion_tokens,
+        retries,
+        stage,
+        tools=tools,
+        tool_choice=tool_choice,
+        return_message=return_message,
+        deployment=OPTIMIZER_DEPLOYMENT or None,
+        timeout=timeout,
+    )
+
+
 def get_token_summary() -> dict[str, dict[str, int]]:
     return tracker.summary()
 
@@ -301,3 +334,9 @@ def set_target_deployment(deployment: str) -> None:
     global TARGET_DEPLOYMENT
     TARGET_DEPLOYMENT = deployment or default_model_for_backend("minimax_chat")
     os.environ["TARGET_DEPLOYMENT"] = TARGET_DEPLOYMENT
+
+
+def set_optimizer_deployment(deployment: str) -> None:
+    global OPTIMIZER_DEPLOYMENT
+    OPTIMIZER_DEPLOYMENT = deployment or default_model_for_backend("minimax_chat")
+    os.environ["OPTIMIZER_DEPLOYMENT"] = OPTIMIZER_DEPLOYMENT

@@ -215,7 +215,7 @@ def chat_optimizer_messages(
             timeout=timeout,
         )
     if get_optimizer_backend() == "minimax_chat":
-        return _minimax.chat_target_messages(
+        return _minimax.chat_optimizer_messages(
             messages=messages,
             max_completion_tokens=max_completion_tokens,
             retries=retries,
@@ -540,3 +540,4 @@ def set_optimizer_deployment(deployment: str) -> None:
     _openai.set_optimizer_deployment(deployment)
     _claude.set_optimizer_deployment(deployment)
     _qwen.set_optimizer_deployment(deployment)
+    _minimax.set_optimizer_deployment(deployment)
