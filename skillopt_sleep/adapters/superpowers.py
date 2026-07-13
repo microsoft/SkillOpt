@@ -305,9 +305,8 @@ def _run_scenario(
         target_skill_path = skill_dest.resolve()
 
         # ponytail: sanity check - resolved path must be under workspace
-        assert str(target_skill_path).startswith(str(workspace)), (
-            f"Skill path {target_skill_path} escapes workspace {workspace}"
-        )
+        if not target_skill_path.is_relative_to(workspace):
+            raise ValueError(f"Skill path {target_skill_path} escapes workspace {workspace}")
 
     prompt = scenario.get("prompt", "").strip()
     env = {**os.environ, "HOME": str(scenario_home)}
@@ -386,19 +385,23 @@ class SuperpowersEvaluator:
         with tempfile.TemporaryDirectory(prefix="skillopt-superpowers-") as tmpdir:
             workspace = Path(tmpdir)
 
-            # Clone superpowers at pinned SHA into temp
+            # Clone superpowers at pinned SHA into temp (init+fetch avoids wasted default-branch clone)
             superpowers_copy = workspace / "superpowers"
+            superpowers_copy.mkdir()
             subprocess.run(
-                ["git", "clone", "--depth=1", SUPERPOWERS_REPO, str(superpowers_copy)],
-                capture_output=True, check=True,
+                ["git", "init"], cwd=str(superpowers_copy), capture_output=True, check=True,
             )
             subprocess.run(
-                ["git", "-C", str(superpowers_copy), "fetch", "--depth=1", "origin", pinned_sha],
-                capture_output=True,
+                ["git", "remote", "add", "origin", SUPERPOWERS_REPO],
+                cwd=str(superpowers_copy), capture_output=True, check=True,
             )
             subprocess.run(
-                ["git", "-C", str(superpowers_copy), "checkout", pinned_sha],
-                capture_output=True,
+                ["git", "fetch", "--depth=1", "origin", pinned_sha],
+                cwd=str(superpowers_copy), capture_output=True, check=True,
+            )
+            subprocess.run(
+                ["git", "checkout", "FETCH_HEAD"],
+                cwd=str(superpowers_copy), capture_output=True, check=True,
             )
 
             for scenario in scenarios:

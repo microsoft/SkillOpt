@@ -39,5 +39,8 @@ mkdocs serve   # Preview at http://localhost:8000
 - Use type hints for function signatures
 - Keep docstrings concise
 
+## AI Assistance
+- No `Co-Authored-By` lines in commits or PRs
+
 ## License
 By contributing, you agree your contributions are licensed under the [MIT License](LICENSE).
