@@ -18,8 +18,10 @@ Usage:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -32,6 +34,13 @@ SUPERPOWERS_REPO = "https://github.com/obra/superpowers.git"
 DEFAULT_VERSION = "v6.1.1"
 DEFAULT_SHA = "d884ae04edebef577e82ff7c4e143debd0bbec99"
 DEFAULT_TIMEOUT = 120
+
+
+def _hash_file(path: Path) -> str:
+    """SHA256 hash of file contents, truncated to 12 chars."""
+    if not path.exists():
+        return "none"
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
 # Embedded scenarios for verification-before-completion skill
@@ -160,6 +169,10 @@ class ScenarioResult:
     tokens: int = 0
     latency_ms: float = 0.0
     error: str = ""
+    # ponytail: stamping for reproducible diffs across rounds
+    pinned_sha: str = ""
+    candidate_hash: str = ""
+    scenario_seed: int = 0
 
 
 @dataclass
@@ -201,8 +214,12 @@ class EvalResults:
             "total_tokens": self.total_tokens,
             "total_latency_ms": round(self.total_latency_ms, 1),
             "scenarios": [
-                {"id": s.id, "passed": s.passed, "checks": s.checks,
-                 "tokens": s.tokens, "latency_ms": s.latency_ms, "error": s.error}
+                {
+                    "id": s.id, "passed": s.passed, "checks": s.checks,
+                    "tokens": s.tokens, "latency_ms": s.latency_ms, "error": s.error,
+                    "pinned_sha": s.pinned_sha, "candidate_hash": s.candidate_hash,
+                    "scenario_seed": s.scenario_seed,
+                }
                 for s in self.scenarios
             ],
         }
@@ -252,12 +269,22 @@ def _run_scenario(
     skill_overlay: Optional[Path],
     workspace: Path,
     timeout: int = DEFAULT_TIMEOUT,
+    pinned_sha: str = DEFAULT_SHA,
+    candidate_hash: str = "",
 ) -> ScenarioResult:
-    """Run a single scenario."""
+    """Run a single scenario.
+
+    If skill_overlay is provided, copies it into superpowers_dir and uses that
+    path for --target-skill-path. Asserts the resolved path is under workspace.
+    """
     import time
 
     sid = scenario["id"]
-    result = ScenarioResult(id=sid, passed=False)
+    scenario_seed = random.randint(0, 2**31 - 1)
+    result = ScenarioResult(
+        id=sid, passed=False,
+        pinned_sha=pinned_sha, candidate_hash=candidate_hash, scenario_seed=scenario_seed,
+    )
 
     # Isolated project and HOME per scenario
     project_dir = workspace / f"project-{sid}"
@@ -269,13 +296,30 @@ def _run_scenario(
     for filename, content in scenario.get("setup", {}).get("files", {}).items():
         (project_dir / filename).write_text(content)
 
+    # Overlay candidate skill into temp superpowers copy
+    target_skill_path = None
+    if skill_overlay and skill_overlay.exists():
+        skill_dest = superpowers_dir / "skills" / skill_overlay.name
+        skill_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(skill_overlay, skill_dest)
+        target_skill_path = skill_dest.resolve()
+
+        # ponytail: sanity check - resolved path must be under workspace
+        assert str(target_skill_path).startswith(str(workspace)), (
+            f"Skill path {target_skill_path} escapes workspace {workspace}"
+        )
+
     prompt = scenario.get("prompt", "").strip()
     env = {**os.environ, "HOME": str(scenario_home)}
+
+    cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions"]
+    if target_skill_path:
+        cmd.extend(["--target-skill-path", str(target_skill_path)])
 
     t0 = time.time()
     try:
         proc = subprocess.run(
-            ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+            cmd,
             cwd=str(project_dir),
             capture_output=True,
             text=True,
@@ -326,16 +370,36 @@ class SuperpowersEvaluator:
         self,
         candidate_skill_path: Optional[str] = None,
         scenario_filter: Optional[str] = None,
+        pinned_sha: str = DEFAULT_SHA,
     ) -> EvalResults:
         """Evaluate a skill against scenarios.
 
-        Stops early if token_cap is exceeded.
+        Clones superpowers at pinned_sha, overlays candidate skill into the temp
+        copy so harness and judge see the same tree. Stops early if token_cap exceeded.
         """
         results = EvalResults(skill=self.skill, version=self.version)
         scenarios = _get_scenarios(self.skill)
 
+        candidate_path = Path(candidate_skill_path) if candidate_skill_path else None
+        candidate_hash = _hash_file(candidate_path) if candidate_path else ""
+
         with tempfile.TemporaryDirectory(prefix="skillopt-superpowers-") as tmpdir:
             workspace = Path(tmpdir)
+
+            # Clone superpowers at pinned SHA into temp
+            superpowers_copy = workspace / "superpowers"
+            subprocess.run(
+                ["git", "clone", "--depth=1", SUPERPOWERS_REPO, str(superpowers_copy)],
+                capture_output=True, check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(superpowers_copy), "fetch", "--depth=1", "origin", pinned_sha],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(superpowers_copy), "checkout", pinned_sha],
+                capture_output=True,
+            )
 
             for scenario in scenarios:
                 if scenario_filter and scenario["id"] != scenario_filter:
@@ -346,7 +410,13 @@ class SuperpowersEvaluator:
                     break
 
                 result = _run_scenario(
-                    scenario, workspace, None, workspace, self.timeout
+                    scenario,
+                    superpowers_dir=superpowers_copy,
+                    skill_overlay=candidate_path,
+                    workspace=workspace,
+                    timeout=self.timeout,
+                    pinned_sha=pinned_sha,
+                    candidate_hash=candidate_hash,
                 )
                 results.scenarios.append(result)
 
@@ -358,10 +428,11 @@ def evaluate_skill(
     candidate_path: Optional[str] = None,
     version: str = DEFAULT_VERSION,
     scenario: Optional[str] = None,
+    pinned_sha: str = DEFAULT_SHA,
 ) -> Dict[str, Any]:
     """Convenience function."""
     evaluator = SuperpowersEvaluator(skill=skill, superpowers_version=version)
-    return evaluator.evaluate(candidate_path, scenario_filter=scenario).to_dict()
+    return evaluator.evaluate(candidate_path, scenario_filter=scenario, pinned_sha=pinned_sha).to_dict()
 
 
 if __name__ == "__main__":
@@ -371,10 +442,11 @@ if __name__ == "__main__":
     parser.add_argument("--skill", default="verification-before-completion")
     parser.add_argument("--candidate", help="Path to candidate SKILL.md")
     parser.add_argument("--scenario", help="Run only this scenario")
+    parser.add_argument("--sha", default=DEFAULT_SHA, help="Pinned superpowers SHA")
     parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
-    results = evaluate_skill(args.skill, args.candidate, scenario=args.scenario)
+    results = evaluate_skill(args.skill, args.candidate, scenario=args.scenario, pinned_sha=args.sha)
 
     if args.json:
         print(json.dumps(results, indent=2))
