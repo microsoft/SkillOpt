@@ -11,7 +11,7 @@ from skillopt_sleep.adapters.superpowers import (
 
 def test_scenarios_exist():
     scenarios = _get_scenarios("verification-before-completion")
-    assert len(scenarios) >= 3
+    assert len(scenarios) >= 5  # 5 scenarios now
 
 
 def test_scenarios_have_required_fields():
