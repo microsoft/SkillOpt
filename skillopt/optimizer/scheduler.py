@@ -61,23 +61,35 @@ class ConstantScheduler(LRScheduler):
 
 
 class LinearScheduler(LRScheduler):
-    """Linear decay from ``max_lr`` to ``min_lr`` over ``total_steps``."""
+    """Linear decay from ``max_lr`` to ``min_lr`` over ``total_steps``.
+
+    The scheduler guarantees that ``step()`` returns ``max_lr`` on the first
+    call and ``min_lr`` on the ``total_steps``-th call.  Intermediate steps
+    are linearly interpolated and rounded to the nearest integer.
+    """
 
     def _compute_lr(self, step: int) -> int:
         if self.total_steps <= 1:
             return self.max_lr
-        t = min(step, self.total_steps) / self.total_steps
+        s = min(step, self.total_steps)
+        t = (s - 1) / (self.total_steps - 1)
         lr = self.max_lr + (self.min_lr - self.max_lr) * t
         return max(self.min_lr, round(lr))
 
 
 class CosineScheduler(LRScheduler):
-    """Cosine annealing from ``max_lr`` to ``min_lr`` over ``total_steps``."""
+    """Cosine annealing from ``max_lr`` to ``min_lr`` over ``total_steps``.
+
+    The scheduler guarantees that ``step()`` returns ``max_lr`` on the first
+    call and ``min_lr`` on the ``total_steps``-th call.  Intermediate steps
+    follow a half-cosine curve that starts and ends flat.
+    """
 
     def _compute_lr(self, step: int) -> int:
         if self.total_steps <= 1:
             return self.max_lr
-        t = min(step, self.total_steps) / self.total_steps
+        s = min(step, self.total_steps)
+        t = (s - 1) / (self.total_steps - 1)
         lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (1 + math.cos(math.pi * t))
         return max(self.min_lr, round(lr))
 
