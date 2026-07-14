@@ -3,29 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?</title>
-  <meta name="description" content="A descriptive analysis of 499 completed SkillOpt run summaries and a controlled SkillOpt-Sleep study of gating, reflection, and consolidation.">
+  <title>SkillOpt Technical Report: Expanded Ablations, Skill-Aware Reflection, and SkillOpt-Sleep</title>
+  <meta name="description" content="Expanded SkillOpt ablations, a skill-aware reflection design with memory consolidation, and a controlled study of the SkillOpt-Sleep plugin.">
   <meta name="author" content="Ziwei Zhou, Ziyang Gong, Yifan Yang">
   <link rel="canonical" href="https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/">
   <meta property="og:type" content="article">
   <meta property="og:site_name" content="SkillOpt Technical Blog">
-  <meta property="og:title" content="SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?">
-  <meta property="og:description" content="A descriptive 499-run analysis and controlled five-night study of skill-update policies, reflection memory, and validation gates.">
+  <meta property="og:title" content="SkillOpt Technical Report: Expanded Ablations, Skill-Aware Reflection, and SkillOpt-Sleep">
+  <meta property="og:description" content="A three-part report on SkillOpt ablations, skill-aware reflection and memory consolidation, and the SkillOpt-Sleep plugin.">
   <meta property="og:url" content="https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/">
   <meta property="og:image" content="https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png">
   <meta property="article:published_time" content="2026-07-14">
   <meta property="article:modified_time" content="2026-07-14">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="SkillOpt Ablations and Sleep">
-  <meta name="twitter:description" content="When should an agent accept, gate, or reflect on skill updates?">
+  <meta name="twitter:title" content="SkillOpt Technical Report">
+  <meta name="twitter:description" content="A three-part report on expanded ablations, Skill-Aware Reflection, and SkillOpt-Sleep.">
   <meta name="twitter:image" content="https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='16' fill='%23245fc7'/%3E%3Ctext x='50' y='68' text-anchor='middle' font-size='58' font-family='Arial' font-weight='700' fill='white'%3ES%3C/text%3E%3C/svg%3E">
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
-    "headline": "SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?",
-    "description": "A descriptive analysis of 499 completed SkillOpt run summaries and a controlled SkillOpt-Sleep study.",
+    "headline": "SkillOpt Technical Report: Expanded Ablations, Skill-Aware Reflection, and SkillOpt-Sleep",
+    "description": "Expanded SkillOpt ablations, a skill-aware reflection design with memory consolidation, and a controlled study of SkillOpt-Sleep.",
     "datePublished": "2026-07-14",
     "dateModified": "2026-07-14",
     "author": [
@@ -292,7 +292,7 @@
 
     .takeaways {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 14px;
       margin: 24px 0 10px;
     }
@@ -618,9 +618,8 @@
         <a href="../../docs/guideline.html">Docs</a>
         <a href="#summary">Summary</a>
         <a href="#setup">Setup</a>
-        <a href="#results">Results</a>
+        <a href="#ablations">Ablations</a>
         <a href="#sar">Reflection</a>
-        <a href="#stability">Stability</a>
         <a href="#sleep">Sleep</a>
         <a href="#recommendations">Recommendations</a>
       </nav>
@@ -631,27 +630,25 @@
     <article class="article">
       <section class="hero">
         <div class="eyebrow">Technical Blog</div>
-        <h1>SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?</h1>
+        <h1>SkillOpt Technical Report: Expanded Ablations, Skill-Aware Reflection, and SkillOpt-Sleep</h1>
         <p class="subtitle">
-          A descriptive analysis of 499 completed run summaries across SearchQA,
-          LiveMathematicianBench, and SpreadsheetBench examines how combined update
-          policies trade exploration for stability. A separate five-night
-          SkillOpt-Sleep experiment studies the same controls using shipped components;
-          five nights is the study protocol, not a nightly CLI default.
+          A three-part report with expanded analysis of SkillOpt's update policies,
+          a skill-aware reflection design for directing updates and consolidating memory,
+          and a controlled study of the SkillOpt-Sleep plugin.
         </p>
         <div class="meta">
           <span>Ziwei Zhou, Ziyang Gong, and Yifan Yang</span>
           <span><time datetime="2026-07-14">July 14, 2026</time></span>
-          <span>Exploratory SkillOpt ablations + controlled SkillOpt-Sleep study</span>
+          <span>Expanded ablations · Skill-Aware Reflection · SkillOpt-Sleep</span>
         </div>
       </section>
 
       <section class="content">
         <p class="lead" id="summary">
           SkillOpt improves an agent by iteratively editing a natural-language skill file.
-          That raises a practical control question: when the optimizer proposes a new skill
-          update, should the system accept it, gate it against validation performance, or
-          ask the model to reflect on its own successes and failures first?
+          This technical report extends the earlier project materials in three directions:
+          deeper ablations of update-policy design, Skill-Aware Reflection (SAR) with
+          memory consolidation, and a deployment-oriented SkillOpt-Sleep plugin.
         </p>
 
         <p>
@@ -667,24 +664,16 @@
 
         <div class="takeaways">
           <div class="takeaway">
-            <b><code>Accept Every Edit</code> is competitive in this sweep.</b>
-            <span>Its combined candidate and slow-update policy often has a similar or higher exploratory diagnostic than the paper-style baseline, especially for <code>gpt-5.5</code>.</span>
+            <b>Part I · Expanded SkillOpt ablations</b>
+            <span>Additional analyses surface conclusions that earlier reporting did not: combined update-policy trade-offs, denser test-case feedback, and the distinction between validation-selected and final checkpoints.</span>
           </div>
           <div class="takeaway">
-            <b>Hard gating remains a useful stability control.</b>
-            <span>The stress study motivates retaining validation, checkpointing, and rollback around automated skill edits.</span>
+            <b>Part II · Skill-Aware Reflection and consolidation</b>
+            <span>SAR adds a useful design principle: interpret a trajectory against the current skill before deciding the update direction, then keep durable reflection memory focused through selective routing and consolidation. The design is inspired by EmbodiSkill <a href="#reference-embodiskill">[1]</a>.</span>
           </div>
           <div class="takeaway">
-            <b>Skill memory needs to stay compact.</b>
-            <span>Long, repetitive, or contradictory notes can hurt smaller targets.</span>
-          </div>
-          <div class="takeaway">
-            <b>Selection and consolidation control memory growth.</b>
-            <span>The tested Failure-Only SAR recipe restricts the source of appendix reminders and also uses consolidation, so its result supports the combined compact-memory configuration.</span>
-          </div>
-          <div class="takeaway">
-            <b>The Sleep study combines layered controls.</b>
-            <span>Opt-in replay and diverse rollouts have a better measured robustness profile; in one stress case, the validation-gated run remained flat while the ungated run collapsed.</span>
+            <b>Part III · SkillOpt-Sleep plugin</b>
+            <span>The preview plugin turns offline experience replay, validation-gated improvement, and staged adoption into a practical overnight workflow for coding agents.</span>
           </div>
         </div>
 
@@ -718,10 +707,10 @@
 
         <h2 id="setup">Experimental setup</h2>
         <p>
-          We vary two core mechanisms in SkillOpt. The first is the acceptance gate:
-          should a candidate skill update be accepted only if it improves validation
-          performance? The second is skill-aware reflection: should trajectories from the
-          target model be summarized into reusable notes for future skill edits?
+          The report studies three layers of the system. Part I varies candidate gates,
+          slow-update policies, and score signals. Part II studies how reflection uses the
+          current skill to direct an update and how consolidation controls reflection
+          memory. Part III evaluates SkillOpt-Sleep as a deployment-oriented plugin.
         </p>
 
         <div class="callout">
@@ -733,9 +722,10 @@
           provider-connection all-zero cells are excluded where noted. The aggregate
           figures support qualitative hypotheses for follow-up; they do not establish
           statistically reliable rankings, especially when differences are small.
-          Implementation semantics were checked against
-          <a href="https://github.com/microsoft/SkillOpt/tree/a49d0eb1b92ec114b5d22408eaaa18f112c710c8">SkillOpt <code>a49d0eb</code></a>;
-          provider behavior can change independently of the repository.
+          The configuration names, defaults, and code paths described below were checked
+          against <a href="https://github.com/microsoft/SkillOpt/commit/a49d0eb1b92ec114b5d22408eaaa18f112c710c8">SkillOpt commit a49d0eb</a>.
+          This code review does not independently reproduce the reported ablation
+          results, and provider behavior can change outside the repository.
         </div>
 
         <h3>Key terms</h3>
@@ -744,18 +734,24 @@
           <li><strong>Hard score:</strong> exact task success, such as answering a question correctly or producing a fully correct spreadsheet output.</li>
           <li><strong>Soft score:</strong> partial credit, useful when a task has meaningful intermediate progress even if the final answer is not fully correct.</li>
           <li><strong>Slow update:</strong> a periodic rewrite or merge step that incorporates broader training evidence into the skill.</li>
-          <li><strong>Skill-aware reflection (SAR):</strong> an EmbodiSkill-inspired routing mechanism that sends skill defects to body edits and execution lapses to protected appendix reminders.</li>
+          <li><strong>Skill-aware reflection (SAR):</strong> a reflection policy that interprets trajectory evidence in light of what the current skill already contains before deciding the direction of an update. This design is inspired by EmbodiSkill <a href="#reference-embodiskill">[1]</a>.</li>
           <li><strong>Consolidation:</strong> a compression step for SAR notes. It removes duplicate or overlapping advice before the skill appendix becomes too long.</li>
         </ul>
 
-        <table aria-label="SkillOpt ablation settings">
+        <h2 id="ablations">Part I · Expanded SkillOpt ablations</h2>
+        <p>
+          This section adds analyses that were not developed in the earlier project
+          materials: how combined update policies trade exploration for stability, when
+          denser test-case feedback is informative, and why validation-selected and
+          final checkpoints answer different questions.
+        </p>
+
+        <table aria-label="Base SkillOpt update-policy ablation settings">
           <thead>
             <tr>
-              <th>Base setting or SAR add-on</th>
+              <th>Base update policy</th>
               <th>Gate</th>
               <th>Slow-update gate</th>
-              <th>Reflection</th>
-              <th>Consolidation</th>
               <th>What it tests</th>
             </tr>
           </thead>
@@ -764,57 +760,31 @@
               <td><span class="tag setting-default">Paper-Style Fully Gated Baseline</span></td>
               <td>Hard validation gate</td>
               <td>Validation-selected</td>
-              <td>None</td>
-              <td>None</td>
               <td>The paper-style stability-first baseline; this is not the current <code>main</code> default.</td>
             </tr>
             <tr>
               <td><span class="tag setting-accept">Accept Every Edit</span></td>
               <td>Disabled</td>
               <td>Unconditional</td>
-              <td>None</td>
-              <td>None</td>
               <td>The combined behavior when candidate edits and slow updates are both accepted unconditionally.</td>
             </tr>
             <tr>
               <td><span class="tag setting-hard-slow">Hard Gate + Always-On Slow Updates</span></td>
               <td>Hard validation gate</td>
               <td>Unconditional</td>
-              <td>None</td>
-              <td>None</td>
               <td>Changes only the slow-update policy relative to the paper-style fully gated baseline.</td>
             </tr>
             <tr>
               <td><span class="tag setting-soft-score">Soft-Score Gate + Always-On Slow Updates</span></td>
               <td>Soft score gate</td>
               <td>Unconditional</td>
-              <td>None</td>
-              <td>None</td>
               <td>Uses partial test-case success as the candidate signal while keeping slow updates unconditional.</td>
             </tr>
             <tr>
               <td><span class="tag setting-hybrid">Hard/Soft Hybrid Gate + Always-On Slow Updates</span></td>
               <td>Mixed hard/soft</td>
               <td>Unconditional</td>
-              <td>None</td>
-              <td>None</td>
               <td>Combines exact correctness and partial test-case success while keeping slow updates unconditional.</td>
-            </tr>
-            <tr>
-              <td><span class="tag setting-sar-failure">Failure-Only SAR + Consolidation (40)</span></td>
-              <td>Base-dependent</td>
-              <td>Base-dependent</td>
-              <td>Appendix reminders from failed trajectories only</td>
-              <td>After 40 notes</td>
-              <td>Whether failure-sourced appendix routing plus periodic compression keeps memory useful.</td>
-            </tr>
-            <tr>
-              <td><span class="tag setting-sar-both">Success-and-Failure SAR</span></td>
-              <td>Base-dependent</td>
-              <td>Base-dependent</td>
-              <td>Appendix reminders from successes and failures</td>
-              <td>None in the comparison below</td>
-              <td>Whether a broader memory of both good and bad trajectories is useful.</td>
             </tr>
           </tbody>
         </table>
@@ -828,18 +798,7 @@
           Edit</code> force-accepts candidates while slow updates remain unconditional.
           The other three settings keep slow updates
           always on while changing the candidate gate to hard, soft-score, or hybrid
-          hard/soft evidence. Tag colors stay consistent throughout the post; a composite
-          configuration inherits its base setting's color, while standalone SAR add-ons
-          use their own colors. SAR can be added to any base setting. Here,
-          <code>Failure-Only SAR</code> is shorthand for sourcing protected appendix
-          reminders only from failures; it does not disable the baseline body-edit path.
-          For example,
-          <code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code> accepts
-          every candidate, draws appendix reminders only from failures, and compresses
-          accumulated notes once the appendix grows past 40 notes. Because appendix-source
-          selection and consolidation change together in this configuration, its result
-          supports the combined compact-memory recipe, not failure-only appendix sourcing
-          in isolation.
+          hard/soft evidence.
         </p>
 
         <p class="note">
@@ -851,52 +810,6 @@
           baseline is stated explicitly.
         </p>
 
-        <h3>Where SAR comes from</h3>
-        <p>
-          SkillOpt's skill-aware reflection adapts the central idea of
-          <a href="https://arxiv.org/abs/2605.10332"><em>EmbodiSkill</em> (Ju et al., 2026)</a>:
-          interpret a trajectory against the current skill before allowing that
-          trajectory to change the skill. A failed run is ambiguous evidence. It may
-          expose a missing or incorrect rule, or it may be an execution lapse in which
-          the model simply failed to follow valid guidance. Turning both cases into a
-          generic whole-skill rewrite can delete useful rules, add redundant advice, and
-          amplify noise.
-        </p>
-
-        <p>
-          EmbodiSkill makes this attribution explicit. It separates a prescriptive skill
-          body from an appendix that emphasizes valid rules. When a trajectory provides
-          reliable evidence, successful runs are routed to <em>Discovery</em> or
-          <em>Optimization</em>; failed runs are
-          routed to <em>Skill Defect</em> or <em>Execution Lapse</em>. The first three
-          categories can trigger targeted body edits, whereas an execution lapse only
-          adds an appendix reminder. Before editing, body-changing reflections are
-          consolidated: duplicates are removed, overlapping suggestions are merged,
-          target-specific edits are grouped, and unresolved conflicts can be discarded.
-          A constrained editor then changes the implicated rules while leaving unrelated
-          skill content intact (Ju et al., 2026, Sections 3.1–3.2.2, Equations 2 and
-          6–11).
-        </p>
-
-        <p>
-          SkillOpt transfers this failure-attribution rule to general-domain skill
-          optimization. A <em>Skill Defect</em> becomes a normal body edit governed by
-          the base setting's acceptance policy, whereas an <em>Execution Lapse</em>
-          becomes a short reminder in a protected appendix that step-level edits cannot
-          rewrite. <code>Failure-Only
-          SAR</code> is closest to EmbodiSkill's original appendix routing.
-          <code>Success-and-Failure SAR</code> extends it by allowing successful
-          trajectories to re-emphasize existing rules, and the note-count consolidation
-          thresholds tested here are a SkillOpt-specific compaction policy rather than a
-          parameter reported by EmbodiSkill. EmbodiSkill does not impose a formal length
-          penalty or show that shorter skills are always better: the compact-memory
-          conclusion below comes from the SkillOpt ablations. In EmbodiSkill's own
-          ALFWorld ablation, skill-aware revision raises success from
-          <code>78.36%</code> to <code>93.28%</code>, an absolute increase of
-          <code>14.92 percentage points</code> (a <code>19.04%</code> relative
-          improvement) over skill-unaware evolution.
-        </p>
-
         <p>
           We evaluate on three task families with different reward landscapes.
           SearchQA has a high baseline and limited headroom. LiveMathematicianBench is small and high
@@ -904,7 +817,7 @@
           correctness and more room for partial progress signals.
         </p>
 
-        <h2 id="results">Result 1: combined update policies trade exploration for stability</h2>
+        <h3 id="results">1.1 Combined update policies trade exploration for stability</h3>
         <p>
           The <code>Paper-Style Fully Gated Baseline</code> is a useful
           stability-first reference, but it is not the highest-scoring policy in every
@@ -1000,7 +913,7 @@
           baseline.
         </p>
 
-        <h2>Result 2: combined soft and hybrid policies use denser test-case feedback</h2>
+        <h3>1.2 Combined soft and hybrid policies use denser test-case feedback</h3>
         <p>
           An acceptance gate does more than find a promising candidate: it determines
           which edits survive into the final skill. Hard correctness is a useful anchor,
@@ -1074,7 +987,138 @@
           slow-update policy.
         </p>
 
-        <h2 id="sar">Result 3: selective appendix routing and consolidation keep skill memory compact</h2>
+        <h3 id="stability">1.3 Best-on-val and final expose different failure modes</h3>
+        <p>
+          The pair <code>bov/fin</code> is more useful than a single score because it
+          separates search ability from training stability. <code>bov</code> asks whether
+          SkillOpt ever found a good skill according to validation selection.
+          <code>fin</code> asks whether the skill left at the end of training is still
+          good. Some exploratory summaries above use <code>max(bov, fin)</code> to
+          describe observed reachability, but that test-aware maximum can inflate what a
+          deployable policy would achieve. The two endpoints must remain separate when
+          diagnosing drift, selection on a small validation set, or steady improvement.
+        </p>
+
+        <table aria-label="Best-on-val and final diagnostic examples">
+          <thead>
+            <tr>
+              <th>Example</th>
+              <th>Benchmark</th>
+              <th>Mean bov / fin</th>
+              <th>Diagnostic</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.4-mini</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
+              <td>SearchQA</td>
+              <td class="num">70.87% / 56.60%</td>
+              <td>Large endpoint gap, consistent with end-of-run drift under broad reflection.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
+              <td>SearchQA</td>
+              <td class="num">72.04% / 64.62%</td>
+              <td>Same pattern at smaller scale: the final skill is worse than the selected checkpoint.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.5</code>, <code>Accept Every Edit</code></td>
+              <td>SpreadsheetBench</td>
+              <td class="num">73.49% / 70.36%</td>
+              <td>The endpoint gap is consistent with later ungated updates eroding the final skill.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code>, <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code></td>
+              <td>SpreadsheetBench</td>
+              <td class="num">64.29% / 66.25%</td>
+              <td>Final exceeds best-on-val; the run continued to improve beyond the validation-selected checkpoint.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.5</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
+              <td>SearchQA</td>
+              <td class="num">86.53% / 86.52%</td>
+              <td>No measurable endpoint gap in this aggregate cell.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          A high oracle maximum shows that one of two retrospectively inspected
+          endpoints scored well; it does not tell an operator which checkpoint could
+          have been selected without test awareness. A high <code>fin</code> is more
+          directly relevant to an automatic training policy. The observed
+          <code>bov-fin</code> gaps under <code>Accept Every Edit</code> motivate retaining
+          validation checkpointing and rollback. The hybrid policy's final-score pattern
+          makes it a candidate for repeated-seed evaluation when the target is smaller or
+          the validation signal is noisy, not a universal default.
+        </p>
+
+        <h2 id="sar">Part II · Skill-Aware Reflection and Memory Consolidation</h2>
+        <h3>Reflection grounded in the current skill</h3>
+        <p>
+          <strong>Skill-Aware Reflection (SAR)</strong> makes the current skill part of
+          the reflection context. When summarizing a trajectory and deciding the
+          direction of the next update, the reflector interprets the evidence in light
+          of what the skill already contains. This design is inspired by EmbodiSkill
+          <a href="#reference-embodiskill">[1]</a>.
+        </p>
+
+        <p>
+          In the tested SkillOpt implementation, that judgment can route a likely
+          <em>Skill Defect</em> toward a targeted skill-body update and an
+          <em>Execution Lapse</em> toward a protected appendix reminder. The routing is
+          one implementation of the broader SAR principle, not the definition of SAR
+          itself. Consolidation is the companion memory-control mechanism: it
+          periodically merges duplicate or overlapping reminders to help keep reflection
+          memory compact.
+        </p>
+
+        <p>
+          EmbodiSkill formalizes a related skill-conditioned attribution with
+          <em>Discovery</em>, <em>Optimization</em>, <em>Skill Defect</em>, and
+          <em>Execution Lapse</em> categories. SkillOpt adapts the failure-attribution
+          idea to general-domain skill optimization. In EmbodiSkill's ALFWorld ablation,
+          skill-aware revision raises success from <code>78.36%</code> to
+          <code>93.28%</code>, an absolute increase of <code>14.92 percentage points</code>
+          (a <code>19.04%</code> relative improvement) over skill-unaware evolution. That
+          result provides context for the design; it is not part of the 499-run SkillOpt
+          sweep reported here.
+        </p>
+
+        <table aria-label="Skill-Aware Reflection configurations in this report">
+          <thead>
+            <tr>
+              <th>SAR add-on</th>
+              <th>Durable reflection memory</th>
+              <th>Consolidation</th>
+              <th>Scope</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="tag setting-sar-failure">Failure-Only SAR + Consolidation (40)</span></td>
+              <td>Appendix reminders sourced from failed trajectories</td>
+              <td>After 40 notes</td>
+              <td>An add-on to the base update policy; the normal body-edit path remains active.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-sar-both">Success-and-Failure SAR</span></td>
+              <td>Successful and failed trajectories can re-emphasize existing rules</td>
+              <td>None in the main comparison below</td>
+              <td>An add-on to the base update policy; separate cells add consolidation.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="note">
+          SAR can be added to any base setting. In the comparison below, both SAR
+          configurations use <code>Accept Every Edit</code>. The failure-only recipe
+          changes appendix-source selection and consolidation together, so its result
+          supports the combined compact-memory recipe rather than either mechanism in
+          isolation.
+        </p>
+
+        <h3>2.1 Selective reflection and consolidation keep skill memory compact</h3>
         <p>
           The key question for skill-aware reflection is not simply whether to reflect,
           but how much history should remain in the skill. Broad, unconsolidated
@@ -1145,7 +1189,7 @@
           differences, displayed with a percent sign.
         </p>
 
-        <h3>A more direct comparison for consolidation</h3>
+        <h3>2.2 Consolidation recovers broad-memory regressions in three matched cells</h3>
         <p>
           The next comparison holds the reflection source fixed at successes and failures
           and adds consolidation after the appendix grows past 20 notes. This more
@@ -1202,7 +1246,7 @@
           sweeps are needed before choosing a threshold by model size.
         </p>
 
-        <h3>Compact-memory robustness across hyperparameters</h3>
+        <h3>2.3 Compact-memory patterns across hyperparameters</h3>
         <p>
           Averages can hide whether a result is broad or driven by one lucky run. We also
           compare settings against <code>Paper-Style Fully Gated Baseline</code> across four
@@ -1238,80 +1282,15 @@
           </tbody>
         </table>
 
-        <h2 id="stability">Result 4: best-on-val and final expose different failure modes</h2>
+        <h2 id="sleep">Part III · SkillOpt-Sleep: an overnight optimization plugin</h2>
         <p>
-          The pair <code>bov/fin</code> is more useful than a single score because it
-          separates search ability from training stability. <code>bov</code> asks whether
-          SkillOpt ever found a good skill according to validation selection.
-          <code>fin</code> asks whether the skill left at the end of training is still
-          good. Some exploratory summaries above use <code>max(bov, fin)</code> to
-          describe observed reachability, but that test-aware maximum can inflate what a
-          deployable policy would achieve. The two endpoints must remain separate when
-          diagnosing drift, selection on a small validation set, or steady improvement.
-        </p>
-
-        <table aria-label="Best-on-val and final diagnostic examples">
-          <thead>
-            <tr>
-              <th>Example</th>
-              <th>Benchmark</th>
-              <th>Mean bov / fin</th>
-              <th>Diagnostic</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><code>gpt-5.4-mini</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
-              <td>SearchQA</td>
-              <td class="num">70.87% / 56.60%</td>
-              <td>Large endpoint gap, consistent with end-of-run drift under broad reflection.</td>
-            </tr>
-            <tr>
-              <td><code>gpt-5.4-nano</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
-              <td>SearchQA</td>
-              <td class="num">72.04% / 64.62%</td>
-              <td>Same pattern at smaller scale: the final skill is worse than the selected checkpoint.</td>
-            </tr>
-            <tr>
-              <td><code>gpt-5.5</code>, <code>Accept Every Edit</code></td>
-              <td>SpreadsheetBench</td>
-              <td class="num">73.49% / 70.36%</td>
-              <td>The endpoint gap is consistent with later ungated updates eroding the final skill.</td>
-            </tr>
-            <tr>
-              <td><code>gpt-5.4-mini</code>, <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code></td>
-              <td>SpreadsheetBench</td>
-              <td class="num">64.29% / 66.25%</td>
-              <td>Final exceeds best-on-val; the run continued to improve beyond the validation-selected checkpoint.</td>
-            </tr>
-            <tr>
-              <td><code>gpt-5.5</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
-              <td>SearchQA</td>
-              <td class="num">86.53% / 86.52%</td>
-              <td>No measurable endpoint gap in this aggregate cell.</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <p>
-          A high oracle maximum shows that one of two retrospectively inspected
-          endpoints scored well; it does not tell an operator which checkpoint could
-          have been selected without test awareness. A high <code>fin</code> is more
-          directly relevant to an automatic training policy. The observed
-          <code>bov-fin</code> gaps under <code>Accept Every Edit</code> motivate retaining
-          validation checkpointing and rollback. The hybrid policy's final-score pattern
-          makes it a candidate for repeated-seed evaluation when the target is smaller or
-          the validation signal is noisy, not a universal default.
-        </p>
-
-        <h2 id="sleep">Result 5: SkillOpt-Sleep applies these controls in an overnight preview</h2>
-        <p>
-          The ablations above ask which update policy is best under a training harness.
-          SkillOpt-Sleep asks the deployment version of the same question: if an agent
-          sees new real tasks today, can it improve a skill proposal overnight and
-          come back better tomorrow? The plugin runs this as an offline sleep cycle rather
-          than an in-session edit: it replays recent experience, proposes a consolidated
-          skill update, validates it against a held-out gate, and stages it for review.
+          Parts I and II study update and reflection policies under a training harness.
+          SkillOpt-Sleep brings the same discipline to a deployment-oriented workflow:
+          if an agent sees new real tasks today, can it improve a skill proposal
+          overnight and come back better tomorrow? The preview plugin runs an offline
+          sleep cycle rather than an in-session edit: it replays recent experience,
+          proposes a consolidated skill update, validates it against a held-out gate,
+          and stages it for review.
           Normal operation does not replace the deployed skill until the user explicitly
           runs <code>adopt</code>; <code>auto_adopt</code> is an opt-in mode.
         </p>
@@ -1374,7 +1353,7 @@
           </tbody>
         </table>
 
-        <h3>The default validation gate bounded downside in a paired stress case</h3>
+        <h3>3.1 The default validation gate bounded downside in a paired stress case</h3>
         <p>
           In a paired study with <code>gpt-5.4-nano</code> on SearchQA, the ungated run
           adopted a plausible but wrong rule—answer with the document title string
@@ -1419,7 +1398,7 @@
           rollback—and should stage changes for review before adoption.
         </p>
 
-        <h3>Replay gives the overnight cycle something to learn from</h3>
+        <h3>3.2 Replay and recall give the overnight cycle useful context</h3>
         <p>
           In the study recipe, diverse rollouts and relevant recalled experience are
           associated with larger gains where the target model has headroom. One practical
@@ -1483,7 +1462,7 @@
           All deltas here are percentage points.
         </p>
 
-        <h3>Diverse dream rollouts improve the study's robustness profile</h3>
+        <h3>3.3 Diverse dream rollouts improve the study's robustness profile</h3>
         <p>
           Sleep only learns useful contrastive lessons if the dream rollouts are
           independent samples. An early engine configuration collapsed the rollouts to a
@@ -1528,7 +1507,7 @@
           </tbody>
         </table>
 
-        <h3>Sensitivity around the study recipe</h3>
+        <h3>3.4 Sensitivity around the study recipe</h3>
         <p>
           On one gated nano SearchQA cell, every tested change away from the study recipe
           (<code>dream_factor=2</code>, <code>dream_rollouts=5</code>, 10 tasks per night,
@@ -1676,23 +1655,38 @@
 
         <h2>Conclusion</h2>
         <p>
-          The main observation is that SkillOpt's update controls should be evaluated as
-          a policy, not inferred from one switch in a confounded comparison. The
-          exploratory sweep is consistent with stronger targets tolerating more candidate
-          updates, and with test-case pass rates providing useful signal on
-          SpreadsheetBench. Reflection can help, but the displayed comparisons favor
-          keeping its memory compact.
+          <strong>Expanded ablations.</strong> SkillOpt's update controls should be
+          evaluated as a policy, not inferred from one switch in a confounded comparison.
+          The exploratory sweep is consistent with stronger targets tolerating more
+          candidate updates, and with test-case pass rates providing useful signal on
+          SpreadsheetBench. Validation-selected and final checkpoints must remain
+          separate when judging deployability.
         </p>
         <p>
-          In practice, choose a SkillOpt configuration with the target model, task,
-          validation signal, and deployment boundary in mind. Treat the settings above as
-          hypotheses to validate locally, and preserve checkpointing, staged review, and
-          rollback when skill updates can affect a deployed agent.
+          <strong>Skill-Aware Reflection.</strong> SAR contributes a useful design
+          principle: reflection should interpret a trajectory against the current skill
+          before deciding the direction of an update. The observed cells make SAR a
+          promising direction, while the large regressions observed with broad,
+          unconsolidated memory motivate selective routing and consolidation as companion
+          controls.
+        </p>
+        <p>
+          <strong>SkillOpt-Sleep.</strong> The preview plugin turns these ideas into an
+          offline workflow that replays experience, validates a proposed update, and
+          stages it for review. The controlled study motivates further evaluation of
+          replay, recall, and diverse rollouts, while shipping defaults remain
+          conservative and adoption remains explicit by default.
+        </p>
+        <p>
+          Across all three parts, choose settings with the target model, task, validation
+          signal, provider data boundary, and deployment risk in mind. Treat the reported
+          settings as hypotheses to validate locally, and preserve checkpointing, staged
+          review, and rollback when updates can affect a deployed agent.
         </p>
 
-        <h2>Method reference</h2>
+        <h2>References</h2>
         <p id="reference-embodiskill">
-          Ju, Ruofei, Xinrui Wang, Xin Ding, Yifan Yang, Hao Wu, Shiqi Jiang, Qianxi
+          <strong>[1]</strong> Ju, Ruofei, Xinrui Wang, Xin Ding, Yifan Yang, Hao Wu, Shiqi Jiang, Qianxi
           Zhang, Hao Wen, Xiangyu Li, Weijun Wang, Kun Li, Yunxin Liu, Haipeng Dai, Wei
           Wang, and Ting Cao. 2026. “EmbodiSkill: Skill-Aware Reflection for
           Self-Evolving Embodied Agents.” <em>arXiv preprint</em> arXiv:2605.10332
@@ -1704,23 +1698,23 @@
           <button class="copy-button" type="button" data-copy-target="citation-bibtex" aria-live="polite">Copy BibTeX</button>
         </div>
         <p>
-          If you find this ablation useful, please cite it as:
+          If you find this report useful, please cite it as:
         </p>
-        <pre><code id="citation-bibtex">@misc{zhou2026skilloptablations,
-  title        = {SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?},
+        <pre><code id="citation-bibtex">@misc{zhou2026skillopttechnicalreport,
+  title        = {SkillOpt Technical Report: Expanded Ablations, Skill-Aware Reflection, and SkillOpt-Sleep},
   author       = {Zhou, Ziwei and Gong, Ziyang and Yang, Yifan},
   year         = {2026},
   url          = {https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/},
-  note         = {Blog post}
+  note         = {Technical report on the SkillOpt Technical Blog}
 }</code></pre>
 
         <hr class="section-divider">
 
         <div class="footer-note">
           <p>
-            This post summarizes the gating, skill-aware reflection, and consolidation
-            ablations used to choose practical SkillOpt training settings, plus the
-            SkillOpt-Sleep results that turn those controls into an overnight plugin.
+            This three-part report presents expanded SkillOpt ablations, Skill-Aware
+            Reflection with memory consolidation, and a controlled study of the
+            SkillOpt-Sleep plugin.
           </p>
         </div>
       </section>
