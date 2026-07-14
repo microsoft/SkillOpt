@@ -33,7 +33,6 @@ from typing import Any
 from openai import OpenAI
 
 from skillopt.model.common import (
-    CompatAssistantMessage,
     TokenTracker,
     compat_message_from_chat_message,
     default_model_for_backend,
