@@ -81,11 +81,11 @@ def is_target_exec_backend() -> bool:
 
 
 def is_optimizer_chat_backend() -> bool:
-    return OPTIMIZER_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat"}
+    return OPTIMIZER_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "hermes_chat"}
 
 
 def is_target_chat_backend() -> bool:
-    return TARGET_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat"}
+    return TARGET_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "hermes_chat"}
 
 
 def configure_codex_exec(
