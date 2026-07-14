@@ -1,0 +1,1796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?</title>
+  <meta name="description" content="A descriptive analysis of 499 completed SkillOpt run summaries and a controlled SkillOpt-Sleep study of gating, reflection, and consolidation.">
+  <meta name="author" content="Ziwei Zhou, Ziyang Gong, Yifan Yang">
+  <link rel="canonical" href="https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="SkillOpt Technical Blog">
+  <meta property="og:title" content="SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?">
+  <meta property="og:description" content="A descriptive 499-run analysis and controlled five-night study of skill-update policies, reflection memory, and validation gates.">
+  <meta property="og:url" content="https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/">
+  <meta property="og:image" content="https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png">
+  <meta property="article:published_time" content="2026-07-14">
+  <meta property="article:modified_time" content="2026-07-14">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="SkillOpt Ablations and Sleep">
+  <meta name="twitter:description" content="When should an agent accept, gate, or reflect on skill updates?">
+  <meta name="twitter:image" content="https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='16' fill='%23245fc7'/%3E%3Ctext x='50' y='68' text-anchor='middle' font-size='58' font-family='Arial' font-weight='700' fill='white'%3ES%3C/text%3E%3C/svg%3E">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?",
+    "description": "A descriptive analysis of 499 completed SkillOpt run summaries and a controlled SkillOpt-Sleep study.",
+    "datePublished": "2026-07-14",
+    "dateModified": "2026-07-14",
+    "author": [
+      {"@type": "Person", "name": "Ziwei Zhou"},
+      {"@type": "Person", "name": "Ziyang Gong"},
+      {"@type": "Person", "name": "Yifan Yang"}
+    ],
+    "publisher": {"@type": "Organization", "name": "Microsoft Research"},
+    "mainEntityOfPage": "https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/",
+    "image": "https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png"
+  }
+  </script>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #596579;
+      --line: #d9deea;
+      --soft-line: #edf0f6;
+      --paper: #ffffff;
+      --wash: #f7f9fc;
+      --blue: #245fc7;
+      --blue-soft: #eaf1ff;
+      --green: #08734b;
+      --green-soft: #eaf8f1;
+      --red: #b93434;
+      --red-soft: #fbebeb;
+      --amber: #805700;
+      --amber-soft: #fff5d9;
+      --purple: #7e22ce;
+      --purple-soft: #f5e8ff;
+      --rose: #9c3f70;
+      --rose-soft: #fbeaf3;
+      --teal: #006d77;
+      --teal-soft: #e3f6f7;
+      --slate: #4b5563;
+      --slate-soft: #eef1f5;
+      --code: #273043;
+      --shadow: 0 12px 40px rgba(23, 32, 51, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-padding-top: 104px;
+    }
+
+    body {
+      margin: 0;
+      background: var(--wash);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.58;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .skip-link {
+      position: fixed;
+      left: 16px;
+      top: -80px;
+      z-index: 100;
+      padding: 10px 14px;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--blue);
+    }
+
+    .skip-link:focus {
+      top: 12px;
+    }
+
+    .content a {
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .site-header {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(10px);
+    }
+
+    .header-inner {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      font-weight: 760;
+      letter-spacing: 0.2px;
+      color: var(--ink);
+    }
+
+    .nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      font-size: 14px;
+    }
+
+    .nav a {
+      color: var(--muted);
+    }
+
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    .article {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero {
+      padding: 54px 56px 34px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(44, 107, 237, 0.08), rgba(255, 255, 255, 0.0) 58%),
+        var(--paper);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--blue);
+      background: var(--blue-soft);
+      font-size: 13px;
+      font-weight: 650;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0 0 18px;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 20px;
+      max-width: 850px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      color: var(--muted);
+      font-size: 14px;
+      margin-top: 24px;
+    }
+
+    .content {
+      padding: 36px 56px 56px;
+    }
+
+    h2 {
+      margin: 48px 0 14px;
+      font-size: 30px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 32px 0 10px;
+      font-size: 21px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 14px 0;
+      font-size: 16px;
+    }
+
+    .lead {
+      font-size: 18px;
+      color: #2d374a;
+    }
+
+    .callout {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--wash);
+      padding: 20px 22px;
+      margin: 24px 0;
+    }
+
+    .callout strong {
+      color: var(--ink);
+    }
+
+    .term-list {
+      margin: 16px 0 22px;
+      padding-left: 22px;
+    }
+
+    .term-list li {
+      margin: 8px 0;
+    }
+
+    .citation-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 48px;
+    }
+
+    .citation-title h2 {
+      margin: 0;
+    }
+
+    .copy-button {
+      border: 1px solid var(--muted);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 650;
+      padding: 8px 12px;
+      white-space: nowrap;
+    }
+
+    .copy-button:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    .copy-button:focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 2px;
+    }
+
+    .takeaways {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 24px 0 10px;
+    }
+
+    .takeaway {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      background: #fff;
+    }
+
+    .takeaway b {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 16px;
+    }
+
+    .takeaway span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 22px 0;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      background: var(--paper);
+    }
+
+    .metric .value {
+      font-size: 30px;
+      font-weight: 780;
+      line-height: 1;
+    }
+
+    .metric .label {
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0 26px;
+      font-size: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      display: table;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--soft-line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #f1f4f9;
+      font-weight: 720;
+      color: #273043;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .num {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .delta {
+      display: inline-block;
+      min-width: 60px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      font-weight: 650;
+      font-size: 13px;
+    }
+
+    .pos {
+      color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .neg {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .flat {
+      color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .omitted {
+      color: var(--muted);
+      background: #f3f5f9;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      background: #f3f5f9;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    code.setting-tag {
+      display: inline;
+      padding: 2px 7px;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      font-family: inherit;
+      font-size: 0.84em;
+      font-weight: 700;
+      line-height: 1.9;
+      white-space: normal;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+
+    .setting-default {
+      color: var(--blue) !important;
+      background: var(--blue-soft) !important;
+    }
+
+    .setting-accept {
+      color: var(--green) !important;
+      background: var(--green-soft) !important;
+    }
+
+    .setting-hard-slow {
+      color: var(--amber) !important;
+      background: var(--amber-soft) !important;
+    }
+
+    .setting-soft-score {
+      color: var(--teal) !important;
+      background: var(--teal-soft) !important;
+    }
+
+    .setting-hybrid {
+      color: var(--rose) !important;
+      background: var(--rose-soft) !important;
+    }
+
+    .setting-sar-failure {
+      color: var(--slate) !important;
+      background: var(--slate-soft) !important;
+    }
+
+    .setting-sar-both {
+      color: var(--purple) !important;
+      background: var(--purple-soft) !important;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .chart {
+      display: grid;
+      gap: 10px;
+      margin: 18px 0 26px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      background: #fff;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 145px 1fr 72px;
+      gap: 12px;
+      align-items: center;
+      font-size: 14px;
+    }
+
+    .track {
+      height: 12px;
+      border-radius: 999px;
+      background: #edf0f6;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .bar {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--blue);
+      width: var(--w);
+    }
+
+    .bar.green {
+      background: var(--green);
+    }
+
+    .bar.red {
+      background: var(--red);
+    }
+
+    code {
+      background: #f3f5f9;
+      color: var(--code);
+      padding: 2px 5px;
+      border-radius: 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    pre {
+      max-width: 100%;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    pre code {
+      white-space: inherit;
+      overflow-wrap: inherit;
+      word-break: normal;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .section-divider {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 44px 0 0;
+    }
+
+    .footer-note {
+      border-top: 1px solid var(--line);
+      padding-top: 24px;
+      margin-top: 48px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 780px) {
+      .header-inner,
+      main {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .hero,
+      .content {
+        padding-left: 22px;
+        padding-right: 22px;
+      }
+
+      .takeaways,
+      .grid-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .bar-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+
+      th,
+      td {
+        overflow-wrap: anywhere;
+      }
+
+      .tag,
+      .num {
+        white-space: normal;
+      }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .site-header,
+      .copy-button,
+      .skip-link { display: none !important; }
+      main { max-width: none; padding: 0; }
+      .article { border: 0; box-shadow: none; overflow: visible; }
+      .hero,
+      .content { padding-left: 0; padding-right: 0; }
+      table { font-size: 10pt; }
+      tr,
+      .callout,
+      .takeaway { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="../">SkillOpt Technical Blog</a>
+      <nav class="nav" aria-label="Article navigation">
+        <a href="../../">Project</a>
+        <a href="../../docs/guideline.html">Docs</a>
+        <a href="#summary">Summary</a>
+        <a href="#setup">Setup</a>
+        <a href="#results">Results</a>
+        <a href="#sar">Reflection</a>
+        <a href="#stability">Stability</a>
+        <a href="#sleep">Sleep</a>
+        <a href="#recommendations">Recommendations</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <article class="article">
+      <section class="hero">
+        <div class="eyebrow">Technical Blog</div>
+        <h1>SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?</h1>
+        <p class="subtitle">
+          A descriptive analysis of 499 completed run summaries across SearchQA,
+          LiveMathematicianBench, and SpreadsheetBench examines how combined update
+          policies trade exploration for stability. A separate five-night
+          SkillOpt-Sleep experiment studies the same controls using shipped components;
+          five nights is the study protocol, not a nightly CLI default.
+        </p>
+        <div class="meta">
+          <span>Ziwei Zhou, Ziyang Gong, and Yifan Yang</span>
+          <span><time datetime="2026-07-14">July 14, 2026</time></span>
+          <span>Exploratory SkillOpt ablations + controlled SkillOpt-Sleep study</span>
+        </div>
+      </section>
+
+      <section class="content">
+        <p class="lead" id="summary">
+          SkillOpt improves an agent by iteratively editing a natural-language skill file.
+          That raises a practical control question: when the optimizer proposes a new skill
+          update, should the system accept it, gate it against validation performance, or
+          ask the model to reflect on its own successes and failures first?
+        </p>
+
+        <p>
+          We analyze 358 completed gating and skill-aware reflection run summaries, plus
+          141 completed consolidation summaries, for 499 included results. The target model is
+          the model being improved and evaluated; the optimizer model writes the skill
+          edits. The targets cover strong
+          proprietary models and a smaller open model: <code>gpt-5.5</code>,
+          <code>gpt-5.4-mini</code>, <code>gpt-5.4-nano</code>, and
+          <code>Qwen3.5-4B</code>. The optimizer model is held fixed at
+          <code>gpt-5.5</code>.
+        </p>
+
+        <div class="takeaways">
+          <div class="takeaway">
+            <b><code>Accept Every Edit</code> is competitive in this sweep.</b>
+            <span>Its combined candidate and slow-update policy often has a similar or higher exploratory diagnostic than the paper-style baseline, especially for <code>gpt-5.5</code>.</span>
+          </div>
+          <div class="takeaway">
+            <b>Hard gating remains a useful stability control.</b>
+            <span>The stress study motivates retaining validation, checkpointing, and rollback around automated skill edits.</span>
+          </div>
+          <div class="takeaway">
+            <b>Skill memory needs to stay compact.</b>
+            <span>Long, repetitive, or contradictory notes can hurt smaller targets.</span>
+          </div>
+          <div class="takeaway">
+            <b>Selection and consolidation control memory growth.</b>
+            <span>The tested Failure-Only SAR recipe restricts the source of appendix reminders and also uses consolidation, so its result supports the combined compact-memory configuration.</span>
+          </div>
+          <div class="takeaway">
+            <b>The Sleep study combines layered controls.</b>
+            <span>Opt-in replay and diverse rollouts have a better measured robustness profile; in one stress case, the validation-gated run remained flat while the ungated run collapsed.</span>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="metric">
+            <div class="value">499</div>
+            <div class="label">completed run summaries included in the descriptive analysis</div>
+          </div>
+          <div class="metric">
+            <div class="value">3</div>
+            <div class="label">benchmarks: SearchQA, LiveMathematicianBench, SpreadsheetBench</div>
+          </div>
+          <div class="metric">
+            <div class="value">4</div>
+            <div class="label">target models spanning GPT and Qwen</div>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>Reading best-on-val vs final.</strong>
+          We report the test score of the validation-selected checkpoint
+          (<code>best-on-val</code>) and the final checkpoint test score. Some exploratory
+          summaries also show <code>max(best-on-val, final)</code>. That maximum is an
+          oracle diagnostic computed after seeing both test endpoints; it is not a
+          deployable selection rule and does not support choosing a production
+          checkpoint. We return to this distinction in the stability analysis below. Scores are shown
+          on a 0–100% scale. A delta such as <code>+0.9%</code> denotes an absolute
+          0.9-percentage-point change, not a 0.9% relative change; relative gains are
+          explicitly labeled.
+        </div>
+
+        <h2 id="setup">Experimental setup</h2>
+        <p>
+          We vary two core mechanisms in SkillOpt. The first is the acceptance gate:
+          should a candidate skill update be accepted only if it improves validation
+          performance? The second is skill-aware reflection: should trajectories from the
+          target model be summarized into reusable notes for future skill edits?
+        </p>
+
+        <div class="callout">
+          <strong>Evidence and reproducibility boundary.</strong>
+          The 499-run section is a descriptive aggregation from an extended SkillOpt
+          sweep. Its raw per-run artifacts are not included in the public repository,
+          so this post is not a reproduction package for those ablations. Independent
+          repeated seeds and confidence intervals are not available for every cell, and
+          provider-connection all-zero cells are excluded where noted. The aggregate
+          figures support qualitative hypotheses for follow-up; they do not establish
+          statistically reliable rankings, especially when differences are small.
+          Implementation semantics were checked against
+          <a href="https://github.com/microsoft/SkillOpt/tree/a49d0eb1b92ec114b5d22408eaaa18f112c710c8">SkillOpt <code>a49d0eb</code></a>;
+          provider behavior can change independently of the repository.
+        </div>
+
+        <h3>Key terms</h3>
+        <ul class="term-list">
+          <li><strong>Gate:</strong> the rule that decides whether a proposed skill edit should become the current skill.</li>
+          <li><strong>Hard score:</strong> exact task success, such as answering a question correctly or producing a fully correct spreadsheet output.</li>
+          <li><strong>Soft score:</strong> partial credit, useful when a task has meaningful intermediate progress even if the final answer is not fully correct.</li>
+          <li><strong>Slow update:</strong> a periodic rewrite or merge step that incorporates broader training evidence into the skill.</li>
+          <li><strong>Skill-aware reflection (SAR):</strong> an EmbodiSkill-inspired routing mechanism that sends skill defects to body edits and execution lapses to protected appendix reminders.</li>
+          <li><strong>Consolidation:</strong> a compression step for SAR notes. It removes duplicate or overlapping advice before the skill appendix becomes too long.</li>
+        </ul>
+
+        <table aria-label="SkillOpt ablation settings">
+          <thead>
+            <tr>
+              <th>Base setting or SAR add-on</th>
+              <th>Gate</th>
+              <th>Slow-update gate</th>
+              <th>Reflection</th>
+              <th>Consolidation</th>
+              <th>What it tests</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="tag setting-default">Paper-Style Fully Gated Baseline</span></td>
+              <td>Hard validation gate</td>
+              <td>Validation-selected</td>
+              <td>None</td>
+              <td>None</td>
+              <td>The paper-style stability-first baseline; this is not the current <code>main</code> default.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-accept">Accept Every Edit</span></td>
+              <td>Disabled</td>
+              <td>Unconditional</td>
+              <td>None</td>
+              <td>None</td>
+              <td>The combined behavior when candidate edits and slow updates are both accepted unconditionally.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-hard-slow">Hard Gate + Always-On Slow Updates</span></td>
+              <td>Hard validation gate</td>
+              <td>Unconditional</td>
+              <td>None</td>
+              <td>None</td>
+              <td>Changes only the slow-update policy relative to the paper-style fully gated baseline.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-soft-score">Soft-Score Gate + Always-On Slow Updates</span></td>
+              <td>Soft score gate</td>
+              <td>Unconditional</td>
+              <td>None</td>
+              <td>None</td>
+              <td>Uses partial test-case success as the candidate signal while keeping slow updates unconditional.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-hybrid">Hard/Soft Hybrid Gate + Always-On Slow Updates</span></td>
+              <td>Mixed hard/soft</td>
+              <td>Unconditional</td>
+              <td>None</td>
+              <td>None</td>
+              <td>Combines exact correctness and partial test-case success while keeping slow updates unconditional.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-sar-failure">Failure-Only SAR + Consolidation (40)</span></td>
+              <td>Base-dependent</td>
+              <td>Base-dependent</td>
+              <td>Appendix reminders from failed trajectories only</td>
+              <td>After 40 notes</td>
+              <td>Whether failure-sourced appendix routing plus periodic compression keeps memory useful.</td>
+            </tr>
+            <tr>
+              <td><span class="tag setting-sar-both">Success-and-Failure SAR</span></td>
+              <td>Base-dependent</td>
+              <td>Base-dependent</td>
+              <td>Appendix reminders from successes and failures</td>
+              <td>None in the comparison below</td>
+              <td>Whether a broader memory of both good and bad trajectories is useful.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          The base settings use mechanism-based names throughout this post.
+          <code>Paper-Style Fully Gated Baseline</code> is the paper-style
+          stability-first policy: it hard-gates candidate edits and validation-selects
+          slow updates. It is not the current <code>main</code> default, which leaves
+          <code>slow_update_gate_with_selection=false</code>. <code>Accept Every
+          Edit</code> force-accepts candidates while slow updates remain unconditional.
+          The other three settings keep slow updates
+          always on while changing the candidate gate to hard, soft-score, or hybrid
+          hard/soft evidence. Tag colors stay consistent throughout the post; a composite
+          configuration inherits its base setting's color, while standalone SAR add-ons
+          use their own colors. SAR can be added to any base setting. Here,
+          <code>Failure-Only SAR</code> is shorthand for sourcing protected appendix
+          reminders only from failures; it does not disable the baseline body-edit path.
+          For example,
+          <code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code> accepts
+          every candidate, draws appendix reminders only from failures, and compresses
+          accumulated notes once the appendix grows past 40 notes. Because appendix-source
+          selection and consolidation change together in this configuration, its result
+          supports the combined compact-memory recipe, not failure-only appendix sourcing
+          in isolation.
+        </p>
+
+        <p class="note">
+          In configuration terms, the key controls are
+          <code>evaluation.use_gate</code>, <code>evaluation.gate_metric</code>, and
+          <code>optimizer.slow_update_gate_with_selection</code>. Several named arms
+          change more than one control. Comparisons against the paper-style baseline are
+          therefore combined-policy comparisons unless a common always-on-slow-update
+          baseline is stated explicitly.
+        </p>
+
+        <h3>Where SAR comes from</h3>
+        <p>
+          SkillOpt's skill-aware reflection adapts the central idea of
+          <a href="https://arxiv.org/abs/2605.10332"><em>EmbodiSkill</em> (Ju et al., 2026)</a>:
+          interpret a trajectory against the current skill before allowing that
+          trajectory to change the skill. A failed run is ambiguous evidence. It may
+          expose a missing or incorrect rule, or it may be an execution lapse in which
+          the model simply failed to follow valid guidance. Turning both cases into a
+          generic whole-skill rewrite can delete useful rules, add redundant advice, and
+          amplify noise.
+        </p>
+
+        <p>
+          EmbodiSkill makes this attribution explicit. It separates a prescriptive skill
+          body from an appendix that emphasizes valid rules. When a trajectory provides
+          reliable evidence, successful runs are routed to <em>Discovery</em> or
+          <em>Optimization</em>; failed runs are
+          routed to <em>Skill Defect</em> or <em>Execution Lapse</em>. The first three
+          categories can trigger targeted body edits, whereas an execution lapse only
+          adds an appendix reminder. Before editing, body-changing reflections are
+          consolidated: duplicates are removed, overlapping suggestions are merged,
+          target-specific edits are grouped, and unresolved conflicts can be discarded.
+          A constrained editor then changes the implicated rules while leaving unrelated
+          skill content intact (Ju et al., 2026, Sections 3.1–3.2.2, Equations 2 and
+          6–11).
+        </p>
+
+        <p>
+          SkillOpt transfers this failure-attribution rule to general-domain skill
+          optimization. A <em>Skill Defect</em> becomes a normal body edit governed by
+          the base setting's acceptance policy, whereas an <em>Execution Lapse</em>
+          becomes a short reminder in a protected appendix that step-level edits cannot
+          rewrite. <code>Failure-Only
+          SAR</code> is closest to EmbodiSkill's original appendix routing.
+          <code>Success-and-Failure SAR</code> extends it by allowing successful
+          trajectories to re-emphasize existing rules, and the note-count consolidation
+          thresholds tested here are a SkillOpt-specific compaction policy rather than a
+          parameter reported by EmbodiSkill. EmbodiSkill does not impose a formal length
+          penalty or show that shorter skills are always better: the compact-memory
+          conclusion below comes from the SkillOpt ablations. In EmbodiSkill's own
+          ALFWorld ablation, skill-aware revision raises success from
+          <code>78.36%</code> to <code>93.28%</code>, an absolute increase of
+          <code>14.92 percentage points</code> (a <code>19.04%</code> relative
+          improvement) over skill-unaware evolution.
+        </p>
+
+        <p>
+          We evaluate on three task families with different reward landscapes.
+          SearchQA has a high baseline and limited headroom. LiveMathematicianBench is small and high
+          variance. SpreadsheetBench is a code-execution benchmark with sparse hard
+          correctness and more room for partial progress signals.
+        </p>
+
+        <h2 id="results">Result 1: combined update policies trade exploration for stability</h2>
+        <p>
+          The <code>Paper-Style Fully Gated Baseline</code> is a useful
+          stability-first reference, but it is not the highest-scoring policy in every
+          cell. In this exploratory sweep, <code>Accept Every Edit</code> is associated
+          with a higher average oracle diagnostic for <code>gpt-5.5</code> on all three
+          benchmarks. The observed differences are smaller for
+          <code>gpt-5.4-mini</code>.
+        </p>
+
+        <p>
+          The table below reports <code>Accept Every Edit</code> -
+          <code>Paper-Style Fully Gated Baseline</code>,
+          averaged over the hyperparameter sweep, using
+          <code>max(best-on-val, final)</code> as the per-run score. Each value is the
+          absolute difference after expressing the score on a 0–100% scale, displayed
+          with a percent sign. This test-aware maximum is an exploratory oracle
+          diagnostic, not a checkpoint-selection rule. Positive values mean the
+          accept-every-edit policy has the higher diagnostic; negative values favor the
+          paper-style policy. The comparison changes both the candidate gate and the
+          slow-update policy, so it cannot identify the effect of either mechanism by
+          itself.
+        </p>
+
+        <table aria-label="Accept Every Edit score change versus Paper-Style Fully Gated Baseline">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>SearchQA change</th>
+              <th>LiveMathematicianBench change</th>
+              <th>SpreadsheetBench change</th>
+              <th>Interpretation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.5</code></td>
+              <td><span class="delta pos">+0.9%</span></td>
+              <td><span class="delta pos">+3.2%</span></td>
+              <td><span class="delta pos">+1.4%</span></td>
+              <td>Consistent with the stronger target tolerating the combined exploratory policy.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td><span class="delta pos">+1.0%</span></td>
+              <td><span class="delta pos">+0.2%</span></td>
+              <td><span class="delta pos">+1.1%</span></td>
+              <td>Small positive differences that require repeated-seed follow-up.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code></td>
+              <td><span class="delta neg">-0.7%</span></td>
+              <td><span class="delta pos">+2.6%</span></td>
+              <td><span class="delta neg">-1.1%</span></td>
+              <td>Mixed signs are consistent with greater sensitivity to the combined policy.</td>
+            </tr>
+            <tr>
+              <td><code>Qwen3.5-4B</code></td>
+              <td><span class="delta pos">+0.7%</span></td>
+              <td><span class="delta pos">+3.6%</span></td>
+              <td><span class="delta omitted">not included</span></td>
+              <td>Positive diagnostic differences on the included tasks; SpreadsheetBench is outside this Qwen analysis.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="note">
+          Across matched hyperparameters, <code>Accept Every Edit</code> beats
+          <code>Paper-Style Fully Gated Baseline</code> in 3 of 3 non-tied SearchQA comparisons and 3
+          of 4 LiveMathematicianBench comparisons for <code>gpt-5.5</code>. For
+          <code>gpt-5.4-nano</code> on SearchQA, it wins only 1 of 4. The observed pattern
+          is therefore broad for the strongest target, but not universal.
+        </p>
+
+        <p>
+          The completed Qwen SearchQA soft and mixed gate runs reinforce the same
+          close-setting result. Across four hyperparameter choices,
+          <code>Soft-Score Gate + Always-On Slow Updates</code> averages
+          <code>72.38%/72.77%</code> and
+          <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code> averages
+          <code>72.73%/72.77%</code> in <code>best-on-val/final</code>, compared with
+          <code>72.71%/72.25%</code> for <code>Accept Every Edit</code> and
+          <code>72.43%/72.43%</code> for <code>Paper-Style Fully Gated Baseline</code>. These
+          differences are small;
+          no gate policy clearly dominates for Qwen on SearchQA.
+        </p>
+
+        <p>
+          These observations motivate treating hard gating as a stability control rather
+          than assuming one policy dominates every target and task. By construction, a
+          hard gate can reject candidate edits; establishing its isolated performance
+          effect requires comparing policies that share the same slow-update behavior,
+          such as using <code>Hard Gate + Always-On Slow Updates</code> as the common
+          baseline.
+        </p>
+
+        <h2>Result 2: combined soft and hybrid policies use denser test-case feedback</h2>
+        <p>
+          An acceptance gate does more than find a promising candidate: it determines
+          which edits survive into the final skill. Hard correctness is a useful anchor,
+          but by itself it can be too sparse to distinguish partial progress from a
+          useless update. A soft score supplies denser supervision, while a hard/soft
+          hybrid gate incorporates exact correctness into the weighted gate signal; it
+          does not impose a hard veto. The key evidence is
+          therefore the <code>final</code> score, not only <code>best-on-val</code>.
+        </p>
+
+        <p>
+          In this SpreadsheetBench adapter, the soft score is the fraction of a task's
+          test cases that pass, while the hard score is 1 only when every test case
+          passes. Workbook formatting and style are not evaluated. This makes the soft
+          score denser than all-or-nothing task success. For <code>gpt-5.5</code>, the
+          combined soft-gate and always-on-slow-update policy is associated with an
+          average <code>best-on-val/final</code> change from <code>72.5%/72.5%</code> to
+          <code>76.3%/74.2%</code>. For <code>gpt-5.4-mini</code>, the pure soft gate finds
+          a better checkpoint but ends lower (<code>65.9%/59.0%</code>); the hard/soft
+          hybrid instead finishes at <code>66.3%</code>, <code>+5.4%</code> above the fully
+          gated final score. This pattern is consistent with including hard correctness
+          in the weighted signal being useful alongside denser feedback, but the
+          comparison against the paper-style baseline also changes slow-update behavior
+          and therefore is not a single-factor gate-metric ablation.
+        </p>
+
+        <table aria-label="SpreadsheetBench high-level results">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th><code>Paper-Style Fully Gated Baseline</code><br><span class="small">mean bov / fin</span></th>
+              <th>Strong alternatives<br><span class="small">mean bov / fin</span></th>
+              <th>Takeaway</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.5</code></td>
+              <td class="num">72.5% / 72.5%</td>
+              <td>
+                <code>Soft-Score Gate + Always-On Slow Updates</code>: <span class="num">76.3% / 74.2%</span>
+              </td>
+              <td>The combined soft/always-on policy has higher checkpoint and final averages in this sweep.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td class="num">60.9% / 60.9%</td>
+              <td>
+                <code>Soft-Score Gate + Always-On Slow Updates</code>: <span class="num">65.9% / 59.0%</span><br>
+                <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code>: <span class="num">64.3% / 66.3%</span>
+              </td>
+              <td>The hybrid/always-on policy has the strongest final average among the displayed alternatives.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code></td>
+              <td class="num">52.1% / 52.1%</td>
+              <td>
+                <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code>: <span class="num">53.1% / 51.7%</span>
+              </td>
+              <td>The signal is useful but not universally better for the weakest target.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="note">
+          Note: these SpreadsheetBench numbers follow the adapter and split used in this
+          ablation study. They are intended for comparing SkillOpt settings under the
+          same harness, not for cross-harness leaderboard comparison. A direct isolation
+          of the gate metric should compare soft or hybrid gating with
+          <code>Hard Gate + Always-On Slow Updates</code>, which shares the same
+          slow-update policy.
+        </p>
+
+        <h2 id="sar">Result 3: selective appendix routing and consolidation keep skill memory compact</h2>
+        <p>
+          The key question for skill-aware reflection is not simply whether to reflect,
+          but how much history should remain in the skill. Broad, unconsolidated
+          <code>Success-and-Failure SAR</code> is associated with gains for the strongest
+          target in some cells, yet with large regressions for smaller models in others.
+          Appendix-source selection limits which experiences become durable reminders;
+          consolidation removes duplicate or overlapping notes after they accumulate.
+          Both reflection configurations
+          below use <code>Accept Every Edit</code> as their base policy.
+        </p>
+
+        <table aria-label="SAR score changes versus Paper-Style Fully Gated Baseline">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Benchmark</th>
+              <th><code>Accept Every Edit + Success-and-Failure SAR</code><br><span class="small">no consolidation</span></th>
+              <th><code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code></th>
+              <th>Interpretation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.5</code></td>
+              <td>SearchQA</td>
+              <td><span class="delta pos">+1.2%</span></td>
+              <td><span class="delta pos">+0.2%</span></td>
+              <td>Consistent with the stronger model making use of broad experience notes.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.5</code></td>
+              <td>Spreadsheet</td>
+              <td><span class="delta pos">+0.5%</span></td>
+              <td><span class="delta pos">+3.2%</span></td>
+              <td>The compact-memory recipe has the higher diagnostic on this code task.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td>SearchQA</td>
+              <td><span class="delta neg">-11.4%</span></td>
+              <td><span class="delta pos">+0.2%</span></td>
+              <td>Consistent with broad notes being difficult for the smaller target to use.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td>Spreadsheet</td>
+              <td><span class="delta neg">-13.8%</span></td>
+              <td><span class="delta pos">+4.7%</span></td>
+              <td>The compact-memory recipe avoids the large regression.</td>
+            </tr>
+            <tr>
+              <td><code>Qwen3.5-4B</code></td>
+              <td>LiveMathematicianBench</td>
+              <td><span class="delta neg">-3.8%</span></td>
+              <td><span class="delta pos">+10.1%</span></td>
+              <td>The combined compact-memory recipe is associated with a gain on this low-baseline MCQ task.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p class="note">
+          Causal scope: the two SAR columns share the same accept-every-edit base, but the
+          compact recipe changes two controls together—it draws appendix reminders only
+          from failures and consolidates after the appendix grows past 40 notes. Their contrast therefore
+          supports the combined recipe, not either mechanism in isolation. Because the
+          displayed changes use <code>Paper-Style Fully Gated Baseline</code> as the reference, they
+          also include the base-policy change. Values are absolute percentage-point
+          differences, displayed with a percent sign.
+        </p>
+
+        <h3>A more direct comparison for consolidation</h3>
+        <p>
+          The next comparison holds the reflection source fixed at successes and failures
+          and adds consolidation after the appendix grows past 20 notes. This more
+          directly isolates compression. Relative to the same unconsolidated SAR memory,
+          the absolute score changes are <code>+9.65%</code> on mini SearchQA,
+          <code>+15.00%</code> on mini SpreadsheetBench, and <code>+2.32%</code> on nano
+          SpreadsheetBench.
+        </p>
+
+        <table aria-label="Direct consolidation effect with success-and-failure SAR">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Benchmark</th>
+              <th><code>Paper-Style Fully Gated Baseline</code></th>
+              <th><code>Accept Every Edit + Success-and-Failure SAR</code><br><span class="small">no consolidation</span></th>
+              <th><code>Accept Every Edit + Success-and-Failure SAR + Consolidation (20)</code></th>
+              <th>What changed</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td>SearchQA</td>
+              <td class="num">82.30%</td>
+              <td class="num">70.87%</td>
+              <td class="num">80.52%</td>
+              <td>Most of the broad-memory regression is recovered.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td>Spreadsheet</td>
+              <td class="num">60.89%</td>
+              <td class="num">47.14%</td>
+              <td class="num">62.14%</td>
+              <td>Consolidation turns a large regression into a small gain.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code></td>
+              <td>Spreadsheet</td>
+              <td class="num">52.14%</td>
+              <td class="num">51.07%</td>
+              <td class="num">53.39%</td>
+              <td>The consolidated setting has the higher diagnostic for the weakest GPT target.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Across these three direct-comparison cells, consolidation at threshold
+          <code>20</code> recovers some or all of the unconsolidated regression. This
+          limited subset suggests that earlier compression may help smaller targets, but
+          it does not establish a generally safest threshold. Broader repeated-seed
+          sweeps are needed before choosing a threshold by model size.
+        </p>
+
+        <h3>Compact-memory robustness across hyperparameters</h3>
+        <p>
+          Averages can hide whether a result is broad or driven by one lucky run. We also
+          compare settings against <code>Paper-Style Fully Gated Baseline</code> across four
+          hyperparameter choices. The counts below are wins/losses over paired settings,
+          with ties omitted.
+        </p>
+
+        <table aria-label="Hyperparameter consistency examples">
+          <thead>
+            <tr>
+              <th>Comparison</th>
+              <th>Examples</th>
+              <th>What this adds</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code> vs <code>Paper-Style Fully Gated Baseline</code></td>
+              <td>
+                <code>Qwen3.5-4B</code>: 3 / 1 on LiveMathematicianBench.<br>
+                <code>gpt-5.4-mini</code>: 3 / 1 on SpreadsheetBench.
+              </td>
+              <td>The combined compact-memory recipe has gains in multiple matched settings, not only in the mean.</td>
+            </tr>
+            <tr>
+              <td><code>Accept Every Edit + Success-and-Failure SAR</code> vs <code>Paper-Style Fully Gated Baseline</code></td>
+              <td>
+                <code>gpt-5.4-mini</code>: 0 / 4 on SearchQA and 0 / 4 on SpreadsheetBench.<br>
+                <code>gpt-5.5</code>: 3 / 1 on SearchQA.
+              </td>
+              <td>The pattern is consistent with model-capacity sensitivity, but does not establish a general capacity threshold.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2 id="stability">Result 4: best-on-val and final expose different failure modes</h2>
+        <p>
+          The pair <code>bov/fin</code> is more useful than a single score because it
+          separates search ability from training stability. <code>bov</code> asks whether
+          SkillOpt ever found a good skill according to validation selection.
+          <code>fin</code> asks whether the skill left at the end of training is still
+          good. Some exploratory summaries above use <code>max(bov, fin)</code> to
+          describe observed reachability, but that test-aware maximum can inflate what a
+          deployable policy would achieve. The two endpoints must remain separate when
+          diagnosing drift, selection on a small validation set, or steady improvement.
+        </p>
+
+        <table aria-label="Best-on-val and final diagnostic examples">
+          <thead>
+            <tr>
+              <th>Example</th>
+              <th>Benchmark</th>
+              <th>Mean bov / fin</th>
+              <th>Diagnostic</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.4-mini</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
+              <td>SearchQA</td>
+              <td class="num">70.87% / 56.60%</td>
+              <td>Large endpoint gap, consistent with end-of-run drift under broad reflection.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
+              <td>SearchQA</td>
+              <td class="num">72.04% / 64.62%</td>
+              <td>Same pattern at smaller scale: the final skill is worse than the selected checkpoint.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.5</code>, <code>Accept Every Edit</code></td>
+              <td>SpreadsheetBench</td>
+              <td class="num">73.49% / 70.36%</td>
+              <td>The endpoint gap is consistent with later ungated updates eroding the final skill.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code>, <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code></td>
+              <td>SpreadsheetBench</td>
+              <td class="num">64.29% / 66.25%</td>
+              <td>Final exceeds best-on-val; the run continued to improve beyond the validation-selected checkpoint.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.5</code>, <code>Accept Every Edit + Success-and-Failure SAR</code></td>
+              <td>SearchQA</td>
+              <td class="num">86.53% / 86.52%</td>
+              <td>No measurable endpoint gap in this aggregate cell.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          A high oracle maximum shows that one of two retrospectively inspected
+          endpoints scored well; it does not tell an operator which checkpoint could
+          have been selected without test awareness. A high <code>fin</code> is more
+          directly relevant to an automatic training policy. The observed
+          <code>bov-fin</code> gaps under <code>Accept Every Edit</code> motivate retaining
+          validation checkpointing and rollback. The hybrid policy's final-score pattern
+          makes it a candidate for repeated-seed evaluation when the target is smaller or
+          the validation signal is noisy, not a universal default.
+        </p>
+
+        <h2 id="sleep">Result 5: SkillOpt-Sleep applies these controls in an overnight preview</h2>
+        <p>
+          The ablations above ask which update policy is best under a training harness.
+          SkillOpt-Sleep asks the deployment version of the same question: if an agent
+          sees new real tasks today, can it improve a skill proposal overnight and
+          come back better tomorrow? The plugin runs this as an offline sleep cycle rather
+          than an in-session edit: it replays recent experience, proposes a consolidated
+          skill update, validates it against a held-out gate, and stages it for review.
+          Normal operation does not replace the deployed skill until the user explicitly
+          runs <code>adopt</code>; <code>auto_adopt</code> is an opt-in mode.
+        </p>
+
+        <p>
+          The sleep study uses a study recipe built from shipped components, including
+          <code>skillopt_sleep.dream.dream_consolidate</code>.
+          Unless stated otherwise, each cell runs five nights; each night adds 10 new
+          real "today" tasks, and the skill carries over night to night. The full
+          held-out test split is scored before night 1 and after the configured final
+          night, with <code>delta = after - baseline</code> in percentage points. The
+          optimizer is <code>gpt-5.5</code>, the seed is 42, and the targets are
+          <code>gpt-5.5</code>, <code>gpt-5.4-mini</code>, and
+          <code>gpt-5.4-nano</code>. The five-night recipe is an experiment-harness
+          protocol, not normal CLI behavior or a shipping default.
+        </p>
+
+        <div class="callout">
+          <strong>Preview and data boundary.</strong>
+          SkillOpt-Sleep is a preview. Harvesting is local and read-only, and the
+          <code>mock</code> backend makes no provider calls. A real backend sends
+          truncated session excerpts and derived task content to the selected provider
+          for mining, replay, judging, and reflection. Depending on the stage, provider
+          prompts can also contain the current skill or memory document, configured user
+          preferences, and generated responses being judged or reflected on. Review and
+          redact sensitive material across these inputs, and check the provider's data
+          policy, before using a real backend. Accepted proposals are staged for manual
+          review by default; adoption is a separate, backed-up operation unless the user
+          explicitly enables <code>auto_adopt</code>.
+        </div>
+
+        <table aria-label="SkillOpt-Sleep benchmark protocol">
+          <thead>
+            <tr>
+              <th>Benchmark</th>
+              <th>Held-out test</th>
+              <th>Scoring</th>
+              <th>Why it matters for sleep</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>SearchQA</td>
+              <td class="num">1,400 items</td>
+              <td>SQuAD exact-match vs gold</td>
+              <td>High-baseline QA task where a bad rule can silently spread.</td>
+            </tr>
+            <tr>
+              <td>LiveMathematicianBench</td>
+              <td class="num">124 items</td>
+              <td>Multiple-choice label with choices shuffled per item</td>
+              <td>Small, high-variance reasoning set that tests whether gains survive noise.</td>
+            </tr>
+            <tr>
+              <td>SpreadsheetBench</td>
+              <td class="num">280 items</td>
+              <td>Generated <code>openpyxl</code> code is executed and compared cell-by-cell to a golden workbook</td>
+              <td>Code-execution task where partial-looking progress must still produce a correct file.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>The default validation gate bounded downside in a paired stress case</h3>
+        <p>
+          In a paired study with <code>gpt-5.4-nano</code> on SearchQA, the ungated run
+          adopted a plausible but wrong rule—answer with the document title string
+          verbatim—and fell from <code>55.4%</code> to <code>2.6%</code>. The gated run
+          rejected all proposals and remained flat at <code>57.0%</code>. The two runs
+          started from different measured baselines, so this is not evidence that they
+          encountered identical candidate edits; it is an observed stress-case contrast.
+        </p>
+
+        <table aria-label="SkillOpt-Sleep gate safety stress case">
+          <thead>
+            <tr>
+              <th>SearchQA, <code>gpt-5.4-nano</code></th>
+              <th>Night 0</th>
+              <th>Night 5</th>
+              <th>Delta</th>
+              <th>Interpretation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>No gate</td>
+              <td class="num">55.4%</td>
+              <td class="num">2.6%</td>
+              <td><span class="delta neg">-52.8%</span></td>
+              <td>The ungated study run propagated a wrong lesson across nights.</td>
+            </tr>
+            <tr>
+              <td>Validation gate, default</td>
+              <td class="num">57.0%</td>
+              <td class="num">57.0%</td>
+              <td><span class="delta flat">0.0%</span></td>
+              <td>The run rejected all proposals and its measured score remained flat.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          This motivates a more conservative deployment posture than the broad ablation
+          headline. <code>Accept Every Edit</code> can be useful for offline exploration,
+          but automated proposal generation should retain validation, checkpointing, and
+          rollback—and should stage changes for review before adoption.
+        </p>
+
+        <h3>Replay gives the overnight cycle something to learn from</h3>
+        <p>
+          In the study recipe, diverse rollouts and relevant recalled experience are
+          associated with larger gains where the target model has headroom. One practical
+          pattern worth testing is a cheaper target model paired with a stronger overnight
+          optimizer. On SearchQA with <code>gpt-5.4-nano</code>, the gated five-night cell
+          shows roughly twice the best measured <code>gpt-5.5</code> gain on the same
+          benchmark.
+        </p>
+
+        <table aria-label="SkillOpt-Sleep SearchQA nano scaling">
+          <thead>
+            <tr>
+              <th>Config</th>
+              <th>Baseline</th>
+              <th>After sleep</th>
+              <th>Delta</th>
+              <th>Night-by-night shape</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.4-nano</code>, cumulative replay, nights=5</td>
+              <td class="num">56.0%</td>
+              <td class="num">67.9%</td>
+              <td><span class="delta pos">+11.9%</span></td>
+              <td>56.0% &rarr; 62.6% &rarr; 66.5% &rarr; 66.5% &rarr; 66.5% &rarr; 67.9%</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code>, <code>recall_k=20</code>, nights=5</td>
+              <td class="num">56.6%</td>
+              <td class="num">68.1%</td>
+              <td><span class="delta pos">+11.5%</span></td>
+              <td>56.6% &rarr; 65.9% &rarr; 68.5% &rarr; 68.5% &rarr; 68.1% &rarr; 68.1%</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code>, cumulative replay, nights=8</td>
+              <td class="num">56.2%</td>
+              <td class="num">65.7%</td>
+              <td><span class="delta pos">+9.5%</span></td>
+              <td>Most of the gain arrives by night 5.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.5</code>, best gated SearchQA sleep cell</td>
+              <td class="num">79.8%</td>
+              <td class="num">85.8%</td>
+              <td><span class="delta pos">+6.0%</span></td>
+              <td>Separate gated scaling cell with less measured headroom.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Recall captures much of the measured full-history gain at lower per-night cost.
+          In one SearchQA comparison with <code>gpt-5.5</code>,
+          <code>recall_k=10</code> gives <code>+3.1%</code>,
+          <code>recall_k=20</code> gives <code>+4.5%</code>, and a full-history reference
+          cell reports <code>79.6% &rarr; 85.1% (+5.6%)</code>. A separate gated scaling
+          cell reports <code>+6.0%</code> and the night-by-night curve
+          <code>79.8% &rarr; 81.4% &rarr; 85.4% &rarr; 85.4% &rarr; 85.4% &rarr; 85.8%</code>.
+          These cells have different baselines and should not be treated as the same run.
+          All deltas here are percentage points.
+        </p>
+
+        <h3>Diverse dream rollouts improve the study's robustness profile</h3>
+        <p>
+          Sleep only learns useful contrastive lessons if the dream rollouts are
+          independent samples. An early engine configuration collapsed the rollouts to a
+          single cached sample, which made reflection brittle. In the measured study
+          configurations, diverse rollouts plus recall improve the grid mean and reduce
+          the worst observed downside. These are experiment-recipe settings, not shipping
+          defaults.
+        </p>
+
+        <table aria-label="SkillOpt-Sleep engine configuration comparison">
+          <thead>
+            <tr>
+              <th>Engine configuration</th>
+              <th>Mean delta</th>
+              <th>Worst-cell delta</th>
+              <th>Cells &gt; +0.5%</th>
+              <th>Cells &lt; -0.5%</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Single-sample reflection, degraded</td>
+              <td><span class="delta neg">-2.66%</span></td>
+              <td><span class="delta neg">-52.8%</span></td>
+              <td class="num">7 / 18</td>
+              <td class="num">5 / 18</td>
+            </tr>
+            <tr>
+              <td>Diverse rollouts, <code>K=5</code>, no recall</td>
+              <td><span class="delta flat">+0.24%</span></td>
+              <td><span class="delta neg">-4.0%</span></td>
+              <td class="num">6 / 18</td>
+              <td class="num">7 / 18</td>
+            </tr>
+            <tr>
+              <td>Diverse rollouts + recall, experiment recipe</td>
+              <td><span class="delta pos">+0.53%</span></td>
+              <td><span class="delta neg">-2.4%</span></td>
+              <td class="num">7 / 18</td>
+              <td class="num">7 / 18</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Sensitivity around the study recipe</h3>
+        <p>
+          On one gated nano SearchQA cell, every tested change away from the study recipe
+          (<code>dream_factor=2</code>, <code>dream_rollouts=5</code>, 10 tasks per night,
+          and five nights) reduces the measured gain. This supports the recipe only for
+          that subset; it does not establish a universal optimum. The plugin itself ships
+          replay off: <code>dream_factor=0</code>, <code>dream_rollouts=1</code>, and
+          <code>recall_k=0</code>.
+        </p>
+
+        <table aria-label="SkillOpt-Sleep study-recipe sensitivity sweep">
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th>Delta</th>
+              <th>Vs study-recipe baseline <code>+11.9%</code></th>
+              <th>Reading</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>dream_factor=4</code> instead of 2</td>
+              <td><span class="delta pos">+8.8%</span></td>
+              <td><span class="delta neg">-3.1%</span></td>
+              <td>More synthetic breadth did not beat the study recipe in this cell.</td>
+            </tr>
+            <tr>
+              <td><code>rollouts=10</code> instead of 5</td>
+              <td><span class="delta pos">+9.5%</span></td>
+              <td><span class="delta neg">-2.4%</span></td>
+              <td>More rollouts added cost without improving this cell's final score.</td>
+            </tr>
+            <tr>
+              <td><code>per_night=15</code> instead of 10</td>
+              <td><span class="delta pos">+2.7%</span></td>
+              <td><span class="delta neg">-9.2%</span></td>
+              <td>This larger nightly batch has a lower measured gain in the tested cell.</td>
+            </tr>
+            <tr>
+              <td><code>nights=8</code> instead of 5</td>
+              <td><span class="delta pos">+9.5%</span></td>
+              <td><span class="delta neg">-2.4%</span></td>
+              <td>Extra nights mostly ran past the useful part of the curve.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          <strong>End-to-end agent check.</strong>
+          In the public
+          <a href="https://github.com/garrytan/gbrain-evals/blob/main/docs/benchmarks/2026-06-03-skillopt.md">gbrain-evals
+          <code>skillopt-v1</code> report</a>, four deliberately deficient, small,
+          single-flaw skills improve from <code>0%</code> to <code>100%</code> on held-out
+          tasks under its Claude-model setup. On the easy ablation fixture, a one-shot
+          rewrite ties the full validation-gated loop at <code>100%</code>. This is a
+          useful mechanism check, not evidence of broad production coding-agent gains or
+          proof that the full loop always outperforms a single rewrite.
+        </div>
+
+        <p class="note">
+          Source for the Sleep numbers:
+          <a href="https://github.com/microsoft/SkillOpt/blob/main/docs/sleep/RESULTS.md">SkillOpt-Sleep results and analysis</a>.
+          The Sleep study is single-seed per cell; treat differences below 1.5 percentage points as
+          noise, and keep the validation gate on unless there is no held-out validation
+          signal.
+        </p>
+
+        <h2 id="recommendations">Settings worth follow-up evaluation</h2>
+        <p>
+          The table below summarizes exploratory candidates from this sweep, not
+          production defaults. Re-evaluate them on your own held-out data with repeated
+          seeds. For deployed workflows, retain validation checkpointing, review staged
+          changes, and keep a rollback path.
+        </p>
+        <table aria-label="Exploratory SkillOpt settings for follow-up evaluation">
+          <thead>
+            <tr>
+              <th>Target model</th>
+              <th>Candidate settings from this sweep</th>
+              <th>Use caution with</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>gpt-5.5</code></td>
+              <td><code>Accept Every Edit</code>, <code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code>, or <code>Accept Every Edit + Success-and-Failure SAR</code>; for Spreadsheet try <code>Soft-Score Gate + Always-On Slow Updates</code> or <code>Hard Gate + Always-On Slow Updates + Failure-Only SAR + Consolidation (40)</code></td>
+              <td>Consolidation is optional</td>
+              <td>The aggregate cells are consistent with tolerance for exploratory updates and broader reflection.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-mini</code></td>
+              <td><code>Accept Every Edit</code>, <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code>, <code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code>, or <code>Accept Every Edit + Success-and-Failure SAR + Consolidation (20)</code></td>
+              <td><code>Accept Every Edit + Success-and-Failure SAR</code> without consolidation</td>
+              <td>The displayed cells associate more updates with gains and long unconsolidated memory with regressions.</td>
+            </tr>
+            <tr>
+              <td><code>gpt-5.4-nano</code></td>
+              <td><code>Paper-Style Fully Gated Baseline</code> or <code>Hard Gate + Always-On Slow Updates</code> for SearchQA; <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code> or <code>Accept Every Edit + Success-and-Failure SAR + Consolidation (20)</code> for Spreadsheet</td>
+              <td>Pure soft-score gates and <code>Accept Every Edit + Success-and-Failure SAR</code> without consolidation</td>
+              <td>The displayed cells are consistent with greater sensitivity to prompt length and noisy rules.</td>
+            </tr>
+            <tr>
+              <td><code>Qwen3.5-4B</code></td>
+              <td><code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code> or <code>Hard Gate + Always-On Slow Updates</code> on LiveMathematicianBench; SearchQA settings are close</td>
+              <td>SpreadsheetBench is outside the Qwen scope of this post</td>
+              <td>On the included tasks, the compact repair-memory setting has its largest gain on the lower-baseline task.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          <strong>Promising exploratory setting, not a safe default.</strong>
+          For strong and medium GPT targets,
+          <code>Accept Every Edit + Failure-Only SAR + Consolidation (40)</code> is worth
+          testing because its reflection memory stays focused and periodically
+          compressed. It force-accepts body edits, however, and SAR appendix reminders
+          are not separately governed by the validation gate. A production workflow
+          should retain a validation gate, checkpoint before adoption, review the staged
+          diff, and keep rollback available.
+        </div>
+
+        <h2>Limitations</h2>
+        <p>
+          These results should be read as an ablation study, not as a benchmark
+          leaderboard. LiveMathematicianBench has high variance because the evaluation set is small.
+          Qwen3.5-4B is discussed only on SearchQA and LiveMathematicianBench in this post. Its
+          SpreadsheetBench <code>Hard/Soft Hybrid Gate + Always-On Slow Updates</code> result has only two valid hyperparameter cells, and the
+          consolidation sweep has three per threshold; failed all-zero connection runs
+          are excluded. SpreadsheetBench conclusions are therefore drawn from the
+          GPT-family target models.
+        </p>
+        <p>
+          SpreadsheetBench scores are sensitive to the spreadsheet execution adapter and
+          prompt format. The numbers here should be compared within this ablation
+          protocol rather than mixed with results from a different harness.
+        </p>
+        <p>
+          The tested failure-only SAR cells also consolidate once the appendix grows past
+          40 notes.
+          Consequently, this study supports the combined compact-memory recipe but does
+          not separately identify the effect of failure-only appendix sourcing. The raw
+          per-run artifacts for the 499-run ablation are not public, so those aggregate
+          results cannot currently be independently reproduced from this repository.
+        </p>
+
+        <h2>Conclusion</h2>
+        <p>
+          The main observation is that SkillOpt's update controls should be evaluated as
+          a policy, not inferred from one switch in a confounded comparison. The
+          exploratory sweep is consistent with stronger targets tolerating more candidate
+          updates, and with test-case pass rates providing useful signal on
+          SpreadsheetBench. Reflection can help, but the displayed comparisons favor
+          keeping its memory compact.
+        </p>
+        <p>
+          In practice, choose a SkillOpt configuration with the target model, task,
+          validation signal, and deployment boundary in mind. Treat the settings above as
+          hypotheses to validate locally, and preserve checkpointing, staged review, and
+          rollback when skill updates can affect a deployed agent.
+        </p>
+
+        <h2>Method reference</h2>
+        <p id="reference-embodiskill">
+          Ju, Ruofei, Xinrui Wang, Xin Ding, Yifan Yang, Hao Wu, Shiqi Jiang, Qianxi
+          Zhang, Hao Wen, Xiangyu Li, Weijun Wang, Kun Li, Yunxin Liu, Haipeng Dai, Wei
+          Wang, and Ting Cao. 2026. “EmbodiSkill: Skill-Aware Reflection for
+          Self-Evolving Embodied Agents.” <em>arXiv preprint</em> arXiv:2605.10332
+          [cs.AI]. <a href="https://doi.org/10.48550/arXiv.2605.10332">https://doi.org/10.48550/arXiv.2605.10332</a>.
+        </p>
+
+        <div class="citation-title">
+          <h2>Citation</h2>
+          <button class="copy-button" type="button" data-copy-target="citation-bibtex" aria-live="polite">Copy BibTeX</button>
+        </div>
+        <p>
+          If you find this ablation useful, please cite it as:
+        </p>
+        <pre><code id="citation-bibtex">@misc{zhou2026skilloptablations,
+  title        = {SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?},
+  author       = {Zhou, Ziwei and Gong, Ziyang and Yang, Yifan},
+  year         = {2026},
+  url          = {https://microsoft.github.io/SkillOpt/blog/gating-reflection-safe-updates/},
+  note         = {Blog post}
+}</code></pre>
+
+        <hr class="section-divider">
+
+        <div class="footer-note">
+          <p>
+            This post summarizes the gating, skill-aware reflection, and consolidation
+            ablations used to choose practical SkillOpt training settings, plus the
+            SkillOpt-Sleep results that turn those controls into an overnight plugin.
+          </p>
+        </div>
+      </section>
+    </article>
+  </main>
+  <script>
+    (function () {
+      var settingRules = [
+        ["Hard/Soft Hybrid Gate + Always-On Slow Updates", "setting-hybrid"],
+        ["Soft-Score Gate + Always-On Slow Updates", "setting-soft-score"],
+        ["Hard Gate + Always-On Slow Updates", "setting-hard-slow"],
+        ["Accept Every Edit", "setting-accept"],
+        ["Paper-Style Fully Gated Baseline", "setting-default"],
+        ["Failure-Only SAR", "setting-sar-failure"],
+        ["Success-and-Failure SAR", "setting-sar-both"]
+      ];
+
+      document.querySelectorAll("code").forEach(function (node) {
+        var label = node.textContent.replace(/\s+/g, " ").trim();
+        for (var i = 0; i < settingRules.length; i += 1) {
+          if (label.indexOf(settingRules[i][0]) !== -1) {
+            node.classList.add("setting-tag", settingRules[i][1]);
+            break;
+          }
+        }
+      });
+
+      function fallbackCopy(text) {
+        var area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.left = "-9999px";
+        document.body.appendChild(area);
+        area.select();
+        var succeeded = false;
+        try {
+          succeeded = document.execCommand("copy");
+        } catch (error) {
+          succeeded = false;
+        }
+        document.body.removeChild(area);
+        return succeeded;
+      }
+
+      document.querySelectorAll("[data-copy-target]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var target = document.getElementById(button.getAttribute("data-copy-target"));
+          if (!target) return;
+          var text = target.textContent.trim();
+          var original = button.textContent;
+          var showStatus = function (succeeded) {
+            button.textContent = succeeded ? "Copied" : "Copy failed";
+            window.setTimeout(function () {
+              button.textContent = original;
+            }, 1600);
+          };
+
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () {
+              showStatus(true);
+            }).catch(function () {
+              showStatus(fallbackCopy(text));
+            });
+          } else {
+            showStatus(fallbackCopy(text));
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

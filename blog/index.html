@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkillOpt Technical Blog</title>
+  <meta name="description" content="Technical notes from the SkillOpt team on skill optimization, evaluation, safety, and agent learning systems.">
+  <link rel="canonical" href="https://microsoft.github.io/SkillOpt/blog/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SkillOpt">
+  <meta property="og:title" content="SkillOpt Technical Blog">
+  <meta property="og:description" content="Technical notes on skill optimization, evaluation, safety, and agent learning systems.">
+  <meta property="og:url" content="https://microsoft.github.io/SkillOpt/blog/">
+  <meta property="og:image" content="https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="SkillOpt Technical Blog">
+  <meta name="twitter:description" content="Technical notes on skill optimization, evaluation, safety, and agent learning systems.">
+  <meta name="twitter:image" content="https://microsoft.github.io/SkillOpt/skillopt-assets/teaser-1.png">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='16' fill='%23245fc7'/%3E%3Ctext x='50' y='68' text-anchor='middle' font-size='58' font-family='Arial' font-weight='700' fill='white'%3ES%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #596579;
+      --line: #d9deea;
+      --paper: #fff;
+      --wash: #f7f9fc;
+      --blue: #245fc7;
+      --blue-soft: #eaf1ff;
+      --shadow: 0 14px 44px rgba(23, 32, 51, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--wash);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }
+    a { color: var(--blue); }
+    .skip-link {
+      position: fixed;
+      left: 16px;
+      top: -80px;
+      z-index: 100;
+      padding: 10px 14px;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--blue);
+    }
+    .skip-link:focus { top: 12px; }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .95);
+    }
+    .header-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 16px 24px;
+    }
+    .brand {
+      color: var(--ink);
+      font-weight: 750;
+      text-decoration: none;
+    }
+    nav { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; }
+    nav a { color: var(--muted); text-decoration: none; }
+    nav a:hover, nav a:focus-visible { color: var(--blue); text-decoration: underline; }
+    main { max-width: 1040px; margin: 0 auto; padding: 72px 24px 96px; }
+    .eyebrow {
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 750;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 10px 0 16px; font-size: clamp(40px, 7vw, 68px); line-height: 1.02; }
+    .intro { max-width: 760px; color: var(--muted); font-size: 20px; }
+    .post-list { margin-top: 52px; }
+    .post-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 30px;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+    .post-card h2 { margin: 8px 0 12px; font-size: clamp(25px, 4vw, 36px); line-height: 1.15; }
+    .post-card h2 a { color: var(--ink); text-decoration: none; }
+    .post-card h2 a:hover, .post-card h2 a:focus-visible { color: var(--blue); text-decoration: underline; }
+    .meta { color: var(--muted); font-size: 14px; }
+    .summary { max-width: 720px; margin: 16px 0 0; color: #344054; }
+    .read-link { align-self: center; white-space: nowrap; font-weight: 700; }
+    footer {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 26px 24px 42px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+    @media (max-width: 720px) {
+      .header-inner { align-items: flex-start; flex-direction: column; }
+      main { padding-top: 48px; }
+      .post-card { grid-template-columns: 1fr; padding: 24px; }
+      .read-link { justify-self: start; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header>
+    <div class="header-inner">
+      <a class="brand" href="../">SkillOpt</a>
+      <nav aria-label="Site navigation">
+        <a href="../">Project</a>
+        <a href="../docs/guideline.html">Documentation</a>
+        <a href="https://arxiv.org/abs/2605.23904">Paper</a>
+        <a href="https://github.com/microsoft/SkillOpt">Code</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <span class="eyebrow">Microsoft Research · SkillOpt</span>
+    <h1>Technical Blog</h1>
+    <p class="intro">Scoped experiments and engineering notes on optimizing agent skills, evaluating text-space updates, and deploying self-improving systems responsibly.</p>
+
+    <section class="post-list" aria-labelledby="latest-posts">
+      <h2 id="latest-posts">Latest posts</h2>
+      <article class="post-card">
+        <div>
+          <div class="meta"><time datetime="2026-07-14">July 14, 2026</time> · Ziwei Zhou, Ziyang Gong, and Yifan Yang</div>
+          <h2><a href="gating-reflection-safe-updates/">SkillOpt Ablations and Sleep: When Should an Agent Accept, Gate, or Reflect on Skill Updates?</a></h2>
+          <p class="summary">A descriptive analysis of 499 completed SkillOpt run summaries, plus a controlled five-night SkillOpt-Sleep study, examines the trade-offs between exploration, validation gates, partial-credit signals, and compact reflection memory.</p>
+        </div>
+        <a class="read-link" href="gating-reflection-safe-updates/" aria-label="Read SkillOpt Ablations and Sleep">Read article →</a>
+      </article>
+    </section>
+  </main>
+
+  <footer>SkillOpt Technical Blog · <a href="https://github.com/microsoft/SkillOpt">github.com/microsoft/SkillOpt</a></footer>
+</body>
+</html>

@@ -39,6 +39,7 @@ theme:
 
 nav:
   - Home: index.md
+  - Technical Blog: https://microsoft.github.io/SkillOpt/blog/
   - Getting Started:
     - Installation: guide/installation.md
     - First Experiment: guide/first-experiment.md
