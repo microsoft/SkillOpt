@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="$(cd "$ROOT/../.." && pwd)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT_DIR="${1:-$WORKSPACE/runtime/skillopt-review-bundle-$STAMP}"
+DRY_RUN_DIR="$OUT_DIR/pilot-dry-run"
+BUNDLE_REPORT="$OUT_DIR/brightlead-skillopt-review-bundle.md"
+
+export PYTHONNOUSERSITE=1
+
+mkdir -p "$OUT_DIR"
+cd "$ROOT"
+
+echo "[brightlead-skillopt-review-bundle] running pilot dry run"
+"$ROOT/bin/brightlead-skillopt-pilot-dry-run" "$DRY_RUN_DIR" >/dev/null
+
+python3 - "$ROOT" "$OUT_DIR" "$DRY_RUN_DIR" "$BUNDLE_REPORT" "$STAMP" <<'PYREPORT'
+import json
+import os
+import sys
+
+root, out_dir, dry_run_dir, bundle_report, stamp = sys.argv[1:]
+dry_run_report = os.path.join(dry_run_dir, "brightlead-skillopt-pilot-dry-run.md")
+dry_run_json = os.path.join(dry_run_dir, "dry-run.json")
+preflight_report = os.path.join(
+    dry_run_dir, "preflight", "brightlead-skillopt-preflight.md"
+)
+
+missing = [
+    path
+    for path in (dry_run_report, dry_run_json, preflight_report)
+    if not os.path.exists(path)
+]
+if missing:
+    raise SystemExit("missing expected evidence: " + ", ".join(missing))
+
+with open(dry_run_report, encoding="utf-8") as f:
+    dry_run_markdown = f.read()
+with open(preflight_report, encoding="utf-8") as f:
+    preflight_markdown = f.read()
+with open(dry_run_json, encoding="utf-8") as f:
+    dry_run_payload = json.load(f)
+
+ok = (
+    "- status: PASS" in dry_run_markdown
+    and "- status: PASS" in preflight_markdown
+    and dry_run_payload.get("accepted") is True
+    and dry_run_payload.get("adopted") is False
+    and dry_run_payload.get("staging_dir") == ""
+    and dry_run_payload.get("tasks_reviewed") is True
+)
+status = "PASS" if ok else "FAIL"
+
+manifest = {
+    "status": status,
+    "generated_utc": stamp,
+    "skillopt_root": root,
+    "dry_run_report": dry_run_report,
+    "preflight_report": preflight_report,
+    "dry_run_json": dry_run_json,
+    "accepted": dry_run_payload.get("accepted"),
+    "baseline": dry_run_payload.get("baseline"),
+    "candidate": dry_run_payload.get("candidate"),
+    "adopted": dry_run_payload.get("adopted"),
+    "staging_dir": dry_run_payload.get("staging_dir"),
+    "tasks_reviewed": dry_run_payload.get("tasks_reviewed"),
+}
+
+manifest_path = os.path.join(out_dir, "manifest.json")
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, ensure_ascii=True, indent=2)
+    f.write("\n")
+
+with open(bundle_report, "w", encoding="utf-8") as f:
+    f.write("# BrightLead SkillOpt Review Bundle\n\n")
+    f.write(f"- status: {status}\n")
+    f.write(f"- generated_utc: `{stamp}`\n")
+    f.write(f"- baseline: {dry_run_payload.get('baseline')}\n")
+    f.write(f"- candidate: {dry_run_payload.get('candidate')}\n")
+    f.write(f"- accepted: {dry_run_payload.get('accepted')}\n")
+    f.write(f"- adopted: {dry_run_payload.get('adopted')}\n")
+    f.write(f"- staging_dir: `{dry_run_payload.get('staging_dir')}`\n")
+    f.write(f"- tasks_reviewed: {dry_run_payload.get('tasks_reviewed')}\n")
+    f.write(f"- manifest: `{manifest_path}`\n")
+    f.write(f"- dry_run_report: `{dry_run_report}`\n")
+    f.write(f"- preflight_report: `{preflight_report}`\n\n")
+    f.write("## Plain English\n\n")
+    f.write(
+        "This bundle turns the BrightLead SkillOpt pilot dry run into a single "
+        "review packet. It reruns the local preflight and reviewed mock dry run, "
+        "checks that both passed, records the evidence paths in a manifest, and "
+        "confirms the pilot produced report-only output with no adopted edits or "
+        "staged live changes. It does not push, open PRs, dispatch automation, "
+        "contact external services, harvest private transcripts, or touch WordPress.\n\n"
+    )
+    f.write("## Review Checklist\n\n")
+    f.write("- Confirm preflight status is PASS.\n")
+    f.write("- Confirm dry-run status is PASS.\n")
+    f.write("- Confirm baseline moved from 0.0 to candidate 1.0.\n")
+    f.write("- Confirm adopted is False and staging_dir is empty.\n")
+    f.write("- Review the proposed rule before any future adoption batch.\n")
+
+if status != "PASS":
+    raise SystemExit(1)
+PYREPORT
+
+echo "[brightlead-skillopt-review-bundle] report: $BUNDLE_REPORT"

@@ -40,6 +40,14 @@ tools/skillopt/bin/brightlead-skillopt-pilot-dry-run
 
 The pilot dry run creates a sanitized temporary project, uses a reviewed task file with `--backend mock`, and writes report-only evidence under `runtime/skillopt-pilot-dry-run-*`. It confirms SkillOpt can propose a missing rule without adopting edits, staging live changes, harvesting transcripts, pushing branches, dispatching automation, contacting external services, or touching WordPress.
 
+Create a single human-review packet after the dry-run command is stable:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-review-bundle
+```
+
+The review bundle reruns the local preflight and reviewed mock dry run, verifies both passed, writes a manifest with evidence paths, and produces a checklist for reviewing the proposed rule before any future adoption batch. It is local-only and does not push, open PRs, dispatch automation, contact external services, harvest private transcripts, adopt edits, stage live changes, or touch WordPress.
+
 Pilot guardrails:
 
 - Internal use only until BrightLead has validated its output quality.
