@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="$(cd "$ROOT/../.." && pwd)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT_DIR="${1:-$WORKSPACE/runtime/skillopt-disposable-adoption-test-$STAMP}"
+
+case "$OUT_DIR" in
+  /*) ;;
+  *) OUT_DIR="$PWD/$OUT_DIR" ;;
+esac
+
+PILOT_PROJECT="$OUT_DIR/disposable-project"
+TARGET_SKILL="$PILOT_PROJECT/skills/disposable-qa/SKILL.md"
+TASKS_FILE="$OUT_DIR/reviewed-disposable-adoption-tasks.json"
+RUN_JSON="$OUT_DIR/auto-adopt-run.json"
+REPORT="$OUT_DIR/brightlead-skillopt-disposable-adoption-test.md"
+CLAUDE_HOME="$OUT_DIR/isolated-home/.claude"
+
+export PYTHONNOUSERSITE=1
+
+mkdir -p "$PILOT_PROJECT/skills/disposable-qa" "$CLAUDE_HOME" "$OUT_DIR"
+cd "$ROOT"
+
+cat >"$TARGET_SKILL" <<'EOF'
+# Disposable QA Skill
+
+Return concise QA status results.
+EOF
+
+cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-disposable-adoption-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/disposable-qa/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "disposable_units_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the reviewed page-speed threshold with the required SI unit.",
+      "reference_kind": "exact",
+      "reference": "2.5 s",
+      "tags": ["brightlead-qa", "disposable-adoption", "rule:units-si"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "disposable_units_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the held-out response-time threshold with the required SI unit.",
+      "reference_kind": "exact",
+      "reference": "500 ms",
+      "tags": ["brightlead-qa", "disposable-adoption", "rule:units-si"],
+      "split": "val",
+      "origin": "real"
+    },
+    {
+      "id": "disposable_units_test",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the final file-size guardrail with the required SI unit.",
+      "reference_kind": "exact",
+      "reference": "1 MB",
+      "tags": ["brightlead-qa", "disposable-adoption", "rule:units-si"],
+      "split": "test",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+
+echo "[brightlead-skillopt-disposable-adoption-test] running mock auto-adopt on disposable skill"
+"$ROOT/bin/brightlead-skillopt-sleep" run \
+  --project "$PILOT_PROJECT" \
+  --backend mock \
+  --claude-home "$CLAUDE_HOME" \
+  --tasks-file "$TASKS_FILE" \
+  --target-skill-path "$TARGET_SKILL" \
+  --edit-budget 1 \
+  --max-sessions 0 \
+  --auto-adopt \
+  --json >"$RUN_JSON"
+
+python3 - "$RUN_JSON" "$REPORT" "$STAMP" "$TASKS_FILE" "$TARGET_SKILL" "$PILOT_PROJECT" <<'PYREPORT'
+import json
+import os
+import sys
+
+run_json, report_path, stamp, tasks_file, target_skill, pilot_project = sys.argv[1:]
+with open(run_json, encoding="utf-8") as f:
+    payload = json.load(f)
+
+staging_dir = payload.get("staging_dir") or ""
+manifest_path = os.path.join(staging_dir, "manifest.json") if staging_dir else ""
+backup_path = os.path.join(staging_dir, "backup", "SKILL.md") if staging_dir else ""
+with open(target_skill, encoding="utf-8") as f:
+    final_skill = f.read()
+
+manifest = {}
+if manifest_path and os.path.exists(manifest_path):
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+
+expected_rule = "Always include SI units in numeric answers."
+staging_abs = os.path.abspath(staging_dir) if staging_dir else ""
+project_abs = os.path.abspath(pilot_project)
+target_abs = os.path.abspath(target_skill)
+ok = (
+    payload.get("accepted") is True
+    and payload.get("adopted") is True
+    and payload.get("candidate") == 1.0
+    and payload.get("candidate", 0) > payload.get("baseline", 0)
+    and payload.get("n_sessions") == 0
+    and payload.get("n_accepted_edits") == 1
+    and payload.get("tasks_reviewed") is True
+    and expected_rule in final_skill
+    and bool(staging_abs)
+    and staging_abs.startswith(project_abs + os.sep)
+    and manifest.get("live_skill_path") == target_abs
+    and os.path.exists(backup_path)
+)
+status = "PASS" if ok else "FAIL"
+
+with open(report_path, "w", encoding="utf-8") as f:
+    f.write("# BrightLead SkillOpt Disposable Adoption Test\n\n")
+    f.write(f"- status: {status}\n")
+    f.write(f"- generated_utc: `{stamp}`\n")
+    f.write(f"- baseline: {payload.get('baseline')}\n")
+    f.write(f"- candidate: {payload.get('candidate')}\n")
+    f.write(f"- accepted: {payload.get('accepted')}\n")
+    f.write(f"- adopted: {payload.get('adopted')}\n")
+    f.write(f"- n_sessions: {payload.get('n_sessions')}\n")
+    f.write(f"- n_accepted_edits: {payload.get('n_accepted_edits')}\n")
+    f.write(f"- tasks_reviewed: {payload.get('tasks_reviewed')}\n")
+    f.write(f"- target_skill: `{target_skill}`\n")
+    f.write(f"- staging_dir: `{staging_dir}`\n")
+    f.write(f"- backup: `{backup_path}`\n")
+    f.write(f"- tasks_file: `{tasks_file}`\n")
+    f.write(f"- adopted_rule_present: {expected_rule in final_skill}\n\n")
+    f.write("## Plain English\n\n")
+    f.write(
+        "This test exercises the real SkillOpt staging and auto-adoption path, "
+        "but only inside a generated disposable project. It verifies the staged "
+        "proposal was adopted into the disposable SKILL.md, a backup was made, "
+        "and the staging directory stayed under the disposable project. It does "
+        "not target any live BrightLead skill, harvest transcripts, push branches, "
+        "contact external services, or touch WordPress.\n\n"
+    )
+    f.write("## Final Disposable Skill\n\n```markdown\n")
+    f.write(final_skill)
+    f.write("\n```\n\n")
+    f.write("## Raw Run JSON\n\n```json\n")
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+    f.write("\n```\n")
+
+if status != "PASS":
+    sys.exit(1)
+PYREPORT
+
+echo "[brightlead-skillopt-disposable-adoption-test] report: $REPORT"

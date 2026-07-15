@@ -40,6 +40,31 @@ tools/skillopt/bin/brightlead-skillopt-pilot-dry-run
 
 The pilot dry run creates a sanitized temporary project, uses a reviewed task file with `--backend mock`, and writes report-only evidence under `runtime/skillopt-pilot-dry-run-*`. It confirms SkillOpt can propose a missing rule without adopting edits, staging live changes, harvesting transcripts, pushing branches, dispatching automation, contacting external services, or touching WordPress.
 
+Run the stronger repeatable BrightLead QA fixture for next-version QA:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-pilot-dry-run --fixture brightlead-qa
+```
+
+This uses three sanitized BrightLead-style QA tasks and a local mock backend. It should improve score from `0.4` to `1.0`, keep `adopted: False`, keep `staging_dir` empty, and write `reviewed-brightlead-qa-tasks.json`, `dry-run.json`, and `brightlead-skillopt-pilot-dry-run.md`. Use this as the repeatable source-side check before building a human QA packet.
+
+Run the known-gap fixture when QA needs proof that SkillOpt can stage a useful new rule from a reviewed local task file:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-pilot-dry-run --fixture brightlead-known-gap
+```
+
+This uses three sanitized BrightLead-style QA tasks that require SI units. It should improve score from `0.5` to `1.0`, propose `Always include SI units in numeric answers.`, keep `adopted: False`, keep `staging_dir` empty, and write `reviewed-brightlead-known-gap-tasks.json`, `dry-run.json`, and `brightlead-skillopt-pilot-dry-run.md`.
+
+
+Run the disposable staged-adoption test only after a separate adoption-path approval:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-disposable-adoption-test
+```
+
+This creates a generated disposable project, stages a mock SkillOpt proposal, auto-adopts it into that disposable `SKILL.md`, verifies a backup was made, and confirms the staging path stayed inside the disposable project. It does not target live BrightLead skills, harvest transcripts, push branches, contact external services, or touch WordPress.
+
 Create a single human-review packet after the dry-run command is stable:
 
 ```sh

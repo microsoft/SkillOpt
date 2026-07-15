@@ -4,16 +4,53 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE="$(cd "$ROOT/../.." && pwd)"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_DIR="${1:-$WORKSPACE/runtime/skillopt-pilot-dry-run-$STAMP}"
+FIXTURE="wrap-answer"
+OUT_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fixture)
+      FIXTURE="${2:?missing fixture name}"
+      shift 2
+      ;;
+    --fixture=*)
+      FIXTURE="${1#*=}"
+      shift
+      ;;
+    --help|-h)
+      cat <<'EOF'
+Usage: brightlead-skillopt-pilot-dry-run [--fixture wrap-answer|brightlead-qa|brightlead-known-gap] [OUT_DIR]
+
+Runs a reviewed, report-only SkillOpt dry run. No skill edits are adopted.
+EOF
+      exit 0
+      ;;
+    *)
+      if [[ -n "$OUT_DIR" ]]; then
+        echo "unexpected argument: $1" >&2
+        exit 2
+      fi
+      OUT_DIR="$1"
+      shift
+      ;;
+  esac
+done
+
+OUT_DIR="${OUT_DIR:-$WORKSPACE/runtime/skillopt-pilot-dry-run-$STAMP}"
+case "$OUT_DIR" in
+  /*) ;;
+  *) OUT_DIR="$PWD/$OUT_DIR" ;;
+esac
 PILOT_PROJECT="$OUT_DIR/pilot-project"
-TASKS_FILE="$OUT_DIR/reviewed-wrap-answer-tasks.json"
+TASKS_FILE="$OUT_DIR/reviewed-$FIXTURE-tasks.json"
 PREFLIGHT_DIR="$OUT_DIR/preflight"
 DRY_RUN_JSON="$OUT_DIR/dry-run.json"
 REPORT="$OUT_DIR/brightlead-skillopt-pilot-dry-run.md"
+TARGET_SKILL_PATH="skills/answer-format/SKILL.md"
 
 export PYTHONNOUSERSITE=1
 
-mkdir -p "$PILOT_PROJECT/skills/answer-format" "$OUT_DIR"
+mkdir -p "$PILOT_PROJECT/skills/answer-format" "$PILOT_PROJECT/skills/qa-output" "$OUT_DIR"
 cd "$ROOT"
 
 cat >"$PILOT_PROJECT/skills/answer-format/SKILL.md" <<'EOF'
@@ -22,7 +59,16 @@ cat >"$PILOT_PROJECT/skills/answer-format/SKILL.md" <<'EOF'
 Be concise.
 EOF
 
-cat >"$TASKS_FILE" <<EOF
+cat >"$PILOT_PROJECT/skills/qa-output/SKILL.md" <<'EOF'
+# QA Output
+
+Return concise QA status results.
+EOF
+
+case "$FIXTURE" in
+  wrap-answer)
+    TARGET_SKILL_PATH="skills/answer-format/SKILL.md"
+    cat >"$TASKS_FILE" <<EOF
 {
   "format": "skillopt_sleep.tasks.v1",
   "project": "$PILOT_PROJECT",
@@ -54,6 +100,108 @@ cat >"$TASKS_FILE" <<EOF
   ]
 }
 EOF
+    ;;
+  brightlead-qa)
+    TARGET_SKILL_PATH="skills/qa-output/SKILL.md"
+    cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-sanitized-review-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/qa-output/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "qa_wrap_status_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return a short QA status result in the required answer wrapper.",
+      "context_excerpt": "A local-only QA check passed. No production write, private transcript harvest, or external publish occurred.",
+      "reference_kind": "exact",
+      "reference": "QA PASS - local-only report",
+      "tags": ["brightlead-qa", "rule:wrap-answer"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "qa_wrap_release_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return a held-out release QA result in the required answer wrapper.",
+      "context_excerpt": "A review bundle passed with adopted false and empty staging output.",
+      "reference_kind": "exact",
+      "reference": "Release QA PASS - review bundle ready",
+      "tags": ["brightlead-qa", "rule:wrap-answer"],
+      "split": "val",
+      "origin": "real"
+    },
+    {
+      "id": "qa_wrap_guardrail_test",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return a final guardrail QA result in the required answer wrapper.",
+      "context_excerpt": "The pilot must stay report-only unless a later adoption batch is approved.",
+      "reference_kind": "exact",
+      "reference": "Guardrail QA PASS - no auto-adopt",
+      "tags": ["brightlead-qa", "rule:wrap-answer"],
+      "split": "test",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+    ;;
+  brightlead-known-gap)
+    TARGET_SKILL_PATH="skills/qa-output/SKILL.md"
+    cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-known-gap-review-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/qa-output/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "qa_units_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the reviewed page-speed threshold with the required SI unit.",
+      "context_excerpt": "The local QA task is checking whether numeric results include standard units.",
+      "reference_kind": "exact",
+      "reference": "2.5 s",
+      "tags": ["brightlead-qa", "known-gap", "rule:units-si"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "qa_units_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the held-out response-time threshold with the required SI unit.",
+      "context_excerpt": "The review bundle should show exact numeric thresholds with standard units.",
+      "reference_kind": "exact",
+      "reference": "500 ms",
+      "tags": ["brightlead-qa", "known-gap", "rule:units-si"],
+      "split": "val",
+      "origin": "real"
+    },
+    {
+      "id": "qa_units_test",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the final file-size guardrail with the required SI unit.",
+      "context_excerpt": "The pilot did not harvest transcripts, push to GitHub, call external services, or write to WordPress.",
+      "reference_kind": "exact",
+      "reference": "1 MB",
+      "tags": ["brightlead-qa", "known-gap", "rule:units-si"],
+      "split": "test",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+    ;;
+  *)
+    echo "unknown fixture: $FIXTURE" >&2
+    exit 2
+    ;;
+esac
 
 echo "[brightlead-skillopt-pilot-dry-run] running preflight"
 "$ROOT/bin/brightlead-skillopt-preflight" "$PREFLIGHT_DIR" >/dev/null
@@ -63,22 +211,22 @@ echo "[brightlead-skillopt-pilot-dry-run] running reviewed mock dry run"
   --project "$PILOT_PROJECT" \
   --backend mock \
   --tasks-file "$TASKS_FILE" \
+  --target-skill-path "$TARGET_SKILL_PATH" \
   --edit-budget 1 \
   --max-sessions 0 \
-  --max-tasks 2 \
   --json >"$DRY_RUN_JSON"
 
-python3 - "$DRY_RUN_JSON" "$REPORT" "$STAMP" "$TASKS_FILE" "$PREFLIGHT_DIR/brightlead-skillopt-preflight.md" <<'PYREPORT'
+python3 - "$DRY_RUN_JSON" "$REPORT" "$STAMP" "$TASKS_FILE" "$PREFLIGHT_DIR/brightlead-skillopt-preflight.md" "$FIXTURE" <<'PYREPORT'
 import json
 import sys
 
-dry_run_path, report_path, stamp, tasks_file, preflight_report = sys.argv[1:]
+dry_run_path, report_path, stamp, tasks_file, preflight_report, fixture = sys.argv[1:]
 with open(dry_run_path, encoding="utf-8") as f:
     payload = json.load(f)
 
 ok = (
     payload.get("accepted") is True
-    and payload.get("baseline") == 0.0
+    and payload.get("candidate", 0) > payload.get("baseline", 0)
     and payload.get("candidate") == 1.0
     and payload.get("n_sessions") == 0
     and payload.get("n_accepted_edits") == 1
@@ -94,6 +242,7 @@ with open(report_path, "w", encoding="utf-8") as f:
     f.write("# BrightLead SkillOpt Pilot Dry Run\n\n")
     f.write(f"- status: {status}\n")
     f.write(f"- generated_utc: `{stamp}`\n")
+    f.write(f"- fixture: `{fixture}`\n")
     f.write(f"- baseline: {payload.get('baseline')}\n")
     f.write(f"- candidate: {payload.get('candidate')}\n")
     f.write(f"- accepted: {payload.get('accepted')}\n")
@@ -109,7 +258,8 @@ with open(report_path, "w", encoding="utf-8") as f:
     f.write(
         "This dry run proves the BrightLead SkillOpt pilot can use a reviewed, "
         "sanitized task file and the mock backend to learn a missing rule, "
-        "improve held-out score from 0.0 to 1.0, and stop at report-only output. "
+        f"improve score from {payload.get('baseline')} to {payload.get('candidate')}, "
+        "and stop at report-only output. "
         "It does not adopt skill edits, stage live changes, harvest private "
         "transcripts, push branches, dispatch automation, contact external "
         "services, or touch WordPress.\n\n"
