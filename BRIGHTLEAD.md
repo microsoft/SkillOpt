@@ -32,6 +32,14 @@ tools/skillopt/bin/brightlead-skillopt-preflight
 
 The preflight writes branch, commit, Git status, smoke output, and GitHub Actions guardrail evidence under `runtime/skillopt-preflight-*`. It is local-only and does not dispatch automation, push branches, adopt skills, contact external services, or touch WordPress.
 
+Run a reviewed local mock pilot dry run after preflight passes:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-pilot-dry-run
+```
+
+The pilot dry run creates a sanitized temporary project, uses a reviewed task file with `--backend mock`, and writes report-only evidence under `runtime/skillopt-pilot-dry-run-*`. It confirms SkillOpt can propose a missing rule without adopting edits, staging live changes, harvesting transcripts, pushing branches, dispatching automation, contacting external services, or touching WordPress.
+
 Pilot guardrails:
 
 - Internal use only until BrightLead has validated its output quality.

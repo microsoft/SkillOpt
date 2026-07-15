@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="$(cd "$ROOT/../.." && pwd)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT_DIR="${1:-$WORKSPACE/runtime/skillopt-pilot-dry-run-$STAMP}"
+PILOT_PROJECT="$OUT_DIR/pilot-project"
+TASKS_FILE="$OUT_DIR/reviewed-wrap-answer-tasks.json"
+PREFLIGHT_DIR="$OUT_DIR/preflight"
+DRY_RUN_JSON="$OUT_DIR/dry-run.json"
+REPORT="$OUT_DIR/brightlead-skillopt-pilot-dry-run.md"
+
+export PYTHONNOUSERSITE=1
+
+mkdir -p "$PILOT_PROJECT/skills/answer-format" "$OUT_DIR"
+cd "$ROOT"
+
+cat >"$PILOT_PROJECT/skills/answer-format/SKILL.md" <<'EOF'
+# Answer Format
+
+Be concise.
+EOF
+
+cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-reviewed-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/answer-format/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "wrap_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the final answer in answer tags.",
+      "reference_kind": "exact",
+      "reference": "42",
+      "tags": ["rule:wrap-answer"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "wrap_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the held-out final answer in answer tags.",
+      "reference_kind": "exact",
+      "reference": "blue",
+      "tags": ["rule:wrap-answer"],
+      "split": "val",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+
+echo "[brightlead-skillopt-pilot-dry-run] running preflight"
+"$ROOT/bin/brightlead-skillopt-preflight" "$PREFLIGHT_DIR" >/dev/null
+
+echo "[brightlead-skillopt-pilot-dry-run] running reviewed mock dry run"
+"$ROOT/bin/brightlead-skillopt-sleep" dry-run \
+  --project "$PILOT_PROJECT" \
+  --backend mock \
+  --tasks-file "$TASKS_FILE" \
+  --edit-budget 1 \
+  --max-sessions 0 \
+  --max-tasks 2 \
+  --json >"$DRY_RUN_JSON"
+
+python3 - "$DRY_RUN_JSON" "$REPORT" "$STAMP" "$TASKS_FILE" "$PREFLIGHT_DIR/brightlead-skillopt-preflight.md" <<'PYREPORT'
+import json
+import sys
+
+dry_run_path, report_path, stamp, tasks_file, preflight_report = sys.argv[1:]
+with open(dry_run_path, encoding="utf-8") as f:
+    payload = json.load(f)
+
+ok = (
+    payload.get("accepted") is True
+    and payload.get("baseline") == 0.0
+    and payload.get("candidate") == 1.0
+    and payload.get("n_sessions") == 0
+    and payload.get("n_accepted_edits") == 1
+    and payload.get("adopted") is False
+    and payload.get("staging_dir") == ""
+    and payload.get("tasks_reviewed") is True
+)
+status = "PASS" if ok else "FAIL"
+edits = payload.get("edits") or []
+edit_text = edits[0].get("content", "") if edits else ""
+
+with open(report_path, "w", encoding="utf-8") as f:
+    f.write("# BrightLead SkillOpt Pilot Dry Run\n\n")
+    f.write(f"- status: {status}\n")
+    f.write(f"- generated_utc: `{stamp}`\n")
+    f.write(f"- baseline: {payload.get('baseline')}\n")
+    f.write(f"- candidate: {payload.get('candidate')}\n")
+    f.write(f"- accepted: {payload.get('accepted')}\n")
+    f.write(f"- adopted: {payload.get('adopted')}\n")
+    f.write(f"- staging_dir: `{payload.get('staging_dir')}`\n")
+    f.write(f"- tasks_reviewed: {payload.get('tasks_reviewed')}\n")
+    f.write(f"- n_sessions: {payload.get('n_sessions')}\n")
+    f.write(f"- n_accepted_edits: {payload.get('n_accepted_edits')}\n")
+    f.write(f"- proposed_rule: `{edit_text}`\n")
+    f.write(f"- tasks_file: `{tasks_file}`\n")
+    f.write(f"- preflight_report: `{preflight_report}`\n\n")
+    f.write("## Plain English\n\n")
+    f.write(
+        "This dry run proves the BrightLead SkillOpt pilot can use a reviewed, "
+        "sanitized task file and the mock backend to learn a missing rule, "
+        "improve held-out score from 0.0 to 1.0, and stop at report-only output. "
+        "It does not adopt skill edits, stage live changes, harvest private "
+        "transcripts, push branches, dispatch automation, contact external "
+        "services, or touch WordPress.\n\n"
+    )
+    f.write("## Raw Dry Run JSON\n\n```json\n")
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+    f.write("\n```\n")
+
+if status != "PASS":
+    sys.exit(1)
+PYREPORT
+
+echo "[brightlead-skillopt-pilot-dry-run] report: $REPORT"
