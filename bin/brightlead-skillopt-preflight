@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="$(cd "$ROOT/../.." && pwd)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT_DIR="${1:-$WORKSPACE/runtime/skillopt-preflight-$STAMP}"
+REPORT="$OUT_DIR/brightlead-skillopt-preflight.md"
+SMOKE_LOG="$OUT_DIR/smoke.log"
+
+export PYTHONNOUSERSITE=1
+
+mkdir -p "$OUT_DIR"
+cd "$ROOT"
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+COMMIT="$(git rev-parse --short HEAD)"
+STATUS="$(git status --short)"
+CHANGED_ACTIONS="$(git status --short -- .github/workflows 2>/dev/null || true)"
+
+echo "[brightlead-skillopt-preflight] running smoke check"
+if "$ROOT/bin/brightlead-skillopt-smoke" >"$SMOKE_LOG" 2>&1; then
+  SMOKE_STATUS="PASS"
+else
+  SMOKE_STATUS="FAIL"
+fi
+
+if [ "$SMOKE_STATUS" = "PASS" ] && [ -z "$CHANGED_ACTIONS" ]; then
+  PREFLIGHT_STATUS="PASS"
+else
+  PREFLIGHT_STATUS="FAIL"
+fi
+
+{
+  echo "# BrightLead SkillOpt Preflight"
+  echo
+  echo "- status: $PREFLIGHT_STATUS"
+  echo "- branch: \`$BRANCH\`"
+  echo "- commit: \`$COMMIT\`"
+  echo "- generated_utc: \`$STAMP\`"
+  echo "- smoke_check: $SMOKE_STATUS"
+  echo "- github_actions_changes: $([ -z "$CHANGED_ACTIONS" ] && echo none || echo present)"
+  echo
+  echo "## Plain English"
+  echo
+  echo "This preflight records whether the BrightLead-local SkillOpt pilot branch is ready for a manual dry run. It runs the existing smoke check, records the branch and commit under runtime evidence, and confirms this batch did not modify GitHub Actions workflow files. It does not push, open PRs, dispatch automation, adopt skills, contact external services, or touch WordPress."
+  echo
+  echo "## Git Status"
+  echo
+  if [ -z "$STATUS" ]; then
+    echo "Clean working tree."
+  else
+    echo '```text'
+    printf '%s\n' "$STATUS"
+    echo '```'
+  fi
+  echo
+  echo "## Smoke Output"
+  echo
+  echo '```text'
+  cat "$SMOKE_LOG"
+  echo '```'
+} >"$REPORT"
+
+echo "[brightlead-skillopt-preflight] report: $REPORT"
+
+if [ "$PREFLIGHT_STATUS" != "PASS" ]; then
+  exit 1
+fi

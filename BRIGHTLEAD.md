@@ -24,6 +24,14 @@ tools/skillopt/bin/brightlead-skillopt-smoke
 
 The smoke check verifies the wrapper help path and the sanitized LOL-010 regression fixture. It does not schedule, adopt, push, contact GitHub, or touch WordPress.
 
+Record a local preflight report before a manual pilot dry run:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-preflight
+```
+
+The preflight writes branch, commit, Git status, smoke output, and GitHub Actions guardrail evidence under `runtime/skillopt-preflight-*`. It is local-only and does not dispatch automation, push branches, adopt skills, contact external services, or touch WordPress.
+
 Pilot guardrails:
 
 - Internal use only until BrightLead has validated its output quality.
