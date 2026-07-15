@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONNOUSERSITE=1
+
+cd "$ROOT"
+
+echo "[brightlead-skillopt-smoke] checking wrapper help"
+"$ROOT/bin/brightlead-skillopt-sleep" --help >/dev/null
+
+echo "[brightlead-skillopt-smoke] running BrightLead LOL-010 fixture"
+"$ROOT/.venv/bin/python" -m unittest tests.test_brightlead_lol010_regression
+
+echo "[brightlead-skillopt-smoke] OK"

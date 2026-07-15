@@ -16,6 +16,14 @@ Use the BrightLead wrapper by default:
 tools/skillopt/bin/brightlead-skillopt-sleep --help
 ```
 
+Run the local pilot smoke check before any manual SkillOpt trial:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-smoke
+```
+
+The smoke check verifies the wrapper help path and the sanitized LOL-010 regression fixture. It does not schedule, adopt, push, contact GitHub, or touch WordPress.
+
 Pilot guardrails:
 
 - Internal use only until BrightLead has validated its output quality.
