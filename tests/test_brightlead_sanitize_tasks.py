@@ -25,15 +25,23 @@ class TestBrightLeadSanitizeTasks(unittest.TestCase):
             with open(src, "w", encoding="utf-8") as f:
                 f.write(json.dumps({
                     "id": "session:1527106928742764586",
-                    "user_prompt": "Check https://private.example.test for david@example.com with token=abc123456789.",
-                    "assistant_final": "Post 8175 stayed draft under /home/hugh-brightlead/secret/path.",
+                    "user_prompt": "Check https://private.example.test and private.example.com for david@example.com with token=abc123456789.",
+                    "assistant_final": "Post 8175 stayed draft under /home/hugh-brightlead/secret/path from 192.168.1.20.",
                     "expected": "No live write occurred for post 8175.",
                     "tags": ["brightlead qa", "rule:no-live-write"],
                     "session_id": "1527106928742764586",
                 }) + "\n")
 
             proc = subprocess.run(
-                [SANITIZE_TASKS, src, out, "--project", tmp, "--target-skill-path", "skills/qa-output/SKILL.md"],
+                [
+                    SANITIZE_TASKS,
+                    src,
+                    out,
+                    "--project",
+                    "/home/hugh-brightlead/private-project",
+                    "--target-skill-path",
+                    "skills/qa-output/SKILL.md",
+                ],
                 cwd=REPO,
                 env=env,
                 capture_output=True,
@@ -51,13 +59,19 @@ class TestBrightLeadSanitizeTasks(unittest.TestCase):
             self.assertEqual(payload["target_skill_path"], "skills/qa-output/SKILL.md")
             task_blob = json.dumps(payload["tasks"], sort_keys=True)
             self.assertNotIn("private.example.test", task_blob)
+            self.assertNotIn("private.example.com", task_blob)
             self.assertNotIn("david@example.com", task_blob)
             self.assertNotIn("abc123456789", task_blob)
-            self.assertNotIn("/home/hugh-brightlead", task_blob)
+            self.assertNotIn("/home/hugh-brightlead", json.dumps(payload, sort_keys=True))
+            self.assertNotIn("192.168.1.20", task_blob)
             self.assertNotIn("8175", task_blob)
             self.assertIn("[REDACTED_URL]", task_blob)
             self.assertIn("[REDACTED_EMAIL]", task_blob)
+            self.assertIn("[REDACTED_DOMAIN]", task_blob)
+            self.assertIn("[REDACTED_IP]", task_blob)
             self.assertIn("post [REDACTED_ID]", task_blob)
+            self.assertEqual(payload["project"], "[REDACTED_PATH]")
+            self.assertEqual(payload["tasks"][0]["project"], "[REDACTED_PATH]")
             self.assertIn("rule:no-live-write", payload["tasks"][0]["tags"])
 
     def test_sanitize_tasks_can_mark_reviewed_after_human_review(self):
