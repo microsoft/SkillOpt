@@ -16,7 +16,10 @@ source into the Claude Code-compatible JSONL the engine reads.
 | `harvest_devin.py` | converts Devin ATIF-v1.7 transcripts + agentmemory + `.devin/skills` into JSONL, with `taskKey` + outcome envelopes |
 | `judge.py` | reference judge for the deferred/judge branch of the validation gate |
 | `mcp-config.example.json` | drop-in MCP server config |
-| `devin-rules.snippet.md` | paste into `.devin/rules/skillopt-sleep.md` |
+| `install.sh` | copies hooks + rules into a project's `.devin/` and prints the MCP registration command |
+| `devin-rules.snippet.md` | copied to `.devin/rules/skillopt-sleep.md` by `install.sh` |
+| `hooks/hooks.v1.json` | SessionEnd hook config — copied to `.devin/hooks.v1.json` by `install.sh` |
+| `hooks/on-session-end.sh` | best-effort activity marker script (called by the hook) |
 
 ## What it harvests
 
@@ -33,19 +36,26 @@ After `sleep_adopt`, the evolved skill is synced to `.devin/skills/skillopt-slee
 
 Requires Python ≥ 3.10. No third-party packages — the server is pure stdlib.
 
-1. **Register the MCP server.** Use `mcp-config.example.json` as a template; set
-   `args` to the absolute path of this `mcp_server.py`. The engine is found
-   automatically (this plugin lives inside the SkillOpt repo). Or via the Devin
-   CLI:
+1. **Install hooks + rules into your project.** From the repo root:
+
+   ```bash
+   bash plugins/devin/install.sh /path/to/your/project
+   ```
+
+   This copies the SessionEnd hook and rules snippet into the project's
+   `.devin/` directory and prints the MCP registration command. The hook is
+   on by default — it logs a cheap activity marker when each session ends so
+   the next nightly cycle knows there is fresh data to harvest. It is
+   non-blocking and spends no API budget. Re-run the script to update.
+
+2. **Register the MCP server.** Use `mcp-config.example.json` as a template, or
+   run the command printed by `install.sh`:
 
    ```bash
    devin mcp add skillopt-sleep \
      --env "SKILLOPT_DEVIN_CLAUDE_HOME=$HOME/.skillopt-sleep-devin" \
      -- python3 /abs/path/to/SkillOpt/plugins/devin/mcp_server.py
    ```
-
-2. **(Optional)** copy `devin-rules.snippet.md` to `.devin/rules/skillopt-sleep.md`
-   so Devin proactively offers the tools.
 
 3. Ask Devin: *"run the sleep cycle"*, *"what did the last sleep propose?"*, *"adopt it"*.
 
