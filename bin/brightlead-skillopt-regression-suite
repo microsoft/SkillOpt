@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE="$(cd "$ROOT/../.." && pwd)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT_DIR="${1:-$WORKSPACE/runtime/skillopt-brightlead-regression-suite-$STAMP}"
+REPORT="$OUT_DIR/brightlead-skillopt-regression-suite.md"
+MANIFEST="$OUT_DIR/manifest.json"
+
+export PYTHONNOUSERSITE=1
+
+fixtures=(
+  brightlead-qa
+  brightlead-known-gap
+  brightlead-no-live-write
+  brightlead-source-citation
+  brightlead-draft-first
+)
+
+mkdir -p "$OUT_DIR"
+cd "$ROOT"
+
+for fixture in "${fixtures[@]}"; do
+  echo "[brightlead-skillopt-regression-suite] running fixture: $fixture"
+  "$ROOT/bin/brightlead-skillopt-pilot-dry-run" --fixture "$fixture" "$OUT_DIR/$fixture" >/dev/null
+done
+
+python3 - "$OUT_DIR" "$REPORT" "$MANIFEST" "$STAMP" "${fixtures[@]}" <<'PYREPORT'
+import json
+import os
+import sys
+
+out_dir, report_path, manifest_path, stamp, *fixtures = sys.argv[1:]
+items = []
+status = "PASS"
+for fixture in fixtures:
+    fixture_dir = os.path.join(out_dir, fixture)
+    dry_run_json = os.path.join(fixture_dir, "dry-run.json")
+    dry_run_report = os.path.join(fixture_dir, "brightlead-skillopt-pilot-dry-run.md")
+    tasks_file = os.path.join(fixture_dir, f"reviewed-{fixture}-tasks.json")
+    with open(dry_run_json, encoding="utf-8") as f:
+        payload = json.load(f)
+    ok = (
+        payload.get("accepted") is True
+        and payload.get("candidate") == 1.0
+        and payload.get("candidate", 0) > payload.get("baseline", 0)
+        and payload.get("adopted") is False
+        and payload.get("staging_dir") == ""
+        and payload.get("tasks_reviewed") is True
+        and payload.get("n_sessions") == 0
+    )
+    if not ok:
+        status = "FAIL"
+    items.append({
+        "fixture": fixture,
+        "status": "PASS" if ok else "FAIL",
+        "baseline": payload.get("baseline"),
+        "candidate": payload.get("candidate"),
+        "accepted": payload.get("accepted"),
+        "adopted": payload.get("adopted"),
+        "staging_dir": payload.get("staging_dir"),
+        "tasks_reviewed": payload.get("tasks_reviewed"),
+        "n_sessions": payload.get("n_sessions"),
+        "n_accepted_edits": payload.get("n_accepted_edits"),
+        "proposed_rule": (payload.get("edits") or [{}])[0].get("content", ""),
+        "dry_run_json": dry_run_json,
+        "dry_run_report": dry_run_report,
+        "tasks_file": tasks_file,
+    })
+
+manifest = {
+    "status": status,
+    "generated_utc": stamp,
+    "fixtures": items,
+}
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, ensure_ascii=True, indent=2)
+    f.write("\n")
+
+with open(report_path, "w", encoding="utf-8") as f:
+    f.write("# BrightLead SkillOpt Regression Suite\n\n")
+    f.write(f"- status: {status}\n")
+    f.write(f"- generated_utc: `{stamp}`\n")
+    f.write(f"- fixtures: {len(items)}\n")
+    f.write(f"- manifest: `{manifest_path}`\n\n")
+    f.write("## Fixture Results\n\n")
+    for item in items:
+        f.write(
+            f"- {item['fixture']}: {item['status']} "
+            f"baseline {item['baseline']} -> candidate {item['candidate']}; "
+            f"adopted {item['adopted']}; sessions {item['n_sessions']}\n"
+        )
+    f.write("\n## Plain English\n\n")
+    f.write(
+        "This suite reruns the reviewed, sanitized BrightLead mock fixtures for "
+        "answer formatting, SI units, no-live-write closeouts, source-citation "
+        "hygiene, and draft-first publication recovery. Each fixture must improve "
+        "under the mock backend while staying report-only: adopted false, empty "
+        "staging output, zero harvested sessions, and reviewed task files. It does "
+        "not adopt live skills, harvest private transcripts, contact external "
+        "services, push branches, or touch WordPress.\n"
+    )
+
+if status != "PASS":
+    raise SystemExit(1)
+PYREPORT
+
+echo "[brightlead-skillopt-regression-suite] report: $REPORT"

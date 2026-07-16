@@ -56,6 +56,22 @@ tools/skillopt/bin/brightlead-skillopt-pilot-dry-run --fixture brightlead-known-
 
 This uses three sanitized BrightLead-style QA tasks that require SI units. It should improve score from `0.5` to `1.0`, propose `Always include SI units in numeric answers.`, keep `adopted: False`, keep `staging_dir` empty, and write `reviewed-brightlead-known-gap-tasks.json`, `dry-run.json`, and `brightlead-skillopt-pilot-dry-run.md`.
 
+Run the broader BrightLead regression suite when checking guardrail coverage before another SkillOpt batch:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-regression-suite
+```
+
+The suite runs reviewed mock fixtures for answer formatting, SI units, no-live-write closeouts, source-citation hygiene, and draft-first publication recovery. It writes `manifest.json` and `brightlead-skillopt-regression-suite.md`, and every fixture must stay report-only with `adopted: False`, an empty `staging_dir`, reviewed task files, and `n_sessions: 0`.
+
+Create a redacted task-file draft from reviewed local snippets before any real-backend replay:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-sanitize-tasks snippets.jsonl runtime/skillopt-reviewed-tasks.json --target-skill-path skills/qa-output/SKILL.md
+```
+
+The sanitizer accepts JSON or JSONL snippets, redacts obvious secrets, emails, URLs, home paths, long IDs, Discord-like IDs, and WordPress-style item IDs, then writes `skillopt_sleep.tasks.v1`. It defaults to `reviewed: false`; pass `--mark-reviewed` only after a human has inspected the output and filled any missing expected outcome/rubric.
+
 
 Run the disposable staged-adoption test only after a separate adoption-path approval:
 

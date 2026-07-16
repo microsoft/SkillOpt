@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Create a redacted SkillOpt tasks.v1 draft from reviewed local snippets.
+
+Input may be JSON or JSONL. Each item can use TaskRecord-shaped keys
+(`intent`, `context_excerpt`, `reference`, `tags`, `split`) or session-shaped
+keys (`user_prompt`, `assistant_final`, `expected`). The output is deliberately
+marked reviewed:false unless --mark-reviewed is passed after human review.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from skillopt_sleep.staging import redact_secrets  # noqa: E402
+
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+HOME_RE = re.compile(r"/home/[^\s\"'<>]+")
+LONG_ID_RE = re.compile(r"\b[0-9a-fA-F]{24,}\b")
+DISCORD_ID_RE = re.compile(r"\b\d{17,20}\b")
+WP_ID_RE = re.compile(r"\b(post|item|media|workspace|comment)\s+#?\d+\b", re.IGNORECASE)
+
+
+def _read_items(path: Path) -> list[dict[str, Any]]:
+    text = path.read_text(encoding="utf-8")
+    stripped = text.lstrip()
+    if not stripped:
+        return []
+    if stripped[0] in "[{":
+        payload = json.loads(text)
+        if isinstance(payload, dict) and isinstance(payload.get("tasks"), list):
+            payload = payload["tasks"]
+        elif isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list):
+            raise SystemExit("input JSON must be an object, task payload, or array")
+        return [_ensure_object(item) for item in payload]
+
+    items = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            items.append(_ensure_object(json.loads(line)))
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"invalid JSONL at line {lineno}: {exc}") from exc
+    return items
+
+
+def _ensure_object(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SystemExit("each input item must be a JSON object")
+    return value
+
+
+def _clean_text(value: Any) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    text = redact_secrets(text)
+    text = EMAIL_RE.sub("[REDACTED_EMAIL]", text)
+    text = URL_RE.sub("[REDACTED_URL]", text)
+    text = HOME_RE.sub("[REDACTED_PATH]", text)
+    text = LONG_ID_RE.sub("[REDACTED_ID]", text)
+    text = DISCORD_ID_RE.sub("[REDACTED_ID]", text)
+    text = WP_ID_RE.sub(lambda m: m.group(1).lower() + " [REDACTED_ID]", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_tags(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    tags = []
+    for item in value:
+        tag = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(item).strip())[:80]
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _normalize_split(value: Any, index: int) -> str:
+    split = str(value or "").strip().lower()
+    if split in {"train", "val", "test"}:
+        return split
+    return ("train", "val", "test")[min(index, 2)]
+
+
+def _task_from_item(item: dict[str, Any], *, project: str, index: int) -> dict[str, Any]:
+    task_id = _clean_text(item.get("id") or item.get("session_id") or f"sanitized_task_{index + 1}")
+    task_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", task_id)[:80] or f"sanitized_task_{index + 1}"
+    intent = _clean_text(item.get("intent") or item.get("user_prompt") or item.get("prompt"))
+    context = _clean_text(item.get("context_excerpt") or item.get("context") or item.get("assistant_final") or item.get("summary"))
+    reference = _clean_text(item.get("reference") or item.get("expected") or item.get("expected_answer") or item.get("rubric"))
+    if not intent:
+        raise SystemExit(f"item {index + 1} is missing intent/user_prompt")
+    if not reference:
+        reference = "Human reviewer must fill expected outcome before real-backend replay."
+    reference_kind = str(item.get("reference_kind") or ("rubric" if "rubric" in item else "exact"))
+    if reference_kind not in {"exact", "rubric", "rule", "none"}:
+        reference_kind = "rubric"
+    source = item.get("source_sessions") or item.get("source_session") or item.get("session_id") or []
+    if isinstance(source, str):
+        source = [source]
+    if not isinstance(source, list):
+        source = []
+    return {
+        "id": task_id,
+        "project": project,
+        "intent": intent,
+        "context_excerpt": context,
+        "attempted_solution": _clean_text(item.get("attempted_solution") or item.get("assistant_final")),
+        "outcome": str(item.get("outcome") or "unknown"),
+        "reference_kind": reference_kind,
+        "reference": reference,
+        "tags": _clean_tags(item.get("tags")),
+        "source_sessions": [_clean_text(s) for s in source],
+        "split": _normalize_split(item.get("split"), index),
+        "origin": "real",
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Redact local snippets into a SkillOpt tasks.v1 draft")
+    parser.add_argument("input", help="JSON/JSONL snippets or task payload")
+    parser.add_argument("output", help="output tasks.v1 JSON path")
+    parser.add_argument("--project", default=os.getcwd(), help="project path to store in tasks")
+    parser.add_argument("--target-skill-path", default="", help="optional target skill path")
+    parser.add_argument("--transcript-source", default="brightlead-sanitized-local-snippets")
+    parser.add_argument("--mark-reviewed", action="store_true", help="mark reviewed:true after human inspection")
+    args = parser.parse_args()
+
+    items = _read_items(Path(args.input))
+    tasks = [_task_from_item(item, project=os.path.abspath(args.project), index=i) for i, item in enumerate(items)]
+    payload = {
+        "format": "skillopt_sleep.tasks.v1",
+        "project": os.path.abspath(args.project),
+        "transcript_source": _clean_text(args.transcript_source),
+        "n_sessions": len({s for task in tasks for s in task.get("source_sessions", [])}),
+        "target_skill_path": _clean_text(args.target_skill_path),
+        "reviewed": bool(args.mark_reviewed),
+        "tasks": tasks,
+    }
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    print(f"[brightlead-skillopt-sanitize-tasks] wrote {len(tasks)} tasks to {out}")
+    print(f"[brightlead-skillopt-sanitize-tasks] reviewed: {payload['reviewed']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

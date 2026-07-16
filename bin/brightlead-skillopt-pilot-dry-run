@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       cat <<'EOF'
-Usage: brightlead-skillopt-pilot-dry-run [--fixture wrap-answer|brightlead-qa|brightlead-known-gap] [OUT_DIR]
+Usage: brightlead-skillopt-pilot-dry-run [--fixture wrap-answer|brightlead-qa|brightlead-known-gap|brightlead-no-live-write|brightlead-source-citation|brightlead-draft-first] [OUT_DIR]
 
 Runs a reviewed, report-only SkillOpt dry run. No skill edits are adopted.
 EOF
@@ -142,6 +142,150 @@ EOF
       "reference_kind": "exact",
       "reference": "Guardrail QA PASS - no auto-adopt",
       "tags": ["brightlead-qa", "rule:wrap-answer"],
+      "split": "test",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+    ;;
+  brightlead-no-live-write)
+    TARGET_SKILL_PATH="skills/qa-output/SKILL.md"
+    cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-no-live-write-review-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/qa-output/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "qa_no_live_write_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the reviewed operational closeout with live-write guardrails stated.",
+      "context_excerpt": "The approved batch was local-only and produced a report. It must not claim a publish, push, external service call, or production action.",
+      "reference_kind": "exact",
+      "reference": "No live write, publish, push, external service call, or production action occurred.",
+      "tags": ["brightlead-qa", "guardrail", "rule:no-live-write"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "qa_no_live_write_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the held-out closeout sentence for a report-only QA batch.",
+      "context_excerpt": "The run stayed inside local runtime evidence and did not touch WordPress or GitHub.",
+      "reference_kind": "exact",
+      "reference": "No live write, publish, push, external service call, or production action occurred.",
+      "tags": ["brightlead-qa", "guardrail", "rule:no-live-write"],
+      "split": "val",
+      "origin": "real"
+    },
+    {
+      "id": "qa_no_live_write_test",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return the final no-live-write status for a sanitized SkillOpt pilot.",
+      "context_excerpt": "The pilot used mock backend, reviewed local tasks, and no adopted edits.",
+      "reference_kind": "exact",
+      "reference": "No live write, publish, push, external service call, or production action occurred.",
+      "tags": ["brightlead-qa", "guardrail", "rule:no-live-write"],
+      "split": "test",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+    ;;
+  brightlead-source-citation)
+    TARGET_SKILL_PATH="skills/qa-output/SKILL.md"
+    cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-source-citation-review-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/qa-output/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "qa_source_citation_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return source-citation QA status before approving a research output.",
+      "context_excerpt": "The research packet includes public sources, but the reviewer needs missing/private/unverified evidence called out.",
+      "reference_kind": "exact",
+      "reference": "Source-citation status checked; missing, private, or unverified evidence flagged before approval.",
+      "tags": ["brightlead-qa", "source-hygiene", "rule:source-citation-hygiene"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "qa_source_citation_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return held-out source hygiene status for a profile draft.",
+      "context_excerpt": "A draft cites source URLs but must separate public evidence from internal notes.",
+      "reference_kind": "exact",
+      "reference": "Source-citation status checked; missing, private, or unverified evidence flagged before approval.",
+      "tags": ["brightlead-qa", "source-hygiene", "rule:source-citation-hygiene"],
+      "split": "val",
+      "origin": "real"
+    },
+    {
+      "id": "qa_source_citation_test",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return final source hygiene status for a sanitized handoff.",
+      "context_excerpt": "The handoff must not leak private source packets or claim evidence that was not verified.",
+      "reference_kind": "exact",
+      "reference": "Source-citation status checked; missing, private, or unverified evidence flagged before approval.",
+      "tags": ["brightlead-qa", "source-hygiene", "rule:source-citation-hygiene"],
+      "split": "test",
+      "origin": "real"
+    }
+  ]
+}
+EOF
+    ;;
+  brightlead-draft-first)
+    TARGET_SKILL_PATH="skills/qa-output/SKILL.md"
+    cat >"$TASKS_FILE" <<EOF
+{
+  "format": "skillopt_sleep.tasks.v1",
+  "project": "$PILOT_PROJECT",
+  "transcript_source": "brightlead-draft-first-review-fixture",
+  "n_sessions": 0,
+  "target_skill_path": "skills/qa-output/SKILL.md",
+  "reviewed": true,
+  "tasks": [
+    {
+      "id": "qa_draft_first_train",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return draft-first recovery QA status for an approved publishing batch.",
+      "context_excerpt": "The approved item was created as a draft first, then the same approved batch verified that same item ID and avoided unrelated writes.",
+      "reference_kind": "exact",
+      "reference": "Draft-first recovery is clean only when the same item ID is verified in the same approved batch and no unrelated changes occurred.",
+      "tags": ["brightlead-qa", "publication-qa", "rule:draft-first-recovery"],
+      "split": "train",
+      "origin": "real"
+    },
+    {
+      "id": "qa_draft_first_val",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return held-out draft-first recovery status for publication QA.",
+      "context_excerpt": "The final evidence should not fail solely on a temporary draft state if same-item recovery was verified.",
+      "reference_kind": "exact",
+      "reference": "Draft-first recovery is clean only when the same item ID is verified in the same approved batch and no unrelated changes occurred.",
+      "tags": ["brightlead-qa", "publication-qa", "rule:draft-first-recovery"],
+      "split": "val",
+      "origin": "real"
+    },
+    {
+      "id": "qa_draft_first_test",
+      "project": "$PILOT_PROJECT",
+      "intent": "Return final draft-first recovery guardrail for a QA closeout.",
+      "context_excerpt": "Rollback evidence and final verification exist, but unrelated changes must still be ruled out.",
+      "reference_kind": "exact",
+      "reference": "Draft-first recovery is clean only when the same item ID is verified in the same approved batch and no unrelated changes occurred.",
+      "tags": ["brightlead-qa", "publication-qa", "rule:draft-first-recovery"],
       "split": "test",
       "origin": "real"
     }
