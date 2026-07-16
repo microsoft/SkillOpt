@@ -137,11 +137,6 @@ def _task_from_item(item: dict[str, Any], *, project: str, index: int) -> dict[s
     reference_kind = str(item.get("reference_kind") or ("rubric" if "rubric" in item else "exact"))
     if reference_kind not in {"exact", "rubric", "rule", "none"}:
         reference_kind = "rubric"
-    source = item.get("source_sessions") or item.get("source_session") or item.get("session_id") or []
-    if isinstance(source, str):
-        source = [source]
-    if not isinstance(source, list):
-        source = []
     return {
         "id": task_id,
         "project": _clean_text(project),
@@ -152,7 +147,7 @@ def _task_from_item(item: dict[str, Any], *, project: str, index: int) -> dict[s
         "reference_kind": reference_kind,
         "reference": reference,
         "tags": _clean_tags(item.get("tags")),
-        "source_sessions": [_clean_text(s) for s in source],
+        "source_sessions": [],
         "split": _normalize_split(item.get("split"), index),
         "origin": "real",
     }
@@ -174,7 +169,7 @@ def main() -> int:
         "format": "skillopt_sleep.tasks.v1",
         "project": _clean_text(os.path.abspath(args.project)),
         "transcript_source": _clean_text(args.transcript_source),
-        "n_sessions": len({s for task in tasks for s in task.get("source_sessions", [])}),
+        "n_sessions": 0,
         "target_skill_path": _clean_text(args.target_skill_path),
         "reviewed": bool(args.mark_reviewed),
         "tasks": tasks,

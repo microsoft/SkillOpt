@@ -70,7 +70,7 @@ Create a redacted task-file draft from reviewed local snippets before any real-b
 tools/skillopt/bin/brightlead-skillopt-sanitize-tasks snippets.jsonl runtime/skillopt-reviewed-tasks.json --target-skill-path skills/qa-output/SKILL.md
 ```
 
-The sanitizer accepts JSON or JSONL snippets, redacts obvious secrets, emails, URLs, bare domains, IP addresses, home paths, long IDs, Discord-like IDs, and WordPress-style item IDs, then writes `skillopt_sleep.tasks.v1`. It also redacts stored project paths and fails closed if those unsafe patterns still survive in the output JSON. It defaults to `reviewed: false`; pass `--mark-reviewed` only after a human has inspected the output and filled any missing expected outcome/rubric.
+The sanitizer accepts JSON or JSONL snippets, redacts obvious secrets, emails, URLs, bare domains, IP addresses, home paths, long IDs, Discord-like IDs, WordPress-style item IDs, and source-session handles, then writes `skillopt_sleep.tasks.v1` with `n_sessions: 0`. It also redacts stored project paths and fails closed if those unsafe patterns still survive in the output JSON. It defaults to `reviewed: false`; pass `--mark-reviewed` only after a human has inspected the output and filled any missing expected outcome/rubric.
 
 Validate any reviewed sanitized task file before a real-backend replay:
 

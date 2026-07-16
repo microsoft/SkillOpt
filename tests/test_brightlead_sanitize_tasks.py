@@ -58,6 +58,8 @@ class TestBrightLeadSanitizeTasks(unittest.TestCase):
             self.assertEqual(payload["format"], "skillopt_sleep.tasks.v1")
             self.assertIs(payload["reviewed"], False)
             self.assertEqual(payload["target_skill_path"], "skills/qa-output/SKILL.md")
+            self.assertEqual(payload["n_sessions"], 0)
+            self.assertEqual(payload["tasks"][0]["source_sessions"], [])
             task_blob = json.dumps(payload["tasks"], sort_keys=True)
             self.assertNotIn("private.example.test", task_blob)
             self.assertNotIn("private.example.com", task_blob)
