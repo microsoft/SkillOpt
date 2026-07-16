@@ -202,6 +202,33 @@ class TestBrightLeadValidateTasks(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("reviewed: False", proc.stdout)
 
+    def test_validate_tasks_rejects_unsafe_target_skill_paths(self):
+        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+        cases = (
+            ("/home/hugh-brightlead/project/skills/qa/SKILL.md", "target_skill_path must be repo-relative"),
+            ("../skills/qa/SKILL.md", "target_skill_path must not contain .."),
+            ("skills/qa/README.md", "target_skill_path must point to a SKILL.md file"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            for target_path, expected_error in cases:
+                payload = self._payload()
+                payload["target_skill_path"] = target_path
+                tasks_path = os.path.join(tmp, "tasks.json")
+                with open(tasks_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+
+                proc = subprocess.run(
+                    [VALIDATE_TASKS, tasks_path],
+                    cwd=REPO,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(expected_error, proc.stdout)
+
 
 class TestBrightLeadRegressionSuite(unittest.TestCase):
     def test_regression_suite_runs_brightlead_guardrail_fixtures(self):

@@ -78,7 +78,7 @@ Validate any reviewed sanitized task file before a real-backend replay:
 tools/skillopt/bin/brightlead-skillopt-validate-tasks runtime/skillopt-reviewed-tasks.json
 ```
 
-The validator requires `skillopt_sleep.tasks.v1`, `reviewed: true`, `n_sessions: 0`, a target skill path, non-empty train/val/test tasks, filled references, `origin: real`, and no unsafe content that would have failed the sanitizer. Use `--allow-unreviewed` only for pre-review drafts that are not ready for replay.
+The validator requires `skillopt_sleep.tasks.v1`, `reviewed: true`, `n_sessions: 0`, a repo-relative target path that points to `SKILL.md`, non-empty train/val/test tasks, filled references, `origin: real`, and no unsafe content that would have failed the sanitizer. Use `--allow-unreviewed` only for pre-review drafts that are not ready for replay.
 
 Run the disposable staged-adoption test only after a separate adoption-path approval:
 

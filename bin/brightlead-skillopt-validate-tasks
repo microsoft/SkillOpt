@@ -30,6 +30,21 @@ def _load_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _validate_target_skill_path(value: Any) -> list[str]:
+    path = str(value or "").strip()
+    errors: list[str] = []
+    if not path:
+        return ["target_skill_path is required"]
+    if path.startswith(("/", "~")):
+        errors.append("target_skill_path must be repo-relative")
+    parts = Path(path).parts
+    if ".." in parts:
+        errors.append("target_skill_path must not contain ..")
+    if Path(path).name != "SKILL.md":
+        errors.append("target_skill_path must point to a SKILL.md file")
+    return errors
+
+
 def _validate(payload: dict[str, Any], *, require_reviewed: bool) -> list[str]:
     errors: list[str] = []
     if payload.get("format") != "skillopt_sleep.tasks.v1":
@@ -38,8 +53,7 @@ def _validate(payload: dict[str, Any], *, require_reviewed: bool) -> list[str]:
         errors.append("reviewed must be true before real-backend replay")
     if payload.get("n_sessions") != 0:
         errors.append("n_sessions must be 0 for BrightLead sanitized replay files")
-    if not payload.get("target_skill_path"):
-        errors.append("target_skill_path is required")
+    errors.extend(_validate_target_skill_path(payload.get("target_skill_path")))
 
     tasks = payload.get("tasks")
     if not isinstance(tasks, list) or not tasks:
