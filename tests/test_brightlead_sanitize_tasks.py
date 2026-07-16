@@ -11,6 +11,7 @@ import unittest
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SANITIZE_TASKS = os.path.join(REPO, "bin", "brightlead-skillopt-sanitize-tasks")
 REGRESSION_SUITE = os.path.join(REPO, "bin", "brightlead-skillopt-regression-suite")
+VALIDATE_TASKS = os.path.join(REPO, "bin", "brightlead-skillopt-validate-tasks")
 
 
 class TestBrightLeadSanitizeTasks(unittest.TestCase):
@@ -95,6 +96,111 @@ class TestBrightLeadSanitizeTasks(unittest.TestCase):
             with open(out, encoding="utf-8") as f:
                 payload = json.load(f)
             self.assertIs(payload["reviewed"], True)
+
+
+class TestBrightLeadValidateTasks(unittest.TestCase):
+    def _payload(self) -> dict:
+        tasks = []
+        for split, reference in (("train", "QA PASS"), ("val", "QA PASS"), ("test", "QA PASS")):
+            tasks.append({
+                "id": f"qa_{split}",
+                "project": "[REDACTED_PATH]",
+                "intent": f"Return {split} QA status",
+                "context_excerpt": "Reviewed local sanitized fixture.",
+                "attempted_solution": "",
+                "outcome": "unknown",
+                "reference_kind": "exact",
+                "reference": reference,
+                "tags": ["brightlead-qa"],
+                "source_sessions": [],
+                "split": split,
+                "origin": "real",
+            })
+        return {
+            "format": "skillopt_sleep.tasks.v1",
+            "project": "[REDACTED_PATH]",
+            "transcript_source": "brightlead-sanitized-local-snippets",
+            "n_sessions": 0,
+            "target_skill_path": "skills/qa-output/SKILL.md",
+            "reviewed": True,
+            "tasks": tasks,
+        }
+
+    def test_validate_tasks_accepts_reviewed_sanitized_replay_file(self):
+        self.assertTrue(os.path.exists(VALIDATE_TASKS))
+        self.assertTrue(os.access(VALIDATE_TASKS, os.X_OK))
+
+        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks_path = os.path.join(tmp, "tasks.json")
+            with open(tasks_path, "w", encoding="utf-8") as f:
+                json.dump(self._payload(), f)
+
+            proc = subprocess.run(
+                [VALIDATE_TASKS, tasks_path],
+                cwd=REPO,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("PASS", proc.stdout)
+            self.assertIn("tasks: 3", proc.stdout)
+            self.assertIn("reviewed: True", proc.stdout)
+
+    def test_validate_tasks_fails_closed_for_unready_replay_file(self):
+        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._payload()
+            payload["reviewed"] = False
+            payload["n_sessions"] = 2
+            payload["target_skill_path"] = ""
+            payload["tasks"] = payload["tasks"][:2]
+            payload["tasks"][0]["reference"] = "Human reviewer must fill expected outcome before real-backend replay."
+            payload["tasks"][1]["intent"] = "Check private.example.com before replay"
+            tasks_path = os.path.join(tmp, "tasks.json")
+            with open(tasks_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+            proc = subprocess.run(
+                [VALIDATE_TASKS, tasks_path],
+                cwd=REPO,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("reviewed must be true", proc.stdout)
+            self.assertIn("n_sessions must be 0", proc.stdout)
+            self.assertIn("target_skill_path is required", proc.stdout)
+            self.assertIn("placeholder reference", proc.stdout)
+            self.assertIn("missing splits: test", proc.stdout)
+            self.assertIn("unsafe content survived sanitizer", proc.stdout)
+
+    def test_validate_tasks_can_allow_unreviewed_drafts(self):
+        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._payload()
+            payload["reviewed"] = False
+            tasks_path = os.path.join(tmp, "tasks.json")
+            with open(tasks_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+            proc = subprocess.run(
+                [VALIDATE_TASKS, tasks_path, "--allow-unreviewed"],
+                cwd=REPO,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("reviewed: False", proc.stdout)
 
 
 class TestBrightLeadRegressionSuite(unittest.TestCase):

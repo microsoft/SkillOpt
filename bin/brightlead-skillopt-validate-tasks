@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Validate a BrightLead-reviewed SkillOpt tasks file before backend replay."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from importlib.machinery import SourceFileLoader  # noqa: E402
+
+
+SANITIZER = SourceFileLoader(
+    "brightlead_skillopt_sanitize_tasks",
+    str(ROOT / "bin" / "brightlead-skillopt-sanitize-tasks"),
+).load_module()
+
+
+def _load_payload(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit("tasks file must be a JSON object")
+    return payload
+
+
+def _validate(payload: dict[str, Any], *, require_reviewed: bool) -> list[str]:
+    errors: list[str] = []
+    if payload.get("format") != "skillopt_sleep.tasks.v1":
+        errors.append("format must be skillopt_sleep.tasks.v1")
+    if require_reviewed and payload.get("reviewed") is not True:
+        errors.append("reviewed must be true before real-backend replay")
+    if payload.get("n_sessions") != 0:
+        errors.append("n_sessions must be 0 for BrightLead sanitized replay files")
+    if not payload.get("target_skill_path"):
+        errors.append("target_skill_path is required")
+
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        errors.append("tasks must be a non-empty list")
+        return errors
+
+    splits = set()
+    for index, task in enumerate(tasks, 1):
+        if not isinstance(task, dict):
+            errors.append(f"task {index} must be an object")
+            continue
+        splits.add(task.get("split"))
+        for field in ("id", "intent", "reference", "reference_kind", "split"):
+            if not task.get(field):
+                errors.append(f"task {index} missing {field}")
+        if task.get("reference") == "Human reviewer must fill expected outcome before real-backend replay.":
+            errors.append(f"task {index} still has placeholder reference")
+        if task.get("origin") != "real":
+            errors.append(f"task {index} origin must be real")
+
+    missing_splits = {"train", "val", "test"} - splits
+    if missing_splits:
+        errors.append("missing splits: " + ", ".join(sorted(missing_splits)))
+
+    try:
+        SANITIZER._assert_no_unsafe_survivors(payload)
+    except SystemExit as exc:
+        errors.append(str(exc))
+
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate a sanitized SkillOpt tasks.v1 file")
+    parser.add_argument("tasks_file")
+    parser.add_argument(
+        "--allow-unreviewed",
+        action="store_true",
+        help="allow reviewed:false for pre-review sanitizer drafts",
+    )
+    args = parser.parse_args()
+
+    path = Path(args.tasks_file)
+    payload = _load_payload(path)
+    errors = _validate(payload, require_reviewed=not args.allow_unreviewed)
+    if errors:
+        print(f"[brightlead-skillopt-validate-tasks] FAIL {path}")
+        for error in errors:
+            print(f"- {error}")
+        return 1
+
+    print(f"[brightlead-skillopt-validate-tasks] PASS {path}")
+    print(f"[brightlead-skillopt-validate-tasks] tasks: {len(payload.get('tasks', []))}")
+    print(f"[brightlead-skillopt-validate-tasks] reviewed: {payload.get('reviewed')}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

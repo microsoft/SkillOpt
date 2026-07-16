@@ -72,6 +72,13 @@ tools/skillopt/bin/brightlead-skillopt-sanitize-tasks snippets.jsonl runtime/ski
 
 The sanitizer accepts JSON or JSONL snippets, redacts obvious secrets, emails, URLs, bare domains, IP addresses, home paths, long IDs, Discord-like IDs, and WordPress-style item IDs, then writes `skillopt_sleep.tasks.v1`. It also redacts stored project paths and fails closed if those unsafe patterns still survive in the output JSON. It defaults to `reviewed: false`; pass `--mark-reviewed` only after a human has inspected the output and filled any missing expected outcome/rubric.
 
+Validate any reviewed sanitized task file before a real-backend replay:
+
+```sh
+tools/skillopt/bin/brightlead-skillopt-validate-tasks runtime/skillopt-reviewed-tasks.json
+```
+
+The validator requires `skillopt_sleep.tasks.v1`, `reviewed: true`, `n_sessions: 0`, a target skill path, non-empty train/val/test tasks, filled references, `origin: real`, and no unsafe content that would have failed the sanitizer. Use `--allow-unreviewed` only for pre-review drafts that are not ready for replay.
 
 Run the disposable staged-adoption test only after a separate adoption-path approval:
 
