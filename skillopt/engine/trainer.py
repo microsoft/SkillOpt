@@ -74,6 +74,7 @@ from skillopt.model import (
     set_optimizer_deployment,
 )
 from skillopt.utils import compute_score, skill_hash
+from skillopt.memory.trainer_hooks import maybe_init_mem0, hook_post_evaluate, hook_post_reflect
 
 
 # ── Skill-aware reflection: appendix flush ───────────────────────────────────
@@ -1034,6 +1035,8 @@ class ReflACTTrainer:
         # ── Training loop ────────────────────────────────────────────────
         t_loop_start = time.time()
 
+        memory = maybe_init_mem0(cfg)
+
         if resume_from > total_steps:
             print(f"\n  [skip] all {total_steps} steps complete — jumping to evaluation")
 
@@ -1195,6 +1198,11 @@ class ReflACTTrainer:
                 step_rec["accumulation_batches"] = accum_rollout_stats
                 step_rec["timing"]["rollout_s"] = round(total_rollout_time, 1)
                 step_rec["timing"]["reflect_s"] = round(total_reflect_time, 1)
+
+                hook_post_reflect(
+                    memory, epoch, global_step, all_raw_patches,
+                    scores={"hard": agg_hard, "soft": agg_soft},
+                )
 
                 n_total_patches = len(all_failure_patches) + len(all_success_patches)
                 step_rec["n_patches"] = n_total_patches
@@ -1513,6 +1521,10 @@ class ReflACTTrainer:
                     gate.action == "force_accept" and best_step == global_step
                 ):
                     best_origin = current_origin
+
+                hook_post_evaluate(
+                    memory, epoch, global_step, current_skill, current_score, cfg,
+                )
 
                 if use_skill_aware:
                     current_skill = _flush_skill_aware_appendix(
