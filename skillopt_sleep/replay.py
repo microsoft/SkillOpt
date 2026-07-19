@@ -53,6 +53,18 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     else:
         hard, soft, rationale = backend.judge(task, response)
 
+    ev = getattr(backend, "evidence", None)
+    if ev is not None:
+        # One scored-attempt record per (phase, task): the task->score link of
+        # the evidentiary chain, with the failing checks named in `why`.
+        ev.log("replay", "result",
+               phase=getattr(backend, "evidence_phase", ""),
+               task_id=task.id, split=task.split, origin=task.origin,
+               reference_kind=task.reference_kind, sample_id=sample_id,
+               hard=float(hard), soft=float(soft), why=rationale or "",
+               response_head=(response or "")[:400], tools_called=tools_called,
+               tokens=int(tokens), latency_ms=round(latency_ms, 1))
+
     return ReplayResult(
         id=task.id,
         hard=float(hard),

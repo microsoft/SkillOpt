@@ -14,7 +14,9 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
-from skillopt_sleep.backend import Backend, get_backend
+from skillopt_sleep import evidence
+from skillopt_sleep.backend import Backend, build_backend
+from skillopt_sleep.evidence import EvidenceLog
 from skillopt_sleep.config import SleepConfig, load_config
 from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.harvest_sources import harvest_for_config
@@ -114,14 +116,49 @@ def run_sleep_cycle(
     project = _project_paths(cfg)
     started = _now_iso(clock)
 
-    backend = backend or get_backend(
-        cfg.get("backend", "mock"),
+    backend = backend or build_backend(
+        backend=cfg.get("backend", "mock"),
         model=cfg.get("model", ""),
+        optimizer_backend=cfg.get("optimizer_backend", ""),
+        optimizer_model=cfg.get("optimizer_model", ""),
+        target_backend=cfg.get("target_backend", ""),
+        target_model=cfg.get("target_model", ""),
         codex_path=cfg.get("codex_path", ""),
+        azure_endpoint=cfg.get("azure_endpoint", ""),
+        preferences=cfg.get("preferences", ""),
         project_dir=project,
     )
     backend.preferences = cfg.get("preferences", "")
     _progress(cfg, f"night {night}: project={project} backend={backend.name}")
+
+    # ── evidence log (the night's full evidentiary chain) ────────────────
+    # Pre-create the staging dir so evidence.jsonl accumulates exactly where
+    # the report will land; dry-runs log into the state dir instead.
+    ev = None
+    staging_dir_pre = ""
+    if cfg.get("evidence_log", True):
+        from skillopt_sleep.staging import _ts_dir, new_staging_dir
+        if dry_run:
+            ev_path = os.path.join(
+                cfg.state_dir, "evidence", f"dryrun-{_ts_dir()}.jsonl")
+        else:
+            staging_dir_pre = new_staging_dir(project)
+            ev_path = os.path.join(staging_dir_pre, "evidence.jsonl")
+        ev = EvidenceLog(
+            ev_path,
+            max_chars=int(cfg.get("evidence_max_chars", 4000) or 4000),
+            redact=bool(cfg.get("redact_secrets", True)),
+        )
+        evidence.attach(backend, ev)
+        ev.log("cycle", "start", night=night, project=project,
+               backend=backend.name, model=cfg.get("model", ""),
+               config={k: cfg.get(k) for k in (
+                   "backend", "model", "optimizer_backend", "optimizer_model",
+                   "target_backend", "target_model", "gate_mode", "gate_metric",
+                   "gate_mixed_weight", "edit_budget", "holdout_fraction",
+                   "dream_rollouts", "dream_factor", "recall_k",
+                   "max_tasks_per_night", "lookback_hours", "llm_mine",
+                   "evolve_skill", "evolve_memory")})
 
     # ── live skill/memory docs ───────────────────────────────────────────
     live_memory_path = os.path.join(project, "CLAUDE.md")
@@ -174,6 +211,17 @@ def run_sleep_cycle(
         )
         n_sessions = len(digests)
         _progress(cfg, f"harvest done: sessions={n_sessions}")
+        if ev is not None:
+            # The transcript end of the evidentiary chain: which sessions were
+            # even considered, and what signals they carried into mining.
+            for d in digests:
+                ev.log("harvest", "session", session_id=d.session_id,
+                       project=d.project,
+                       n_user_prompts=len(d.user_prompts),
+                       user_prompts_head=[p[:200] for p in d.user_prompts[:6]],
+                       assistant_final_head=(d.assistant_finals[-1][:300]
+                                             if d.assistant_finals else ""),
+                       feedback_signals=list(d.feedback_signals or []))
         # When a real backend is configured, use it to mine checkable tasks from
         # the transcripts (rubric/rule judges); otherwise fall back to the
         # heuristic miner (no API, no checkable reference).
@@ -205,6 +253,17 @@ def run_sleep_cycle(
         )
         _progress(cfg, f"mine done: tasks={len(tasks)}")
 
+    if ev is not None:
+        # Final task pool with split assignment: which tasks train the edits
+        # vs. which held-out tasks gate them (works for seeded tasks too).
+        for t in tasks:
+            ev.log("mine", "task_ready", task_id=t.id, split=t.split,
+                   origin=t.origin, intent=t.intent[:300],
+                   reference_kind=t.reference_kind,
+                   checks=(t.judge or {}).get("checks", []),
+                   rubric=(t.reference if t.reference_kind == "rubric" else ""),
+                   source_sessions=list(t.source_sessions or []))
+
     report = SleepReport(
         night=night, project=project, started_at=started,
         n_sessions=n_sessions, n_tasks=len(tasks),
@@ -217,6 +276,9 @@ def run_sleep_cycle(
         state.record_night({"night": night, "accepted": False, "n_tasks": 0})
         if not dry_run:
             state.save()
+        if ev is not None:
+            ev.log("cycle", "end", night=night, outcome="no_tasks",
+                   tokens_used=backend.tokens_used())
         staging_dir = ""
         return CycleOutcome(report, staging_dir, False, [])
 
@@ -280,7 +342,13 @@ def run_sleep_cycle(
             live_skill_path=live_skill_path,
             live_memory_path=live_memory_path,
             report_md=report_md,
+            out_dir=staging_dir_pre,
         )
+        if ev is not None:
+            ev.log("stage", "staged", staging_dir=staging_dir,
+                   has_skill=proposed_skill is not None,
+                   has_memory=proposed_memory is not None,
+                   accepted=result.accepted)
         # Observability: persist per-task held-out evidence + optimizer/codex errors so a
         # 0.0->0.0 night self-explains (empty responses vs failing checks vs no edits) — the
         # cycle previously captured none of this, making the gate a black box (#learning-stall).
@@ -319,5 +387,14 @@ def run_sleep_cycle(
             adopted_paths = adopt_staging(staging_dir)
             adopted = bool(adopted_paths)
         state.save()
+
+    if ev is not None:
+        ev.log("cycle", "end", night=night, outcome="completed",
+               gate_action=report.gate_action, accepted=report.accepted,
+               baseline_score=report.baseline_score,
+               candidate_score=report.candidate_score,
+               n_applied_edits=len(report.edits),
+               n_rejected_edits=len(report.rejected_edits),
+               tokens_used=report.tokens_used, adopted=adopted)
 
     return CycleOutcome(report, staging_dir, adopted, adopted_paths)
