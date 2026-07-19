@@ -38,6 +38,14 @@ DEFAULTS: Dict[str, Any] = {
     # ── optimizer ──────────────────────────────────────────────────────────
     "backend": "mock",            # "mock" | "claude" | "codex" | "copilot"
     "model": "",                  # backend-specific; "" => backend default
+    # Dual-backend split (both empty => single backend above plays all roles).
+    # target = the model whose skill is deployed (runs `attempt` rollouts);
+    # optimizer = the model that mines tasks, judges rubrics, writes edits.
+    "optimizer_backend": "",
+    "optimizer_model": "",
+    "target_backend": "",
+    "target_model": "",
+    "azure_endpoint": "",         # explicit endpoint for azure/compat backends
     "gate_mode": "on",            # "on" (validation-gated) | "off" (greedy, no hard filter)
     "codex_path": "",             # "" => auto-detect the real @openai/codex binary
     "edit_budget": 4,             # textual learning rate (max edits/night)
@@ -55,6 +63,9 @@ DEFAULTS: Dict[str, Any] = {
     "target_skill_path": "",      # explicit SKILL.md target for repo-scoped agents
     "target_task_filter": True,   # prefer mined tasks matching target_skill_path/text
     "progress": False,            # print phase progress to stderr
+    # ── observability ──────────────────────────────────────────────────────
+    "evidence_log": True,         # write per-night evidence.jsonl (full evidentiary chain)
+    "evidence_max_chars": 4000,   # per-field truncation cap for evidence events
     # ── adoption / safety ──────────────────────────────────────────────────
     "auto_adopt": False,          # default: stage + require explicit `adopt`
     "managed_skill_name": "skillopt-sleep-learned",
