@@ -513,6 +513,12 @@ def main(argv=None) -> int:
     p_unsched = sub.add_parser("unschedule", help="remove the nightly cron entry")
     _add_common(p_unsched)
     p_unsched.add_argument("--all", action="store_true", help="remove all managed entries")
+    p_dash = sub.add_parser(
+        "dashboard", help="serve the local control-panel dashboard (127.0.0.1)")
+    _add_common(p_dash)
+    p_dash.add_argument("--port", type=int, default=8321)
+    p_dash.add_argument("--no-browser", action="store_true",
+                        help="don't auto-open the browser")
 
     args = parser.parse_args(argv)
     if args.cmd == "run":
@@ -529,6 +535,10 @@ def main(argv=None) -> int:
         return cmd_schedule(args)
     if args.cmd == "unschedule":
         return cmd_unschedule(args)
+    if args.cmd == "dashboard":
+        from skillopt_sleep.dashboard import serve
+        return serve(project=args.project or os.getcwd(), port=args.port,
+                     open_browser=not args.no_browser)
     parser.print_help()
     return 2
 

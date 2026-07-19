@@ -1,15 +1,17 @@
-"""Tests for the evidence log and the prompt registry.
+"""Tests for the evidence log, the prompt registry, and the dashboard API.
 
-Pure-stdlib (unittest), deterministic, no API key, no network,
-no third-party deps.
+Pure-stdlib (unittest), deterministic, no API key, no network beyond
+127.0.0.1, no third-party deps.
 
 Run:  python -m unittest tests.test_sleep_evidence
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -151,6 +153,69 @@ class TestCycleEvidence(unittest.TestCase):
         self.assertEqual(outcome.staging_dir, "")
         # an evidence-only folder exists but latest_staging must skip it
         self.assertIsNone(latest_staging(proj))
+
+
+class TestDashboardApi(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from skillopt_sleep.dashboard import DashboardHandler, _RunState
+        from http.server import ThreadingHTTPServer
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.env = mock.patch.dict(os.environ, {
+            "SKILLOPT_SLEEP_PROMPTS_PATH": os.path.join(cls.tmp.name, "prompts.json")})
+        cls.env.start()
+        DashboardHandler.project = cls.tmp.name
+        DashboardHandler.run_state = _RunState()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.env.stop()
+        cls.tmp.cleanup()
+
+    def _get(self, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", path)
+        r = conn.getresponse()
+        body = json.loads(r.read().decode("utf-8")) if "json" in r.getheader("Content-Type", "") else r.read()
+        conn.close()
+        return r.status, body
+
+    def _post(self, path, obj):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        payload = json.dumps(obj).encode("utf-8")
+        conn.request("POST", path, body=payload,
+                     headers={"Content-Type": "application/json"})
+        r = conn.getresponse()
+        body = json.loads(r.read().decode("utf-8"))
+        conn.close()
+        return r.status, body
+
+    def test_overview_and_html(self):
+        status, body = self._get("/api/overview")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["project"], self.tmp.name)
+        self.assertEqual({p["name"] for p in body["prompts"]},
+                         {"miner", "attempt", "judge", "reflect"})
+        status, html = self._get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Control Panel", html)
+
+    def test_prompt_roundtrip(self):
+        status, body = self._post("/api/prompts", {"updates": {"miner": "X __PROMPTS__"}})
+        self.assertEqual(status, 200)
+        mined = [p for p in body["prompts"] if p["name"] == "miner"][0]
+        self.assertEqual(mined["override"], "X __PROMPTS__")
+        self._post("/api/prompts", {"updates": {"miner": None}})
+
+    def test_unknown_night_404(self):
+        status, _body = self._get("/api/night/nope")
+        self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":
