@@ -62,8 +62,9 @@ _TOOL_SCHEMA = {
     "properties": {
         "project": {"type": "string",
                     "description": "Project dir to evolve (default: cwd)."},
-        "backend": {"type": "string", "enum": ["mock", "claude", "codex", "copilot", "cursor"],
-                    "description": "mock = no API spend (default); claude/codex/copilot/cursor = real."},
+        "backend": {"type": "string",
+                    "enum": ["mock", "claude", "codex", "copilot", "cursor", "handoff"],
+                    "description": "mock = no API spend (default); claude/codex/copilot/cursor = real; handoff = session answers prompts, no API subprocess."},
         "scope": {"type": "string", "enum": ["invoked", "all"],
                   "description": "Harvest scope (default: invoked project only)."},
         "source": {"type": "string", "enum": ["claude", "codex", "cursor", "auto"],

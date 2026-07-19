@@ -46,7 +46,7 @@ class TestDevinMcpSchema(unittest.TestCase):
 
     def test_backends_in_enum(self):
         backends = mcp_server._TOOL_SCHEMA["properties"]["backend"]["enum"]
-        for b in ["mock", "claude", "codex", "copilot", "cursor"]:
+        for b in ["mock", "claude", "codex", "copilot", "cursor", "handoff"]:
             self.assertIn(b, backends)
 
     def test_schema_has_key_engine_params(self):
@@ -68,6 +68,10 @@ class TestClaudeHomeExpansion(unittest.TestCase):
     (the documented mcp-config sets SKILLOPT_DEVIN_CLAUDE_HOME="~/...")."""
 
     def test_env_tilde_is_expanded(self):
+        # Re-insert the devin plugin path at position 0 so importlib.reload
+        # picks up this module, not plugins/copilot/mcp_server.py when both
+        # test modules are loaded in the same process.
+        sys.path.insert(0, PLUGIN)
         os.environ["SKILLOPT_DEVIN_CLAUDE_HOME"] = "~/.skillopt-sleep-devin"
         try:
             importlib.reload(mcp_server)

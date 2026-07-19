@@ -62,9 +62,12 @@ Requires Python ≥ 3.10. No third-party packages — the server is pure stdlib.
 | `sleep_unschedule` | remove the nightly cron entry |
 
 Default backend is `mock` (no API spend); the `claude`, `codex`, `copilot`, and `cursor`
-backends use the corresponding authenticated CLI and budget. The seven tools
-call the same `python -m skillopt_sleep` actions as the other shared-engine
-integrations.
+backends use the corresponding authenticated CLI and budget. The `handoff`
+backend runs the cycle with no model subprocess or API key — the engine writes
+pending model calls to `.skillopt-sleep-handoff/PROMPTS.md` + `pending.json`
+(exit code 3) and resumes after answers are placed in `answers/<id>.md`; re-run
+`sleep_run` with the same arguments to resume. The seven tools call the same
+`python -m skillopt_sleep` actions as the other shared-engine integrations.
 
 ## Data boundary
 

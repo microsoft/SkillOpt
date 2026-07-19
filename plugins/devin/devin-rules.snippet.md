@@ -24,7 +24,10 @@ Always pass the absolute Devin workspace as `project`, especially for
 `sleep_adopt`. Default backend is `mock` (no provider calls). The `claude`,
 `codex`, `copilot`, and `cursor` backend values use the corresponding installed and
 authenticated CLI; they do not require this plugin to implement a separate
-API-key flow.
+API-key flow. The `handoff` backend runs the cycle with no model subprocess
+or API key — the engine writes pending model calls to
+`.skillopt-sleep-handoff/` and exits; answer each prompt in a fresh context
+and re-run `sleep_run` to resume (typically 3–6 rounds).
 
 The Devin conversion and mock workflow stay local. A real backend sends
 truncated transcript excerpts and derived tasks to the selected provider for

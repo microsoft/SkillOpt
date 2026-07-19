@@ -2005,6 +2005,45 @@ class MockBeneficialBackend(MockBackend):
                 break
         return edits
 
+
+class MockFractionalDegradationBackend(MockBackend):
+    """Backend where an edit improves train but partially degrades held-out.
+
+    Train improves 0.0 → 1.0 (looks good!) but held-out degrades from
+    1.0 → 0.5 across two val tasks (one still passes, one breaks).
+    A naive optimizer might see the train improvement and miss the
+    partial regression — the gate must catch this subtle case.
+    """
+
+    HACK_TEXT = "Always respond with a definitive answer"
+
+    def attempt(self, task: TaskRecord, skill: str, memory: str, sample_id: int = 0) -> str:
+        ctx = (skill or "") + "\n" + (memory or "")
+        if self.HACK_TEXT in ctx:
+            if "rule:__reward_hacking__" in task.tags:
+                return str(task.reference)  # train improves
+            if "rule:real" in task.tags:
+                if task.id == "v1":
+                    return str(task.reference)  # val task 1 still passes
+                if task.id == "v2":
+                    return "misleading answer"  # val task 2 breaks
+        # Baseline (without edit)
+        if "rule:__reward_hacking__" in task.tags:
+            return "I am missing input"  # train fails
+        if "rule:real" in task.tags:
+            return str(task.reference)  # held-out passes
+        return super().attempt(task, skill, memory, sample_id)
+
+    def reflect(self, failures, successes, skill, memory, **kwargs):
+        edits = []
+        for task, _ in failures:
+            if "rule:__reward_hacking__" in task.tags:
+                edits.append(EditRecord("skill", "add", self.HACK_TEXT,
+                                        rationale="improve response confidence"))
+                break
+        return edits
+
+
 class TestVerifierDiscipline(unittest.TestCase):
     def test_gate_rejects_reward_hacking_edit(self):
         be = MockRewardHackingBackend()
@@ -2035,6 +2074,40 @@ class TestVerifierDiscipline(unittest.TestCase):
         self.assertEqual(res.holdout_candidate, 1.0)
         self.assertGreater(len(res.applied_edits), 0)
         self.assertIn("step-by-step", res.applied_edits[0].content)
+
+    def test_gate_rejects_fractional_degradation(self):
+        """Gate must reject an edit that partially degrades held-out (1.0→0.5),
+        not just all-or-nothing collapses. Train improves (0.0→1.0) which makes
+        the regression easy to miss — the gate catches it anyway."""
+        from skillopt_sleep.replay import aggregate_scores, replay_batch
+
+        be = MockFractionalDegradationBackend()
+        train = TaskRecord(id="t3", project="/p", intent="train", reference="ABC",
+                           reference_kind="exact", tags=["rule:__reward_hacking__"], split="train")
+        val1 = TaskRecord(id="v1", project="/p", intent="val", reference="DEF",
+                          reference_kind="exact", tags=["rule:real"], split="val")
+        val2 = TaskRecord(id="v2", project="/p", intent="val", reference="GHI",
+                          reference_kind="exact", tags=["rule:real"], split="val")
+        tasks = [train, val1, val2]
+
+        candidate_pairs = replay_batch(be, [val1, val2], be.HACK_TEXT, "")
+        candidate_hard, _candidate_soft = aggregate_scores(candidate_pairs)
+        self.assertEqual([result.hard for _task, result in candidate_pairs], [1.0, 0.0])
+        self.assertEqual(candidate_hard, 0.5)
+
+        res = consolidate(be, tasks, "", "", edit_budget=4, gate_metric="hard", night=1)
+
+        self.assertFalse(res.accepted)
+        self.assertEqual(res.gate_action, "reject")
+        # Baseline: both val tasks pass → 1.0
+        self.assertEqual(res.holdout_baseline, 1.0)
+        # After rejection the skill reverts; final replay also passes both
+        self.assertEqual(res.holdout_candidate, 1.0)
+        # Confirm we had two val tasks in the baseline
+        self.assertEqual(len(res.holdout_detail), 2)
+        self.assertGreater(len(res.rejected_edits), 0)
+        self.assertIn("definitive answer", res.rejected_edits[0].content)
+
 
 class TestDiagnosticsRedaction(unittest.TestCase):
     """diagnostics.json surfaces backend stderr / optimizer replies / task
