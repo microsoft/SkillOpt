@@ -22,7 +22,7 @@ tools over explaining the concept.
 
 Always pass the absolute Devin workspace as `project`, especially for
 `sleep_adopt`. Default backend is `mock` (no provider calls). The `claude`,
-`codex`, and `copilot` backend values use the corresponding installed and
+`codex`, `copilot`, and `cursor` backend values use the corresponding installed and
 authenticated CLI; they do not require this plugin to implement a separate
 API-key flow.
 

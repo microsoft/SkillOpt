@@ -42,7 +42,8 @@ or `--target-skill-path`) instead of silently dropping them:
 | `unschedule` | remove the nightly cron entry (`--all` to remove every managed entry) |
 
 Default backend is `mock` (deterministic, no API spend). To use real budget for
-model-driven optimization, add `--backend claude` or `--backend codex`. An
+model-driven optimization, add `--backend claude`, `--backend codex`, or
+`--backend cursor`. An
 accepted gain is evidence on this run's held-out tasks, not a guarantee of
 general improvement; results depend on the tasks, model, and checks. To steer
 what the optimizer writes, add `--preferences "<your house rules>"`.

@@ -60,7 +60,7 @@ Prefer the `/skillopt-sleep` command. Under the hood it calls the bundled runner
 ```
 
 - Default backend is `mock` (deterministic, **no API spend**) — good for trying the plumbing.
-- Add `--backend claude` or `--backend codex` to spend the user's real budget
+- Add `--backend claude`, `--backend codex`, or `--backend cursor` to spend the user's real budget
   for model-driven optimization. A held-out gain is run-specific evidence, not
   a guarantee of broader improvement; results depend on the tasks, model, and
   checks.
@@ -84,9 +84,9 @@ Installs a nightly cron entry. `unschedule --all` removes every managed entry.
 |------|---------|-------------|
 | `--project PATH` | cwd | Project directory to evolve |
 | `--scope all\|invoked` | invoked | Harvest scope |
-| `--backend mock\|claude\|codex\|copilot\|handoff\|azure_openai` | mock | Backend (mock = no provider calls) |
+| `--backend mock\|claude\|codex\|copilot\|cursor\|handoff\|azure_openai` | mock | Backend (mock = no provider calls) |
 | `--model NAME` | backend default | Override the model used for replay |
-| `--source claude\|codex\|auto` | claude | Transcript source |
+| `--source claude\|codex\|cursor\|auto` | claude | Transcript source |
 | `--lookback-hours N` | 72 | Harvest window |
 | `--max-sessions N` | derived | Cap harvested sessions; defaults to 3 × max tasks (120 with current defaults) |
 | `--max-tasks N` | 40 | Cap mined tasks |
@@ -99,7 +99,7 @@ Installs a nightly cron entry. `unschedule --all` removes every managed entry.
 | `--json` | off | Machine-readable JSON output |
 
 The CLI also has source/runtime path overrides (`--claude-home`, `--codex-home`,
-and `--codex-path`) and action-specific flags. Use
+`--cursor-home`, `--codex-path`, and `--cursor-path`) and action-specific flags. Use
 `python -m skillopt_sleep <action> --help` as the authoritative surface.
 
 ## Config keys (`~/.skillopt-sleep/config.json`)

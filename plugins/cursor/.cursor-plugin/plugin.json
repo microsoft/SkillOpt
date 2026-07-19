@@ -1,0 +1,30 @@
+{
+  "name": "skillopt-sleep",
+  "displayName": "SkillOpt-Sleep",
+  "version": "0.1.0",
+  "description": "Review recent Cursor sessions, replay recurring work, and stage validation-gated improvements to a Cursor skill for explicit adoption.",
+  "author": {
+    "name": "Yifan Yang",
+    "email": "yifanyang@microsoft.com"
+  },
+  "homepage": "https://github.com/microsoft/SkillOpt",
+  "repository": "https://github.com/microsoft/SkillOpt",
+  "license": "MIT",
+  "keywords": [
+    "skillopt",
+    "cursor",
+    "self-improvement",
+    "memory-consolidation",
+    "sleep",
+    "skills",
+    "offline-optimization"
+  ],
+  "category": "developer-tools",
+  "tags": [
+    "automation",
+    "memory",
+    "transcripts"
+  ],
+  "commands": "./commands/",
+  "skills": "./skills/"
+}

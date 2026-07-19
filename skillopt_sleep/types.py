@@ -17,8 +17,8 @@ from typing import Any, Dict, List
 class SessionDigest:
     """A normalized summary of one local agent session transcript.
 
-    Produced by source-specific harvesters from Claude Code transcripts or
-    Codex Desktop archived sessions.
+    Produced by source-specific harvesters from Claude Code transcripts, Codex
+    Desktop archived sessions, or Cursor Agent transcripts.
     """
 
     session_id: str

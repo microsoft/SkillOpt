@@ -25,8 +25,8 @@ my preferences", or "make the agent improve from past usage", use the MCP tools:
 
 ### Key parameters (pass as MCP tool arguments)
 
-- `backend` — `mock` (default, no provider calls), `claude`, `codex`, or `copilot`
-- `source` — `claude`, `codex`, or `auto` (where to read transcripts)
+- `backend` — `mock` (default, no provider calls), `claude`, `codex`, `copilot`, or `cursor`
+- `source` — `claude`, `codex`, `cursor`, or `auto` (where to read transcripts)
 - `target_skill_path` — explicit SKILL.md to evolve; use this for a skill that
   the current agent actually loads
 - `tasks_file` — reviewed TaskRecord JSON (skip harvest); real backends require

@@ -2,9 +2,9 @@
 
 > **Version note.** This reference tracks `main`. PyPI 0.2.0 does not yet
 > include the generic research `openai_compatible` backend, Sleep handoff,
-> Sleep support for non-Azure OpenAI-compatible endpoints, or the Sleep
-> `--preferences` flag; use a source install from `main` for those features
-> until the next release.
+> Sleep support for non-Azure OpenAI-compatible endpoints, the Sleep
+> `--preferences` flag, or Cursor source/backend/plugin support; use a source
+> install from `main` for those features until the next release.
 
 ## Training
 
@@ -106,9 +106,11 @@ Actions are `run`, `dry-run`, `status`, `adopt`, `harvest`, `schedule`, and
 |---|---|
 | `--project PATH` | Project to evolve (default: current directory) |
 | `--scope invoked\|all` | Harvest this project or all projects |
-| `--source claude\|codex\|auto` | Transcript source |
-| `--backend mock\|claude\|codex\|copilot\|handoff\|azure_openai` | Replay/optimizer backend |
+| `--source claude\|codex\|cursor\|auto` | Transcript source; `auto` keeps Codex-then-Claude precedence and does not select Cursor |
+| `--backend mock\|claude\|codex\|copilot\|cursor\|handoff\|azure_openai` | Replay/optimizer backend |
 | `--model NAME` | Backend-specific model override |
+| `--cursor-home PATH` | Override `~/.cursor` for Cursor transcript harvesting |
+| `--cursor-path PATH` | Path to the installed Cursor Agent CLI |
 | `--preferences TEXT` | House rules supplied to reflection |
 | `--lookback-hours N` | Initial transcript lookback; `0` scans all history |
 | `--max-sessions N` / `--max-tasks N` | Bound the harvested workload |
@@ -117,6 +119,55 @@ Actions are `run`, `dry-run`, `status`, `adopt`, `harvest`, `schedule`, and
 | `--edit-budget N` | Maximum bounded edits for the night |
 | `--progress` / `--json` | Progress or machine-readable output |
 | `--auto-adopt` | Apply an accepted staged proposal automatically |
+
+### Cursor source and backend
+
+`--source cursor` reads local Cursor JSONL transcripts from
+`~/.cursor/projects/<workspace>/agent-transcripts/*/*.jsonl`. Invoked scope uses
+Cursor's recorded workspace path, including when `--project` is a nested
+directory, and falls back to the sanitized storage name when metadata is not
+available. `--scope all` scans every workspace below `cursor_home`. The
+harvester retains user/assistant text, explicit turn errors, and tool names,
+while excluding tool arguments, tool outputs, and non-message records. It
+redacts known secret patterns and filters SkillOpt-generated replay sessions,
+but redaction is not a guarantee that outbound prompts contain no sensitive
+data.
+
+`--backend cursor` launches an installed, authenticated `cursor-agent`, sends
+prompts over stdin, and parses its JSON result. Ordinary model calls use
+read-only Ask mode. Replays that validate tool use run in an isolated temporary
+workspace with an isolated Cursor config. Agent-mode sandboxing is disabled so
+the local headless configuration allowlists only the generated tool shims; file
+reads, file writes, and MCP tools are denied. These calls do not use `--force`
+or automatic MCP approval. Cursor and the model provider selected by Cursor can
+receive the prompt content. Organization-enforced Cursor policies still apply.
+
+Cursor-specific settings are available through the CLI, config, and environment:
+
+| Purpose | CLI | `~/.skillopt-sleep/config.json` | Environment |
+|---|---|---|---|
+| Transcript home | `--cursor-home PATH` | `"cursor_home": "/path/to/.cursor"` | none |
+| Agent executable | `--cursor-path PATH` | `"cursor_path": "/path/to/cursor-agent"` | `SKILLOPT_SLEEP_CURSOR_PATH` |
+| Model | `--model NAME` | `"model": "NAME"` | `SKILLOPT_SLEEP_CURSOR_MODEL` |
+
+Target the learned project skill explicitly so accepted updates are visible to
+Cursor without modifying the plugin's own `skillopt-sleep` workflow skill:
+
+```bash
+skillopt-sleep run --project "$(pwd)" \
+  --source cursor --backend cursor \
+  --target-skill-path .cursor/skills/skillopt-sleep-learned/SKILL.md \
+  --max-sessions 5 --max-tasks 3 --progress
+```
+
+The managed `schedule` command persists the project, backend, time, and optional
+auto-adopt setting only. It does not copy source, Cursor paths, model, or target
+skill flags into the scheduled command. Put `transcript_source`, `cursor_home`,
+`cursor_path`, `model`, and `target_skill_path` in the user config before
+scheduling Cursor. Keep `target_skill_path` project-relative as
+`.cursor/skills/skillopt-sleep-learned/SKILL.md`, prefer an absolute
+`cursor_path`, and verify authentication for the scheduled account because cron
+and Task Scheduler may have a minimal environment.
 
 Backend-specific setup for compatible endpoints is documented in
 [OpenAI-compatible endpoints for SkillOpt-Sleep](../sleep/openai-compatible-endpoints.md).

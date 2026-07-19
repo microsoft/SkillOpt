@@ -19,13 +19,15 @@ from typing import Any, Dict, Optional
 HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
+CURSOR_HOME = os.path.expanduser("~/.cursor")
 
 
 DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
     "codex_home": CODEX_HOME,
-    "transcript_source": "claude",  # "claude" | "codex" | "auto"
+    "cursor_home": CURSOR_HOME,
+    "transcript_source": "claude",  # "claude" | "codex" | "cursor" | "auto"
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -36,10 +38,11 @@ DEFAULTS: Dict[str, Any] = {
     "val_fraction": 0.34,         # real tasks reserved to gate updates
     "test_fraction": 0.0,         # real tasks reserved as the final held-out measure
     # ── optimizer ──────────────────────────────────────────────────────────
-    "backend": "mock",            # "mock" | "claude" | "codex" | "copilot"
+    "backend": "mock",            # "mock" | "claude" | "codex" | "copilot" | "cursor"
     "model": "",                  # backend-specific; "" => backend default
     "gate_mode": "on",            # "on" (validation-gated) | "off" (greedy, no hard filter)
     "codex_path": "",             # "" => auto-detect the real @openai/codex binary
+    "cursor_path": "",            # "" => auto-detect the Cursor Agent CLI
     "edit_budget": 4,             # textual learning rate (max edits/night)
     "preferences": "",            # free-text house rules injected into reflect as a prior
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
@@ -107,6 +110,11 @@ class SleepConfig:
     @property
     def codex_archived_sessions_dir(self) -> str:
         return os.path.join(self.data["codex_home"], "archived_sessions")
+
+    @property
+    def cursor_projects_dir(self) -> str:
+        cursor_home = os.path.abspath(os.path.expanduser(str(self.data["cursor_home"])))
+        return os.path.join(cursor_home, "projects")
 
     @property
     def history_path(self) -> str:

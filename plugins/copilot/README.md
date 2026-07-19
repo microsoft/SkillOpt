@@ -46,10 +46,14 @@ propose?"*, *"adopt the staged sleep proposal"*. The server exposes seven MCP
 tools: `sleep_status`, `sleep_dry_run`, `sleep_run`, `sleep_adopt`,
 `sleep_harvest`, `sleep_schedule`, and `sleep_unschedule`.
 
-Each tool takes optional `project`, `backend` (`mock`/`claude`/`codex`/`copilot`), and
-`scope` arguments. Default backend is `mock` (no API spend). The `copilot`
-backend drives the GitHub Copilot CLI (`copilot -p ... --output-format json`)
-and requires the `copilot` CLI to be installed and authenticated.
+Each tool takes optional `project`, `backend`
+(`mock`/`claude`/`codex`/`copilot`/`cursor`), `source`, and `scope` arguments.
+Default backend is `mock` (no API spend). The `copilot` backend drives the
+GitHub Copilot CLI (`copilot -p ... --output-format json`) and requires the
+`copilot` CLI to be installed and authenticated. The `cursor` backend requires
+an authenticated `cursor-agent`; pair it with `source: "cursor"` to harvest
+Cursor sessions, and pass `cursor_home` or `cursor_path` through the MCP tool
+when their defaults are not suitable.
 
 Harvesting is local and read-only, and the default `mock` backend makes no
 provider calls. A real backend sends truncated transcript excerpts and derived

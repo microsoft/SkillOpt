@@ -112,6 +112,7 @@ without `crontab`, `schedule` prints a line for manual installation.
 - `--backend claude` — uses the Claude CLI
 - `--backend codex` — uses the Codex CLI
 - `--backend copilot` — uses the GitHub Copilot CLI
+- `--backend cursor` — uses the Cursor Agent CLI
 - `--backend handoff` — emits prompt/answer files for an interactive session
 - `--backend azure_openai` — uses the configured Azure OpenAI endpoint
 

@@ -61,7 +61,7 @@ and treat this directory only as source material for a future OpenClaw port.
 ## Shared-engine features are not wrapper features
 
 At this revision the supported shared CLI backends are `mock`, `claude`,
-`codex`, `copilot`, `handoff`, and `azure_openai`; the
+`codex`, `copilot`, `cursor`, `handoff`, and `azure_openai`; the
 [plugin integration reference](../README.md#supported-cli-surface) is the
 authoritative list. The shared engine can consolidate a selected skill and
 project `CLAUDE.md` memory (controlled by `evolve_skill` and `evolve_memory`),

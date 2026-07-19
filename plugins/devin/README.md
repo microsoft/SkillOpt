@@ -61,7 +61,7 @@ Requires Python ≥ 3.10. No third-party packages — the server is pure stdlib.
 | `sleep_schedule` | install a nightly cron entry (`--hour` / `--minute`) |
 | `sleep_unschedule` | remove the nightly cron entry |
 
-Default backend is `mock` (no API spend); the `claude`, `codex`, and `copilot`
+Default backend is `mock` (no API spend); the `claude`, `codex`, `copilot`, and `cursor`
 backends use the corresponding authenticated CLI and budget. The seven tools
 call the same `python -m skillopt_sleep` actions as the other shared-engine
 integrations.

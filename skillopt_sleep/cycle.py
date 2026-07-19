@@ -118,6 +118,7 @@ def run_sleep_cycle(
         cfg.get("backend", "mock"),
         model=cfg.get("model", ""),
         codex_path=cfg.get("codex_path", ""),
+        cursor_path=cfg.get("cursor_path", ""),
         project_dir=project,
     )
     backend.preferences = cfg.get("preferences", "")

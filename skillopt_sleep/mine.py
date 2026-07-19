@@ -20,6 +20,7 @@ import re
 from collections import Counter
 from typing import Any, Callable, List, Optional, Set, Tuple
 
+from skillopt_sleep.backend import CursorBackendError
 from skillopt_sleep.types import SessionDigest, TaskRecord
 
 
@@ -300,6 +301,8 @@ def mine(
     if llm_miner is not None:
         try:
             tasks = llm_miner(digests) or []
+        except CursorBackendError:
+            raise
         except Exception:
             tasks = []
     if not tasks:

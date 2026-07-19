@@ -13,8 +13,8 @@ Common flags:
     --max-tasks N       cap mined tasks per run
     --target-skill-path PATH explicit live SKILL.md to stage/adopt
     --tasks-file PATH   reviewed TaskRecord JSON file to replay instead of harvesting
-    --backend mock|claude|codex|copilot|handoff
-    --source claude|codex|auto
+    --backend mock|claude|codex|copilot|cursor|handoff
+    --source claude|codex|cursor|auto
     --model NAME
     --lookback-hours N
     --auto-adopt
@@ -28,6 +28,7 @@ import os
 import sys
 from typing import Any, Dict
 
+from skillopt_sleep.backend import CursorBackendError
 from skillopt_sleep.config import load_config
 from skillopt_sleep.cycle import run_sleep_cycle
 from skillopt_sleep.harvest_sources import harvest_for_config
@@ -70,13 +71,15 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
     p.add_argument("--backend", default="",
-                   choices=["", "mock", "claude", "codex", "copilot", "handoff",
+                   choices=["", "mock", "claude", "codex", "copilot", "cursor", "handoff",
                             "azure_openai"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
+    p.add_argument("--cursor-path", default="", help="path to the Cursor Agent CLI")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
     p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
-    p.add_argument("--source", default="", choices=["", "claude", "codex", "auto"],
+    p.add_argument("--cursor-home", default="", help="override ~/.cursor for Cursor session harvest")
+    p.add_argument("--source", default="", choices=["", "claude", "codex", "cursor", "auto"],
                    help="session transcript source")
     p.add_argument("--lookback-hours", type=int, default=None,
                    help="harvest window in hours; 0 = scan full history")
@@ -110,10 +113,14 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["model"] = args.model
     if getattr(args, "codex_path", ""):
         overrides["codex_path"] = os.path.abspath(args.codex_path)
+    if getattr(args, "cursor_path", ""):
+        overrides["cursor_path"] = os.path.abspath(os.path.expanduser(args.cursor_path))
     if getattr(args, "claude_home", ""):
         overrides["claude_home"] = os.path.abspath(args.claude_home)
     if getattr(args, "codex_home", ""):
         overrides["codex_home"] = os.path.abspath(args.codex_home)
+    if getattr(args, "cursor_home", ""):
+        overrides["cursor_home"] = os.path.abspath(os.path.expanduser(args.cursor_home))
     if getattr(args, "source", ""):
         overrides["transcript_source"] = args.source
     lh = getattr(args, "lookback_hours", None)
@@ -164,7 +171,11 @@ def cmd_run(args, dry: bool = False) -> int:
             return 2
     if cfg.get("backend", "mock") == "handoff":
         return _run_handoff(cfg, args, seed_tasks=tasks, task_meta=task_meta, dry=dry)
-    outcome = run_sleep_cycle(cfg, seed_tasks=tasks, dry_run=dry)
+    try:
+        outcome = run_sleep_cycle(cfg, seed_tasks=tasks, dry_run=dry)
+    except CursorBackendError as exc:
+        print(f"[sleep] Cursor backend failed: {_redact_deep(str(exc))}", file=sys.stderr)
+        return 1
     _print_run_report(outcome, args, task_meta)
     return 0
 

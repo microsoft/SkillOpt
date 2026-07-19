@@ -46,7 +46,7 @@ class TestDevinMcpSchema(unittest.TestCase):
 
     def test_backends_in_enum(self):
         backends = mcp_server._TOOL_SCHEMA["properties"]["backend"]["enum"]
-        for b in ["mock", "claude", "codex", "copilot"]:
+        for b in ["mock", "claude", "codex", "copilot", "cursor"]:
             self.assertIn(b, backends)
 
     def test_schema_has_key_engine_params(self):
@@ -55,8 +55,12 @@ class TestDevinMcpSchema(unittest.TestCase):
         for param in {"project", "backend", "scope", "source", "model",
                       "tasks_file", "target_skill_path", "max_sessions",
                       "max_tasks", "lookback_hours", "auto_adopt", "json",
-                      "edit_budget", "hour", "minute"}:
+                      "edit_budget", "hour", "minute", "cursor_home", "cursor_path"}:
             self.assertIn(param, props)
+
+    def test_cursor_source_is_in_enum(self):
+        sources = mcp_server._TOOL_SCHEMA["properties"]["source"]["enum"]
+        self.assertIn("cursor", sources)
 
 
 class TestClaudeHomeExpansion(unittest.TestCase):

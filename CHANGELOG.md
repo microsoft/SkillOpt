@@ -7,6 +7,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- Native SkillOpt-Sleep support for Cursor, including a local plugin command
+  and skill, Cursor transcript harvesting, and an optional Cursor Agent CLI
+  backend.
 - **Handoff backend** (`--backend handoff`) for SkillOpt-Sleep — runs the
   sleep cycle with no model subprocess or API key: the engine writes each
   pending model call to `PROMPTS.md`/`pending.json` (exit code 3) and the

@@ -17,7 +17,7 @@ normal agent requests.
 One "night":
 
 ```
-harvest Claude Code / Codex transcripts → mine recurring tasks → replay offline
+harvest Claude Code / Codex / Cursor transcripts → mine recurring tasks → replay offline
    → consolidate (reflect → bounded edit → GATE on real held-out tasks)
    → stage proposal → (you) adopt
 ```
@@ -33,6 +33,14 @@ experience → long-term competence).
 > review your transcript source and provider policy before running on sensitive
 > projects. For a reviewable workflow, harvest to a task file, inspect/redact it, mark
 > it `"reviewed": true`, and then replay that file with the real backend.
+>
+> The Cursor source reads local user/assistant message text, explicit turn errors,
+> and tool names, but excludes tool arguments, tool outputs, and non-message records.
+> Known secret-shaped strings are redacted as defense in depth. The Cursor backend
+> sends prompts through `cursor-agent`; ordinary calls use read-only Ask mode and
+> tool-validated tasks use an isolated temporary workspace and Cursor config with
+> only generated local shims allowlisted. Cursor and the model provider selected
+> by Cursor may therefore receive transcript-derived content.
 
 ## How to use it
 
@@ -48,13 +56,14 @@ skillopt-sleep schedule     # install a nightly cron entry for this project
 ```
 
 > **Version note.** This page tracks `main`. PyPI 0.2.0 provides the base
-> commands above. Sleep handoff, non-Azure OpenAI-compatible endpoints, and
-> `--preferences` landed later and require a source install from `main` until
-> the next release.
+> commands above. Cursor source/backend/plugin support, Sleep handoff, non-Azure
+> OpenAI-compatible endpoints, and `--preferences` landed later and require a
+> source install from `main` until the next release.
 
 The per-agent integrations below still come from the repo; the CLI above is the
-standalone, pip-only way to run a cycle. Claude Code, Codex, Copilot, and Devin wrap
-the shared engine. OpenClaw is a separate reference adaptation and has its own setup.
+standalone, pip-only way to run a cycle. Claude Code, Codex, Cursor, Copilot, and
+Devin wrap the shared engine. OpenClaw is a separate reference adaptation and has
+its own setup.
 
 One engine, thin per-agent shells (see [`plugins/`](https://github.com/microsoft/SkillOpt/tree/main/plugins)):
 
@@ -62,9 +71,43 @@ One engine, thin per-agent shells (see [`plugins/`](https://github.com/microsoft
 |---|---|---|
 | **Claude Code** | [`plugins/claude-code`](https://github.com/microsoft/SkillOpt/tree/main/plugins/claude-code) | `/plugin marketplace add ./plugins/claude-code` → `/skillopt-sleep` |
 | **Codex** | [`plugins/codex`](https://github.com/microsoft/SkillOpt/tree/main/plugins/codex) | `bash plugins/codex/install.sh` → `skillopt-sleep` skill |
+| **Cursor** | [`plugins/cursor`](https://github.com/microsoft/SkillOpt/tree/main/plugins/cursor) | `bash plugins/cursor/install.sh` → `/skillopt-sleep` |
 | **Copilot** | [`plugins/copilot`](https://github.com/microsoft/SkillOpt/tree/main/plugins/copilot) | register `plugins/copilot/mcp_server.py` as an MCP server |
 | **Devin** | [`plugins/devin`](https://github.com/microsoft/SkillOpt/tree/main/plugins/devin) | register `plugins/devin/mcp_server.py` as an MCP server |
 | **OpenClaw** | [`plugins/openclaw`](https://github.com/microsoft/SkillOpt/tree/main/plugins/openclaw) | adapt the reference wrapper and paths for your installation |
+
+### Cursor
+
+Cursor transcript harvesting and model execution are independent. Use
+`--source cursor` to read
+`~/.cursor/projects/<workspace>/agent-transcripts/*/*.jsonl`; `--scope invoked`
+uses Cursor's recorded workspace path, with the sanitized storage directory as
+a fallback, while `--scope all` scans every Cursor workspace. Use
+`--cursor-home` for a different Cursor home. `--source auto` keeps its existing
+Codex-then-Claude precedence and does not select Cursor.
+
+`--backend cursor` requires an installed, authenticated `cursor-agent`. If it is
+not on `PATH`, select it with `--cursor-path`, `SKILLOPT_SLEEP_CURSOR_PATH`, or
+the `cursor_path` config key. Select a model with `--model` or
+`SKILLOPT_SLEEP_CURSOR_MODEL`. Point adoption at a project Cursor skill rather
+than at the plugin's workflow skill:
+
+```bash
+skillopt-sleep run --project "$(pwd)" \
+  --source cursor --backend cursor \
+  --target-skill-path .cursor/skills/skillopt-sleep-learned/SKILL.md \
+  --max-sessions 5 --max-tasks 3 --progress
+```
+
+The managed scheduler records only the project, backend, time, and optional
+auto-adopt setting. It does not preserve Cursor source, home, CLI path, model, or
+target-skill flags. Before `skillopt-sleep schedule --backend cursor`, put
+`transcript_source`, `cursor_home`, `cursor_path`, `model`, and
+`target_skill_path` in `~/.skillopt-sleep/config.json`. The target may remain
+project-relative as `.cursor/skills/skillopt-sleep-learned/SKILL.md`. Use an
+absolute `cursor_path` and verify that the scheduled account is already
+authenticated, because cron and Task Scheduler may run with a minimal
+environment.
 
 To use DeepSeek, vLLM, Ollama, or another Chat Completions server, see
 **[OpenAI-compatible endpoints](openai-compatible-endpoints.md)**. That guide also

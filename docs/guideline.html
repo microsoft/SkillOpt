@@ -295,9 +295,10 @@ python -m pip install -e ".[dev]"       # tests and linting</code></pre>
       <strong>Release boundary</strong>
       This guide tracks <code>main</code>. PyPI currently serves 0.2.0; the
       generic research <code>openai_compatible</code> backend, Sleep handoff,
-      SkillOpt-Sleep support for non-Azure OpenAI-compatible endpoints, and the
-      Sleep <code>--preferences</code> flag require a source install from
-      <code>main</code> until the next release.
+      SkillOpt-Sleep support for non-Azure OpenAI-compatible endpoints, the
+      Sleep <code>--preferences</code> flag, and Cursor source/backend/plugin
+      support require a source install from <code>main</code> until the next
+      release.
     </div>
     <p>See the <a href="https://github.com/microsoft/SkillOpt/blob/main/docs/guide/installation.md">installation guide</a>
     for platform notes and dependency boundaries.</p>
@@ -450,8 +451,18 @@ skillopt-sleep adopt --project "$PWD"</code></pre>
     <p><code>--project</code> scopes collection but does not automatically
     choose a project's skill file. Use <code>--target-skill-path</code> when
     you intend to evolve a particular <code>SKILL.md</code>. Transcript source
-    (<code>claude</code>, <code>codex</code>, or <code>auto</code>) and replay
-    backend are independent settings.</p>
+    (<code>claude</code>, <code>codex</code>, <code>cursor</code>, or
+    <code>auto</code>) and replay backend are independent settings. The existing
+    <code>auto</code> precedence remains Codex then Claude; select Cursor
+    explicitly with <code>--source cursor</code>.</p>
+    <p>Cursor transcripts default to
+    <code>~/.cursor/projects/&lt;workspace&gt;/agent-transcripts</code>; override
+    that home with <code>--cursor-home</code>. Model-driven replay requires an
+    installed, authenticated <code>cursor-agent</code> and
+    <code>--backend cursor</code>; use <code>--cursor-path</code> when the CLI is
+    not on <code>PATH</code>. Target
+    <code>.cursor/skills/skillopt-sleep-learned/SKILL.md</code> explicitly so
+    adoption updates a project skill rather than the plugin's workflow skill.</p>
     <p>For subscription-based workflows that should not launch an API or model
     subprocess, use <code>--backend handoff</code> and follow the generated
     prompt/answer loop. Read the
@@ -467,6 +478,7 @@ skillopt-sleep adopt --project "$PWD"</code></pre>
         <tbody>
           <tr><td>Claude Code</td><td>Shared-engine plugin and handoff command</td><td><a href="https://github.com/microsoft/SkillOpt/blob/main/plugins/claude-code/README.md">README</a></td></tr>
           <tr><td>Codex</td><td>Shared-engine skill shell</td><td><a href="https://github.com/microsoft/SkillOpt/blob/main/plugins/codex/README.md">README</a></td></tr>
+          <tr><td>Cursor</td><td>Native command and skill, local transcript source, and Cursor Agent backend</td><td><a href="https://github.com/microsoft/SkillOpt/blob/main/plugins/cursor/README.md">README</a></td></tr>
           <tr><td>GitHub Copilot</td><td>Shared-engine Sleep MCP plus a separate research MCP</td><td><a href="https://github.com/microsoft/SkillOpt/blob/main/plugins/copilot/README.md">README</a></td></tr>
           <tr><td>Devin</td><td>Shared-engine MCP with Devin transcript conversion</td><td><a href="https://github.com/microsoft/SkillOpt/blob/main/plugins/devin/README.md">README</a></td></tr>
           <tr><td>OpenClaw</td><td>Independent community/reference adaptation; review locally before use</td><td><a href="https://github.com/microsoft/SkillOpt/blob/main/plugins/openclaw/README.md">README</a></td></tr>
@@ -498,6 +510,13 @@ skillopt-sleep adopt --project "$PWD"</code></pre>
     reward/budget controls as advanced features that require task-specific
     validation. The reported experiments and their exact settings are in
     <a href="https://github.com/microsoft/SkillOpt/blob/main/docs/sleep/RESULTS.md">RESULTS.md</a>.</p>
+    <p>The managed scheduler persists only project, backend, time, and optional
+    auto-adopt. For Cursor schedules, put <code>transcript_source</code>,
+    <code>cursor_home</code>, <code>cursor_path</code>, <code>model</code>, and
+    <code>target_skill_path</code> in
+    <code>~/.skillopt-sleep/config.json</code>. Use an absolute Cursor CLI path
+    and verify authentication for the scheduled account because schedulers may
+    run with a minimal environment.</p>
   </section>
 
   <section id="safety">
@@ -510,6 +529,10 @@ skillopt-sleep adopt --project "$PWD"</code></pre>
       is not a guarantee that every outbound model prompt is free of sensitive
       content. In particular, do not treat raw coding-agent transcripts as
       pre-sanitized.</li>
+      <li>The Cursor source excludes tool arguments and outputs, retaining only
+      user/assistant text, explicit turn errors, and tool names. The Cursor
+      backend still sends transcript-derived prompts through
+      <code>cursor-agent</code> to Cursor's selected model provider.</li>
       <li>Updates are staged for review by default. Use
       <code>--auto-adopt</code> only when you have an independent rollback and
       validation process.</li>

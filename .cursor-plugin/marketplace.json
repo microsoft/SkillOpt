@@ -1,0 +1,17 @@
+{
+  "name": "skillopt",
+  "owner": {
+    "name": "Yifan Yang",
+    "email": "yifanyang@microsoft.com"
+  },
+  "metadata": {
+    "description": "Official SkillOpt plugins for usage-driven, validation-gated agent improvement."
+  },
+  "plugins": [
+    {
+      "name": "skillopt-sleep",
+      "source": "plugins/cursor",
+      "description": "Review recent Cursor sessions, replay recurring work, and stage validation-gated improvements to a Cursor skill for explicit adoption."
+    }
+  ]
+}

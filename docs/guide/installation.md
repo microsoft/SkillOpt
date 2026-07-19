@@ -26,9 +26,10 @@ checkout for those files.
 !!! important "PyPI versus `main`"
     These docs track the latest `main`. The current PyPI release is `0.2.0`.
     The generic research `openai_compatible` backend, SkillOpt-Sleep handoff,
-    Sleep support for non-Azure OpenAI-compatible endpoints, and the Sleep
-    `--preferences` flag landed after that release and require a source install
-    from `main` until the next release.
+    Sleep support for non-Azure OpenAI-compatible endpoints, the Sleep
+    `--preferences` flag, and Cursor source/backend/plugin support landed after
+    that release and require a source install from `main` until the next
+    release.
 
 ### Source checkout
 
@@ -127,6 +128,13 @@ The research `claude_chat` backend is a Claude Code CLI adapter, not a direct
 Anthropic API client. Install and authenticate `claude`, and set
 `CLAUDE_CLI_BIN` only if the executable is not available as `claude` on
 `PATH`. `ANTHROPIC_API_KEY` is one authentication option the CLI may consume.
+
+The SkillOpt-Sleep `cursor` backend similarly requires a separately installed
+and authenticated `cursor-agent`; harvesting with `--source cursor` alone does
+not. Set `SKILLOPT_SLEEP_CURSOR_PATH` when the executable is not on `PATH`, and
+`SKILLOPT_SLEEP_CURSOR_MODEL` to override its model. Cursor plugin installation
+and the explicit project skill target are documented in the
+[Cursor integration guide](https://github.com/microsoft/SkillOpt/blob/main/plugins/cursor/README.md).
 
 OpenAI-compatible servers have three distinct entry points:
 
