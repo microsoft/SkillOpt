@@ -319,13 +319,31 @@ function renderMap(){
 function rHarvest(){
   const ss = ev("harvest","session");
   if(!ss.length) return "<div class='empty'>No harvest events for this night (seeded tasks, or evidence predates this upgrade).</div>";
-  return ss.map(s => `<details><summary><b>${esc(s.session_id)}</b>
-      <span class='kv'>${s.n_user_prompts} prompts · feedback: ${esc((s.feedback_signals||[]).join(", ")||"none")}</span></summary>
+  return ss.map(s => {
+    // full SessionDigest view (new format) with fallback to the old head-only fields
+    const prompts = s.user_prompts || s.user_prompts_head || [];
+    const finals  = s.assistant_finals || (s.assistant_final_head ? [s.assistant_final_head] : []);
+    return `<details open><summary><b>SessionDigest — ${esc(s.session_id)}</b>
+      <span class='kv'>${s.source?esc(s.source)+" · ":""}${s.n_user_prompts??prompts.length} prompts ·
+      ${finals.length} finals · feedback: ${esc((s.feedback_signals||[]).join(", ")||"none")}</span></summary>
     <div class='inner'>
-      <div class='kv'>user prompts (head):</div>
-      <pre>${esc((s.user_prompts_head||[]).map(p=>"• "+p).join("\n"))}</pre>
-      <div class='kv'>assistant final (head):</div><pre>${esc(s.assistant_final_head||"(none)")}</pre>
-    </div></details>`).join("");
+      <table><tr><th>field</th><th>value</th></tr>
+        <tr><td>session_id</td><td>${esc(s.session_id)}</td></tr>
+        <tr><td>project</td><td>${esc(s.project||"")}</td></tr>
+        <tr><td>started / ended</td><td>${esc(s.started_at||"—")} → ${esc(s.ended_at||"—")}</td></tr>
+        ${s.raw_path?`<tr><td>raw_path</td><td>${esc(s.raw_path)}</td></tr>`:""}
+        <tr><td>tools_used</td><td>${esc((s.tools_used||[]).join(", ")||"—")}</td></tr>
+        <tr><td>files_touched</td><td>${esc((s.files_touched||[]).join(", ")||"—")}</td></tr>
+        <tr><td>feedback_signals</td><td>${esc((s.feedback_signals||[]).join(", ")||"—")}</td></tr>
+      </table>
+      <div class='kv'>user_prompts (${prompts.length}):</div>
+      ${prompts.map((p,i)=>`<details><summary><span class='kv'>prompt ${i+1} — ${esc(String(p).slice(0,110))}${String(p).length>110?"…":""}</span></summary>
+        <div class='inner'><pre>${esc(p)}</pre></div></details>`).join("")}
+      <div class='kv' style='margin-top:6px'>assistant_finals (${finals.length}):</div>
+      ${finals.length ? finals.map((f,i)=>`<details><summary><span class='kv'>final ${i+1} — ${esc(String(f).slice(0,110))}${String(f).length>110?"…":""}</span></summary>
+        <div class='inner'><pre>${esc(f)}</pre></div></details>`).join("") : "<div class='kv'>(none captured)</div>"}
+    </div></details>`;
+  }).join("");
 }
 function checksTable(checks){
   if(!checks || !checks.length) return "<div class='kv'>no programmatic checks (rubric task)</div>";
@@ -506,6 +524,8 @@ const CFG_FIELDS = [
   ["target_backend","target backend (override)","select",["","mock","claude","codex","copilot","azure_openai"]],
   ["target_model","target model","text"],
   ["azure_endpoint","azure / compat endpoint","text"],
+  ["transcript_source","transcript source","select",["claude","codex","antigravity","auto"]],
+  ["max_sessions_per_night","max sessions / night","number"],
   ["gate_mode","gate mode","select",["on","off"]],
   ["gate_metric","gate metric","select",["mixed","hard","soft"]],
   ["gate_mixed_weight","mixed weight (soft share)","number"],

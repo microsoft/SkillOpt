@@ -212,15 +212,19 @@ def run_sleep_cycle(
         n_sessions = len(digests)
         _progress(cfg, f"harvest done: sessions={n_sessions}")
         if ev is not None:
-            # The transcript end of the evidentiary chain: which sessions were
-            # even considered, and what signals they carried into mining.
+            # The transcript end of the evidentiary chain: the COMPLETE
+            # SessionDigest for every considered session (per-field truncation
+            # is handled by the evidence log's max_chars cap).
             for d in digests:
                 ev.log("harvest", "session", session_id=d.session_id,
-                       project=d.project,
+                       project=d.project, source=cfg.get("transcript_source"),
+                       started_at=d.started_at, ended_at=d.ended_at,
+                       raw_path=d.raw_path,
                        n_user_prompts=len(d.user_prompts),
-                       user_prompts_head=[p[:200] for p in d.user_prompts[:6]],
-                       assistant_final_head=(d.assistant_finals[-1][:300]
-                                             if d.assistant_finals else ""),
+                       user_prompts=list(d.user_prompts),
+                       assistant_finals=list(d.assistant_finals),
+                       tools_used=list(d.tools_used or []),
+                       files_touched=list(d.files_touched or []),
                        feedback_signals=list(d.feedback_signals or []))
         # When a real backend is configured, use it to mine checkable tasks from
         # the transcripts (rubric/rule judges); otherwise fall back to the

@@ -25,7 +25,8 @@ DEFAULTS: Dict[str, Any] = {
     # ── scope ──────────────────────────────────────────────────────────────
     "claude_home": CLAUDE_HOME,
     "codex_home": CODEX_HOME,
-    "transcript_source": "claude",  # "claude" | "codex" | "auto"
+    "transcript_source": "claude",  # "claude" | "codex" | "antigravity" | "auto"
+    "antigravity_conversations_dir": "",  # "" => ~/.gemini/antigravity/conversations
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded

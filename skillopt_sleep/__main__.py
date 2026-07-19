@@ -76,7 +76,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
     p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
-    p.add_argument("--source", default="", choices=["", "claude", "codex", "auto"],
+    p.add_argument("--source", default="",
+                   choices=["", "claude", "codex", "antigravity", "auto"],
                    help="session transcript source")
     p.add_argument("--lookback-hours", type=int, default=None,
                    help="harvest window in hours; 0 = scan full history")
