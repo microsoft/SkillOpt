@@ -80,6 +80,16 @@ def staging_root(project: str) -> str:
     return os.path.join(project, ".skillopt-sleep", "staging")
 
 
+def new_staging_dir(project: str) -> str:
+    """A staging path that is unique even for two runs in the same second."""
+    base = os.path.join(staging_root(project), _ts_dir())
+    out, i = base, 2
+    while os.path.exists(out):
+        out = f"{base}-{i}"
+        i += 1
+    return out
+
+
 def latest_staging(project: str) -> Optional[str]:
     root = staging_root(project)
     if not os.path.isdir(root):
@@ -89,7 +99,12 @@ def latest_staging(project: str) -> Optional[str]:
         key=lambda p: os.path.getmtime(p),
         reverse=True,
     )
-    return subs[0] if subs else None
+    for p in subs:
+        # Only adoptable folders count: a no-tasks night leaves evidence.jsonl
+        # but no manifest, and adopt() needs the manifest.
+        if os.path.exists(os.path.join(p, "manifest.json")):
+            return p
+    return None
 
 
 def write_staging(
@@ -101,9 +116,15 @@ def write_staging(
     live_skill_path: str,
     live_memory_path: str,
     report_md: str,
+    out_dir: str = "",
 ) -> str:
-    """Write proposals + report into staging/<ts>/ and return that path."""
-    out = os.path.join(staging_root(project), _ts_dir())
+    """Write proposals + report into staging/<ts>/ and return that path.
+
+    ``out_dir`` lets the cycle pre-create the night's staging folder at cycle
+    START, so incremental artifacts (evidence.jsonl) accumulate in the same
+    place the report lands.
+    """
+    out = out_dir or os.path.join(staging_root(project), _ts_dir())
     os.makedirs(out, exist_ok=True)
 
     manifest = {

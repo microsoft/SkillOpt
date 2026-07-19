@@ -13,6 +13,14 @@ def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) 
     scope = cfg.get("projects", "invoked")
     invoked_project = cfg.get("invoked_project", "")
 
+    if source == "antigravity":
+        from skillopt_sleep.harvest_antigravity import harvest_antigravity
+        return harvest_antigravity(
+            cfg.get("antigravity_conversations_dir", ""),
+            invoked_project=invoked_project,
+            since_iso=since_iso,
+            limit=limit,
+        )
     if source == "codex":
         return harvest_codex(
             cfg.codex_archived_sessions_dir,

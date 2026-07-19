@@ -47,6 +47,11 @@ class Backend:
     name = "base"
     # Optional user preferences (free text) injected into reflect as a prior.
     preferences: str = ""
+    # Optional per-night evidence log (skillopt_sleep.evidence.EvidenceLog).
+    # Attached by the cycle; None => no observability overhead. The phase tag
+    # labels which consolidation step subsequent replay calls belong to.
+    evidence = None
+    evidence_phase: str = ""
 
     def attempt(self, task: TaskRecord, skill: str, memory: str,
                 sample_id: int = 0) -> str:
@@ -330,11 +335,23 @@ class CliBackend(Backend):
         raise NotImplementedError
 
     def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
+        kind = key.split(":", 1)[0]
+        ev = getattr(self, "evidence", None)
         if key in self._cache:
+            # cache hits log key-only (the full text is on the original miss event)
+            if ev is not None:
+                ev.log("replay", "model_call", kind=kind, cache_hit=True, key=key,
+                       phase=getattr(self, "evidence_phase", ""), backend=self.name,
+                       model=self.model)
             return self._cache[key]
         out = self._call(prompt, max_tokens=max_tokens)
         self._tokens += len(prompt) // 4 + len(out) // 4
         self._cache[key] = out
+        if ev is not None:
+            ev.log("replay", "model_call", kind=kind, cache_hit=False, key=key,
+                   phase=getattr(self, "evidence_phase", ""), backend=self.name,
+                   model=self.model, prompt=prompt, response=out,
+                   error=getattr(self, "last_call_error", "") or "")
         return out
 
     # operations -----------------------------------------------------------
@@ -363,16 +380,15 @@ class CliBackend(Backend):
             return self._cached_call(key, prompt, max_tokens=512)
         # generic path (mined daily-case tasks): neutral, content-filter-safe
         # wording. Apply the skill/memory as guidance, not as adversarial
-        # "OVERRIDE everything" directives.
-        prompt = (
-            "Complete the following task for the user. Follow the skill and memory "
-            "guidance below, including any output-format and length requirements. "
-            "When a 'Learned preferences' rule sets an explicit limit (e.g. a length "
-            "cap), prefer that rule over more general advice it refines.\n\n"
-            f"# Skill\n{skill or '(none)'}\n\n# Memory\n{memory or '(none)'}\n\n"
-            f"# Task\n{task.intent}\n\n{task.context_excerpt}\n\n"
-            "Return ONLY the final answer text, nothing else."
-        )
+        # "OVERRIDE everything" directives. Template lives in the prompt
+        # registry so the dashboard can display/override it live.
+        from skillopt_sleep import prompts as prompt_registry
+        prompt = prompt_registry.render("attempt", {
+            "__SKILL__": skill or "(none)",
+            "__MEMORY__": memory or "(none)",
+            "__INTENT__": task.intent,
+            "__CONTEXT__": task.context_excerpt,
+        })
         # cache on (task, skill, memory) so identical hold-out re-scoring is free
         salt = f"s{sample_id}:" if sample_id else ""
         key = "attempt:" + salt + skill_hash(prompt)
@@ -395,11 +411,11 @@ class CliBackend(Backend):
         if task.reference_kind == "exact" and task.reference:
             hard = exact_score(task.reference, response)
             return hard, max(hard, keyword_soft_score(task.reference, response)), "exact(local)"
-        prompt = (
-            "Score how well the response satisfies the rubric, 0..1. "
-            'Return ONLY JSON {"score": <0..1>, "reason": "..."}.\n\n'
-            f"# Rubric\n{task.reference or task.intent}\n\n# Response\n{response}"
-        )
+        from skillopt_sleep import prompts as prompt_registry
+        prompt = prompt_registry.render("judge", {
+            "__RUBRIC__": task.reference or task.intent,
+            "__RESPONSE__": response,
+        })
         key = "judge:" + skill_hash(prompt)
         raw = self._cached_call(key, prompt, max_tokens=200)
         obj = _extract_json(raw, "object")
@@ -482,39 +498,20 @@ class CliBackend(Backend):
         # can't ask questions). We surface the benchmark's own rollout system
         # prompt (carried on TaskRecord.system) so proposed rules stay in-bounds.
         guard_text = _task_guardrail(failures)
-        prompt = (
-            "You are SkillOpt's optimizer. The agent keeps failing the recurring "
-            f"tasks below. Propose at most {edit_budget} bounded edits to the "
-            f"{target} document so it stops failing. Each edit MUST be a short, "
-            "GENERAL, reusable rule or preference (never task-specific, never an "
-            "answer to a single task). If exact failing criteria are listed, your "
-            "edits MUST make future outputs satisfy every one of them.\n"
-            "BE CONCRETE: quote the exact threshold, section name, or format from "
-            "the criteria verbatim in your rule (e.g. write 'keep the entire "
-            "response under 1200 characters', NOT 'respect length limits'). Vague "
-            "rules do not change behavior; specific numeric/structural rules do.\n"
-            "IMPORTANT: your edits are APPENDED to a 'Learned preferences' block; "
-            "you CANNOT delete the existing instructions above. If the current "
-            f"{target} text conflicts with a criterion (e.g. it says 'be exhaustive' "
-            "but outputs must be under a character limit), write an explicit, "
-            "forceful OVERRIDE rule stating it supersedes the conflicting "
-            "instruction, and put the hard requirement first.\n"
-            "HARD CONSTRAINT: every rule you write MUST be consistent with the "
-            "'Task output contract' below (if shown). NEVER propose a rule that "
-            "changes the required output format/language, tells the agent to ask "
-            "the user a question, or otherwise violates that contract — such a "
-            "rule scores ZERO because the evaluator cannot honor it.\n"
-            'Return ONLY a JSON array: '
-            '[{"op":"add|replace|delete","content":"<rule>","anchor":"<text to replace/delete, optional>","rationale":"<why>"}].\n\n'
-            f"# Current {target}\n{cur_doc}\n"
-            f"{guard_text}"
-            f"{criteria_text}\n"
-            f"{pref_text}\n\n"
-            f"# Recurring failures\n{fail_text}"
-        )
+        from skillopt_sleep import prompts as prompt_registry
+        prompt = prompt_registry.render("reflect", {
+            "__EDIT_BUDGET__": str(edit_budget),
+            "__TARGET__": target,
+            "__CUR_DOC__": cur_doc,
+            "__GUARD__": guard_text,
+            "__CRITERIA__": criteria_text,
+            "__PREFS__": pref_text,
+            "__FAILURES__": fail_text,
+        })
         # Call with one retry: transient non-JSON replies otherwise waste a whole
         # night (the gate sees no edits and rejects). A firmer second prompt
         # recovers most of these.
+        ev = getattr(self, "evidence", None)
         arr = None
         for attempt in range(2):
             p = prompt if attempt == 0 else (
@@ -523,6 +520,11 @@ class CliBackend(Backend):
             )
             raw = self._call(p, max_tokens=1024)
             self._tokens += len(p) // 4 + len(raw) // 4
+            if ev is not None:
+                ev.log("reflect", "exchange", target=target, attempt=attempt + 1,
+                       backend=self.name, model=self.model,
+                       n_failures=len(failures), prompt=p, raw_reply=raw,
+                       error=getattr(self, "last_call_error", "") or "")
             arr = _extract_json(raw, "array")
             if isinstance(arr, list) and arr:
                 break

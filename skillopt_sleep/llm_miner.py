@@ -22,51 +22,22 @@ import json
 import re
 from typing import Any, Callable, Dict, List
 
+from skillopt_sleep import prompts as prompt_registry
 from skillopt_sleep.backend import Backend, _extract_json
 from skillopt_sleep.types import SessionDigest, TaskRecord
 
 
-_MINER_PROMPT = """You are mining a user's past AI-assistant sessions to find RECURRING tasks
-worth optimizing a skill for. From the session below, extract 0-3 reusable tasks.
-
-A good task is something the user asks for repeatedly or had to correct, where a
-GENERAL rule would help next time (formatting, structure, tool-use, conventions).
-Skip one-off or purely exploratory requests.
-
-For each task return:
-  - "intent": the reusable request, generalized (no one-off specifics)
-  - "checks": a list of programmatic success checks a grader can run on a future
-     answer. Each check is one of:
-        {"op":"section_present","arg":"<heading text>"}
-        {"op":"regex","arg":"<python regex the answer must match>"}
-        {"op":"contains","arg":"<substring the answer must contain>"}
-        {"op":"max_chars","arg":<int>}
-     Only include checks you are confident a GOOD answer must satisfy.
-  - "rubric": a one-sentence description of what a good answer looks like
-  - "satisfied": true/false — did the user seem satisfied with the assistant's answer?
-
-Return ONLY a JSON array (possibly empty). No prose.
-
-# Session
-project: __PROJECT__
-user prompts:
-__PROMPTS__
-assistant final (last):
-__FINAL__
-feedback signals: __FEEDBACK__
-"""
-
-
 def _digest_to_prompt(d: SessionDigest) -> str:
+    # Template lives in the central prompt registry (skillopt_sleep.prompts)
+    # so the dashboard can display and override it live.
     prompts = "\n".join(f"  - {p[:240]}" for p in d.user_prompts[:6]) or "  (none)"
     final = (d.assistant_finals[-1][:400] if d.assistant_finals else "(none)")
-    return (
-        _MINER_PROMPT
-        .replace("__PROJECT__", d.project or "(unknown)")
-        .replace("__PROMPTS__", prompts)
-        .replace("__FINAL__", final)
-        .replace("__FEEDBACK__", ", ".join(d.feedback_signals[:6]) or "(none)")
-    )
+    return prompt_registry.render("miner", {
+        "__PROJECT__": d.project or "(unknown)",
+        "__PROMPTS__": prompts,
+        "__FINAL__": final,
+        "__FEEDBACK__": ", ".join(d.feedback_signals[:6]) or "(none)",
+    })
 
 
 def _mk_task(d: SessionDigest, obj: Dict[str, Any], idx: int) -> TaskRecord | None:
@@ -114,21 +85,45 @@ def make_llm_miner(
     """Return an llm_miner(digests) -> list[TaskRecord] bound to a backend."""
 
     def _miner(digests: List[SessionDigest]) -> List[TaskRecord]:
+        ev = getattr(backend, "evidence", None)
         out: List[TaskRecord] = []
         for d in digests[:max_sessions]:
             if not d.user_prompts:
                 continue
-            raw = backend._call(_digest_to_prompt(d), max_tokens=800)  # type: ignore[attr-defined]
+            prompt = _digest_to_prompt(d)
+            raw = backend._call(prompt, max_tokens=800)  # type: ignore[attr-defined]
             arr = _extract_json(raw, "array")
-            if not isinstance(arr, list):
-                continue
-            for i, obj in enumerate(arr[:3]):
+            candidates = arr if isinstance(arr, list) else []
+            made: List[TaskRecord] = []
+            dropped = 0
+            full = False
+            for i, obj in enumerate(candidates[:3]):
                 if isinstance(obj, dict):
                     t = _mk_task(d, obj, i)
                     if t is not None:
+                        made.append(t)
                         out.append(t)
+                    else:
+                        dropped += 1  # not checkable -> dropped, and now logged
                 if len(out) >= max_tasks:
-                    return out
+                    full = True
+                    break
+            if ev is not None:
+                # The transcript->task link of the evidentiary chain: what this
+                # session was, exactly what the miner was asked, exactly what it
+                # replied, and which TaskRecords (with checks) came out of it.
+                ev.log("mine", "miner_exchange", session_id=d.session_id,
+                       project=d.project, prompt=prompt, raw_reply=raw,
+                       parse_ok=isinstance(arr, list), n_candidates=len(candidates),
+                       n_tasks=len(made), n_dropped_uncheckable=dropped)
+                for t in made:
+                    ev.log("mine", "task_mined", task_id=t.id,
+                           session_id=d.session_id, intent=t.intent,
+                           reference_kind=t.reference_kind,
+                           checks=(t.judge or {}).get("checks", []),
+                           rubric=t.reference, outcome=t.outcome)
+            if full:
+                return out
         return out
 
     return _miner

@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkillOpt-Sleep — Control Panel</title>
+<style>
+  :root{
+    --bg:#0a0f1a; --panel:#101726; --panel2:#0d1420; --line:#1e2a3e;
+    --text:#dbe4f0; --dim:#8194ac; --faint:#5b6b82;
+    --target:#2dd4bf; --optimizer:#a78bfa; --code:#64748b; --human:#f472b6;
+    --ok:#34d399; --bad:#f87171; --warn:#fbbf24; --accent:#60a5fa;
+    --mono:ui-monospace,'Cascadia Code',Consolas,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font:14px/1.55 'Segoe UI',system-ui,sans-serif}
+  a{color:var(--accent)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#22314a;border-radius:5px}
+
+  /* ── top bar ─────────────────────────────────────────── */
+  header{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;
+    padding:10px 18px;background:linear-gradient(180deg,#0d1526,#0a101c);
+    border-bottom:1px solid var(--line)}
+  .logo{font-size:17px;font-weight:700;letter-spacing:.3px;white-space:nowrap}
+  .logo .moon{color:var(--optimizer)}
+  .proj{font-family:var(--mono);font-size:11.5px;color:var(--dim);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .btn{background:#16233a;border:1px solid #27395a;color:var(--text);border-radius:7px;
+    padding:6px 13px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+  .btn:hover{background:#1c2c48}
+  .btn.primary{background:linear-gradient(135deg,#2b4bd7,#7c3aed);border-color:#3b56c9}
+  .btn.primary:hover{filter:brightness(1.15)}
+  .btn.danger{border-color:#7f1d1d;color:#fca5a5}
+  .btn:disabled{opacity:.45;cursor:default}
+  .runpill{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim)}
+  .dot{width:9px;height:9px;border-radius:50%;background:#334155}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.4}}
+
+  /* ── layout ──────────────────────────────────────────── */
+  .wrap{display:grid;grid-template-columns:250px 1fr;gap:0;min-height:calc(100vh - 49px)}
+  aside{border-right:1px solid var(--line);background:var(--panel2);padding:12px}
+  main{padding:18px 22px 80px;min-width:0}
+  h2.sec{font-size:12px;text-transform:uppercase;letter-spacing:1.4px;color:var(--faint);
+    margin:0 0 10px}
+
+  /* ── nights list ─────────────────────────────────────── */
+  .night{border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin-bottom:8px;
+    cursor:pointer;background:var(--panel)}
+  .night:hover{border-color:#2e4368}
+  .night.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .night .ts{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .night .row{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:3px}
+  .badge{font-size:10px;padding:1.5px 7px;border-radius:99px;border:1px solid;white-space:nowrap}
+  .badge.accept{color:var(--ok);border-color:var(--ok)}
+  .badge.reject{color:var(--bad);border-color:var(--bad)}
+  .badge.na{color:var(--faint);border-color:var(--faint)}
+  .badge.adopted{color:var(--warn);border-color:var(--warn)}
+  .delta{font-family:var(--mono);font-size:11.5px}
+
+  /* ── pipeline map ────────────────────────────────────── */
+  .map{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:14px 4px 18px;margin-bottom:6px}
+  .node{min-width:128px;flex:1;border:1px solid var(--line);border-radius:11px;padding:9px 11px;
+    background:linear-gradient(180deg,var(--panel),var(--panel2));cursor:pointer;position:relative}
+  .node:hover{border-color:#33507c}
+  .node .nm{font-weight:600;font-size:12.5px;margin-bottom:2px}
+  .node .stat{font-family:var(--mono);font-size:10.5px;color:var(--dim);min-height:14px}
+  .arrow{align-self:center;color:#31445f;font-size:17px;padding:0 5px;user-select:none}
+  .chip{display:inline-block;font-size:9.5px;padding:1px 7px;border-radius:99px;margin-bottom:4px;
+    border:1px solid;letter-spacing:.4px}
+  .chip.target{color:var(--target);border-color:var(--target)}
+  .chip.optimizer{color:var(--optimizer);border-color:var(--optimizer)}
+  .chip.code{color:var(--code);border-color:var(--code)}
+  .chip.human{color:var(--human);border-color:var(--human)}
+
+  /* ── stage sections ──────────────────────────────────── */
+  section.stage{border:1px solid var(--line);border-radius:13px;background:var(--panel);
+    margin:16px 0;overflow:hidden}
+  .stghead{display:flex;align-items:center;gap:11px;padding:11px 16px;background:#121b2d;
+    border-bottom:1px solid var(--line)}
+  .stghead .num{font-family:var(--mono);color:var(--faint);font-size:12px}
+  .stghead .ttl{font-size:15px;font-weight:650}
+  .stghead .mdl{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .stgbody{padding:14px 16px}
+  .about{color:var(--dim);font-size:12.5px;margin-bottom:11px}
+  .about b{color:var(--text)}
+  .io{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:3px}
+
+  details{border:1px solid var(--line);border-radius:9px;margin:7px 0;background:var(--panel2)}
+  details>summary{cursor:pointer;padding:7px 12px;font-size:12.5px;color:var(--dim);
+    list-style:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  details>summary::before{content:'▸';color:var(--faint);transition:.15s}
+  details[open]>summary::before{transform:rotate(90deg)}
+  details .inner{padding:4px 12px 12px}
+  pre{font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;word-break:break-word;
+    background:#0a111d;border:1px solid #182338;border-radius:8px;padding:10px;max-height:340px;
+    overflow:auto;color:#c3d2e5}
+  .kv{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .score{font-family:var(--mono);font-weight:700}
+  .s-ok{color:var(--ok)} .s-bad{color:var(--bad)} .s-warn{color:var(--warn)}
+
+  table{border-collapse:collapse;width:100%;font-size:12px;margin:6px 0}
+  th,td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top}
+  th{color:var(--faint);font-weight:600;background:#0e1626;font-size:11px;
+    text-transform:uppercase;letter-spacing:.7px}
+  td{font-family:var(--mono);font-size:11.5px}
+
+  /* ── prompt editor ───────────────────────────────────── */
+  .prompted{margin-top:10px}
+  .prompted .bar{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+  .prompted .bar .lbl{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--faint)}
+  .ovr{font-size:10px;color:var(--warn);border:1px solid var(--warn);border-radius:99px;padding:1px 7px}
+  textarea{width:100%;min-height:170px;background:#0a111d;color:#c9d7ea;border:1px solid #1d2c46;
+    border-radius:9px;padding:10px;font-family:var(--mono);font-size:11.5px;resize:vertical}
+  textarea:focus{outline:none;border-color:var(--accent)}
+  .hint{font-size:11px;color:var(--faint);margin-top:4px}
+  .savemsg{font-size:11.5px;color:var(--ok);margin-left:6px;opacity:0;transition:.4s}
+  .savemsg.show{opacity:1}
+
+  /* ── gate math ───────────────────────────────────────── */
+  .gatecard{border:1px solid #3a2e12;background:linear-gradient(180deg,#171307,#100e08);
+    border-radius:11px;padding:13px 16px;margin:9px 0}
+  .formula{font-family:var(--mono);font-size:12.5px;color:#fde68a;white-space:pre-wrap}
+  .verdict{font-size:15px;font-weight:750;margin-top:7px}
+
+  /* ── config ──────────────────────────────────────────── */
+  .cfggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:11px}
+  .cfgitem label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;
+    color:var(--faint);margin-bottom:3px}
+  .cfgitem input,.cfgitem select{width:100%;background:#0a111d;color:var(--text);
+    border:1px solid #1d2c46;border-radius:7px;padding:6px 9px;font-size:12.5px;font-family:var(--mono)}
+  .cfgitem input:focus,.cfgitem select:focus{outline:none;border-color:var(--accent)}
+  .rolebox{border:1px solid var(--line);border-radius:10px;padding:10px 13px;margin-bottom:12px}
+  .rolebox .rt{font-size:12px;font-weight:650;margin-bottom:2px}
+  .empty{color:var(--faint);font-size:12.5px;font-style:italic;padding:8px 2px}
+  #runlog{max-height:200px}
+  .flash{animation:flash 1s}
+  @keyframes flash{0%{box-shadow:0 0 0 2px var(--accent)}100%{box-shadow:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="moon">⏾</span> SkillOpt-Sleep <span style="color:var(--faint);font-weight:400">Control Panel</span></div>
+  <div class="proj" id="projPath"></div>
+  <div class="runpill"><span class="dot" id="runDot"></span><span id="runLbl">idle</span></div>
+  <button class="btn" id="btnDry">Dry-run night</button>
+  <button class="btn primary" id="btnRun">▶ Run night</button>
+</header>
+
+<div class="wrap">
+  <aside>
+    <h2 class="sec">Nights</h2>
+    <div id="nights"></div>
+  </aside>
+
+  <main>
+    <!-- pipeline map -->
+    <h2 class="sec">Pipeline — one sleep night, left to right</h2>
+    <div class="map" id="map"></div>
+
+    <!-- models & knobs -->
+    <section class="stage" id="sec-config">
+      <div class="stghead"><span class="num">⚙</span><span class="ttl">Models &amp; Knobs</span>
+        <span class="mdl" id="cfgPath"></span>
+        <button class="btn" id="btnCfgSave" style="margin-left:12px">Save config</button>
+        <span class="savemsg" id="cfgMsg">saved ✓</span></div>
+      <div class="stgbody">
+        <div class="rolebox">
+          <div class="rt"><span class="chip target">TARGET</span> the model whose skill is being evolved — runs every <b>attempt</b> (replay rollout)</div>
+          <div class="rt" style="margin-top:5px"><span class="chip optimizer">OPTIMIZER</span> the model that <b>mines</b> tasks, <b>judges</b> rubrics and <b>writes edits</b> (reflect)</div>
+          <div class="kv" style="margin-top:6px">Leave the optimizer/target overrides empty to have the base backend play all roles. Changes apply from the <b>next run</b>. Prompt edits (below, per stage) apply to the <b>very next model call</b>.</div>
+        </div>
+        <div class="cfggrid" id="cfgGrid"></div>
+      </div>
+    </section>
+
+    <div id="stages"></div>
+
+    <!-- run log -->
+    <section class="stage">
+      <div class="stghead"><span class="num">▤</span><span class="ttl">Run log</span></div>
+      <div class="stgbody"><pre id="runlog">(no run this session)</pre></div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = v => (v===null||v===undefined||v==="") ? "—" : (typeof v==="number" ? (Number.isInteger(v)?v:v.toFixed(3)) : String(v));
+const api = async (p, opts) => (await fetch(p, opts)).json();
+const post = (p, body) => api(p, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+
+let OV = null;        // overview
+let NIGHT = null;     // selected night payload
+let SEL = null;       // selected ts
+
+/* ── stage metadata (mirrors the real flow) ─────────────────────────── */
+const STAGES = [
+ {id:"harvest", n:"1", name:"Harvest", role:"code", prompt:null,
+  about:"Reads your past session transcripts (newest first, since the last night) and distills each into a <b>SessionDigest</b>: your prompts, the assistant's final answer, and feedback signals (corrections, repeats). Pure code — no model call.",
+  io:"in ← transcript JSONL files · out → SessionDigests (to Mine)"},
+ {id:"mine", n:"2", name:"Mine", role:"optimizer", prompt:"miner",
+  about:"For each digest the <b>optimizer</b> model receives the miner prompt and must return recurring, <b>checkable</b> tasks (regex / contains / heading / length checks). Tasks it cannot make checkable are dropped — every exchange and every drop is recorded here.",
+  io:"in ← SessionDigests · out → TaskRecords with checks (to Split)"},
+ {id:"split", n:"3", name:"Split", role:"code", prompt:null,
+  about:"Deterministically splits the mined tasks: <b>train</b> tasks drive reflection, <b>val</b> tasks are held out to gate the update. Seeded by config (holdout_fraction, seed). Pure code.",
+  io:"in ← TaskRecords · out → train / val slices (to Replay)"},
+ {id:"replay", n:"4", name:"Replay", role:"target", prompt:"attempt",
+  about:"The <b>target</b> model re-attempts each task in a clean context — it sees ONLY skill + memory + the task (never the errors, never the miner's context). Scored by deterministic checks, or by the optimizer's rubric judge when no checks exist. Phases: baseline_val → train → gate_trial → final_val.",
+  io:"in ← tasks + (skill, memory) documents · out → scored attempts (to Reflect / Gate)"},
+ {id:"judge", n:"4b", name:"Judge", role:"optimizer", prompt:"judge",
+  about:"Only for tasks with a free-text rubric and no programmatic checks: the <b>optimizer</b> scores the response 0..1. Rule/exact tasks never reach a model — they are scored by pure code (honest, unfakeable).",
+  io:"in ← (rubric, response) · out → hard/soft score (to Gate)"},
+ {id:"reflect", n:"5", name:"Reflect", role:"optimizer", prompt:"reflect",
+  about:"The <b>optimizer</b> sees the recurring train-split failures — with the exact failing checks translated to plain English — and proposes bounded, general edits as a JSON array. The full prompt and raw reply are recorded verbatim below.",
+  io:"in ← failures + current doc + failing criteria · out → proposed edits (to Gate)"},
+ {id:"gate", n:"6", name:"Gate", role:"code", prompt:null,
+  about:"Pure arithmetic: re-score the held-out val slice with the candidate document; accept only strict improvement. The exact formula and numbers for this night are shown below — no model opinion is involved in the verdict.",
+  io:"in ← baseline vs candidate val scores · out → accept / reject (to Stage)"},
+ {id:"stage", n:"7", name:"Stage", role:"code", prompt:null,
+  about:"Accepted proposals are written to <span class='kv'>.skillopt-sleep/staging/&lt;ts&gt;/</span> together with report, diagnostics and this evidence chain. <b>Nothing live is touched.</b>",
+  io:"in ← candidate documents · out → staging folder (to Adopt)"},
+ {id:"adopt", n:"8", name:"Adopt", role:"human", prompt:null,
+  about:"<b>You</b> are the final gate. Review the proposal and adopt it — the live files are backed up into the staging folder first, so any adoption can be rolled back by copying the backup over.",
+  io:"in ← staged proposal + your judgment · out → live SKILL.md / CLAUDE.md"},
+];
+
+/* ── model resolution ───────────────────────────────────────────────── */
+function modelFor(role){
+  if(!OV) return "";
+  const c = OV.config;
+  const be = (r) => r==="target"
+    ? (c.target_backend || c.backend) : (c.optimizer_backend || c.backend);
+  const md = (r) => r==="target"
+    ? (c.target_model || c.model) : (c.optimizer_model || c.model);
+  if(role==="code")  return "deterministic (no model)";
+  if(role==="human") return "you";
+  return be(role) + (md(role) ? " · " + md(role) : "");
+}
+
+/* ── overview / nights ──────────────────────────────────────────────── */
+async function loadOverview(){
+  OV = await api("/api/overview");
+  $("#projPath").textContent = OV.project;
+  $("#cfgPath").textContent = OV.config_path;
+  renderNights(); renderConfig(); renderMap(); renderStages();
+  if(OV.nights.length && !SEL) selectNight(OV.nights[0].ts);
+}
+function renderNights(){
+  const el = $("#nights"); el.innerHTML = "";
+  if(!OV.nights.length){ el.innerHTML = "<div class='empty'>No staged nights yet — run one ▶</div>"; return; }
+  for(const n of OV.nights){
+    const d = document.createElement("div");
+    d.className = "night" + (n.ts===SEL ? " active":"");
+    const badge = n.has_report
+      ? (n.accepted ? "<span class='badge accept'>"+esc(n.gate_action||"accept")+"</span>"
+                    : "<span class='badge reject'>"+esc(n.gate_action||"reject")+"</span>")
+      : "<span class='badge na'>evidence only</span>";
+    const adopted = n.adopted ? " <span class='badge adopted'>adopted</span>" : "";
+    const delta = (n.baseline!=null && n.candidate!=null)
+      ? `<span class='delta'>${fmt(n.baseline)} → ${fmt(n.candidate)}</span>` : "";
+    d.innerHTML = `<div class='ts'>${esc(n.ts)}${n.night!=null?" · night "+n.night:""}</div>
+      <div class='row'>${badge}${adopted}${delta}</div>`;
+    d.onclick = () => selectNight(n.ts);
+    el.appendChild(d);
+  }
+}
+async function selectNight(ts){
+  SEL = ts;
+  NIGHT = await api("/api/night/" + encodeURIComponent(ts));
+  renderNights(); renderMap(); renderStages();
+}
+
+/* ── evidence helpers ───────────────────────────────────────────────── */
+const evAll   = () => (NIGHT && NIGHT.evidence) || [];
+const ev      = (stage, event) => evAll().filter(e => e.stage===stage && (!event || e.event===event));
+const results = (phase) => ev("replay","result").filter(r => !phase || r.phase===phase);
+
+/* ── pipeline map ───────────────────────────────────────────────────── */
+function mapStat(id){
+  if(!NIGHT) return "";
+  const r = NIGHT.report || {};
+  switch(id){
+    case "harvest": { const k = ev("harvest","session").length || r.n_sessions; return k!=null?`${k} sessions`:""; }
+    case "mine":    { const k = ev("mine","task_mined").length || r.n_tasks; return k!=null?`${k} tasks mined`:""; }
+    case "split":   { const t = ev("mine","task_ready");
+                      if(!t.length) return ""; const tr=t.filter(x=>x.split==="train").length;
+                      return `${tr} train / ${t.length-tr} val`; }
+    case "replay":  { const k = results().length; return k?`${k} scored attempts`:""; }
+    case "judge":   { const k = ev("replay","model_call").filter(c=>c.kind==="judge").length;
+                      return k?`${k} rubric judgements`:"rule checks only"; }
+    case "reflect": { const e = ev("reflect","edits_returned").reduce((a,x)=>a+(x.n_edits||0),0);
+                      return `${e} edits proposed`; }
+    case "gate":    { if(r.baseline_score==null) return "";
+                      return `${fmt(r.baseline_score)} → ${fmt(r.candidate_score)}`; }
+    case "stage":   { const s = ev("stage","staged")[0]; return s? (s.accepted?"proposal staged":"nothing staged") : ""; }
+    case "adopt":   { return NIGHT.adopted ? "adopted ✓" : (NIGHT.manifest ? "awaiting review" : ""); }
+  }
+  return "";
+}
+function renderMap(){
+  const el = $("#map"); el.innerHTML = "";
+  STAGES.forEach((s,i) => {
+    if(i) { const a = document.createElement("div"); a.className="arrow"; a.textContent="➜"; el.appendChild(a); }
+    const d = document.createElement("div"); d.className = "node";
+    d.innerHTML = `<span class="chip ${s.role}">${s.role.toUpperCase()}</span>
+      <div class="nm">${s.n}. ${s.name}</div><div class="stat">${esc(mapStat(s.id))}</div>`;
+    d.onclick = () => { const t = document.getElementById("sec-"+s.id);
+      if(t){ t.scrollIntoView({block:"start"}); t.classList.remove("flash"); void t.offsetWidth; t.classList.add("flash"); } };
+    el.appendChild(d);
+  });
+}
+
+/* ── per-stage evidence renderers ───────────────────────────────────── */
+function rHarvest(){
+  const ss = ev("harvest","session");
+  if(!ss.length) return "<div class='empty'>No harvest events for this night (seeded tasks, or evidence predates this upgrade).</div>";
+  return ss.map(s => {
+    // full SessionDigest view (new format) with fallback to the old head-only fields
+    const prompts = s.user_prompts || s.user_prompts_head || [];
+    const finals  = s.assistant_finals || (s.assistant_final_head ? [s.assistant_final_head] : []);
+    return `<details open><summary><b>SessionDigest — ${esc(s.session_id)}</b>
+      <span class='kv'>${s.source?esc(s.source)+" · ":""}${s.n_user_prompts??prompts.length} prompts ·
+      ${finals.length} finals · feedback: ${esc((s.feedback_signals||[]).join(", ")||"none")}</span></summary>
+    <div class='inner'>
+      <table><tr><th>field</th><th>value</th></tr>
+        <tr><td>session_id</td><td>${esc(s.session_id)}</td></tr>
+        <tr><td>project</td><td>${esc(s.project||"")}</td></tr>
+        <tr><td>started / ended</td><td>${esc(s.started_at||"—")} → ${esc(s.ended_at||"—")}</td></tr>
+        ${s.raw_path?`<tr><td>raw_path</td><td>${esc(s.raw_path)}</td></tr>`:""}
+        <tr><td>tools_used</td><td>${esc((s.tools_used||[]).join(", ")||"—")}</td></tr>
+        <tr><td>files_touched</td><td>${esc((s.files_touched||[]).join(", ")||"—")}</td></tr>
+        <tr><td>feedback_signals</td><td>${esc((s.feedback_signals||[]).join(", ")||"—")}</td></tr>
+      </table>
+      <div class='kv'>user_prompts (${prompts.length}):</div>
+      ${prompts.map((p,i)=>`<details><summary><span class='kv'>prompt ${i+1} — ${esc(String(p).slice(0,110))}${String(p).length>110?"…":""}</span></summary>
+        <div class='inner'><pre>${esc(p)}</pre></div></details>`).join("")}
+      <div class='kv' style='margin-top:6px'>assistant_finals (${finals.length}):</div>
+      ${finals.length ? finals.map((f,i)=>`<details><summary><span class='kv'>final ${i+1} — ${esc(String(f).slice(0,110))}${String(f).length>110?"…":""}</span></summary>
+        <div class='inner'><pre>${esc(f)}</pre></div></details>`).join("") : "<div class='kv'>(none captured)</div>"}
+    </div></details>`;
+  }).join("");
+}
+function checksTable(checks){
+  if(!checks || !checks.length) return "<div class='kv'>no programmatic checks (rubric task)</div>";
+  return "<table><tr><th>check</th><th>argument</th></tr>" +
+    checks.map(c=>`<tr><td>${esc(c.op)}</td><td>${esc(String(c.arg))}</td></tr>`).join("") + "</table>";
+}
+function rMine(){
+  const ex = ev("mine","miner_exchange"), tasks = ev("mine","task_mined");
+  if(!ex.length && !tasks.length) return "<div class='empty'>No mining events (seeded tasks night, or heuristic miner only).</div>";
+  let h = "";
+  for(const e of ex){
+    const mine = tasks.filter(t=>t.session_id===e.session_id);
+    h += `<details><summary><b>session ${esc(e.session_id)}</b>
+        <span class='kv'>${e.n_candidates} candidates → ${e.n_tasks} tasks, ${e.n_dropped_uncheckable} dropped (uncheckable)</span></summary>
+      <div class='inner'>
+        <div class='kv'>miner prompt (verbatim):</div><pre>${esc(e.prompt||"")}</pre>
+        <div class='kv'>raw reply (verbatim):</div><pre>${esc(e.raw_reply||"")}</pre>
+        ${mine.map(t=>`<div style='margin-top:8px'><b>${esc(t.task_id)}</b>
+          <span class='kv'>(${esc(t.reference_kind)})</span><br>
+          <span class='kv'>intent:</span> ${esc(t.intent)}${checksTable(t.checks)}</div>`).join("")}
+      </div></details>`;
+  }
+  return h;
+}
+function rSplit(){
+  const t = ev("mine","task_ready");
+  if(!t.length) return "<div class='empty'>No split records.</div>";
+  return "<table><tr><th>task</th><th>split</th><th>origin</th><th>kind</th><th>intent</th><th>from session(s)</th></tr>" +
+    t.map(x=>`<tr><td>${esc(x.task_id)}</td>
+      <td><span class='badge ${x.split==="val"?"adopted":"na"}'>${esc(x.split)}</span></td>
+      <td>${esc(x.origin||"real")}</td><td>${esc(x.reference_kind)}</td>
+      <td style='font-family:inherit'>${esc(x.intent)}</td>
+      <td>${esc((x.source_sessions||[]).join(", "))}</td></tr>`).join("") + "</table>";
+}
+function scoreChip(v){ const c = v>=1 ? "s-ok" : (v>0 ? "s-warn" : "s-bad"); return `<span class='score ${c}'>${fmt(v)}</span>`; }
+function rReplay(){
+  const rs = ev("replay","result");
+  if(!rs.length) return "<div class='empty'>No replay results.</div>";
+  const phases = [...new Set(rs.map(r=>r.phase||"(unphased)"))];
+  const calls = ev("replay","model_call").filter(c=>c.kind==="attempt");
+  let h = "";
+  for(const ph of phases){
+    const rows = rs.filter(r=>(r.phase||"(unphased)")===ph);
+    h += `<details ${ph==="baseline_val"||ph==="final_val"?"open":""}><summary><b>phase: ${esc(ph)}</b>
+        <span class='kv'>${rows.length} attempts · mean hard ${fmt(rows.reduce((a,r)=>a+r.hard,0)/rows.length)} · mean soft ${fmt(rows.reduce((a,r)=>a+r.soft,0)/rows.length)}</span></summary>
+      <div class='inner'><table><tr><th>task</th><th>split</th><th>hard</th><th>soft</th><th>why (failing checks)</th><th>response head</th></tr>
+        ${rows.map(r=>`<tr><td>${esc(r.task_id)}</td><td>${esc(r.split)}</td>
+          <td>${scoreChip(r.hard)}</td><td>${scoreChip(r.soft)}</td>
+          <td>${esc(r.why||"")}</td><td style='font-family:inherit'>${esc(r.response_head||"")}</td></tr>`).join("")}
+      </table></div></details>`;
+  }
+  if(calls.length){
+    h += `<details><summary><b>raw model calls (attempt)</b> <span class='kv'>${calls.length} calls, cache hits marked</span></summary><div class='inner'>` +
+      calls.map(c=>`<details><summary><span class='kv'>${esc(c.phase||"")} · ${esc(c.backend)}${c.model?" · "+esc(c.model):""}${c.cache_hit?" · CACHE HIT":""}</span></summary>
+        <div class='inner'>${c.prompt?`<div class='kv'>prompt:</div><pre>${esc(c.prompt)}</pre>`:""}
+        ${c.response?`<div class='kv'>response:</div><pre>${esc(c.response)}</pre>`:"<div class='kv'>(cache hit — text on the original call)</div>"}</div></details>`).join("") +
+      "</div></details>";
+  }
+  return h;
+}
+function rJudge(){
+  const calls = ev("replay","model_call").filter(c=>c.kind==="judge");
+  if(!calls.length) return "<div class='empty'>No rubric judgements this night — every task was scored by deterministic checks (good: nothing to self-grade).</div>";
+  return calls.map(c=>`<details><summary><span class='kv'>${esc(c.phase||"")} · ${esc(c.backend)}${c.cache_hit?" · CACHE HIT":""}</span></summary>
+    <div class='inner'>${c.prompt?`<div class='kv'>prompt:</div><pre>${esc(c.prompt)}</pre>`:""}
+    ${c.response?`<div class='kv'>reply:</div><pre>${esc(c.response)}</pre>`:""}</div></details>`).join("");
+}
+function rReflect(){
+  const ex = ev("reflect","exchange"), ed = ev("reflect","edits_returned");
+  if(!ex.length && !ed.length) return "<div class='empty'>No reflection this night (no failures, or mock backend).</div>";
+  let h = ex.map(e=>`<details><summary><b>exchange</b> <span class='kv'>target=${esc(e.target)} · try ${e.attempt} · ${esc(e.backend)}${e.model?" · "+esc(e.model):""} · ${e.n_failures} failures shown</span></summary>
+    <div class='inner'><div class='kv'>optimizer prompt (verbatim):</div><pre>${esc(e.prompt||"")}</pre>
+    <div class='kv'>raw reply (verbatim):</div><pre>${esc(e.raw_reply||"")}</pre></div></details>`).join("");
+  for(const e of ed){
+    h += `<div style='margin-top:9px'><b>parsed edits → ${esc(e.target)}</b> <span class='kv'>(${e.n_edits})</span>` +
+      (e.edits||[]).map(x=>`<div style='border:1px solid var(--line);border-radius:8px;padding:8px 11px;margin:6px 0'>
+        <span class='badge na'>${esc(x.op)}</span> ${esc(x.content)}
+        <div class='kv' style='margin-top:3px'>why: ${esc(x.rationale||"—")}</div></div>`).join("") + "</div>";
+  }
+  return h;
+}
+function rGate(){
+  const base = ev("gate","baseline")[0], trials = ev("gate","trial"), dec = ev("gate","decision")[0];
+  if(!base && !dec) return "<div class='empty'>No gate events.</div>";
+  let h = "";
+  if(base) h += `<div class='kv'>baseline (val slice, ${base.n_val} task${base.n_val===1?"":"s"} — gate ${esc(base.gate_mode)}): hard ${fmt(base.hard)} · soft ${fmt(base.soft)} · score ${fmt(base.score)} · metric ${esc(base.metric)}</div>`;
+  if(trials.length){
+    h += "<table><tr><th>trial</th><th>mode</th><th>candidate score</th><th>vs baseline</th><th>edits</th><th>verdict</th></tr>" +
+      trials.map(t=>`<tr><td>${esc(t.target)}</td><td>${esc(t.mode)}</td>
+        <td>${t.cand_score!=null?fmt(t.cand_score):"—"}</td><td>${t.baseline_score!=null?fmt(t.baseline_score):"—"}</td>
+        <td>${t.n_edits}</td><td>${t.accepted?"<span class='s-ok'>kept</span>":"<span class='s-bad'>rejected</span>"}</td></tr>`).join("") + "</table>";
+  }
+  if(dec){
+    h += `<div class='gatecard'><div class='kv'>THE GATE'S ARITHMETIC — the entire "improvement" claim, spelled out:</div>
+      <div class='formula'>${esc(dec.formula||"")}</div>
+      <div class='verdict ${dec.accepted?"s-ok":"s-bad"}'>${esc(dec.action)} — ${dec.accepted?"candidate accepted":"candidate rejected"}
+        <span class='kv'>(${dec.n_applied} applied, ${dec.n_rejected} rejected edits)</span></div></div>`;
+  }
+  return h;
+}
+function rStage(){
+  if(!NIGHT) return "";
+  const m = NIGHT.manifest;
+  if(!m) return "<div class='empty'>Nothing staged this night (no accepted proposal).</div>";
+  let h = `<div class='kv'>staging: ${esc(NIGHT.dir)}</div>
+    <div class='kv'>targets: skill → ${esc(m.live_skill_path)} · memory → ${esc(m.live_memory_path)}</div>`;
+  if(NIGHT.proposed_skill) h += `<details><summary><b>proposed_SKILL.md</b></summary><div class='inner'><pre>${esc(NIGHT.proposed_skill)}</pre></div></details>`;
+  if(NIGHT.proposed_memory) h += `<details><summary><b>proposed_CLAUDE.md</b></summary><div class='inner'><pre>${esc(NIGHT.proposed_memory)}</pre></div></details>`;
+  if(NIGHT.report_md) h += `<details><summary><b>report.md</b></summary><div class='inner'><pre>${esc(NIGHT.report_md)}</pre></div></details>`;
+  return h;
+}
+function rAdopt(){
+  if(!NIGHT || !NIGHT.manifest) return "<div class='empty'>Nothing to adopt for this night.</div>";
+  if(NIGHT.adopted) return "<div class='kv'>✓ This night's proposal has been adopted (live files were backed up into the staging folder first).</div>";
+  return `<div class='kv'>Adopting copies the staged proposal over the live files listed above, after backing them up to <b>${esc(NIGHT.dir)}\\backup</b>.</div>
+    <button class='btn danger' style='margin-top:9px' onclick='doAdopt()'>Adopt this night's proposal</button>`;
+}
+async function doAdopt(){
+  if(!SEL) return;
+  if(!confirm("Adopt night "+SEL+"? Live SKILL.md / CLAUDE.md will be overwritten (backups are taken first).")) return;
+  const r = await post("/api/adopt", {ts:SEL});
+  alert(r.ok ? ("Adopted:\n" + (r.updated||[]).join("\n")) : ("Failed: " + r.error));
+  await loadOverview(); await selectNight(SEL);
+}
+
+/* ── stage sections ─────────────────────────────────────────────────── */
+const RENDER = {harvest:rHarvest, mine:rMine, split:rSplit, replay:rReplay,
+                judge:rJudge, reflect:rReflect, gate:rGate, stage:rStage, adopt:rAdopt};
+function promptEditor(s){
+  if(!s.prompt || !OV) return "";
+  const p = OV.prompts.find(x=>x.name===s.prompt);
+  if(!p) return "";
+  return `<div class='prompted'>
+    <div class='bar'><span class='lbl'>Prompt template — ${esc(p.name)}</span>
+      ${p.override?"<span class='ovr'>OVERRIDDEN</span>":""}
+      <span class='kv'>placeholders: ${p.placeholders.map(esc).join(" ")}</span>
+      <button class='btn' onclick='savePrompt("${esc(p.name)}")'>Save</button>
+      <button class='btn' onclick='resetPrompt("${esc(p.name)}")'>Reset to default</button>
+      <span class='savemsg' id='pmsg-${esc(p.name)}'>live ✓</span></div>
+    <textarea id='pt-${esc(p.name)}' spellcheck='false'>${esc(p.effective)}</textarea>
+    <div class='hint'>Applies to the <b>next model call</b>, even mid-run — the registry re-reads its override file whenever it changes. ${esc(p.description)}</div>
+  </div>`;
+}
+async function savePrompt(name){
+  const v = document.getElementById("pt-"+name).value;
+  const r = await post("/api/prompts", {updates:{[name]:v}});
+  if(r.ok){ OV.prompts = r.prompts; const m = document.getElementById("pmsg-"+name);
+    m.classList.add("show"); setTimeout(()=>m.classList.remove("show"), 1600); renderStages(); }
+}
+async function resetPrompt(name){
+  const r = await post("/api/prompts", {updates:{[name]:null}});
+  if(r.ok){ OV.prompts = r.prompts; renderStages(); }
+}
+function renderStages(){
+  const el = $("#stages"); el.innerHTML = "";
+  for(const s of STAGES){
+    const sec = document.createElement("section");
+    sec.className = "stage"; sec.id = "sec-"+s.id;
+    sec.innerHTML = `<div class='stghead'><span class='num'>${s.n}</span>
+        <span class='ttl'>${s.name}</span><span class='chip ${s.role}'>${s.role.toUpperCase()}</span>
+        <span class='mdl'>${esc(modelFor(s.role))}</span></div>
+      <div class='stgbody'>
+        <div class='about'>${s.about}<div class='io'>${esc(s.io)}</div></div>
+        ${promptEditor(s)}
+        <h2 class='sec' style='margin-top:13px'>Evidence — night ${esc(SEL||"—")}</h2>
+        ${RENDER[s.id]()}
+      </div>`;
+    el.appendChild(sec);
+  }
+}
+
+/* ── config editor ──────────────────────────────────────────────────── */
+const CFG_FIELDS = [
+  ["backend","base backend","select",["mock","claude","codex","copilot","azure_openai","handoff"]],
+  ["model","base model","text"],
+  ["optimizer_backend","optimizer backend (override)","select",["","mock","claude","codex","copilot","azure_openai"]],
+  ["optimizer_model","optimizer model","text"],
+  ["target_backend","target backend (override)","select",["","mock","claude","codex","copilot","azure_openai"]],
+  ["target_model","target model","text"],
+  ["azure_endpoint","azure / compat endpoint","text"],
+  ["transcript_source","transcript source","select",["claude","codex","antigravity","auto"]],
+  ["max_sessions_per_night","max sessions / night","number"],
+  ["gate_mode","gate mode","select",["on","off"]],
+  ["gate_metric","gate metric","select",["mixed","hard","soft"]],
+  ["gate_mixed_weight","mixed weight (soft share)","number"],
+  ["edit_budget","edit budget / night","number"],
+  ["holdout_fraction","holdout fraction (val)","number"],
+  ["max_tasks_per_night","max tasks / night","number"],
+  ["lookback_hours","lookback hours (first run)","number"],
+  ["dream_rollouts","dream rollouts (K)","number"],
+  ["dream_factor","dream factor","number"],
+  ["recall_k","recall K","number"],
+  ["llm_mine","LLM mining","select",["true","false"]],
+  ["evolve_skill","evolve SKILL.md","select",["true","false"]],
+  ["evolve_memory","evolve CLAUDE.md","select",["true","false"]],
+  ["evidence_log","evidence log","select",["true","false"]],
+  ["auto_adopt","auto-adopt (careful)","select",["false","true"]],
+  ["preferences","house rules for the optimizer","text"],
+];
+function renderConfig(){
+  const g = $("#cfgGrid"); g.innerHTML = "";
+  for(const [key,label,kind,opts] of CFG_FIELDS){
+    const v = OV.config[key];
+    const d = document.createElement("div"); d.className = "cfgitem";
+    if(kind==="select"){
+      d.innerHTML = `<label>${esc(label)}</label><select data-k='${key}'>` +
+        opts.map(o=>`<option value='${esc(o)}' ${String(v)===o?"selected":""}>${esc(o||"(inherit)")}</option>`).join("") + "</select>";
+    } else {
+      d.innerHTML = `<label>${esc(label)}</label><input data-k='${key}' type='${kind==="number"?"text":"text"}' value='${esc(v??"")}'>`;
+    }
+    g.appendChild(d);
+  }
+}
+async function saveConfig(){
+  const updates = {};
+  document.querySelectorAll("#cfgGrid [data-k]").forEach(el=>{
+    let v = el.value;
+    if(v==="true") v = true; else if(v==="false") v = false;
+    else if(v!=="" && !isNaN(Number(v)) && el.closest(".cfgitem").querySelector("label").textContent.match(/weight|budget|fraction|hours|tasks|rollouts|factor|K$|chars/i)) v = Number(v);
+    updates[el.dataset.k] = v;
+  });
+  const r = await post("/api/config", {updates});
+  if(r.ok){ OV.config = r.config; const m = $("#cfgMsg");
+    m.classList.add("show"); setTimeout(()=>m.classList.remove("show"), 1600);
+    renderConfig(); renderMap(); renderStages(); }
+}
+
+/* ── run control ────────────────────────────────────────────────────── */
+let pollTimer = null;
+async function pollRun(){
+  const s = await api("/api/run/status");
+  $("#runDot").className = "dot" + (s.running ? " on" : "");
+  $("#runLbl").textContent = s.running ? ("running " + (s.mode||"")) :
+    (s.returncode==null ? "idle" : (s.mode+" done (rc "+s.returncode+")"));
+  if(s.tail) $("#runlog").textContent = s.tail;
+  $("#btnRun").disabled = $("#btnDry").disabled = !!s.running;
+  if(s.running){ pollTimer = setTimeout(pollRun, 1500); }
+  else if(pollTimer){ clearTimeout(pollTimer); pollTimer = null; await loadOverview(); if(SEL) selectNight(OV.nights.length?OV.nights[0].ts:SEL); }
+}
+async function startRun(dry){
+  const r = await post("/api/run", {dry_run:dry});
+  if(r.ok===false){ alert(r.error); return; }
+  pollRun();
+}
+
+$("#btnRun").onclick = () => startRun(false);
+$("#btnDry").onclick = () => startRun(true);
+$("#btnCfgSave").onclick = saveConfig;
+loadOverview().then(pollRun);
+</script>
+</body>
+</html>
