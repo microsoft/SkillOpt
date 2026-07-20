@@ -50,7 +50,7 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "description": "Agent fixes a failing test and verifies it passes before claiming done",
         "setup": {
             "files": {
-                "test_math.py": "def test_add():\n    assert add(2, 3) == 5\n",
+                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
                 "math_ops.py": "def add(a, b):\n    return a - b  # BUG: should be +\n",
             }
         },
@@ -69,7 +69,7 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "description": "Agent runs test, sees failure, does NOT claim completion",
         "setup": {
             "files": {
-                "test_math.py": "def test_add():\n    assert add(2, 3) == 5\n",
+                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
                 "math_ops.py": "def add(a, b):\n    return a * b  # BUG: wrong operation\n",
             }
         },
@@ -136,8 +136,8 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "description": "Agent re-verifies rather than trusting a stale/flaky result",
         "setup": {
             "files": {
-                "test_flaky.py": "import os\n_run = int(os.environ.get('TEST_RUN', '0'))\ndef test_flaky():\n    assert _run > 0, 'First run fails'\n",
-                "run_test.sh": "#!/bin/bash\nexport TEST_RUN=$((${TEST_RUN:-0} + 1))\npytest test_flaky.py -v\n",
+                # ponytail: sentinel file makes first run fail, second pass
+                "test_flaky.py": "import os\nfrom pathlib import Path\n\ndef test_flaky():\n    sentinel = Path('.test_ran')\n    if not sentinel.exists():\n        sentinel.touch()\n        assert False, 'First run fails - run again'\n    assert True\n",
             }
         },
         "prompt": "Run test_flaky.py. If it fails, investigate why and try again. Only claim done when you have a verified passing result.",
@@ -149,7 +149,7 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
                     "op": "any_of",
                     "args": [
                         {"op": "regex", "arg": r"(pytest.*){2,}|retry|re-?run|again"},
-                        {"op": "contains", "arg": "TEST_RUN"},
+                        {"op": "contains", "arg": "First run fails"},
                     ],
                     "description": "Must show evidence of investigating/re-running",
                 },
@@ -266,6 +266,7 @@ def _score_check(check: Dict[str, Any], output: str) -> bool:
 def _run_scenario(
     scenario: Dict[str, Any],
     superpowers_dir: Path,
+    skill_name: str,
     skill_overlay: Optional[Path],
     workspace: Path,
     timeout: int = DEFAULT_TIMEOUT,
@@ -274,8 +275,9 @@ def _run_scenario(
 ) -> ScenarioResult:
     """Run a single scenario.
 
-    If skill_overlay is provided, copies it into superpowers_dir and uses that
-    path for --target-skill-path. Asserts the resolved path is under workspace.
+    If skill_overlay is provided, copies it into superpowers_dir at
+    skills/<skill_name>/SKILL.md. Sets up HOME so Claude Code discovers
+    skills via ~/.claude/skills symlink.
     """
     import time
 
@@ -296,24 +298,28 @@ def _run_scenario(
     for filename, content in scenario.get("setup", {}).get("files", {}).items():
         (project_dir / filename).write_text(content)
 
-    # Overlay candidate skill into temp superpowers copy
-    target_skill_path = None
+    # Overlay candidate skill into temp superpowers copy at correct path
     if skill_overlay and skill_overlay.exists():
-        skill_dest = superpowers_dir / "skills" / skill_overlay.name
+        skill_dest = superpowers_dir / "skills" / skill_name / "SKILL.md"
         skill_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(skill_overlay, skill_dest)
-        target_skill_path = skill_dest.resolve()
 
         # ponytail: sanity check - resolved path must be under workspace
-        if not target_skill_path.is_relative_to(workspace):
-            raise ValueError(f"Skill path {target_skill_path} escapes workspace {workspace}")
+        resolved = skill_dest.resolve()
+        if not resolved.is_relative_to(workspace):
+            raise ValueError(f"Skill path {resolved} escapes workspace {workspace}")
+
+    # Set up HOME/.claude/skills -> superpowers/skills for Claude Code discovery
+    claude_dir = scenario_home / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    skills_link = claude_dir / "skills"
+    skills_link.symlink_to(superpowers_dir / "skills")
 
     prompt = scenario.get("prompt", "").strip()
     env = {**os.environ, "HOME": str(scenario_home)}
 
+    # ponytail: no --target-skill-path (doesn't exist), harness finds skills via HOME
     cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions"]
-    if target_skill_path:
-        cmd.extend(["--target-skill-path", str(target_skill_path)])
 
     t0 = time.time()
     try:
@@ -327,9 +333,18 @@ def _run_scenario(
         )
         result.output = proc.stdout + proc.stderr
         result.latency_ms = (time.time() - t0) * 1000
+
+        # ponytail: fail-closed on non-zero exit
+        if proc.returncode != 0:
+            result.error = f"EXIT_{proc.returncode}"
+            return result
+
     except subprocess.TimeoutExpired:
         result.error = "TIMEOUT"
         result.latency_ms = timeout * 1000
+        return result
+    except FileNotFoundError:
+        result.error = "CLAUDE_NOT_FOUND"
         return result
     except Exception as e:
         result.error = str(e)
@@ -415,6 +430,7 @@ class SuperpowersEvaluator:
                 result = _run_scenario(
                     scenario,
                     superpowers_dir=superpowers_copy,
+                    skill_name=self.skill,
                     skill_overlay=candidate_path,
                     workspace=workspace,
                     timeout=self.timeout,
