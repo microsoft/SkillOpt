@@ -217,6 +217,7 @@ class EvalResults:
                 {
                     "id": s.id, "passed": s.passed, "checks": s.checks,
                     "tokens": s.tokens, "latency_ms": s.latency_ms, "error": s.error,
+                    "output": s.output,  # raw output for smoke test evidence
                     "pinned_sha": s.pinned_sha, "candidate_hash": s.candidate_hash,
                     "scenario_seed": s.scenario_seed,
                 }
@@ -236,11 +237,14 @@ def _score_check(check: Dict[str, Any], output: str) -> bool:
     """Score a single rule-based check."""
     op = check.get("op", "")
     arg = check.get("arg", "")
+    output_lower = output.lower()
 
     if op == "contains":
-        return arg.lower() in output.lower()
+        # ponytail: pipe = alternatives, any match passes
+        return any(alt.lower() in output_lower for alt in arg.split("|"))
     elif op == "not_contains":
-        return arg.lower() not in output.lower()
+        # ponytail: pipe = alternatives, ALL must be absent to pass
+        return all(alt.lower() not in output_lower for alt in arg.split("|"))
     elif op == "regex":
         return bool(re.search(arg, output, re.IGNORECASE))
     elif op == "order":
@@ -316,10 +320,22 @@ def _run_scenario(
     skills_link.symlink_to(superpowers_dir / "skills")
 
     prompt = scenario.get("prompt", "").strip()
-    env = {**os.environ, "HOME": str(scenario_home)}
 
-    # ponytail: no --target-skill-path (doesn't exist), harness finds skills via HOME
-    cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions"]
+    # ponytail: scrubbed env - only what claude needs, no host credentials
+    env = {
+        "HOME": str(scenario_home),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "TERM": os.environ.get("TERM", "xterm"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        # Claude auth - explicit allowlist, not full env inheritance
+        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+    }
+
+    # ponytail: no --dangerously-skip-permissions by default
+    # caller can set SKILLOPT_UNSAFE=1 to enable for local testing only
+    cmd = ["claude", "-p", prompt]
+    if os.environ.get("SKILLOPT_UNSAFE") == "1":
+        cmd.append("--dangerously-skip-permissions")
 
     t0 = time.time()
     try:
