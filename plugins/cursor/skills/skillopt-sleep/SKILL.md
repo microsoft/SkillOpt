@@ -134,6 +134,14 @@ backend for those tasks. Do not claim that repository- or tool-dependent
 behavior was validated. The current engine does not implement a fresh-worktree
 replay for Cursor.
 
+Repository maintainers can exercise the proposed synthetic-tool boundary with
+`python -m skillopt_sleep.experiments.cursor_adversarial_matrix --run --yes
+--cursor-path /path/to/cursor-agent --model composer-2.5`. The full matrix
+requires `CURSOR_API_KEY`, makes at most eight provider calls with no retries,
+and writes sanitized reports under `outputs/`. Only exit code `0` is sufficient
+evidence to consider restoring Cursor tool-aware replay; exit code `1` is a
+boundary failure and exit code `2` is inconclusive.
+
 A real-backend `dry-run` still makes provider calls; it only suppresses staging.
 Session and task limits are workload bounds, not hard limits on calls, tokens,
 time, or money. Start with small limits.

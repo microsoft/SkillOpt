@@ -171,6 +171,15 @@ Cursor backend therefore does not provide end-to-end validation for skills that
 need repository inspection, real CLIs, browsers, running services, or file
 changes.
 
+The manual `python -m skillopt_sleep.experiments.cursor_adversarial_matrix`
+validator exercises the proposed temporary-workspace boundary against a real
+Cursor Agent. It requires `--run --yes`, an explicit `--cursor-path` and
+`--model`, and `CURSOR_API_KEY` for the fake-user-profile cell. It performs no
+automatic retries or public-CI calls and persists only sanitized reports below
+`outputs/`. Its exit codes are `0` for a complete pass, `1` for a demonstrated
+boundary failure, and `2` for an inconclusive result or unmet precondition. A
+nonzero result does not enable tool-aware replay.
+
 There is no implemented fresh-worktree Cursor replay. If a report says
 `replay: mock`, that is the prompt-replay label and does not mean the mock model
 backend was selected. Both `run` and `dry-run` perform real-backend provider

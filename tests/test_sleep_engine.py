@@ -1632,6 +1632,175 @@ class TestCursorBackend(unittest.TestCase):
             self.assertTrue(env["CURSOR_CONFIG_DIR"].startswith(runtime_dir))
             self.assertTrue(env["CURSOR_DATA_DIR"].startswith(runtime_dir))
 
+    def test_tool_guard_requires_one_exact_command_and_fails_closed(self):
+        import io
+
+        from skillopt_sleep.cursor_tool_guard import command_verdict, evaluate_hook
+
+        allowed = ["./search"]
+        self.assertEqual(command_verdict({"command": " ./search\n"}, allowed), (True, "./search"))
+        for command in (
+            "./search query",
+            "./search; ./blocked",
+            "./search && ./blocked",
+            "./search || ./blocked",
+            "./search | ./blocked",
+            "./search > result",
+            "./search $(./blocked)",
+            "./search\n./blocked",
+            "/usr/bin/search",
+            "./blocked",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(command_verdict({"command": command}, allowed)[0], False)
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = os.path.join(tmp, "policy.json")
+            log = os.path.join(tmp, "guard.jsonl")
+            with open(policy, "w", encoding="utf-8") as f:
+                json.dump({"allowed_commands": allowed}, f)
+
+            output = io.StringIO()
+            rc = evaluate_hook(
+                policy_path=policy,
+                log_path=log,
+                input_stream=io.StringIO('{"command":"./search; ./blocked"}'),
+                output_stream=output,
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(json.loads(output.getvalue())["permission"], "deny")
+            with open(log, encoding="utf-8") as f:
+                event = json.loads(f.readline())
+            self.assertFalse(event["allowed"])
+            self.assertNotIn("command", event)
+
+            malformed = io.StringIO()
+            evaluate_hook(
+                policy_path=policy,
+                log_path=log,
+                input_stream=io.StringIO("not json"),
+                output_stream=malformed,
+            )
+            self.assertEqual(json.loads(malformed.getvalue())["permission"], "deny")
+
+    def test_tool_workspace_uses_exact_permissions_and_fail_closed_hook(self):
+        from skillopt_sleep.backend import CursorCliBackend
+
+        backend = CursorCliBackend(cursor_path="cursor-agent-test")
+        with tempfile.TemporaryDirectory() as workspace:
+            boundary = backend._prepare_tool_workspace(
+                workspace,
+                ["search"],
+                is_windows=False,
+            )
+            with open(os.path.join(workspace, ".cursor", "cli.json"), encoding="utf-8") as f:
+                permissions = json.load(f)["permissions"]
+            with open(os.path.join(workspace, ".cursor", "hooks.json"), encoding="utf-8") as f:
+                hooks = json.load(f)["hooks"]
+                hook = hooks["beforeShellExecution"][0]
+
+            self.assertEqual(boundary["invocations"], ["./search"])
+            self.assertEqual(permissions["allow"], ["Shell(./search)"])
+            self.assertEqual(
+                permissions["deny"],
+                ["Read(**)", "Write(**)", "Mcp(*:*)", "WebFetch(*)", "WebSearch(*)"],
+            )
+            self.assertTrue(hook["failClosed"])
+            self.assertEqual(hook["type"], "command")
+            self.assertIn("cursor_tool_guard.py", hook["command"])
+            self.assertNotIn("./search", hook["command"])
+            self.assertTrue(os.access(os.path.join(workspace, "search"), os.X_OK))
+
+        with tempfile.TemporaryDirectory() as workspace:
+            windows = backend._prepare_tool_workspace(
+                workspace,
+                ["search"],
+                is_windows=True,
+            )
+            with open(os.path.join(workspace, ".cursor", "cli.json"), encoding="utf-8") as f:
+                permissions = json.load(f)["permissions"]
+            self.assertEqual(windows["invocations"], [".\\search.cmd"])
+            self.assertEqual(permissions["allow"], ["Shell(.\\search.cmd)"])
+            with open(os.path.join(workspace, "search.cmd"), encoding="utf-8") as f:
+                self.assertIn("_tool_calls.log", f.read())
+
+    def test_tool_names_are_rejected_before_cursor_can_start(self):
+        from skillopt_sleep.backend import CursorCliBackend
+
+        backend = CursorCliBackend(cursor_path="cursor-agent-test")
+        for unsafe in (
+            ["../escape"],
+            ["/tmp/escape"],
+            ["bad name"],
+            ["CON"],
+            ["search", "SEARCH"],
+        ):
+            with self.subTest(tools=unsafe), tempfile.TemporaryDirectory() as workspace:
+                with mock.patch("skillopt_sleep.backend.subprocess.run") as run:
+                    with self.assertRaises(ValueError):
+                        backend._prepare_tool_workspace(workspace, unsafe)
+                run.assert_not_called()
+
+    def test_tool_mode_is_sandboxed_without_force_and_uses_only_call_log(self):
+        from skillopt_sleep.backend import CursorBackendError, CursorCliBackend
+
+        backend = CursorCliBackend(
+            cursor_path="cursor-agent-test",
+            model="composer-2.5",
+            timeout=7,
+        )
+        runtime_configs = []
+
+        def fake_run(cmd, **kwargs):
+            with open(
+                os.path.join(kwargs["env"]["CURSOR_CONFIG_DIR"], "cli-config.json"),
+                encoding="utf-8",
+            ) as f:
+                runtime_configs.append(json.load(f))
+
+            class Proc:
+                returncode = 0
+                stdout = (
+                    '{"type":"tool_call","subtype":"completed",'
+                    '"tool_call":{"shellToolCall":{"args":{"command":"./search"}}}}\n'
+                    '{"type":"result","subtype":"success","is_error":false,'
+                    '"result":"TOOL_CALL: search"}\n'
+                )
+                stderr = ""
+
+            return Proc()
+
+        with tempfile.TemporaryDirectory() as workspace:
+            boundary = backend._prepare_tool_workspace(workspace, ["search"])
+            with mock.patch("skillopt_sleep.backend.subprocess.run", side_effect=fake_run) as run:
+                response = backend._invoke_once("run the tool", workspace, tool_mode=True)
+            cmd = run.call_args.args[0]
+            self.assertEqual(response, "TOOL_CALL: search")
+            self.assertEqual(backend._called_tools(boundary), [])
+
+        self.assertEqual(cmd[cmd.index("--output-format") + 1], "stream-json")
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], "enabled")
+        self.assertNotIn("--mode", cmd)
+        self.assertNotIn("--force", cmd)
+        self.assertNotIn("--approve-mcps", cmd)
+        self.assertNotIn("--add-dir", cmd)
+        self.assertEqual(runtime_configs[0]["permissions"]["deny"], CursorCliBackend._TOOL_DENY)
+        self.assertEqual(runtime_configs[0]["sandbox"]["mode"], "enabled")
+
+        class MalformedProc:
+            returncode = 0
+            stdout = "not-json"
+            stderr = ""
+
+        with tempfile.TemporaryDirectory() as workspace:
+            with mock.patch(
+                "skillopt_sleep.backend.subprocess.run",
+                return_value=MalformedProc(),
+            ) as run:
+                with self.assertRaises(CursorBackendError) as raised:
+                    backend._invoke_once("run the tool", workspace, tool_mode=True)
+        self.assertFalse(raised.exception.retryable)
+        self.assertEqual(run.call_count, 1)
+
     def test_nonzero_and_error_results_fail_once_with_redacted_diagnostics(self):
         from skillopt_sleep.backend import CursorBackendError, CursorCliBackend
 
@@ -1827,7 +1996,158 @@ class TestCursorBackend(unittest.TestCase):
             self.assertEqual(backend._cache, {})
             self.assertFalse(os.path.exists(os.path.join(tmp, ".skillopt-sleep")))
             self.assertFalse(os.path.exists(os.path.join(project, ".skillopt-sleep")))
-            self.assertFalse(os.path.exists(target))
+        self.assertFalse(os.path.exists(target))
+
+
+class TestCursorAdversarialMatrix(unittest.TestCase):
+    def test_matrix_requires_confirmation_api_key_and_has_fixed_case_limit(self):
+        from skillopt_sleep.experiments import cursor_adversarial_matrix as matrix
+
+        self.assertEqual(len(matrix.CASES), 8)
+        with mock.patch.object(matrix, "run_matrix") as run:
+            rc = matrix.main(["--cursor-path", "cursor-agent", "--model", "composer-2.5"])
+        self.assertEqual(rc, 2)
+        run.assert_not_called()
+
+        version = mock.Mock(returncode=0, stdout="test-version\n", stderr="")
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(matrix.subprocess, "run", return_value=version),
+            mock.patch.object(matrix.platform, "platform", return_value="test-os"),
+        ):
+            rc, results = matrix.run_matrix(
+                cursor_path="cursor-agent",
+                model="composer-2.5",
+                timeout=90,
+                output_dir=tmp,
+                selected_cases=["user_config_isolation"],
+            )
+        self.assertEqual(rc, 2)
+        self.assertEqual(results[0].status, "INCONCLUSIVE")
+        self.assertIn("no provider call", results[0].evidence[0].lower())
+
+    def test_matrix_denial_classification_requires_observable_attempt(self):
+        from skillopt_sleep.experiments.cursor_adversarial_matrix import _denied_result
+
+        denied = [{
+            "type": "tool_call",
+            "subtype": "completed",
+            "tool_call": {
+                "shellToolCall": {
+                    "args": {"command": "./blocked"},
+                    "result": {"error": "Permission denied"},
+                }
+            },
+        }]
+        passed = _denied_result(
+            case="unlisted",
+            expected="denied",
+            events=denied,
+            needles=["./blocked"],
+            side_effect=False,
+            duration=0.1,
+        )
+        self.assertEqual(passed.status, "PASS")
+
+        inconclusive = _denied_result(
+            case="unlisted",
+            expected="denied",
+            events=[],
+            needles=["./blocked"],
+            side_effect=False,
+            duration=0.1,
+        )
+        self.assertEqual(inconclusive.status, "INCONCLUSIVE")
+
+        successful = [{
+            "type": "tool_call",
+            "subtype": "completed",
+            "tool_call": {
+                "shellToolCall": {
+                    "args": {"command": "./blocked"},
+                    "result": {"success": {"exitCode": 0}},
+                }
+            },
+        }]
+        failed = _denied_result(
+            case="unlisted",
+            expected="denied",
+            events=successful,
+            needles=["./blocked"],
+            side_effect=False,
+            duration=0.1,
+        )
+        self.assertEqual(failed.status, "FAIL")
+
+    def test_matrix_report_is_sanitized_and_contains_no_raw_stream(self):
+        from skillopt_sleep.experiments.cursor_adversarial_matrix import (
+            MatrixResult,
+            _write_report,
+        )
+
+        metadata = {
+            "utc": "2026-07-21T00:00:00+00:00",
+            "os": "test-os",
+            "cursor_version": "test-version",
+            "model": "composer-2.5",
+            "provider_calls": 1,
+        }
+        result = MatrixResult(
+            case="example",
+            status="PASS",
+            expected="token=matrix-secret is hidden",
+            evidence=["path /private/matrix-root was denied"],
+            duration_seconds=0.1,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_report(
+                tmp,
+                metadata,
+                [result],
+                {"/private/matrix-root": "$MATRIX_ROOT"},
+            )
+            with open(os.path.join(tmp, "report.md"), encoding="utf-8") as f:
+                markdown = f.read()
+            with open(os.path.join(tmp, "report.json"), encoding="utf-8") as f:
+                payload = f.read()
+
+        self.assertIn("$MATRIX_ROOT", markdown)
+        self.assertNotIn("/private/matrix-root", markdown)
+        self.assertNotIn("matrix-secret", markdown)
+        self.assertNotIn("matrix-secret", payload)
+        self.assertIn("Raw Cursor streams and credentials were not persisted", markdown)
+
+    def test_matrix_exit_codes_follow_cell_statuses_without_live_calls(self):
+        from skillopt_sleep.experiments import cursor_adversarial_matrix as matrix
+
+        version = mock.Mock(returncode=0, stdout="test-version\n", stderr="")
+        expected_codes = {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}
+        for status, expected_code in expected_codes.items():
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                result = matrix.MatrixResult(
+                    case="allowlisted_shim",
+                    status=status,
+                    expected="synthetic",
+                    evidence=["offline"],
+                    duration_seconds=0.0,
+                )
+                with (
+                    mock.patch.dict(os.environ, {"CURSOR_API_KEY": "test-key"}, clear=False),
+                    mock.patch.object(matrix.subprocess, "run", return_value=version),
+                    mock.patch.object(matrix.platform, "platform", return_value="test-os"),
+                    mock.patch.object(matrix, "_run_case", return_value=result) as run_case,
+                ):
+                    code, results = matrix.run_matrix(
+                        cursor_path="cursor-agent",
+                        model="composer-2.5",
+                        timeout=90,
+                        output_dir=tmp,
+                        selected_cases=["allowlisted_shim"],
+                    )
+            self.assertEqual(code, expected_code)
+            self.assertEqual(results, [result])
+            run_case.assert_called_once()
 
     def test_cursor_failure_aborts_without_state_or_staging_and_cli_returns_nonzero(self):
         import contextlib

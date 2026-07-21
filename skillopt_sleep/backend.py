@@ -1259,7 +1259,20 @@ class CursorCliBackend(CliBackend):
         "not available for your account",
         "invalid configuration",
     )
+    _TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+    _WINDOWS_RESERVED = {
+        "aux", "con", "nul", "prn",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
     _ASK_DENY = ["Read(**)", "Write(**)", "Mcp(*:*)"]
+    _TOOL_DENY = [
+        "Read(**)",
+        "Write(**)",
+        "Mcp(*:*)",
+        "WebFetch(*)",
+        "WebSearch(*)",
+    ]
     # Keep the Cursor child usable across shells, credential stores, proxies,
     # and enterprise CA setups without forwarding unrelated provider or cloud
     # credentials from the host process.
@@ -1279,19 +1292,25 @@ class CursorCliBackend(CliBackend):
     def __init__(self, model: str = "", cursor_path: str = "", timeout: int = 240) -> None:
         super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_CURSOR_MODEL", ""), timeout=timeout)
         self.cursor_path = resolve_cursor_path(cursor_path)
+        # Kept in memory for the manual adversarial matrix. Production replay
+        # never persists raw Cursor streams.
+        self._last_cursor_stdout = ""
+        self._last_cursor_stderr = ""
 
-    def _command(self, workspace: str) -> List[str]:
+    def _command(self, workspace: str, *, tool_mode: bool = False) -> List[str]:
         cmd = [
             self.cursor_path,
             "-p",
             "--output-format",
-            "json",
+            "stream-json" if tool_mode else "json",
             "--trust",
             "--workspace",
             workspace,
-            "--mode",
-            "ask",
         ]
+        if tool_mode:
+            cmd += ["--sandbox", "enabled"]
+        else:
+            cmd += ["--mode", "ask"]
         if self.model:
             cmd += ["--model", self.model]
         return cmd
@@ -1330,7 +1349,12 @@ class CursorCliBackend(CliBackend):
         return CursorBackendError(self.last_call_error, retryable=retryable)
 
     @staticmethod
-    def _isolated_environment(runtime_dir: str) -> Dict[str, str]:
+    def _isolated_environment(
+        runtime_dir: str,
+        *,
+        deny: Optional[List[str]] = None,
+        sandbox_mode: str = "disabled",
+    ) -> Dict[str, str]:
         config_dir = os.path.join(runtime_dir, "config")
         data_dir = os.path.join(runtime_dir, "data")
         os.makedirs(config_dir, exist_ok=True)
@@ -1342,11 +1366,11 @@ class CursorCliBackend(CliBackend):
                     "editor": {"vimMode": False},
                     "permissions": {
                         "allow": [],
-                        "deny": CursorCliBackend._ASK_DENY,
+                        "deny": deny or CursorCliBackend._ASK_DENY,
                     },
                     "approvalMode": "allowlist",
                     "sandbox": {
-                        "mode": "disabled",
+                        "mode": sandbox_mode,
                         "networkAccess": "user_config_only",
                         "networkAllowlist": [],
                     },
@@ -1369,18 +1393,192 @@ class CursorCliBackend(CliBackend):
         env["CURSOR_DATA_DIR"] = data_dir
         return env
 
-    def _invoke_once(self, prompt: str, workspace: str) -> str:
+    @classmethod
+    def _validated_tool_names(cls, tools: List[str]) -> List[str]:
+        names = tools or ["search"]
+        validated: List[str] = []
+        seen = set()
+        for name in names:
+            if not isinstance(name, str) or not cls._TOOL_NAME_RE.fullmatch(name):
+                raise ValueError(f"unsafe Cursor replay tool name: {name!r}")
+            if os.path.isabs(name) or "/" in name or "\\" in name or name in {".", ".."}:
+                raise ValueError(f"unsafe Cursor replay tool name: {name!r}")
+            if name.split(".", 1)[0].casefold() in cls._WINDOWS_RESERVED:
+                raise ValueError(f"reserved Cursor replay tool name: {name!r}")
+            folded = name.casefold()
+            if folded in seen:
+                raise ValueError(f"duplicate Cursor replay tool name: {name!r}")
+            seen.add(folded)
+            validated.append(name)
+        return validated
+
+    @staticmethod
+    def _tool_invocations(tools: List[str], *, is_windows: bool) -> List[str]:
+        if is_windows:
+            return [f".\\{tool}.cmd" for tool in tools]
+        return [f"./{tool}" for tool in tools]
+
+    @staticmethod
+    def _hook_command(
+        guard: str,
+        policy: str,
+        log_path: str,
+        *,
+        is_windows: bool,
+    ) -> str:
+        import shlex
+        import sys
+
+        argv = [
+            sys.executable,
+            guard,
+            "--policy",
+            policy,
+            "--log",
+            log_path,
+        ]
+        if is_windows:
+            return subprocess.list2cmdline(argv)
+        return " ".join(shlex.quote(part) for part in argv)
+
+    @classmethod
+    def _prepare_tool_workspace(
+        cls,
+        workspace: str,
+        tools: List[str],
+        *,
+        is_windows: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Install synthetic tools and the exact-command Cursor boundary."""
+        import shutil
+        import stat
+
+        from skillopt_sleep import cursor_tool_guard
+
+        tool_names = cls._validated_tool_names(tools)
+        windows = os.name == "nt" if is_windows is None else is_windows
+        invocations = cls._tool_invocations(tool_names, is_windows=windows)
+        calllog = os.path.join(workspace, "_tool_calls.log")
+        guard_log = os.path.join(workspace, "_tool_guard.jsonl")
+        internal_dir = os.path.join(workspace, ".skillopt-replay")
+        cursor_dir = os.path.join(workspace, ".cursor")
+        os.makedirs(internal_dir, exist_ok=True)
+        os.makedirs(cursor_dir, exist_ok=True)
+
+        guard = os.path.join(internal_dir, "cursor_tool_guard.py")
+        policy = os.path.join(internal_dir, "allowed_commands.json")
+        shutil.copyfile(cursor_tool_guard.__file__, guard)
+        with open(policy, "w", encoding="utf-8") as f:
+            json.dump({"allowed_commands": invocations}, f, indent=2)
+
+        with open(os.path.join(cursor_dir, "cli.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "permissions": {
+                        "allow": [f"Shell({command})" for command in invocations],
+                        "deny": cls._TOOL_DENY,
+                    }
+                },
+                f,
+                indent=2,
+            )
+        with open(os.path.join(cursor_dir, "hooks.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "hooks": {
+                        "beforeShellExecution": [
+                            {
+                                "type": "command",
+                                "command": cls._hook_command(
+                                    guard,
+                                    policy,
+                                    guard_log,
+                                    is_windows=windows,
+                                ),
+                                "failClosed": True,
+                                "timeout": 5,
+                            }
+                        ]
+                    },
+                },
+                f,
+                indent=2,
+            )
+
+        for tool_name in tool_names:
+            if windows:
+                shim = os.path.join(workspace, f"{tool_name}.cmd")
+                with open(shim, "w", encoding="utf-8") as f:
+                    f.write(
+                        "@echo off\n"
+                        f'echo {tool_name}>>"{calllog}"\n'
+                        "echo (search results: 3 relevant notes found; use them to answer)\n"
+                    )
+            else:
+                import shlex
+
+                shim = os.path.join(workspace, tool_name)
+                with open(shim, "w", encoding="utf-8") as f:
+                    f.write(
+                        "#!/bin/sh\n"
+                        f"printf '%s\\n' {shlex.quote(tool_name)} >> {shlex.quote(calllog)}\n"
+                        "printf '%s\\n' '(search results: 3 relevant notes found; use them to answer)'\n"
+                    )
+                os.chmod(
+                    shim,
+                    os.stat(shim).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+                )
+        return {
+            "tools": tool_names,
+            "invocations": invocations,
+            "calllog": calllog,
+            "guard_log": guard_log,
+        }
+
+    @staticmethod
+    def _called_tools(boundary: Dict[str, Any]) -> List[str]:
+        calllog = str(boundary["calllog"])
+        if not os.path.exists(calllog):
+            return []
+        with open(calllog, encoding="utf-8") as f:
+            logged = {line.strip() for line in f if line.strip()}
+        return [tool for tool in boundary["tools"] if tool in logged]
+
+    @staticmethod
+    def _tool_prompt(
+        task: TaskRecord,
+        skill: str,
+        memory: str,
+        invocations: List[str],
+    ) -> str:
+        commands = ", ".join(invocations)
+        example = invocations[0]
+        return (
+            "You are completing a task. Apply the skill and memory rules exactly, "
+            "including any rule about searching or looking up information before answering.\n\n"
+            f"You have synthetic local shell tools: {commands}. When required, run exactly "
+            f"one listed command with no arguments (for example, `{example}`). No other shell, "
+            "file, web, or MCP operation is permitted.\n\n"
+            f"# Skill\n{skill or '(none)'}\n\n# Memory\n{memory or '(none)'}\n\n"
+            f"# Task\n{task.intent}\n\n{task.context_excerpt}\n\n"
+            "Return only the final answer text."
+        )
+
+    def _invoke_once(self, prompt: str, workspace: str, *, tool_mode: bool = False) -> str:
         import shutil
 
         from skillopt_sleep.harvest_cursor import CURSOR_REPLAY_SENTINEL
 
         self.last_call_error = ""
+        self._last_cursor_stdout = ""
+        self._last_cursor_stderr = ""
         replay_prompt = CURSOR_REPLAY_SENTINEL + "\n\n" + prompt
         runtime_dir = ""
         try:
             runtime_dir = tempfile.mkdtemp(prefix="skillopt_sleep_cursor_runtime_")
             proc = subprocess.run(
-                self._command(workspace),
+                self._command(workspace, tool_mode=tool_mode),
                 capture_output=True,
                 creationflags=_NO_WINDOW,
                 text=True,
@@ -1389,12 +1587,16 @@ class CursorCliBackend(CliBackend):
                 timeout=self.timeout,
                 cwd=workspace,
                 input=replay_prompt,
-                env=self._isolated_environment(runtime_dir),
+                env=self._isolated_environment(
+                    runtime_dir,
+                    deny=self._TOOL_DENY if tool_mode else None,
+                    sandbox_mode="enabled" if tool_mode else "disabled",
+                ),
             )
         except subprocess.TimeoutExpired:
             raise self._error(
                 f"Cursor Agent timed out after {self.timeout}s",
-                retryable=True,
+                retryable=not tool_mode,
             )
         except Exception as exc:
             raise self._error(f"Cursor Agent spawn failed: {exc}")
@@ -1402,6 +1604,9 @@ class CursorCliBackend(CliBackend):
             if runtime_dir:
                 shutil.rmtree(runtime_dir, ignore_errors=True)
 
+        if tool_mode:
+            self._last_cursor_stdout = proc.stdout or ""
+            self._last_cursor_stderr = proc.stderr or ""
         if proc.returncode != 0:
             raise self._error(
                 f"Cursor Agent exited {proc.returncode}: {(proc.stderr or '')[:500]}"
@@ -1426,7 +1631,7 @@ class CursorCliBackend(CliBackend):
             raise self._error(
                 "Cursor Agent returned no usable JSON response"
                 + (f": {detail[:300]}" if detail else ""),
-                retryable=True,
+                retryable=not tool_mode,
             )
         self.last_call_error = ""
         return output

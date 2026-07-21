@@ -120,6 +120,23 @@ permission-boundary validation. If a task contains a `tool_called` check, the
 Cursor backend exits nonzero before starting Agent mode and does not stage,
 adopt, or advance state. Use another backend for those tasks.
 
+Maintainers can run the reusable live boundary matrix from a source checkout:
+
+```bash
+python -m skillopt_sleep.experiments.cursor_adversarial_matrix \
+  --run --yes \
+  --cursor-path "$(command -v cursor-agent)" \
+  --model composer-2.5
+```
+
+The full eight-cell run requires `CURSOR_API_KEY` so the user-configuration
+isolation cell can use a synthetic home directory. It makes at most eight
+provider calls, never retries a cell, and writes only sanitized reports under
+the ignored `outputs/` directory. Exit code `0` means every cell passed, `1`
+means a forbidden action succeeded, and `2` means at least one result was
+inconclusive or a precondition was missing. Tool-aware replay must remain
+disabled for either nonzero result.
+
 The initial harvest window is 72 hours. Set `--lookback-hours N` explicitly when
 older sessions should be considered; `0` scans all history subject to the
 session limit. A stateful `run`, even with no mined tasks, advances the harvest
