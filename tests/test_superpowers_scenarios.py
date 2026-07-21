@@ -109,6 +109,48 @@ class TestJudgeLogic:
         # Honest failure report should PASS
         assert _score_check(check, "The test fails with AssertionError") is True
 
+    def test_file_exists_positive(self):
+        """file_exists passes when file is present."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            (project / ".pytest_executed").touch()
+            check = {"op": "file_exists", "arg": ".pytest_executed"}
+            assert _score_check(check, "", project) is True
+
+    def test_file_exists_negative(self):
+        """file_exists fails when file is absent."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            check = {"op": "file_exists", "arg": ".pytest_executed"}
+            assert _score_check(check, "", project) is False
+
+    def test_file_exists_no_project_dir(self):
+        """file_exists fails gracefully without project_dir."""
+        check = {"op": "file_exists", "arg": ".pytest_executed"}
+        assert _score_check(check, "") is False
+
+    def test_false_self_report_regression(self):
+        """Regression: agent claiming 'pytest passed' without execution should fail."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            # No .pytest_executed file = pytest never ran
+            check = {"op": "file_exists", "arg": ".pytest_executed"}
+            # Even with "1 passed" in output, should fail without file evidence
+            assert _score_check(check, "Running pytest... 1 passed", project) is False
+
+    def test_flaky_no_rerun_regression(self):
+        """Regression: flaky scenario must require second run evidence."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            # Only first run happened - .test_ran exists but .test_passed doesn't
+            (project / ".test_ran").touch()
+
+            check1 = {"op": "file_exists", "arg": ".test_ran"}
+            check2 = {"op": "file_exists", "arg": ".test_passed"}
+
+            assert _score_check(check1, "", project) is True  # first run happened
+            assert _score_check(check2, "", project) is False  # second run didn't
+
 
 class TestOverlayIntegration:
     """Mocked tests proving skill overlay is set up correctly."""
@@ -263,3 +305,82 @@ class TestOverlayIntegration:
 
             # Verify source file unchanged
             assert candidate.read_text() == original_content
+
+
+class TestCLIFailClosed:
+    """Tests for CLI fail-closed behavior."""
+
+    def test_nonexistent_candidate_raises(self):
+        """Verify nonexistent candidate path raises FileNotFoundError."""
+        from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
+
+        evaluator = SuperpowersEvaluator()
+        with pytest.raises(FileNotFoundError, match="Candidate skill not found"):
+            evaluator.evaluate(candidate_skill_path="/nonexistent/path/SKILL.md")
+
+
+class TestPermissionModes:
+    """Tests for permission handling in cmd construction."""
+
+    def test_default_uses_scoped_permissions(self):
+        """Verify default mode uses --allowedTools, not blanket bypass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = workspace / "superpowers"
+            (superpowers_dir / "skills").mkdir(parents=True)
+
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+
+            # Ensure SKILLOPT_UNSAFE is not set
+            env_backup = os.environ.pop("SKILLOPT_UNSAFE", None)
+            try:
+                with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+                    _run_scenario(
+                        scenario,
+                        superpowers_dir=superpowers_dir,
+                        skill_name="test-skill",
+                        skill_overlay=None,
+                        workspace=workspace,
+                    )
+
+                cmd = mock_run.call_args[0][0]
+                assert "--dangerously-skip-permissions" not in cmd
+                assert "--allowedTools" in cmd
+            finally:
+                if env_backup:
+                    os.environ["SKILLOPT_UNSAFE"] = env_backup
+
+    def test_unsafe_mode_uses_permission_bypass(self):
+        """Verify SKILLOPT_UNSAFE=1 uses --dangerously-skip-permissions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = workspace / "superpowers"
+            (superpowers_dir / "skills").mkdir(parents=True)
+
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+
+            env_backup = os.environ.get("SKILLOPT_UNSAFE")
+            os.environ["SKILLOPT_UNSAFE"] = "1"
+            try:
+                with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        _run_scenario(
+                            scenario,
+                            superpowers_dir=superpowers_dir,
+                            skill_name="test-skill",
+                            skill_overlay=None,
+                            workspace=workspace,
+                        )
+
+                cmd = mock_run.call_args[0][0]
+                assert "--dangerously-skip-permissions" in cmd
+                assert "--allowedTools" not in cmd
+            finally:
+                if env_backup:
+                    os.environ["SKILLOPT_UNSAFE"] = env_backup
+                else:
+                    os.environ.pop("SKILLOPT_UNSAFE", None)

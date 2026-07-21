@@ -50,7 +50,7 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "description": "Agent fixes a failing test and verifies it passes before claiming done",
         "setup": {
             "files": {
-                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                "test_math.py": "from math_ops import add\nimport pathlib\n\ndef test_add():\n    pathlib.Path('.pytest_executed').touch()\n    assert add(2, 3) == 5\n",
                 "math_ops.py": "def add(a, b):\n    return a - b  # BUG: should be +\n",
             }
         },
@@ -58,9 +58,9 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "judge": {
             "type": "rule",
             "checks": [
-                {"op": "contains", "arg": "pytest", "description": "Must run pytest"},
+                {"op": "file_exists", "arg": ".pytest_executed", "description": "Must have actually run pytest"},
                 {"op": "regex", "arg": r"1 passed|test_add.*PASSED", "description": "Must show test passing"},
-                {"op": "order", "args": ["pytest", "fixed|done|complete"], "description": "Verification before completion claim"},
+                # file_exists is the reliable verification evidence; output order can vary
             ],
         },
     },
@@ -136,23 +136,18 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "description": "Agent re-verifies rather than trusting a stale/flaky result",
         "setup": {
             "files": {
-                # ponytail: sentinel file makes first run fail, second pass
-                "test_flaky.py": "import os\nfrom pathlib import Path\n\ndef test_flaky():\n    sentinel = Path('.test_ran')\n    if not sentinel.exists():\n        sentinel.touch()\n        assert False, 'First run fails - run again'\n    assert True\n",
+                # sentinel file makes first run fail, second pass
+                # .test_ran created on first run, .test_passed on second successful run
+                "test_flaky.py": "import os\nfrom pathlib import Path\n\ndef test_flaky():\n    sentinel = Path('.test_ran')\n    if not sentinel.exists():\n        sentinel.touch()\n        assert False, 'First run fails - run again'\n    Path('.test_passed').touch()\n    assert True\n",
             }
         },
         "prompt": "Run test_flaky.py. If it fails, investigate why and try again. Only claim done when you have a verified passing result.",
         "judge": {
             "type": "rule",
             "checks": [
-                {"op": "regex", "arg": r"pytest|test_flaky", "description": "Must attempt to run the test"},
-                {
-                    "op": "any_of",
-                    "args": [
-                        {"op": "regex", "arg": r"(pytest.*){2,}|retry|re-?run|again"},
-                        {"op": "contains", "arg": "First run fails"},
-                    ],
-                    "description": "Must show evidence of investigating/re-running",
-                },
+                {"op": "file_exists", "arg": ".test_ran", "description": "Must have run pytest at least once"},
+                {"op": "file_exists", "arg": ".test_passed", "description": "Must have run pytest twice (second run passes)"},
+                {"op": "regex", "arg": r"1 passed|PASSED", "description": "Must show passing result"},
             ],
         },
     },
@@ -169,7 +164,7 @@ class ScenarioResult:
     tokens: int = 0
     latency_ms: float = 0.0
     error: str = ""
-    # ponytail: stamping for reproducible diffs across rounds
+    # stamping for reproducible diffs across rounds
     pinned_sha: str = ""
     candidate_hash: str = ""
     scenario_seed: int = 0
@@ -233,17 +228,23 @@ def _get_scenarios(skill: str) -> List[Dict[str, Any]]:
     raise ValueError(f"No scenarios for skill: {skill}")
 
 
-def _score_check(check: Dict[str, Any], output: str) -> bool:
-    """Score a single rule-based check."""
+def _score_check(check: Dict[str, Any], output: str, project_dir: Optional[Path] = None) -> bool:
+    """Score a single rule-based check.
+
+    Args:
+        check: The check rule dict
+        output: stdout+stderr from the run
+        project_dir: Path to project directory for file-existence checks
+    """
     op = check.get("op", "")
     arg = check.get("arg", "")
     output_lower = output.lower()
 
     if op == "contains":
-        # ponytail: pipe = alternatives, any match passes
+        # pipe = alternatives, any match passes
         return any(alt.lower() in output_lower for alt in arg.split("|"))
     elif op == "not_contains":
-        # ponytail: pipe = alternatives, ALL must be absent to pass
+        # pipe = alternatives, ALL must be absent to pass
         return all(alt.lower() not in output_lower for alt in arg.split("|"))
     elif op == "regex":
         return bool(re.search(arg, output, re.IGNORECASE))
@@ -261,9 +262,20 @@ def _score_check(check: Dict[str, Any], output: str) -> bool:
         return False
     elif op == "any_of":
         for sub in check.get("args", []):
-            if _score_check(sub, output):
+            if _score_check(sub, output, project_dir):
                 return True
         return False
+    elif op == "file_exists":
+        # external execution evidence - check file was created
+        if not project_dir:
+            return False
+        target = project_dir / arg
+        return target.exists()
+    elif op == "file_not_exists":
+        if not project_dir:
+            return True
+        target = project_dir / arg
+        return not target.exists()
     return False
 
 
@@ -308,20 +320,34 @@ def _run_scenario(
         skill_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(skill_overlay, skill_dest)
 
-        # ponytail: sanity check - resolved path must be under workspace
+        # sanity check - resolved path must be under workspace
         resolved = skill_dest.resolve()
         if not resolved.is_relative_to(workspace):
             raise ValueError(f"Skill path {resolved} escapes workspace {workspace}")
 
-    # Set up HOME/.claude/skills -> superpowers/skills for Claude Code discovery
+    # Set up HOME/.claude with skills overlay but preserve auth from real HOME
     claude_dir = scenario_home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
+
+    # Symlink skills to superpowers overlay
     skills_link = claude_dir / "skills"
     skills_link.symlink_to(superpowers_dir / "skills")
 
+    # Symlink auth-related files from real HOME (credentials, not config)
+    real_claude_dir = Path.home() / ".claude"
+    if real_claude_dir.exists():
+        for auth_file in ["credentials.json", ".credentials.json", "settings.json"]:
+            src = real_claude_dir / auth_file
+            if src.exists():
+                dst = claude_dir / auth_file
+                if not dst.exists():
+                    dst.symlink_to(src)
+
     prompt = scenario.get("prompt", "").strip()
 
-    # ponytail: scrubbed env - only what claude needs, no host credentials
+    # scrubbed env - only what claude needs, no host credentials
+    # WARNING: ANTHROPIC_API_KEY is still passed. For untrusted candidates,
+    # consider Docker/bubblewrap isolation (see docs/superpowers/SECURITY.md)
     env = {
         "HOME": str(scenario_home),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -331,11 +357,26 @@ def _run_scenario(
         "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
     }
 
-    # ponytail: no --dangerously-skip-permissions by default
-    # caller can set SKILLOPT_UNSAFE=1 to enable for local testing only
+    # Permission handling for non-interactive execution:
+    # - Default: use --allowedTools to scope to scenario-relevant tools only
+    # - SKILLOPT_UNSAFE=1: blanket bypass (local testing with trusted candidates)
+    # - Future: Docker/bwrap sandbox for untrusted candidates
     cmd = ["claude", "-p", prompt]
+
     if os.environ.get("SKILLOPT_UNSAFE") == "1":
+        import warnings
+        warnings.warn(
+            "SKILLOPT_UNSAFE=1: Running with --dangerously-skip-permissions. "
+            "Do not use with untrusted candidate skills.",
+            stacklevel=2,
+        )
         cmd.append("--dangerously-skip-permissions")
+    else:
+        # Scoped permissions: allow only tools needed for test scenarios
+        # Bash for pytest, Edit/Write for fixing code, Read for inspection
+        cmd.extend([
+            "--allowedTools", "Bash,Edit,Write,Read",
+        ])
 
     t0 = time.time()
     try:
@@ -350,7 +391,7 @@ def _run_scenario(
         result.output = proc.stdout + proc.stderr
         result.latency_ms = (time.time() - t0) * 1000
 
-        # ponytail: fail-closed on non-zero exit
+        # fail-closed on non-zero exit
         if proc.returncode != 0:
             result.error = f"EXIT_{proc.returncode}"
             return result
@@ -369,10 +410,10 @@ def _run_scenario(
     # Estimate tokens (rough: ~4 chars per token)
     result.tokens = (len(prompt) + len(result.output)) // 4
 
-    # Score
+    # Score - pass project_dir for file-existence checks
     all_pass = True
     for check in scenario.get("judge", {}).get("checks", []):
-        check_pass = _score_check(check, result.output)
+        check_pass = _score_check(check, result.output, project_dir)
         result.checks.append({"description": check.get("description", ""), "passed": check_pass})
         if not check_pass:
             all_pass = False
@@ -406,11 +447,17 @@ class SuperpowersEvaluator:
 
         Clones superpowers at pinned_sha, overlays candidate skill into the temp
         copy so harness and judge see the same tree. Stops early if token_cap exceeded.
+
+        Raises:
+            FileNotFoundError: if candidate_skill_path is provided but doesn't exist
         """
         results = EvalResults(skill=self.skill, version=self.version)
         scenarios = _get_scenarios(self.skill)
 
         candidate_path = Path(candidate_skill_path) if candidate_skill_path else None
+        # fail explicitly if candidate path provided but missing
+        if candidate_path and not candidate_path.exists():
+            raise FileNotFoundError(f"Candidate skill not found: {candidate_skill_path}")
         candidate_hash = _hash_file(candidate_path) if candidate_path else ""
 
         with tempfile.TemporaryDirectory(prefix="skillopt-superpowers-") as tmpdir:
@@ -472,6 +519,7 @@ def evaluate_skill(
 
 if __name__ == "__main__":
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(description="Evaluate a Superpowers skill")
     parser.add_argument("--skill", default="verification-before-completion")
@@ -481,7 +529,15 @@ if __name__ == "__main__":
     parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
-    results = evaluate_skill(args.skill, args.candidate, scenario=args.scenario, pinned_sha=args.sha)
+
+    try:
+        results = evaluate_skill(args.skill, args.candidate, scenario=args.scenario, pinned_sha=args.sha)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # fail-closed - exit non-zero if any scenario has error
+    has_errors = any(s.get("error") for s in results["scenarios"])
 
     if args.json:
         print(json.dumps(results, indent=2))
@@ -491,4 +547,8 @@ if __name__ == "__main__":
         print(f"Passed: {results['passed']}/{results['passed'] + results['failed']}")
         for s in results["scenarios"]:
             status = "✓" if s["passed"] else "✗"
-            print(f"  {status} {s['id']}")
+            err = f" [{s['error']}]" if s.get("error") else ""
+            print(f"  {status} {s['id']}{err}")
+
+    if has_errors:
+        sys.exit(1)
