@@ -48,13 +48,17 @@ run_scenario() {
     # No || true - fail if runner errors
     python -m skillopt_sleep.adapters.superpowers "${args[@]}" > "$outfile"
 
-    # Sanitized summary for sharing: no raw output, no host paths, no secrets
+    # Best-effort sanitized summary for sharing: home dir, temp workspace paths
+    # and api-key-shaped tokens are redacted. Skim before sharing - it is a
+    # heuristic scrub, not a guarantee.
     python - "$outfile" "$OUTDIR/${name}.summary.txt" <<'PY'
 import json, os, re, sys
 data = json.load(open(sys.argv[1]))
 home = os.path.expanduser("~")
 def clean(t):
     t = t.replace(home, "~")
+    t = re.sub(r"/tmp/\S*skillopt\S*", "<workspace>", t)
+    t = re.sub(r"/(?:tmp|var)/\S*", "<path>", t)
     return re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "sk-REDACTED", t)
 lines = [
     f"skill={data['skill']} version={data['version']} pinned_sha={data['pinned_sha']}",

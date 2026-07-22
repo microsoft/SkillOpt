@@ -331,12 +331,19 @@ def _score_check(
     return False
 
 
-def _write_pytest_shims(bin_dir: Path, audit_log: Path) -> None:
-    """Install harness-owned `pytest`/`python` shims that log real invocations.
+def _write_pytest_shims(bin_dir: Path, audit_log: Path, nonce: str) -> None:
+    """Install `pytest`/`python` shims that log real invocations, tagged with a
+    per-run nonce the parent generated.
 
-    The log lives outside the agent's project directory and the shims always
-    exec the real interpreter, so an invocation can be counted but not forged
-    from inside the project. Same pattern as the tool shims in backend.py.
+    The shims always exec the real interpreter and count is derived from
+    nonce-tagged lines (no plain counter file to overwrite). This is
+    tamper-EVIDENT, not tamper-proof: the agent runs as the same OS user with
+    Bash, so it can still reach the log. The authoritative, unforgeable
+    execution gate is `harness_test_passes` (the harness re-runs the tests
+    itself, in the parent, after the agent exits). For untrusted candidates use
+    SKILLOPT_SANDBOX so the agent cannot reach the harness side at all.
+
+    POSIX only (bash shims), matching this adapter's reliance on `claude`/`git`.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     real_python = sys.executable
@@ -346,27 +353,31 @@ def _write_pytest_shims(bin_dir: Path, audit_log: Path) -> None:
         path.write_text(f"#!/usr/bin/env bash\n{body}")
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-    count = f'n=$(( $(cat "{audit_log}.count" 2>/dev/null || echo 0) + 1 )); ' \
-            f'echo "$n" > "{audit_log}.count"; ' \
-            f'echo "run $n: $*" >> "{audit_log}"; ' \
-            'export SKILLOPT_ATTEMPT="$n"; '
+    # attempt number = (nonce-tagged lines so far) + 1, stamped for flaky tests
+    rec = (
+        f'n=$(( $(grep -c "^{nonce} " "{audit_log}" 2>/dev/null || echo 0) + 1 )); '
+        f'printf "{nonce} run %s: %s\\n" "$n" "$*" >> "{audit_log}"; '
+        'export SKILLOPT_ATTEMPT="$n"; '
+    )
 
-    _install("pytest", f'{count}exec "{real_python}" -m pytest "$@"\n')
+    _install("pytest", f'{rec}exec "{real_python}" -m pytest "$@"\n')
     # `python -m pytest` must be counted too, otherwise it silently bypasses the shim
     for name in ("python", "python3"):
         _install(
             name,
             'if [[ " $* " == *" -m pytest "* ]]; then\n'
-            f'  {count}\n'
+            f'  {rec}\n'
             'fi\n'
             f'exec "{real_python}" "$@"\n',
         )
 
 
-def _pytest_run_count(audit_log: Path) -> int:
+def _pytest_run_count(audit_log: Path, nonce: str) -> int:
     try:
-        return int(Path(f"{audit_log}.count").read_text().strip())
-    except (OSError, ValueError):
+        return sum(
+            1 for ln in audit_log.read_text().splitlines() if ln.startswith(f"{nonce} ")
+        )
+    except OSError:
         return 0
 
 
@@ -427,6 +438,10 @@ def _run_scenario(
     """
     import time
 
+    if os.name != "posix":
+        # bash shims + claude/git shell-out are POSIX-only
+        raise RuntimeError("Superpowers adapter requires a POSIX host (bash).")
+
     sid = scenario["id"]
     result = ScenarioResult(
         id=sid, passed=False,
@@ -443,7 +458,8 @@ def _run_scenario(
     # (bwrap/docker mount HOME but not the bare workspace)
     audit_log = scenario_home / ".skillopt" / "pytest.log"
     bin_dir = scenario_home / ".skillopt" / "bin"
-    _write_pytest_shims(bin_dir, audit_log)
+    run_nonce = os.urandom(8).hex()
+    _write_pytest_shims(bin_dir, audit_log, run_nonce)
 
     # Write setup files
     for filename, content in scenario.get("setup", {}).get("files", {}).items():
@@ -478,6 +494,11 @@ def _run_scenario(
     # untrusted input to the agent, and Read/Bash are granted.
     host_auth = os.environ.get("SKILLOPT_HOST_AUTH") == "1"
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if host_auth and os.environ.get("SKILLOPT_SANDBOX"):
+        # host ~/.claude is not mounted into the sandbox, so the symlinks would
+        # dangle and auth would silently fail - refuse the combination
+        result.error = "HOST_AUTH_IN_SANDBOX_UNSUPPORTED"
+        return result
     if host_auth:
         import warnings
         warnings.warn(
@@ -564,7 +585,7 @@ def _run_scenario(
 
     # Harness-owned evidence, collected after the agent has exited
     result.evidence = {
-        "pytest_runs": _pytest_run_count(audit_log),
+        "pytest_runs": _pytest_run_count(audit_log, run_nonce),
         "bootstrap_loaded": marker in result.output,
         "candidate_hash": candidate_hash,
     }
@@ -614,6 +635,9 @@ class SuperpowersEvaluator:
         token_cap: int = 0,
     ):
         self.skill = skill
+        # NOTE: superpowers_version is a REPORTING LABEL only. The evaluated
+        # checkout is controlled solely by `pinned_sha` (--sha). Set both to
+        # matching values; changing version alone does not change what is run.
         self.version = superpowers_version
         self.timeout = timeout
         self.token_cap = token_cap  # 0 = no cap
@@ -634,6 +658,12 @@ class SuperpowersEvaluator:
         """
         results = EvalResults(skill=self.skill, version=self.version, pinned_sha=pinned_sha)
         scenarios = _get_scenarios(self.skill)
+
+        # fail explicitly on a typo'd --scenario rather than returning an empty
+        # (score=0.0) result that looks like a real evaluation
+        if scenario_filter and not any(s["id"] == scenario_filter for s in scenarios):
+            valid = ", ".join(s["id"] for s in scenarios)
+            raise ValueError(f"Unknown scenario '{scenario_filter}'. Valid: {valid}")
 
         candidate_path = Path(candidate_skill_path) if candidate_skill_path else None
         # fail explicitly if candidate path provided but missing
@@ -712,7 +742,13 @@ if __name__ == "__main__":
 
     try:
         results = evaluate_skill(args.skill, args.candidate, scenario=args.scenario, pinned_sha=args.sha)
-    except FileNotFoundError as e:
+    except subprocess.CalledProcessError as e:
+        # git init/fetch/checkout failure (bad SHA, no network, no git)
+        print(f"Error: git step failed ({' '.join(map(str, e.cmd))}): exit {e.returncode}",
+              file=sys.stderr)
+        sys.exit(1)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        # missing candidate/git/claude, unknown scenario, non-POSIX host
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

@@ -24,8 +24,12 @@ reach, the candidate can reach.
    `ANTHROPIC_API_KEY` are passed; the host environment is not inherited.
 4. **Isolated project and HOME** per scenario, inside a temp workspace.
 5. **OS-level sandbox**, opt-in via `SKILLOPT_SANDBOX=bwrap|docker`.
-6. **Harness-owned evidence.** Execution evidence (pytest invocation log,
-   post-run verification) lives outside the agent-writable project directory.
+6. **Execution evidence.** `harness_test_passes` re-runs the tests in the parent
+   process after the agent exits — this is unforgeable and is the authoritative
+   gate. `pytest_runs` (nonce-tagged invocation log) is tamper-**evident**, not
+   tamper-proof: an unsandboxed agent runs as the same OS user with `Bash` and
+   can reach the log, so treat the count as corroborating unless running under
+   `SKILLOPT_SANDBOX`.
 
 ## Known Limitations
 
@@ -33,7 +37,9 @@ reach, the candidate can reach.
   process. Use a scoped/disposable key, or run under `SKILLOPT_SANDBOX=docker`
   with a key injected per run.
 - **`SKILLOPT_HOST_AUTH=1` exposes host credentials** to the candidate. Trusted
-  candidates only.
+  candidates only. Combining it with `SKILLOPT_SANDBOX` is refused (the host
+  `~/.claude` is not mounted, so the symlinks would dangle) — use
+  `ANTHROPIC_API_KEY` inside the sandbox instead.
 - **`SKILLOPT_UNSAFE=1`** disables permission checks entirely. Trusted
   candidates only.
 - **No network isolation** in the default (unsandboxed) path.

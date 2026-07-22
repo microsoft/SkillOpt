@@ -197,21 +197,28 @@ class TestHarnessEvidence:
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Path(tmpdir)
             bin_dir, log = ws / "bin", ws / "pytest.log"
-            _write_pytest_shims(bin_dir, log)
+            _write_pytest_shims(bin_dir, log, "abc123")
             (ws / "test_ok.py").write_text("def test_ok():\n    assert True\n")
 
             env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
             subprocess.run(["pytest", "-q"], cwd=ws, env=env, capture_output=True)
-            assert _pytest_run_count(log) == 1
+            assert _pytest_run_count(log, "abc123") == 1
             subprocess.run(["python", "-m", "pytest", "-q"], cwd=ws, env=env, capture_output=True)
-            assert _pytest_run_count(log) == 2
+            assert _pytest_run_count(log, "abc123") == 2
+
+    def test_count_is_nonce_scoped(self):
+        """Lines not bearing the run's nonce (e.g. forged with a stale one) don't count."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log = Path(tmpdir) / "pytest.log"
+            log.write_text("stale run 1: x\nstale run 2: y\n")
+            assert _pytest_run_count(log, "freshnonce") == 0
 
     def test_shim_stamps_attempt_number(self):
         """SKILLOPT_ATTEMPT is set by the shim, so the flaky test can't be faked."""
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Path(tmpdir)
             bin_dir, log = ws / "bin", ws / "pytest.log"
-            _write_pytest_shims(bin_dir, log)
+            _write_pytest_shims(bin_dir, log, "abc123")
             flaky = next(s for s in VERIFICATION_SCENARIOS if s["id"] == "flaky-verify-rerun")
             (ws / "test_flaky.py").write_text(flaky["setup"]["files"]["test_flaky.py"])
 
@@ -476,6 +483,22 @@ class TestIsolation:
             assert result.passed is False
             mock_run.assert_not_called()
 
+    def test_host_auth_in_sandbox_fails_closed(self, monkeypatch):
+        """Host-auth symlinks dangle inside a sandbox - refuse the combination."""
+        monkeypatch.setenv("SKILLOPT_HOST_AUTH", "1")
+        monkeypatch.setenv("SKILLOPT_SANDBOX", "bwrap")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = self._superpowers(workspace)
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                result = _run_scenario(
+                    scenario, superpowers_dir=superpowers_dir, skill_name="s",
+                    skill_overlay=None, workspace=workspace,
+                )
+            assert result.error == "HOST_AUTH_IN_SANDBOX_UNSUPPORTED"
+            mock_run.assert_not_called()
+
     def test_sandbox_prefix_applied(self, monkeypatch):
         monkeypatch.setenv("SKILLOPT_SANDBOX", "bwrap")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -496,6 +519,13 @@ class TestCLIFailClosed:
         evaluator = SuperpowersEvaluator()
         with pytest.raises(FileNotFoundError, match="Candidate skill not found"):
             evaluator.evaluate(candidate_skill_path="/nonexistent/path/SKILL.md")
+
+    def test_unknown_scenario_filter_raises(self):
+        """A typo'd --scenario must error, not return an empty score=0 result."""
+        from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
+
+        with pytest.raises(ValueError, match="Unknown scenario"):
+            SuperpowersEvaluator().evaluate(scenario_filter="does-not-exist")
 
     def test_results_carry_pinned_sha(self):
         """Provenance: reports must record the SHA actually run, not just the tag."""
