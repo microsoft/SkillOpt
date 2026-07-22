@@ -7,10 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import re as _re
+
 from skillopt_sleep.adapters.superpowers import (
     VERIFICATION_SCENARIOS,
     _get_scenarios,
-    _load_marker,
     _pytest_run_count,
     _run_scenario,
     _score_check,
@@ -28,11 +29,17 @@ def _fake_auth(monkeypatch):
     monkeypatch.delenv("SKILLOPT_UNSAFE", raising=False)
 
 
-def _marked(scenario_id="test", sha="", extra="ok"):
-    """Mocked agent output that echoes the bootstrap load marker."""
-    from skillopt_sleep.adapters.superpowers import DEFAULT_SHA
-
-    return f"{extra}\n{_load_marker(sha or DEFAULT_SHA, scenario_id)}"
+def _echo_marker(superpowers_dir, extra="ok"):
+    """subprocess.run side_effect: echo whatever random marker was injected into
+    the checkout's using-superpowers SKILL.md (simulates a bootstrap load)."""
+    def _side_effect(cmd, *a, **k):
+        bootstrap = superpowers_dir / "skills" / "using-superpowers" / "SKILL.md"
+        marker = ""
+        if bootstrap.exists():
+            m = _re.search(r"SPLOAD-[0-9a-f]+", bootstrap.read_text())
+            marker = m.group(0) if m else ""
+        return MagicMock(returncode=0, stdout=f"{extra}\n{marker}", stderr="")
+    return _side_effect
 
 
 def test_scenarios_exist():
@@ -252,7 +259,7 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 _run_scenario(
                     scenario,
                     superpowers_dir=superpowers_dir,
@@ -274,7 +281,7 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 _run_scenario(
                     scenario,
                     superpowers_dir=superpowers_dir,
@@ -296,7 +303,7 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hello there", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 _run_scenario(
                     scenario, superpowers_dir=superpowers_dir, skill_name="s",
                     skill_overlay=None, workspace=workspace,
@@ -331,14 +338,15 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 result = _run_scenario(
                     scenario, superpowers_dir=superpowers_dir, skill_name="s",
                     skill_overlay=None, workspace=workspace,
                 )
 
             bootstrap = (superpowers_dir / "skills" / "using-superpowers" / "SKILL.md").read_text()
-            assert _load_marker(result.pinned_sha, "test") in bootstrap
+            assert _re.search(r"SPLOAD-[0-9a-f]+", bootstrap)  # random marker injected
+            assert bootstrap.count("## Session marker") == 1
             assert result.evidence["bootstrap_loaded"] is True
 
     def test_marker_injection_is_idempotent(self):
@@ -349,7 +357,7 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 for _ in range(3):
                     _run_scenario(
                         scenario, superpowers_dir=superpowers_dir, skill_name="s",
@@ -367,7 +375,7 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 _run_scenario(
                     scenario, superpowers_dir=superpowers_dir, skill_name="s",
                     skill_overlay=None, workspace=workspace,
@@ -423,7 +431,7 @@ class TestOverlayIntegration:
             scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 _run_scenario(
                     scenario, superpowers_dir=superpowers_dir, skill_name="test-skill",
                     skill_overlay=candidate, workspace=workspace,
@@ -444,7 +452,7 @@ class TestIsolation:
         superpowers_dir = self._superpowers(workspace)
         scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
         with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+            mock_run.side_effect = _echo_marker(superpowers_dir)
             result = _run_scenario(
                 scenario, superpowers_dir=superpowers_dir, skill_name="s",
                 skill_overlay=None, workspace=workspace,
@@ -467,6 +475,40 @@ class TestIsolation:
             env = mock_run.call_args.kwargs["env"]
             assert "SECRET_TOKEN" not in env
             assert env["HOME"] == str(workspace / "home-test")
+
+    def test_path_is_minimal_by_default(self, monkeypatch):
+        """Host PATH is not inherited unless SKILLOPT_INHERIT_PATH=1."""
+        monkeypatch.setenv("PATH", f"/opt/hostonly/bin{os.pathsep}/usr/bin")
+        monkeypatch.delenv("SKILLOPT_INHERIT_PATH", raising=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _, mock_run = self._run(workspace)
+            path = mock_run.call_args.kwargs["env"]["PATH"]
+            assert "/opt/hostonly/bin" not in path
+            assert ".skillopt" in path  # shim dir still present
+            assert "/usr/bin" in path
+
+    def test_path_inherit_opt_in(self, monkeypatch):
+        monkeypatch.setenv("PATH", f"/opt/hostonly/bin{os.pathsep}/usr/bin")
+        monkeypatch.setenv("SKILLOPT_INHERIT_PATH", "1")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _, mock_run = self._run(workspace)
+            assert "/opt/hostonly/bin" in mock_run.call_args.kwargs["env"]["PATH"]
+
+    def test_skill_name_traversal_rejected(self):
+        """A skill_name with path separators must not redirect the overlay write."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = self._superpowers(workspace)
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+            for bad in ("../evil", "a/b", ".."):
+                with patch("skillopt_sleep.adapters.superpowers.subprocess.run"):
+                    with pytest.raises(ValueError, match="Invalid skill name"):
+                        _run_scenario(
+                            scenario, superpowers_dir=superpowers_dir, skill_name=bad,
+                            skill_overlay=None, workspace=workspace,
+                        )
 
     def test_fails_closed_without_auth(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -506,7 +548,7 @@ class TestIsolation:
             _, mock_run = self._run(workspace)
             cmd = mock_run.call_args[0][0]
             assert cmd[0] == "bwrap"
-            assert "claude" in cmd
+            assert any("claude" in str(c) for c in cmd)
 
 
 class TestCLIFailClosed:
@@ -550,7 +592,7 @@ class TestPermissionModes:
             superpowers_dir, scenario = self._setup(workspace)
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 _run_scenario(
                     scenario, superpowers_dir=superpowers_dir, skill_name="test-skill",
                     skill_overlay=None, workspace=workspace,
@@ -568,7 +610,7 @@ class TestPermissionModes:
             superpowers_dir, scenario = self._setup(workspace)
 
             with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                mock_run.side_effect = _echo_marker(superpowers_dir)
                 import warnings
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")

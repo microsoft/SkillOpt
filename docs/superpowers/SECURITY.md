@@ -21,7 +21,10 @@ reach, the candidate can reach.
 2. **Fail closed.** With neither `ANTHROPIC_API_KEY` nor `SKILLOPT_HOST_AUTH=1`,
    the scenario errors (`NO_AUTH`) instead of running unauthenticated.
 3. **Scrubbed environment.** Only `HOME`, `PATH`, `TERM`, `LANG` and (if set)
-   `ANTHROPIC_API_KEY` are passed; the host environment is not inherited.
+   `ANTHROPIC_API_KEY` are passed; the host environment is not inherited. `PATH`
+   is minimal by default (shim dir + `/usr/bin:/bin`); opt in to the host `PATH`
+   with `SKILLOPT_INHERIT_PATH=1`. Note this is convenience/hygiene, not a
+   boundary — a `Bash`-holding agent can still call absolute paths.
 4. **Isolated project and HOME** per scenario, inside a temp workspace.
 5. **OS-level sandbox**, opt-in via `SKILLOPT_SANDBOX=bwrap|docker`.
 6. **Execution evidence.** `harness_test_passes` re-runs the tests in the parent

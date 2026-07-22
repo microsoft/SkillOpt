@@ -56,14 +56,18 @@ def _seed(pinned_sha: str, scenario_id: str) -> int:
     return int(digest[:8], 16)
 
 
-def _load_marker(pinned_sha: str, scenario_id: str) -> str:
-    """Nonce the agent can only emit if the bootstrap actually loaded.
+def _new_marker() -> str:
+    """Per-run random marker injected into the checkout's using-superpowers
+    SKILL.md.
 
-    Injected into the temp checkout's using-superpowers SKILL.md, which the
-    SessionStart hook reads and injects into the session. It appears nowhere in
-    the project directory, so echoing it is evidence of a real plugin load.
+    It is random (unpredictable offline), so a candidate cannot precompute and
+    echo it from outside the run. Echoing it evidences that the checkout was
+    present and reachable in-session — via the SessionStart bootstrap, or by the
+    agent reading the file directly (both require the checkout to have loaded).
+    It is corroborating, not a hard proof the hook fired; the unforgeable
+    correctness gate remains `harness_test_passes`.
     """
-    return f"SPLOAD-{_seed(pinned_sha, scenario_id):08x}"
+    return f"SPLOAD-{os.urandom(8).hex()}"
 
 
 # Embedded scenarios for verification-before-completion skill.
@@ -465,19 +469,23 @@ def _run_scenario(
     for filename, content in scenario.get("setup", {}).get("files", {}).items():
         (project_dir / filename).write_text(content)
 
+    # skill_name becomes a path segment - reject traversal/separators up front
+    if skill_name in ("", ".", "..") or "/" in skill_name or "\\" in skill_name:
+        raise ValueError(f"Invalid skill name: {skill_name!r}")
+
     # Overlay candidate skill into temp superpowers copy at correct path
     if skill_overlay and skill_overlay.exists():
         skill_dest = superpowers_dir / "skills" / skill_name / "SKILL.md"
         skill_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(skill_overlay, skill_dest)
 
-        # sanity check - resolved path must be under workspace
+        # defense in depth - resolved path must still be under workspace
         resolved = skill_dest.resolve()
         if not resolved.is_relative_to(workspace):
             raise ValueError(f"Skill path {resolved} escapes workspace {workspace}")
 
-    # Load marker: only reachable through the SessionStart bootstrap
-    marker = _load_marker(pinned_sha, sid)
+    # Per-run random marker (see _new_marker)
+    marker = _new_marker()
     bootstrap_skill = superpowers_dir / "skills" / "using-superpowers" / "SKILL.md"
     if bootstrap_skill.exists():
         # checkout is reused across scenarios - strip any prior marker block first
@@ -516,10 +524,17 @@ def _run_scenario(
         result.error = "NO_AUTH"
         return result
 
-    # scrubbed env - only what claude needs, no host credentials
+    # Minimal PATH by default: shim dir + standard system dirs only, so the
+    # agent doesn't inherit host-specific tooling. Opt in to the full host PATH
+    # with SKILLOPT_INHERIT_PATH=1. (Not a hard boundary - a Bash-holding agent
+    # can still invoke absolute paths; real confinement is SKILLOPT_SANDBOX.)
+    if os.environ.get("SKILLOPT_INHERIT_PATH") == "1":
+        base_path = os.environ.get("PATH", "/usr/bin:/bin")
+    else:
+        base_path = "/usr/bin:/bin"
     env = {
         "HOME": str(scenario_home),
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "PATH": f"{bin_dir}{os.pathsep}{base_path}",
         "TERM": os.environ.get("TERM", "xterm"),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
     }
@@ -530,8 +545,10 @@ def _run_scenario(
 
     # Prompt on stdin + text output, matching backend.py's Claude CLI usage.
     # (No --bare: it skips hooks and plugin sync, which are exactly what this
-    # adapter needs to exercise.)
-    cmd = ["claude", "-p", "--output-format", "text", "--plugin-dir", str(superpowers_dir)]
+    # adapter needs to exercise.) Resolve claude to an absolute path so it's
+    # found even under the minimal PATH above.
+    claude_bin = shutil.which("claude") or "claude"
+    cmd = [claude_bin, "-p", "--output-format", "text", "--plugin-dir", str(superpowers_dir)]
 
     # Permission handling for non-interactive execution:
     # - Default: --allowedTools scopes tools; this is NOT an isolation boundary
