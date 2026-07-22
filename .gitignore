@@ -65,3 +65,5 @@ tests/run_*.sh
 tests/launch_*.py
 *.launch.log
 uv.lock
+# Superpowers smoke runs: raw agent output + local paths, share sanitized excerpts instead
+smoke_results/

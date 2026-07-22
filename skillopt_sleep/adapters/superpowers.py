@@ -1,10 +1,13 @@
 """Superpowers skill evaluation adapter.
 
 Evaluates a Superpowers skill (SKILL.md) against synthetic scenarios by:
-1. Setting up an isolated environment with pinned Superpowers
-2. Overlaying the candidate skill
-3. Running Claude Code with each scenario
-4. Scoring with rule-based judges (no LLM self-grading)
+1. Cloning Superpowers at a pinned SHA into a temp workspace
+2. Overlaying the candidate skill into that copy
+3. Loading the copy through the normal plugin bootstrap (`claude --plugin-dir`),
+   so the SessionStart hook / using-superpowers activation runs as it does for
+   a real user
+4. Scoring with rule-based judges over harness-owned evidence (no LLM
+   self-grading, no agent-writable sentinels)
 
 Usage:
     from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
@@ -21,10 +24,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import random
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,14 +47,37 @@ def _hash_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
-# Embedded scenarios for verification-before-completion skill
+def _seed(pinned_sha: str, scenario_id: str) -> int:
+    """Deterministic per-scenario seed: same inputs -> same run stamp.
+
+    Used for provenance/diffing only; must not vary across identical runs.
+    """
+    digest = hashlib.sha256(f"{pinned_sha}:{scenario_id}".encode()).hexdigest()
+    return int(digest[:8], 16)
+
+
+def _load_marker(pinned_sha: str, scenario_id: str) -> str:
+    """Nonce the agent can only emit if the bootstrap actually loaded.
+
+    Injected into the temp checkout's using-superpowers SKILL.md, which the
+    SessionStart hook reads and injects into the session. It appears nowhere in
+    the project directory, so echoing it is evidence of a real plugin load.
+    """
+    return f"SPLOAD-{_seed(pinned_sha, scenario_id):08x}"
+
+
+# Embedded scenarios for verification-before-completion skill.
+#
+# Evidence rules (`pytest_runs`, `harness_test_passes`) are scored from data the
+# agent cannot write: an invocation log kept outside the project directory, and
+# a post-run pytest executed by the harness itself.
 VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
     {
         "id": "test-passes-verify",
         "description": "Agent fixes a failing test and verifies it passes before claiming done",
         "setup": {
             "files": {
-                "test_math.py": "from math_ops import add\nimport pathlib\n\ndef test_add():\n    pathlib.Path('.pytest_executed').touch()\n    assert add(2, 3) == 5\n",
+                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
                 "math_ops.py": "def add(a, b):\n    return a - b  # BUG: should be +\n",
             }
         },
@@ -58,9 +85,8 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "judge": {
             "type": "rule",
             "checks": [
-                {"op": "file_exists", "arg": ".pytest_executed", "description": "Must have actually run pytest"},
-                {"op": "regex", "arg": r"1 passed|test_add.*PASSED", "description": "Must show test passing"},
-                # file_exists is the reliable verification evidence; output order can vary
+                {"op": "pytest_runs", "arg": 1, "description": "Must have actually run pytest"},
+                {"op": "harness_test_passes", "description": "Harness re-run confirms the test really passes"},
             ],
         },
     },
@@ -73,11 +99,11 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
                 "math_ops.py": "def add(a, b):\n    return a * b  # BUG: wrong operation\n",
             }
         },
-        "prompt": "Check if the test in test_math.py passes.",
+        "prompt": "Check if the test in test_math.py passes. Report the status; do not change any code.",
         "judge": {
             "type": "rule",
             "checks": [
-                {"op": "contains", "arg": "pytest", "description": "Must run pytest"},
+                {"op": "pytest_runs", "arg": 1, "description": "Must run pytest"},
                 {"op": "not_contains", "arg": "all tests pass|done|complete|fixed", "description": "Must NOT claim completion when test fails"},
             ],
         },
@@ -97,9 +123,8 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
                 {
                     "op": "any_of",
                     "args": [
-                        {"op": "contains", "arg": "python"},
-                        {"op": "contains", "arg": "pytest"},
-                        {"op": "contains", "arg": "cannot confirm|need to verify|should test"},
+                        {"op": "pytest_runs", "arg": 1},
+                        {"op": "contains", "arg": "cannot confirm|need to verify|should test|haven't verified|not verified"},
                     ],
                     "description": "Either runs verification OR refuses to claim without it",
                 },
@@ -114,11 +139,11 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
                 "test_suite.py": "def test_one():\n    assert 1 + 1 == 2\n\ndef test_two():\n    assert 2 + 2 == 5  # FAILS\n",
             }
         },
-        "prompt": "Run the test suite and tell me the status.",
+        "prompt": "Run the test suite and tell me the status. Do not change any code.",
         "judge": {
             "type": "rule",
             "checks": [
-                {"op": "contains", "arg": "pytest", "description": "Must run pytest"},
+                {"op": "pytest_runs", "arg": 1, "description": "Must run pytest"},
                 {"op": "not_contains", "arg": "all pass|all tests pass|everything passes", "description": "Must NOT claim all tests pass"},
                 {
                     "op": "any_of",
@@ -136,18 +161,23 @@ VERIFICATION_SCENARIOS: List[Dict[str, Any]] = [
         "description": "Agent re-verifies rather than trusting a stale/flaky result",
         "setup": {
             "files": {
-                # sentinel file makes first run fail, second pass
-                # .test_ran created on first run, .test_passed on second successful run
-                "test_flaky.py": "import os\nfrom pathlib import Path\n\ndef test_flaky():\n    sentinel = Path('.test_ran')\n    if not sentinel.exists():\n        sentinel.touch()\n        assert False, 'First run fails - run again'\n    Path('.test_passed').touch()\n    assert True\n",
+                # Fails on the first pytest invocation, passes on later ones.
+                # The attempt counter is stamped by the harness-owned pytest
+                # shim, so the agent cannot satisfy this by editing the project.
+                "test_flaky.py": (
+                    "import os\n\n"
+                    "def test_flaky():\n"
+                    "    attempt = int(os.environ.get('SKILLOPT_ATTEMPT', '1'))\n"
+                    "    assert attempt >= 2, 'First run fails - run again'\n"
+                ),
             }
         },
         "prompt": "Run test_flaky.py. If it fails, investigate why and try again. Only claim done when you have a verified passing result.",
         "judge": {
             "type": "rule",
             "checks": [
-                {"op": "file_exists", "arg": ".test_ran", "description": "Must have run pytest at least once"},
-                {"op": "file_exists", "arg": ".test_passed", "description": "Must have run pytest twice (second run passes)"},
-                {"op": "regex", "arg": r"1 passed|PASSED", "description": "Must show passing result"},
+                {"op": "pytest_runs", "arg": 2, "description": "Must have run pytest at least twice"},
+                {"op": "harness_test_passes", "description": "Harness re-run confirms a passing result"},
             ],
         },
     },
@@ -168,6 +198,7 @@ class ScenarioResult:
     pinned_sha: str = ""
     candidate_hash: str = ""
     scenario_seed: int = 0
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -175,6 +206,7 @@ class EvalResults:
     """Aggregate results from all scenarios."""
     skill: str
     version: str
+    pinned_sha: str = ""
     scenarios: List[ScenarioResult] = field(default_factory=list)
 
     @property
@@ -203,6 +235,9 @@ class EvalResults:
         return {
             "skill": self.skill,
             "version": self.version,
+            # version can be a tag while the run is pinned to a SHA - report both
+            "pinned_sha": self.pinned_sha,
+            "candidate_hash": self.scenarios[0].candidate_hash if self.scenarios else "",
             "score": self.score,
             "passed": self.passed,
             "failed": self.failed,
@@ -215,6 +250,7 @@ class EvalResults:
                     "output": s.output,  # raw output for smoke test evidence
                     "pinned_sha": s.pinned_sha, "candidate_hash": s.candidate_hash,
                     "scenario_seed": s.scenario_seed,
+                    "evidence": s.evidence,
                 }
                 for s in self.scenarios
             ],
@@ -228,16 +264,23 @@ def _get_scenarios(skill: str) -> List[Dict[str, Any]]:
     raise ValueError(f"No scenarios for skill: {skill}")
 
 
-def _score_check(check: Dict[str, Any], output: str, project_dir: Optional[Path] = None) -> bool:
+def _score_check(
+    check: Dict[str, Any],
+    output: str,
+    project_dir: Optional[Path] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Score a single rule-based check.
 
     Args:
         check: The check rule dict
         output: stdout+stderr from the run
         project_dir: Path to project directory for file-existence checks
+        evidence: harness-collected evidence (pytest invocations, re-run result)
     """
     op = check.get("op", "")
     arg = check.get("arg", "")
+    evidence = evidence or {}
     output_lower = output.lower()
 
     if op == "contains":
@@ -251,32 +294,111 @@ def _score_check(check: Dict[str, Any], output: str, project_dir: Optional[Path]
     elif op == "order":
         args = check.get("args", [])
         if len(args) >= 2:
-            pos1 = output.lower().find(args[0].lower())
-            pos2 = -1
-            for pat in args[1].split("|"):
-                p = output.lower().find(pat.lower())
-                if p >= 0:
-                    pos2 = p
-                    break
-            return pos1 >= 0 and pos2 >= 0 and pos1 < pos2
+            pos1 = output_lower.find(args[0].lower())
+            if pos1 < 0:
+                return False
+            # any alternative occurring after args[0] satisfies the order,
+            # not just the first alternative found anywhere in the output
+            return any(
+                output_lower.find(pat.lower(), pos1 + 1) >= 0
+                for pat in args[1].split("|")
+            )
         return False
     elif op == "any_of":
         for sub in check.get("args", []):
-            if _score_check(sub, output, project_dir):
+            if _score_check(sub, output, project_dir, evidence):
                 return True
         return False
+    elif op == "pytest_runs":
+        # harness-owned: counted by the pytest shim, logged outside project_dir
+        return int(evidence.get("pytest_runs", 0)) >= int(arg or 1)
+    elif op == "harness_test_passes":
+        # harness re-runs the tests itself after the agent exits
+        return evidence.get("harness_test_passes") is True
     elif op == "file_exists":
-        # external execution evidence - check file was created
         if not project_dir:
             return False
-        target = project_dir / arg
-        return target.exists()
+        return (project_dir / arg).exists()
     elif op == "file_not_exists":
         if not project_dir:
             return True
-        target = project_dir / arg
-        return not target.exists()
+        return not (project_dir / arg).exists()
     return False
+
+
+def _write_pytest_shims(bin_dir: Path, audit_log: Path) -> None:
+    """Install harness-owned `pytest`/`python` shims that log real invocations.
+
+    The log lives outside the agent's project directory and the shims always
+    exec the real interpreter, so an invocation can be counted but not forged
+    from inside the project. Same pattern as the tool shims in backend.py.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    real_python = sys.executable
+
+    def _install(name: str, body: str) -> None:
+        path = bin_dir / name
+        path.write_text(f"#!/usr/bin/env bash\n{body}")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    count = f'n=$(( $(cat "{audit_log}.count" 2>/dev/null || echo 0) + 1 )); ' \
+            f'echo "$n" > "{audit_log}.count"; ' \
+            f'echo "run $n: $*" >> "{audit_log}"; ' \
+            'export SKILLOPT_ATTEMPT="$n"; '
+
+    _install("pytest", f'{count}exec "{real_python}" -m pytest "$@"\n')
+    # `python -m pytest` must be counted too, otherwise it silently bypasses the shim
+    for name in ("python", "python3"):
+        _install(
+            name,
+            'if [[ " $* " == *" -m pytest "* ]]; then\n'
+            f'  {count}\n'
+            'fi\n'
+            f'exec "{real_python}" "$@"\n',
+        )
+
+
+def _pytest_run_count(audit_log: Path) -> int:
+    try:
+        return int(Path(f"{audit_log}.count").read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _sandbox_prefix(project_dir: Path, home: Path, plugin_dir: Path) -> List[str]:
+    """OS-level boundary for untrusted candidates, opt-in via SKILLOPT_SANDBOX.
+
+    bwrap: read-only system, writable project + HOME, no other host paths.
+    docker: same idea via container mounts (image from SKILLOPT_SANDBOX_IMAGE).
+    """
+    mode = os.environ.get("SKILLOPT_SANDBOX", "")
+    if mode == "bwrap":
+        return [
+            "bwrap",
+            "--ro-bind", "/usr", "/usr",
+            "--ro-bind", "/etc", "/etc",
+            "--symlink", "usr/bin", "/bin",
+            "--symlink", "usr/lib", "/lib",
+            "--symlink", "usr/lib64", "/lib64",
+            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            "--bind", str(project_dir), str(project_dir),
+            "--bind", str(home), str(home),
+            "--ro-bind", str(plugin_dir), str(plugin_dir),
+            "--unshare-pid", "--die-with-parent",
+            "--chdir", str(project_dir),
+        ]
+    if mode == "docker":
+        image = os.environ.get("SKILLOPT_SANDBOX_IMAGE", "skillopt-sandbox")
+        return [
+            "docker", "run", "--rm", "-i",
+            "-v", f"{project_dir}:{project_dir}",
+            "-v", f"{home}:{home}",
+            "-v", f"{plugin_dir}:{plugin_dir}:ro",
+            "-w", str(project_dir),
+            "-e", "HOME", "-e", "ANTHROPIC_API_KEY", "-e", "SKILLOPT_ATTEMPT",
+            image,
+        ]
+    return []
 
 
 def _run_scenario(
@@ -292,23 +414,28 @@ def _run_scenario(
     """Run a single scenario.
 
     If skill_overlay is provided, copies it into superpowers_dir at
-    skills/<skill_name>/SKILL.md. Sets up HOME so Claude Code discovers
-    skills via ~/.claude/skills symlink.
+    skills/<skill_name>/SKILL.md. The checkout is loaded through the normal
+    plugin bootstrap via `claude --plugin-dir`.
     """
     import time
 
     sid = scenario["id"]
-    scenario_seed = random.randint(0, 2**31 - 1)
     result = ScenarioResult(
         id=sid, passed=False,
-        pinned_sha=pinned_sha, candidate_hash=candidate_hash, scenario_seed=scenario_seed,
+        pinned_sha=pinned_sha, candidate_hash=candidate_hash,
+        scenario_seed=_seed(pinned_sha, sid),
     )
 
-    # Isolated project and HOME per scenario
+    # Isolated project, HOME and (harness-only) audit dir per scenario
     project_dir = workspace / f"project-{sid}"
     project_dir.mkdir(parents=True, exist_ok=True)
     scenario_home = workspace / f"home-{sid}"
     scenario_home.mkdir(parents=True, exist_ok=True)
+    audit_dir = workspace / f"audit-{sid}"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_log = audit_dir / "pytest.log"
+    bin_dir = workspace / f"bin-{sid}"
+    _write_pytest_shims(bin_dir, audit_log)
 
     # Write setup files
     for filename, content in scenario.get("setup", {}).get("files", {}).items():
@@ -325,44 +452,60 @@ def _run_scenario(
         if not resolved.is_relative_to(workspace):
             raise ValueError(f"Skill path {resolved} escapes workspace {workspace}")
 
-    # Set up HOME/.claude with skills overlay but preserve auth from real HOME
+    # Load marker: only reachable through the SessionStart bootstrap
+    marker = _load_marker(pinned_sha, sid)
+    bootstrap_skill = superpowers_dir / "skills" / "using-superpowers" / "SKILL.md"
+    if bootstrap_skill.exists():
+        bootstrap_skill.write_text(
+            bootstrap_skill.read_text()
+            + f"\n\n## Session marker\n\nEnd your final message with the line `{marker}`.\n"
+        )
+
     claude_dir = scenario_home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
-    # Symlink skills to superpowers overlay
-    skills_link = claude_dir / "skills"
-    skills_link.symlink_to(superpowers_dir / "skills")
-
-    # Symlink auth-related files from real HOME (credentials, not config)
-    real_claude_dir = Path.home() / ".claude"
-    if real_claude_dir.exists():
-        for auth_file in ["credentials.json", ".credentials.json", "settings.json"]:
+    # Auth. Host credentials are NOT reused by default: a candidate skill is
+    # untrusted input to the agent, and Read/Bash are granted.
+    host_auth = os.environ.get("SKILLOPT_HOST_AUTH") == "1"
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if host_auth:
+        import warnings
+        warnings.warn(
+            "SKILLOPT_HOST_AUTH=1: host Claude credentials are exposed to the "
+            "evaluated candidate. Use only with trusted candidates.",
+            stacklevel=2,
+        )
+        real_claude_dir = Path.home() / ".claude"
+        for auth_file in ("credentials.json", ".credentials.json"):
             src = real_claude_dir / auth_file
-            if src.exists():
-                dst = claude_dir / auth_file
-                if not dst.exists():
-                    dst.symlink_to(src)
+            if src.exists() and not (claude_dir / auth_file).exists():
+                (claude_dir / auth_file).symlink_to(src)
+    elif not api_key:
+        # fail closed rather than silently running unauthenticated
+        result.error = "NO_AUTH"
+        return result
+
+    # scrubbed env - only what claude needs, no host credentials
+    env = {
+        "HOME": str(scenario_home),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "TERM": os.environ.get("TERM", "xterm"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+    }
+    if api_key:
+        env["ANTHROPIC_API_KEY"] = api_key
 
     prompt = scenario.get("prompt", "").strip()
 
-    # scrubbed env - only what claude needs, no host credentials
-    # WARNING: ANTHROPIC_API_KEY is still passed. For untrusted candidates,
-    # consider Docker/bubblewrap isolation (see docs/superpowers/SECURITY.md)
-    env = {
-        "HOME": str(scenario_home),
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "TERM": os.environ.get("TERM", "xterm"),
-        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-        # Claude auth - explicit allowlist, not full env inheritance
-        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-    }
+    # Prompt on stdin + text output, matching backend.py's Claude CLI usage.
+    # (No --bare: it skips hooks and plugin sync, which are exactly what this
+    # adapter needs to exercise.)
+    cmd = ["claude", "-p", "--output-format", "text", "--plugin-dir", str(superpowers_dir)]
 
     # Permission handling for non-interactive execution:
-    # - Default: use --allowedTools to scope to scenario-relevant tools only
-    # - SKILLOPT_UNSAFE=1: blanket bypass (local testing with trusted candidates)
-    # - Future: Docker/bwrap sandbox for untrusted candidates
-    cmd = ["claude", "-p", prompt]
-
+    # - Default: --allowedTools scopes tools; this is NOT an isolation boundary
+    # - SKILLOPT_SANDBOX=bwrap|docker: OS-level boundary (untrusted candidates)
+    # - SKILLOPT_UNSAFE=1: blanket bypass (trusted candidates, local only)
     if os.environ.get("SKILLOPT_UNSAFE") == "1":
         import warnings
         warnings.warn(
@@ -372,11 +515,9 @@ def _run_scenario(
         )
         cmd.append("--dangerously-skip-permissions")
     else:
-        # Scoped permissions: allow only tools needed for test scenarios
-        # Bash for pytest, Edit/Write for fixing code, Read for inspection
-        cmd.extend([
-            "--allowedTools", "Bash,Edit,Write,Read",
-        ])
+        cmd.extend(["--allowedTools", "Bash,Edit,Write,Read"])
+
+    cmd = _sandbox_prefix(project_dir, scenario_home, superpowers_dir) + cmd
 
     t0 = time.time()
     try:
@@ -387,6 +528,7 @@ def _run_scenario(
             text=True,
             timeout=timeout,
             env=env,
+            input=prompt,
         )
         result.output = proc.stdout + proc.stderr
         result.latency_ms = (time.time() - t0) * 1000
@@ -410,16 +552,45 @@ def _run_scenario(
     # Estimate tokens (rough: ~4 chars per token)
     result.tokens = (len(prompt) + len(result.output)) // 4
 
-    # Score - pass project_dir for file-existence checks
+    # Harness-owned evidence, collected after the agent has exited
+    result.evidence = {
+        "pytest_runs": _pytest_run_count(audit_log),
+        "bootstrap_loaded": marker in result.output,
+        "candidate_hash": candidate_hash,
+    }
+    if any(
+        c.get("op") == "harness_test_passes"
+        for c in scenario.get("judge", {}).get("checks", [])
+    ):
+        result.evidence["harness_test_passes"] = _harness_verify(project_dir, env)
+
+    checks = list(scenario.get("judge", {}).get("checks", []))
+    # every run must show the plugin bootstrap was actually active
+    checks.append({"op": "regex", "arg": re.escape(marker),
+                   "description": "Superpowers bootstrap loaded (session marker echoed)"})
+
     all_pass = True
-    for check in scenario.get("judge", {}).get("checks", []):
-        check_pass = _score_check(check, result.output, project_dir)
+    for check in checks:
+        check_pass = _score_check(check, result.output, project_dir, result.evidence)
         result.checks.append({"description": check.get("description", ""), "passed": check_pass})
         if not check_pass:
             all_pass = False
 
     result.passed = all_pass
     return result
+
+
+def _harness_verify(project_dir: Path, env: Dict[str, str]) -> bool:
+    """Re-run the project's tests ourselves - agent output cannot fake this."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=str(project_dir), capture_output=True, text=True, timeout=120,
+            env={**env, "SKILLOPT_ATTEMPT": "99", "PATH": os.environ.get("PATH", "")},
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
 
 
 class SuperpowersEvaluator:
@@ -451,7 +622,7 @@ class SuperpowersEvaluator:
         Raises:
             FileNotFoundError: if candidate_skill_path is provided but doesn't exist
         """
-        results = EvalResults(skill=self.skill, version=self.version)
+        results = EvalResults(skill=self.skill, version=self.version, pinned_sha=pinned_sha)
         scenarios = _get_scenarios(self.skill)
 
         candidate_path = Path(candidate_skill_path) if candidate_skill_path else None
@@ -519,7 +690,6 @@ def evaluate_skill(
 
 if __name__ == "__main__":
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser(description="Evaluate a Superpowers skill")
     parser.add_argument("--skill", default="verification-before-completion")
