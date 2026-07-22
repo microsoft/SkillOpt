@@ -545,9 +545,9 @@ def _run_scenario(
 
     # Prompt on stdin + text output, matching backend.py's Claude CLI usage.
     # (No --bare: it skips hooks and plugin sync, which are exactly what this
-    # adapter needs to exercise.) Resolve claude to an absolute path so it's
-    # found even under the minimal PATH above.
-    claude_bin = shutil.which("claude") or "claude"
+    # adapter needs to exercise.)
+    sandbox_mode = os.environ.get("SKILLOPT_SANDBOX", "")
+    claude_bin = "claude" if sandbox_mode == "docker" else (shutil.which("claude") or "claude")
     cmd = [claude_bin, "-p", "--output-format", "text", "--plugin-dir", str(superpowers_dir)]
 
     # Permission handling for non-interactive execution:
