@@ -334,6 +334,41 @@ class TestOverlayIntegration:
             assert _load_marker(result.pinned_sha, "test") in bootstrap
             assert result.evidence["bootstrap_loaded"] is True
 
+    def test_marker_injection_is_idempotent(self):
+        """Reused checkout must not accumulate Session marker blocks across runs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = self._superpowers(workspace)
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                for _ in range(3):
+                    _run_scenario(
+                        scenario, superpowers_dir=superpowers_dir, skill_name="s",
+                        skill_overlay=None, workspace=workspace,
+                    )
+
+            bootstrap = (superpowers_dir / "skills" / "using-superpowers" / "SKILL.md").read_text()
+            assert bootstrap.count("## Session marker") == 1
+
+    def test_shim_lives_under_home_for_sandbox(self):
+        """Shim + audit log must sit under HOME (the only mounted writable path)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = self._superpowers(workspace)
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout=_marked(), stderr="")
+                _run_scenario(
+                    scenario, superpowers_dir=superpowers_dir, skill_name="s",
+                    skill_overlay=None, workspace=workspace,
+                )
+
+            home = workspace / "home-test"
+            assert (home / ".skillopt" / "bin" / "pytest").exists()
+
     def test_nonzero_exit_fails_closed(self):
         """Verify non-zero exit code results in error, not silent pass."""
         with tempfile.TemporaryDirectory() as tmpdir:

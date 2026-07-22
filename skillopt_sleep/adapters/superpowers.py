@@ -395,7 +395,10 @@ def _sandbox_prefix(project_dir: Path, home: Path, plugin_dir: Path) -> List[str
             "-v", f"{home}:{home}",
             "-v", f"{plugin_dir}:{plugin_dir}:ro",
             "-w", str(project_dir),
-            "-e", "HOME", "-e", "ANTHROPIC_API_KEY", "-e", "SKILLOPT_ATTEMPT",
+            # PATH must carry through so the shim dir (under HOME) stays at the
+            # front and pytest invocations are counted inside the container
+            "-e", "HOME", "-e", "PATH", "-e", "LANG", "-e", "TERM",
+            "-e", "ANTHROPIC_API_KEY", "-e", "SKILLOPT_ATTEMPT",
             image,
         ]
     return []
@@ -431,10 +434,10 @@ def _run_scenario(
     project_dir.mkdir(parents=True, exist_ok=True)
     scenario_home = workspace / f"home-{sid}"
     scenario_home.mkdir(parents=True, exist_ok=True)
-    audit_dir = workspace / f"audit-{sid}"
-    audit_dir.mkdir(parents=True, exist_ok=True)
-    audit_log = audit_dir / "pytest.log"
-    bin_dir = workspace / f"bin-{sid}"
+    # shim + audit log live under HOME so they're visible inside the sandbox
+    # (bwrap/docker mount HOME but not the bare workspace)
+    audit_log = scenario_home / ".skillopt" / "pytest.log"
+    bin_dir = scenario_home / ".skillopt" / "bin"
     _write_pytest_shims(bin_dir, audit_log)
 
     # Write setup files
@@ -456,8 +459,10 @@ def _run_scenario(
     marker = _load_marker(pinned_sha, sid)
     bootstrap_skill = superpowers_dir / "skills" / "using-superpowers" / "SKILL.md"
     if bootstrap_skill.exists():
+        # checkout is reused across scenarios - strip any prior marker block first
+        base = bootstrap_skill.read_text().split("\n\n## Session marker\n")[0]
         bootstrap_skill.write_text(
-            bootstrap_skill.read_text()
+            base
             + f"\n\n## Session marker\n\nEnd your final message with the line `{marker}`.\n"
         )
 
