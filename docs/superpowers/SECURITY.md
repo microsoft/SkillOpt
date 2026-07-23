@@ -26,7 +26,12 @@ reach, the candidate can reach.
    with `SKILLOPT_INHERIT_PATH=1`. Note this is convenience/hygiene, not a
    boundary — a `Bash`-holding agent can still call absolute paths.
 4. **Isolated project and HOME** per scenario, inside a temp workspace.
-5. **OS-level sandbox**, opt-in via `SKILLOPT_SANDBOX=bwrap|docker`.
+5. **OS-level sandbox** (⚠️ **experimental, not yet validated end-to-end**),
+   opt-in via `SKILLOPT_SANDBOX=bwrap|docker`. The `bwrap` path is the intended
+   Linux boundary; both modes are provided as scaffolding and are not exercised
+   in CI. Treat them as a starting point, not a hardened guarantee — details
+   like the in-container interpreter/`claude` binary (`SKILLOPT_CLAUDE_BIN`,
+   `SKILLOPT_SHIM_PYTHON`) may need tuning for your image.
 6. **Execution evidence.** `harness_test_passes` re-runs the tests after the
    agent exits — this is unforgeable and is the authoritative gate. `pytest_runs`
    (nonce-tagged invocation log) is tamper-**evident**, not tamper-proof: an

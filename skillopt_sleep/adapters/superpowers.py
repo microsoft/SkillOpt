@@ -350,7 +350,10 @@ def _write_pytest_shims(bin_dir: Path, audit_log: Path, nonce: str) -> None:
     POSIX only (bash shims), matching this adapter's reliance on `claude`/`git`.
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
-    real_python = sys.executable
+    # sys.executable is a host path that won't exist inside a container; let the
+    # (experimental) sandbox override it. Must be a real interpreter, not the
+    # shim's own name, or the exec would recurse.
+    real_python = os.environ.get("SKILLOPT_SHIM_PYTHON") or sys.executable
 
     def _install(name: str, body: str) -> None:
         path = bin_dir / name
@@ -387,6 +390,10 @@ def _pytest_run_count(audit_log: Path, nonce: str) -> int:
 
 def _sandbox_prefix(project_dir: Path, home: Path, plugin_dir: Path) -> List[str]:
     """OS-level boundary for untrusted candidates, opt-in via SKILLOPT_SANDBOX.
+
+    EXPERIMENTAL / not validated end-to-end. bwrap is the intended Linux path;
+    neither mode is exercised in CI. See docs/superpowers/SECURITY.md.
+
 
     bwrap: read-only system, writable project + HOME, no other host paths.
     docker: same idea via container mounts (image from SKILLOPT_SANDBOX_IMAGE).
