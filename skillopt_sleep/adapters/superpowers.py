@@ -490,14 +490,20 @@ def _run_scenario(
 
     # Overlay candidate skill into temp superpowers copy at correct path
     if skill_overlay and skill_overlay.exists():
-        skill_dest = superpowers_dir / "skills" / skill_name / "SKILL.md"
-        skill_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(skill_overlay, skill_dest)
-
-        # defense in depth - resolved path must still be under workspace
-        resolved = skill_dest.resolve()
-        if not resolved.is_relative_to(workspace):
-            raise ValueError(f"Skill path {resolved} escapes workspace {workspace}")
+        skills_root = superpowers_dir / "skills"
+        skill_dir = skills_root / skill_name
+        skill_dest = skill_dir / "SKILL.md"
+        # A malicious pinned checkout could carry a symlink at these components
+        # that redirects the write outside the workspace. Refuse symlinked
+        # components and confirm the resolved dir stays under workspace BEFORE
+        # writing anything (copy2 would otherwise follow them first).
+        for p in (skills_root, skill_dir, skill_dest):
+            if p.is_symlink():
+                raise ValueError(f"Refusing symlinked overlay path: {p}")
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        if not skill_dir.resolve().is_relative_to(workspace):
+            raise ValueError(f"Skill path {skill_dir} escapes workspace {workspace}")
+        shutil.copy2(skill_overlay, skill_dest, follow_symlinks=False)
 
     # Per-run random marker (see _new_marker)
     marker = _new_marker()
@@ -511,9 +517,11 @@ def _run_scenario(
             + f"\n\n## Session marker\n\nEnd your final message with the line `{marker}`.\n"
         )
     else:
-        # marker can't be injected, yet the marker check is added below - flag it
-        # explicitly so this is distinguishable from a real skill regression
+        # marker can't be injected -> invalid eval. Fail closed early rather than
+        # run the agent (and untrusted code) for a result that can't be scored.
         result.error = "BOOTSTRAP_SKILL_MISSING"
+        result.evidence = {"bootstrap_present": False}
+        return result
 
     claude_dir = scenario_home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -727,9 +735,11 @@ class SuperpowersEvaluator:
             raise ValueError(f"Unknown scenario '{scenario_filter}'. Valid: {valid}")
 
         candidate_path = Path(candidate_skill_path) if candidate_skill_path else None
-        # fail explicitly if candidate path provided but missing
+        # fail explicitly if candidate path provided but missing or not a file
         if candidate_path and not candidate_path.exists():
             raise FileNotFoundError(f"Candidate skill not found: {candidate_skill_path}")
+        if candidate_path and not candidate_path.is_file():
+            raise ValueError(f"Candidate skill is not a regular file: {candidate_skill_path}")
         candidate_hash = _hash_file(candidate_path) if candidate_path else ""
 
         with tempfile.TemporaryDirectory(prefix="skillopt-superpowers-") as tmpdir:

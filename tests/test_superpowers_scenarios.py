@@ -599,6 +599,7 @@ class TestIsolation:
                 )
             assert result.error == "BOOTSTRAP_SKILL_MISSING"
             assert result.evidence["bootstrap_present"] is False
+            mock_run.assert_not_called()  # fail closed before running the agent
 
     def test_harness_verify_respects_timeout(self, monkeypatch):
         """Verify re-run uses the scenario timeout, not a hardcoded 120s."""
@@ -639,6 +640,36 @@ class TestCLIFailClosed:
         with pytest.raises(FileNotFoundError, match="Candidate skill not found"):
             evaluator.evaluate(candidate_skill_path="/nonexistent/path/SKILL.md")
 
+    def test_candidate_directory_raises(self):
+        """A directory (not a regular file) must fail with a clear error."""
+        from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(ValueError, match="not a regular file"):
+                SuperpowersEvaluator().evaluate(candidate_skill_path=tmpdir)
+
+    def test_symlinked_overlay_path_refused(self):
+        """A symlinked skills/ component in the checkout must be refused, no write."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = workspace / "superpowers"
+            superpowers_dir.mkdir()
+            outside = workspace / "outside"
+            outside.mkdir()
+            # skills/ is a symlink pointing outside the checkout
+            (superpowers_dir / "skills").symlink_to(outside)
+            candidate = workspace / "cand.md"
+            candidate.write_text("# x")
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run"):
+                with pytest.raises(ValueError, match="symlinked overlay path"):
+                    _run_scenario(
+                        scenario, superpowers_dir=superpowers_dir, skill_name="s",
+                        skill_overlay=candidate, workspace=workspace,
+                    )
+            assert not (outside / "s" / "SKILL.md").exists()  # nothing written outside
+
     def test_unknown_scenario_filter_raises(self):
         """A typo'd --scenario must error, not return an empty score=0 result."""
         from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
@@ -659,7 +690,8 @@ class TestPermissionModes:
 
     def _setup(self, workspace):
         superpowers_dir = workspace / "superpowers"
-        (superpowers_dir / "skills").mkdir(parents=True)
+        (superpowers_dir / "skills" / "using-superpowers").mkdir(parents=True)
+        (superpowers_dir / "skills" / "using-superpowers" / "SKILL.md").write_text("# u\n")
         return superpowers_dir, {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
 
     def test_default_uses_scoped_permissions(self):
