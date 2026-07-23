@@ -546,8 +546,13 @@ def _run_scenario(
     # Prompt on stdin + text output, matching backend.py's Claude CLI usage.
     # (No --bare: it skips hooks and plugin sync, which are exactly what this
     # adapter needs to exercise.)
+    # In docker the claude binary comes from the image, so use the bare name and
+    # let the container's PATH resolve it; otherwise use an absolute host path so
+    # it's found under the minimal PATH. SKILLOPT_CLAUDE_BIN overrides either.
     sandbox_mode = os.environ.get("SKILLOPT_SANDBOX", "")
-    claude_bin = "claude" if sandbox_mode == "docker" else (shutil.which("claude") or "claude")
+    claude_bin = os.environ.get("SKILLOPT_CLAUDE_BIN") or (
+        "claude" if sandbox_mode == "docker" else (shutil.which("claude") or "claude")
+    )
     cmd = [claude_bin, "-p", "--output-format", "text", "--plugin-dir", str(superpowers_dir)]
 
     # Permission handling for non-interactive execution:
@@ -610,7 +615,9 @@ def _run_scenario(
         c.get("op") == "harness_test_passes"
         for c in scenario.get("judge", {}).get("checks", [])
     ):
-        result.evidence["harness_test_passes"] = _harness_verify(project_dir, env)
+        result.evidence["harness_test_passes"] = _harness_verify(
+            project_dir, scenario_home, superpowers_dir, env
+        )
 
     checks = list(scenario.get("judge", {}).get("checks", []))
     # every run must show the plugin bootstrap was actually active
@@ -628,13 +635,28 @@ def _run_scenario(
     return result
 
 
-def _harness_verify(project_dir: Path, env: Dict[str, str]) -> bool:
-    """Re-run the project's tests ourselves - agent output cannot fake this."""
+def _harness_verify(
+    project_dir: Path, home: Path, plugin_dir: Path, env: Dict[str, str]
+) -> bool:
+    """Re-run the project's tests ourselves - agent output cannot fake this.
+
+    SECURITY: this executes (agent-modified) project code. When SKILLOPT_SANDBOX
+    is set the re-run goes through the same sandbox as the agent, so untrusted
+    code is not executed on the host. Without a sandbox (trusted-candidate mode)
+    it runs on the host, same as the agent did.
+    """
+    mode = os.environ.get("SKILLOPT_SANDBOX", "")
+    prefix = _sandbox_prefix(project_dir, home, plugin_dir)
+    # in a container the host interpreter path won't exist; resolve in-image
+    interp = "python3" if mode == "docker" else sys.executable
+    verify_env = {**env, "SKILLOPT_ATTEMPT": "99"}
+    if not mode:
+        verify_env["PATH"] = os.environ.get("PATH", "")
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q"],
+            prefix + [interp, "-m", "pytest", "-q"],
             cwd=str(project_dir), capture_output=True, text=True, timeout=120,
-            env={**env, "SKILLOPT_ATTEMPT": "99", "PATH": os.environ.get("PATH", "")},
+            env=verify_env,
         )
         return proc.returncode == 0
     except Exception:

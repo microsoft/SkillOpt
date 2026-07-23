@@ -27,12 +27,17 @@ reach, the candidate can reach.
    boundary — a `Bash`-holding agent can still call absolute paths.
 4. **Isolated project and HOME** per scenario, inside a temp workspace.
 5. **OS-level sandbox**, opt-in via `SKILLOPT_SANDBOX=bwrap|docker`.
-6. **Execution evidence.** `harness_test_passes` re-runs the tests in the parent
-   process after the agent exits — this is unforgeable and is the authoritative
-   gate. `pytest_runs` (nonce-tagged invocation log) is tamper-**evident**, not
-   tamper-proof: an unsandboxed agent runs as the same OS user with `Bash` and
-   can reach the log, so treat the count as corroborating unless running under
-   `SKILLOPT_SANDBOX`.
+6. **Execution evidence.** `harness_test_passes` re-runs the tests after the
+   agent exits — this is unforgeable and is the authoritative gate. `pytest_runs`
+   (nonce-tagged invocation log) is tamper-**evident**, not tamper-proof: an
+   unsandboxed agent runs as the same OS user with `Bash` and can reach the log,
+   so treat the count as corroborating unless running under `SKILLOPT_SANDBOX`.
+
+   ⚠️ The verification re-run **executes the (agent-modified) project code**. When
+   `SKILLOPT_SANDBOX` is set, the re-run goes through the same sandbox as the
+   agent, so untrusted code does not run on the host. In the default (no-sandbox)
+   mode it runs on the host — acceptable only for trusted candidates. Never
+   evaluate an untrusted candidate without `SKILLOPT_SANDBOX`.
 
 ## Known Limitations
 

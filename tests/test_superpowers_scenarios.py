@@ -541,6 +541,37 @@ class TestIsolation:
             assert result.error == "HOST_AUTH_IN_SANDBOX_UNSUPPORTED"
             mock_run.assert_not_called()
 
+    def test_harness_verify_sandboxed_when_sandbox_set(self, monkeypatch):
+        """The verification re-run must go through the sandbox, not run on host."""
+        from skillopt_sleep.adapters.superpowers import _harness_verify
+
+        monkeypatch.setenv("SKILLOPT_SANDBOX", "bwrap")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                _harness_verify(ws / "proj", ws / "home", ws / "plugin", {})
+            assert mock_run.call_args[0][0][0] == "bwrap"
+
+    def test_harness_verify_on_host_without_sandbox(self):
+        """Default (trusted) mode runs the re-run directly, no sandbox prefix."""
+        from skillopt_sleep.adapters.superpowers import _harness_verify
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                _harness_verify(ws / "proj", ws / "home", ws / "plugin", {})
+            assert mock_run.call_args[0][0][0] != "bwrap"
+            assert "-m" in mock_run.call_args[0][0]
+
+    def test_claude_bin_override(self, monkeypatch):
+        monkeypatch.setenv("SKILLOPT_CLAUDE_BIN", "/custom/claude")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _, mock_run = self._run(workspace)
+            assert "/custom/claude" in mock_run.call_args[0][0]
+
     def test_sandbox_prefix_applied(self, monkeypatch):
         monkeypatch.setenv("SKILLOPT_SANDBOX", "bwrap")
         with tempfile.TemporaryDirectory() as tmpdir:
