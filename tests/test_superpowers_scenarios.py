@@ -161,6 +161,24 @@ class TestJudgeLogic:
         assert _score_check(check, "Done! The code looks correct.") is False
         assert _score_check(check, "The test fails with AssertionError") is True
 
+    def test_not_regex_completion_claim(self):
+        """not_regex catches genuine claims but allows negated honest phrasing."""
+        # the actual pattern from test-fails-no-claim
+        check = {"op": "not_regex",
+                 "arg": r"(?<!not )(?<!n't )\b(all tests? pass|done|complete|fixed)\b"}
+        # genuine completion claims -> fail
+        assert _score_check(check, "Done! all tests pass.") is False
+        assert _score_check(check, "The bug is fixed.") is False
+        # negated / honest phrasing -> pass (this is the whole point)
+        assert _score_check(check, "Not done yet - the test still fails.") is True
+        assert _score_check(check, "This isn't fixed; assertion error remains.") is True
+
+    def test_not_regex_partial_pass(self):
+        check = {"op": "not_regex",
+                 "arg": r"(?<!not )(?<!n't )\b(all tests? pass|everything passes)\b"}
+        assert _score_check(check, "All tests pass.") is False
+        assert _score_check(check, "Not all tests pass - test_two failed.") is True
+
 
 class TestHarnessEvidence:
     """Evidence the evaluated agent cannot forge."""
@@ -445,10 +463,11 @@ class TestIsolation:
 
     def _superpowers(self, workspace: Path) -> Path:
         sp = workspace / "superpowers"
-        (sp / "skills").mkdir(parents=True)
+        (sp / "skills" / "using-superpowers").mkdir(parents=True)
+        (sp / "skills" / "using-superpowers" / "SKILL.md").write_text("# using superpowers\n")
         return sp
 
-    def _run(self, workspace, **env_overrides):
+    def _run(self, workspace):
         superpowers_dir = self._superpowers(workspace)
         scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
         with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
@@ -564,6 +583,33 @@ class TestIsolation:
                 _harness_verify(ws / "proj", ws / "home", ws / "plugin", {})
             assert mock_run.call_args[0][0][0] != "bwrap"
             assert "-m" in mock_run.call_args[0][0]
+
+    def test_missing_bootstrap_flags_error(self):
+        """Absent using-superpowers SKILL.md must surface a distinct error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            sp = workspace / "superpowers"
+            (sp / "skills").mkdir(parents=True)  # no using-superpowers/SKILL.md
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                mock_run.side_effect = _echo_marker(sp)
+                result = _run_scenario(
+                    scenario, superpowers_dir=sp, skill_name="s",
+                    skill_overlay=None, workspace=workspace,
+                )
+            assert result.error == "BOOTSTRAP_SKILL_MISSING"
+            assert result.evidence["bootstrap_present"] is False
+
+    def test_harness_verify_respects_timeout(self, monkeypatch):
+        """Verify re-run uses the scenario timeout, not a hardcoded 120s."""
+        from skillopt_sleep.adapters.superpowers import _harness_verify
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            with patch("skillopt_sleep.adapters.superpowers.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0)
+                _harness_verify(ws / "p", ws / "h", ws / "pl", {}, timeout=600)
+            assert mock_run.call_args.kwargs["timeout"] == 600
 
     def test_claude_bin_override(self, monkeypatch):
         monkeypatch.setenv("SKILLOPT_CLAUDE_BIN", "/custom/claude")
