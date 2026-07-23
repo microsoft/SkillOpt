@@ -20,6 +20,12 @@ _BANNER = (
     "approve them. Hand-edits outside this block are never touched._"
 )
 
+# Deny-list: reject learned lines that look like credentials or injection (F06).
+_DENY_LEARNED = re.compile(
+    r"(?i)(api[_\-]?key|credential|exfil|ignore\s*instruction|leak|bypass"
+    r"|token\s*=\s*[A-Za-z0-9])"
+)
+
 
 def extract_learned(doc: str) -> str:
     s = doc.find(LEARNED_START)
@@ -46,8 +52,10 @@ def _strip_learned(doc: str) -> str:
 
 def set_learned(doc: str, learned_lines: List[str]) -> str:
     """Replace the protected learned region with the given bullet lines."""
+    # Strip lines that match the deny-list (credentials, injection directives).
+    safe_lines = [ln for ln in learned_lines if not _DENY_LEARNED.search(ln)]
     base = _strip_learned(doc)
-    body = "\n".join(f"- {ln.strip().lstrip('- ').strip()}" for ln in learned_lines if ln.strip())
+    body = "\n".join(f"- {ln.strip().lstrip('- ').strip()}" for ln in safe_lines if ln.strip())
     block = (
         f"\n\n{LEARNED_START}\n"
         f"## Learned preferences & procedures\n\n{_BANNER}\n\n{body}\n"

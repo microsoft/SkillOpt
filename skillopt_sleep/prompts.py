@@ -53,7 +53,9 @@ Return ONLY a JSON array (possibly empty). No prose.
 # Session
 project: __PROJECT__
 user prompts:
+<user-session-content>
 __PROMPTS__
+</user-session-content>
 assistant final (last):
 __FINAL__
 feedback signals: __FEEDBACK__

@@ -383,7 +383,23 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
 
 def load_config(args: argparse.Namespace) -> dict:
     """Load config with _base_ inheritance, then apply CLI overrides."""
+    import warnings
     from skillopt.config import load_config as _load, flatten_config, is_structured
+
+    # F08: Warn when API keys are supplied on the CLI — prefer env vars or managed identity.
+    for _cli_key in (
+        "azure_api_key", "azure_openai_api_key",
+        "optimizer_azure_openai_api_key", "target_azure_openai_api_key",
+        "minimax_api_key",
+    ):
+        if getattr(args, _cli_key, None):
+            warnings.warn(
+                f"--{_cli_key} is deprecated: provide credentials via the "
+                f"AZURE_OPENAI_API_KEY environment variable or set "
+                f"--azure_openai_auth_mode=managed_identity instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     cfg = _load(args.config, overrides=args.cfg_options)
     structured = is_structured(cfg)

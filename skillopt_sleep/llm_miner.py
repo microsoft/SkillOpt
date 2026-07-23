@@ -27,10 +27,27 @@ from skillopt_sleep.backend import Backend, _extract_json
 from skillopt_sleep.types import SessionDigest, TaskRecord
 
 
+# ── Prompt injection sanitizer ────────────────────────────────────────────────
+# Neutralise directive-style phrases that could manipulate the mining LLM.
+_INJ_RE = re.compile(
+    r"(?i)(ignore|forget|disregard|override)\s.{0,60}(instruction|rule|above|previous)",
+    re.DOTALL,
+)
+
+
+def _sanitise_prompts(raw_prompts: List[str], max_each: int = 240, max_count: int = 6) -> str:
+    """Truncate + neutralise injection-style directives in harvested user prompts."""
+    sanitised = []
+    for p in raw_prompts[:max_count]:
+        clean = _INJ_RE.sub("[FILTERED-DIRECTIVE]", p)[:max_each]
+        sanitised.append(f"  - {clean}")
+    return "\n".join(sanitised) or "  (none)"
+
+
 def _digest_to_prompt(d: SessionDigest) -> str:
     # Template lives in the central prompt registry (skillopt_sleep.prompts)
     # so the dashboard can display and override it live.
-    prompts = "\n".join(f"  - {p[:240]}" for p in d.user_prompts[:6]) or "  (none)"
+    prompts = _sanitise_prompts(d.user_prompts)
     final = (d.assistant_finals[-1][:400] if d.assistant_finals else "(none)")
     return prompt_registry.render("miner", {
         "__PROJECT__": d.project or "(unknown)",

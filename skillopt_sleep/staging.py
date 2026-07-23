@@ -48,6 +48,12 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         "[REDACTED_PRIVATE_KEY]",
     ),
+    # Azure SAS tokens (URL query param: ?sig=<base64>&...)
+    (re.compile(r"(?i)\bsig=[A-Za-z0-9%+/]{10,}"), "[REDACTED_SAS_SIG]"),
+    # Azure Storage account keys (base64, typically 88 chars)
+    (re.compile(r"(?i)AccountKey=[A-Za-z0-9+/=]{20,}"), "[REDACTED_STORAGE_KEY]"),
+    # Connection-string passwords (Password=...; up to semicolon/quote/whitespace)
+    (re.compile(r"(?i)\bPassword=[^;\"'\s]{6,}"), "[REDACTED_DB_PASS]"),
 )
 
 
