@@ -461,6 +461,15 @@ def _run_scenario(
         # bash shims + claude/git shell-out are POSIX-only
         raise RuntimeError("Superpowers adapter requires a POSIX host (bash).")
 
+    # Under docker the shim's default interpreter (host sys.executable) won't
+    # exist in the image; require an explicit in-container path rather than
+    # silently producing a broken shim. (docker sandbox is experimental.)
+    if os.environ.get("SKILLOPT_SANDBOX") == "docker" and not os.environ.get("SKILLOPT_SHIM_PYTHON"):
+        raise RuntimeError(
+            "SKILLOPT_SANDBOX=docker requires SKILLOPT_SHIM_PYTHON set to an "
+            "in-container interpreter path (e.g. /usr/bin/python3)."
+        )
+
     sid = scenario["id"]
     result = ScenarioResult(
         id=sid, passed=False,
@@ -738,6 +747,10 @@ class SuperpowersEvaluator:
         # fail explicitly if candidate path provided but missing or not a file
         if candidate_path and not candidate_path.exists():
             raise FileNotFoundError(f"Candidate skill not found: {candidate_skill_path}")
+        # is_file() is True for symlinks-to-files; reject them so the overlay
+        # copies real content (not a link) and can't point at an arbitrary host file
+        if candidate_path and candidate_path.is_symlink():
+            raise ValueError(f"Candidate skill must not be a symlink: {candidate_skill_path}")
         if candidate_path and not candidate_path.is_file():
             raise ValueError(f"Candidate skill is not a regular file: {candidate_skill_path}")
         candidate_hash = _hash_file(candidate_path) if candidate_path else ""

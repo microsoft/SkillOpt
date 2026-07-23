@@ -648,6 +648,33 @@ class TestCLIFailClosed:
             with pytest.raises(ValueError, match="not a regular file"):
                 SuperpowersEvaluator().evaluate(candidate_skill_path=tmpdir)
 
+    def test_symlinked_candidate_refused(self):
+        """A symlinked --candidate must be rejected, not copied as a link."""
+        from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real = Path(tmpdir) / "real.md"
+            real.write_text("# x")
+            link = Path(tmpdir) / "link.md"
+            link.symlink_to(real)
+            with pytest.raises(ValueError, match="must not be a symlink"):
+                SuperpowersEvaluator().evaluate(candidate_skill_path=str(link))
+
+    def test_docker_requires_shim_python(self, monkeypatch):
+        """docker mode fails fast without SKILLOPT_SHIM_PYTHON rather than breaking silently."""
+        monkeypatch.setenv("SKILLOPT_SANDBOX", "docker")
+        monkeypatch.delenv("SKILLOPT_SHIM_PYTHON", raising=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            superpowers_dir = workspace / "superpowers"
+            (superpowers_dir / "skills").mkdir(parents=True)
+            scenario = {"id": "test", "setup": {"files": {}}, "prompt": "hi", "judge": {"checks": []}}
+            with pytest.raises(RuntimeError, match="SKILLOPT_SHIM_PYTHON"):
+                _run_scenario(
+                    scenario, superpowers_dir=superpowers_dir, skill_name="s",
+                    skill_overlay=None, workspace=workspace,
+                )
+
     def test_symlinked_overlay_path_refused(self):
         """A symlinked skills/ component in the checkout must be refused, no write."""
         with tempfile.TemporaryDirectory() as tmpdir:
