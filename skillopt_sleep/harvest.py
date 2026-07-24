@@ -15,12 +15,17 @@ This module performs NO writes and NO network calls.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac as _hmac_mod
 import json
 import os
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 from skillopt_sleep.types import SessionDigest
+
+
+# \u2500\u2500 Optional HMAC session integrity (F09) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# When SKILLOPT_SESSION_HMAC_KEY is set, each session file is signed on first\n# harvest (a .sig companion is written) and verified on subsequent harvests.\n# Tampered or injected session files are skipped.  Opt-in: if the env var is\n# unset (the default), signing and verification are both no-ops.\n\ndef _hmac_key() -> bytes:\n    \"\"\"Return the configured HMAC key, or b'' if none configured.\"\"\"\n    raw = os.environ.get(\"SKILLOPT_SESSION_HMAC_KEY\", \"\")\n    return raw.encode() if raw else b\"\"\n\n\ndef _sign_session(path: str) -> None:\n    \"\"\"Write a .sig file for *path* if a key is configured and no sig exists.\"\"\"\n    key = _hmac_key()\n    if not key:\n        return\n    sig_path = path + \".sig\"\n    if os.path.exists(sig_path):\n        return\n    try:\n        with open(path, \"rb\") as f:\n            content = f.read()\n        digest = _hmac_mod.new(key, content, hashlib.sha256).hexdigest()\n        with open(sig_path, \"w\", encoding=\"utf-8\") as f:\n            f.write(digest + \"\\n\")\n    except OSError:\n        pass  # read-only fs or permission issue — skip silently\n\n\ndef _verify_session(path: str) -> bool:\n    \"\"\"Return True if HMAC verification passes (or no key is configured).\"\"\"\n    key = _hmac_key()\n    if not key:\n        return True\n    sig_path = path + \".sig\"\n    if not os.path.exists(sig_path):\n        # No sig yet — sign on this first harvest and accept it.\n        _sign_session(path)\n        return True\n    try:\n        with open(sig_path, encoding=\"utf-8\") as f:\n            expected = f.read().strip()\n        with open(path, \"rb\") as f:\n            content = f.read()\n        actual = _hmac_mod.new(key, content, hashlib.sha256).hexdigest()\n        return _hmac_mod.compare_digest(expected, actual)\n    except OSError:\n        return False  # unreadable sig or session file \u2014 skip
 
 
 # Heuristic phrases that signal the user (dis)approving of prior output.
@@ -322,6 +327,11 @@ def harvest(
     paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
     for p in paths:
+        if not _verify_session(p):
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "harvest: HMAC verification failed for %s — skipping", p)
+            continue
         d = digest_transcript(p)
         if d is None:
             continue

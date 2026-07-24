@@ -27,6 +27,8 @@ Events share the shape::
 """
 from __future__ import annotations
 
+import hashlib
+import hmac as _hmac_mod
 import json
 import os
 import threading
@@ -38,6 +40,11 @@ from skillopt_sleep.staging import redact_secrets
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+
+
+def _os_user() -> str:
+    """Return the current OS username for audit purposes (best-effort)."""
+    return os.environ.get("USERNAME") or os.environ.get("USER") or "unknown"
 
 
 class EvidenceLog:
@@ -71,13 +78,24 @@ class EvidenceLog:
 
     # ── the one write path ────────────────────────────────────────────────
     def log(self, stage: str, event: str, **data: Any) -> None:
-        record = {"ts": _now_iso(), "stage": stage, "event": event}
+        record = {"ts": _now_iso(), "stage": stage, "event": event,
+                  "os_user": _os_user()}
         record.update(self._clean(data))
         with self._lock:
             self._seq += 1
             record["seq"] = self._seq
             try:
                 line = json.dumps(record, ensure_ascii=False, default=str)
+                # Optional per-record HMAC for tamper detection (F15).
+                # Set SKILLOPT_EVIDENCE_HMAC_KEY to enable.
+                _hmac_key = os.environ.get("SKILLOPT_EVIDENCE_HMAC_KEY", "")
+                if _hmac_key:
+                    mac = _hmac_mod.new(
+                        _hmac_key.encode(), line.encode(), hashlib.sha256
+                    ).hexdigest()
+                    # Append the MAC as a separate audit line so the JSONL
+                    # structure of the payload line is unchanged.
+                    line = line + "\n" + json.dumps({"_audit_mac": mac, "seq": self._seq})
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
             except Exception:

@@ -29,6 +29,7 @@ DEFAULT_STATE: Dict[str, Any] = {
     "slow_memory": "",      # cross-night consolidated lessons (meta-skill analogue)
     "history": [],          # list of per-night summaries
     "task_archive": [],     # capped list of past mined tasks (for associative recall)
+    "last_model_key": "",   # "backend::model" string used in the last successful night (F16)
 }
 
 
@@ -94,3 +95,11 @@ class SleepState:
         arc.extend(task_dicts)
         if len(arc) > cap:
             self.data["task_archive"] = arc[-cap:]
+
+    # ── model-swap tracking (F16) ─────────────────────────────────────────
+    @property
+    def last_model_key(self) -> str:
+        return str(self.data.get("last_model_key", ""))
+
+    def set_last_model_key(self, key: str) -> None:
+        self.data["last_model_key"] = key

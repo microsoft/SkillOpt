@@ -19,6 +19,11 @@ data/*
 !data/spreadsheetbench_id_split/**
 !data/alfworld_path_split/
 !data/alfworld_path_split/**
+# ─── Internal analysis docs (private, not for open-source release) ───────────
+doc-internals/
+
+# ─── Build / local output dirs ───────────────────────────────────────────────
+out/
 outputs/
 logs/
 external/

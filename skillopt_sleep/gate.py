@@ -8,6 +8,7 @@ decoupled from the paper's experiment code.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -19,6 +20,9 @@ class GateResult:
     best_skill: str
     best_score: float
     best_step: int
+
+
+# \u2500\u2500 Content safety (F14) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Reject candidate skills that contain high-risk content before they can ever\n# be accepted by the gate, regardless of score.\n_DANGEROUS = re.compile(\n    r\"(?i)(api[_\\-]?key|credential|exfil|leak|bypass\\s*security\"\n    r\"|ignore\\s*instruction|x-bypass|token\\s*=\\s*[A-Za-z0-9])\"\n)\n\n\ndef _content_safe(candidate_skill: str) -> bool:\n    \"\"\"Return False if the candidate skill text contains dangerous patterns.\"\"\"\n    return not bool(_DANGEROUS.search(candidate_skill))
 
 
 def select_gate_score(hard: float, soft: float, metric: str = "hard",
@@ -39,6 +43,10 @@ def evaluate_gate(candidate_skill: str, cand_hard: float, current_skill: str,
                   best_step: int, global_step: int, *, cand_soft: float = 0.0,
                   metric: str = "hard", mixed_weight: float = 0.5) -> GateResult:
     """Pure gate decision: compare candidate score to current/best."""
+    # Content safety: reject before score comparison if skill text is unsafe.
+    if not _content_safe(candidate_skill):
+        return GateResult("reject", current_skill, current_score,
+                          best_skill, best_score, best_step)
     cand_score = select_gate_score(cand_hard, cand_soft, metric, mixed_weight)
     if cand_score > current_score:
         if cand_score > best_score:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 
 from skillopt.model import chat_target_messages
@@ -248,13 +249,28 @@ def _auto_verify(work_dir: str) -> str:
         return f"\n\n[AUTO-VERIFY] Could not inspect output: {e}"
 
 
+# Commands that the ReAct agent is allowed to run (benchmark only needs Python).
+_CMD_ALLOW = {"python", "python3"}
+
+
 # ── Bash execution ────────────────────────────────────────────────────────────
 
 def _run_bash(cmd: str, work_dir: str, timeout: int = 60) -> str:
     try:
+        parts = shlex.split(cmd)
+        if not parts:
+            return "[error: empty command]"
+        exe_name = os.path.basename(parts[0]).lower()
+        # Strip .exe suffix on Windows (python.exe → python)
+        exe_stem = exe_name.split(".")[0]
+        if exe_stem not in _CMD_ALLOW:
+            return (
+                f"[blocked: '{parts[0]}' not in allow-list {sorted(_CMD_ALLOW)}; "
+                "use Python to manipulate spreadsheets]"
+            )
         proc = subprocess.run(
-            cmd,
-            shell=True,
+            parts,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout,

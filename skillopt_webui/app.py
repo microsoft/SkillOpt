@@ -25,6 +25,9 @@ from skillopt.config import load_config as load_merged_config
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+# \u2500\u2500\u2500 Per-user state isolation (F13) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# When auth is enabled, give each user an isolated sub-directory for run\n# outputs and logs.  A SHA-256 of the username produces a safe, fixed-length\n# directory name with no path-traversal risk.\n\nimport hashlib as _hashlib\n\n\ndef _user_state_dir(base: Path, user_id: str) -> Path:\n    \"\"\"Return a per-user sub-directory under *base*, isolated by hashed user_id.\"\"\"\n    slug = _hashlib.sha256(user_id.encode()).hexdigest()[:16]\n    d = base / \"_user_state\" / slug\n    d.mkdir(parents=True, exist_ok=True)\n    return d
+
+
 # ─── Config helpers ──────────────────────────────────────────────────────────
 
 def discover_configs() -> list[str]:
@@ -529,8 +532,20 @@ def build_ui():
 
                 config_dropdown.change(on_config_change, config_dropdown, config_preview)
 
+                # F17: per-user rate limit — 5-minute cooldown between launches.
+                import time as _time
+                _last_launch: dict = {}
+                _LAUNCH_COOLDOWN_SECS = 300
+
                 def on_launch(cfg_path, lr_val, sched, epochs, batch, workers,
                               slow_update, meta_skill, gate):
+                    _user_key = str(cfg_path or "default")
+                    _now = _time.time()
+                    _elapsed = _now - _last_launch.get(_user_key, 0.0)
+                    if _elapsed < _LAUNCH_COOLDOWN_SECS:
+                        _remaining = int(_LAUNCH_COOLDOWN_SECS - _elapsed)
+                        return f"Rate limit: please wait {_remaining}s before launching another run."
+                    _last_launch[_user_key] = _now
                     overrides = {
                         "optimizer.learning_rate": lr_val,
                         "optimizer.lr_scheduler": sched,
@@ -643,15 +658,32 @@ def main():
     parser = argparse.ArgumentParser(description="SkillOpt WebUI")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true")
-    parser.add_argument("--host", type=str, default="0.0.0.0",
-                        help="Server host. Use 0.0.0.0 for public access.")
+    parser.add_argument("--host", type=str, default="127.0.0.1",
+                        help=(
+                            "Server host. Defaults to localhost (127.0.0.1). "
+                            "To bind to an external address set SKILLOPT_UI_USER "
+                            "and SKILLOPT_UI_PASS environment variables first."
+                        ))
     args = parser.parse_args()
+
+    # Require credentials when binding to a non-localhost address (F02).
+    _ui_user = os.environ.get("SKILLOPT_UI_USER", "")
+    _ui_pass = os.environ.get("SKILLOPT_UI_PASS", "")
+    _ui_auth = (_ui_user, _ui_pass) if (_ui_user and _ui_pass) else None
+    if args.host not in ("127.0.0.1", "localhost", "::1") and _ui_auth is None:
+        print(
+            "[webui] ERROR: binding to a non-localhost address requires the "
+            "SKILLOPT_UI_USER and SKILLOPT_UI_PASS environment variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     app = build_ui()
     app.launch(
         server_name=args.host,
         server_port=args.port,
         share=args.share,
+        auth=_ui_auth,
         theme=gr.themes.Soft(primary_hue="indigo"),
     )
 

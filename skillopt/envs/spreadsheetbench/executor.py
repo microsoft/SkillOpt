@@ -46,12 +46,27 @@ def run_generated_code(code: str, input_path: str, output_path: str, timeout: in
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(script)
         tmp = f.name
+    # Build a minimal environment so the generated code cannot read API keys,
+    # cloud credentials, or other secrets from the current process environment.
+    import platform as _platform
+    _safe_env: dict[str, str] = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.path.dirname(output_path),
+        "TMPDIR": tempfile.gettempdir(),
+    }
+    if _platform.system() == "Windows":
+        _safe_env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "")
+        _safe_env["TEMP"] = tempfile.gettempdir()
+        _safe_env["TMP"] = tempfile.gettempdir()
+    # Drop empty entries (env dict values must be non-empty strings)
+    _safe_env = {k: v for k, v in _safe_env.items() if v}
     try:
         proc = subprocess.run(
             [sys.executable, tmp],
             capture_output=True,
             text=True,
             timeout=timeout if timeout and timeout > 0 else None,
+            env=_safe_env,
         )
         if proc.returncode != 0:
             return False, (proc.stdout + "\n" + proc.stderr).strip()
