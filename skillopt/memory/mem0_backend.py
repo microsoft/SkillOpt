@@ -1,23 +1,42 @@
 """mem0-backed persistent memory for SkillOpt.
 
-Stores skill iterations, reflection results, and experiment outcomes in mem0
-so that the ReflACT trainer can retrieve relevant historical context across
-runs and identify the best skill versions discovered so far.
+Stores skill iterations and reflection outcomes, and reads a small amount of
+relevant history back into the Reflect stage so the memory participates in
+training rather than only recording it.
+
+Safety contract
+---------------
+1. **Nothing is sent unless the run opted in.** The client is only constructed
+   from a :class:`~skillopt.memory.settings.Mem0Settings` whose ``usable`` is
+   true, which requires ``mem0_enabled`` to have been set explicitly.
+2. **Everything outbound is redacted.** Every payload is built through
+   :meth:`SkillMemory._payload`, which applies
+   :func:`~skillopt.memory.redaction.redact_for_upload` and then truncates.
+   There is no code path that reaches ``self._client`` with unredacted text.
+3. **Every call is time-bounded.** Network work runs through :meth:`_bounded`,
+   so a slow or unreachable service costs at most ``timeout_seconds`` per
+   training step instead of blocking it.
+4. **Failures never break training.** Every public method returns a benign
+   value on error; the trainer hooks additionally swallow anything unexpected.
 
 Usage::
 
     from skillopt.memory import SkillMemory
+    from skillopt.memory.settings import resolve_settings
 
-    m = SkillMemory(api_key="m0-...")
-    m.store_skill_iteration(epoch=1, step=3, skill_text="...", score=0.82)
-    ctx = m.retrieve_relevant_context("handling multi-step navigation")
+    settings = resolve_settings(cfg)
+    memory = SkillMemory.from_settings(settings)   # None unless opted in
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FuturesTimeout
 from typing import Any
+
+from skillopt.memory.redaction import redact_for_upload
+from skillopt.memory.settings import Mem0Settings
 
 try:
     from mem0 import MemoryClient
@@ -27,60 +46,119 @@ except ImportError:
     MemoryClient = None  # type: ignore[assignment,misc]
 
 
+def mem0_available() -> bool:
+    """Whether the optional ``mem0ai`` dependency is importable."""
+    return _MEM0_AVAILABLE
+
+
 class SkillMemory:
     """Persistent memory backend for SkillOpt using mem0.
 
-    Parameters
-    ----------
-    api_key : str | None
-        mem0 API key. Falls back to ``MEM0_API_KEY`` env var, then to
-        ``MEM0_API_KEY`` set on the object at construction time.
-    user_id : str
-        Logical user/project identifier used to namespace memories in mem0.
+    Prefer :meth:`from_settings`; the constructor stays explicit so tests can
+    inject a fake client without touching the network.
     """
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        user_id: str = "skillopt",
-    ) -> None:
-        if not _MEM0_AVAILABLE:
-            raise ImportError(
-                "mem0ai is not installed. Run: pip install mem0ai"
-            )
+    def __init__(self, settings: Mem0Settings, client: Any | None = None) -> None:
+        if client is None:
+            if not _MEM0_AVAILABLE:
+                raise ImportError("mem0ai is not installed. Run: pip install 'skillopt[mem0]'")
+            if not settings.usable:
+                raise ValueError("SkillMemory requires mem0_enabled=true and an API key")
+            client = MemoryClient(api_key=settings.api_key)
 
-        resolved_key = api_key or os.environ.get("MEM0_API_KEY", "")
-        if not resolved_key:
-            raise ValueError(
-                "No mem0 API key provided. Pass api_key= or set MEM0_API_KEY env var."
-            )
+        self.settings = settings
+        self.namespace = settings.namespace
+        self._client = client
+        # One worker: calls are already serialised by the training loop, and a
+        # single thread keeps the timeout semantics easy to reason about.
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem0")
 
-        self.user_id = user_id
-        self._client = MemoryClient(api_key=resolved_key)
+    # ── Construction ──────────────────────────────────────────────────────
+
+    @classmethod
+    def from_settings(cls, settings: Mem0Settings, client: Any | None = None) -> "SkillMemory | None":
+        """Return a backend, or ``None`` when the run has not opted in.
+
+        Returning ``None`` rather than raising keeps callers free of
+        conditionals: every hook already treats ``None`` as "do nothing".
+        """
+        if not settings.usable and client is None:
+            return None
+        if client is None and not _MEM0_AVAILABLE:
+            return None
+        return cls(settings, client=client)
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
-    def _add(self, messages: list[dict], metadata: dict | None = None) -> Any:
-        """Low-level add wrapper — always tags with user_id."""
-        kwargs: dict[str, Any] = {"user_id": self.user_id}
-        if metadata:
-            kwargs["metadata"] = metadata
-        return self._client.add(messages, **kwargs)
+    def _bounded(self, fn, *args, **kwargs) -> Any:
+        """Run *fn* with a hard wall-clock bound; ``None`` on timeout or error.
 
-    def _search(self, query: str, limit: int = 5) -> list[dict]:
-        """Low-level search wrapper — scoped to this user_id."""
-        results = self._client.search(query, user_id=self.user_id, limit=limit)
-        # mem0 returns a list of memory dicts
+        The worker thread may keep running after a timeout — Python cannot
+        cancel a blocked socket read — but the *training step* is released on
+        schedule, which is the property that matters here.
+        """
+        try:
+            future = self._pool.submit(fn, *args, **kwargs)
+            return future.result(timeout=self.settings.timeout_seconds)
+        except _FuturesTimeout:
+            print(f"  [mem0] call exceeded {self.settings.timeout_seconds}s — continuing without it")
+            return None
+        except Exception as exc:  # noqa: BLE001 - memory must never break training
+            print(f"  [mem0] call failed ({type(exc).__name__}: {exc}) — continuing without it")
+            return None
+
+    def _payload(self, text: str) -> str:
+        """The only route by which text becomes outbound content.
+
+        Redacts first, truncates second, so the cap is measured on exactly the
+        string that would be transmitted.
+        """
+        redacted = redact_for_upload(text, self.settings.project_root)
+        if not isinstance(redacted, str):
+            redacted = str(redacted)
+        limit = max(0, int(self.settings.max_chars))
+        if len(redacted) > limit:
+            return redacted[:limit] + "\n[...truncated]"
+        return redacted
+
+    def _add(self, content: str, metadata: dict | None = None) -> Any:
+        messages = [{"role": "user", "content": self._payload(content)}]
+        kwargs: dict[str, Any] = {"user_id": self.namespace}
+        if metadata:
+            kwargs["metadata"] = redact_for_upload(metadata, self.settings.project_root)
+        return self._bounded(self._client.add, messages, **kwargs)
+
+    def _search(self, query: str, limit: int) -> list[dict]:
+        results = self._bounded(
+            self._client.search,
+            self._payload(query),
+            user_id=self.namespace,
+            limit=limit,
+        )
         if isinstance(results, list):
             return results
-        # Some versions wrap results in a dict
         if isinstance(results, dict):
-            return results.get("results", [])
+            found = results.get("results", [])
+            return found if isinstance(found, list) else []
         return []
 
     @staticmethod
     def _short_hash(text: str) -> str:
         return hashlib.sha1(text.encode()).hexdigest()[:8]
+
+    @staticmethod
+    def _valid_patches(patches: Any) -> list[dict]:
+        """Keep only genuine dict patches.
+
+        The reflection stage may yield ``None`` for a minibatch that produced
+        nothing, and a malformed backend reply can yield a bare string. Both
+        are filtered here rather than raising inside a ``try`` that swallows
+        the error, so a malformed patch costs one skipped record instead of
+        the whole memory write.
+        """
+        if not isinstance(patches, (list, tuple)):
+            return []
+        return [p for p in patches if isinstance(p, dict)]
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -92,29 +170,15 @@ class SkillMemory:
         score: float,
         metadata: dict | None = None,
     ) -> Any:
-        """Store a skill version produced during training.
-
-        Parameters
-        ----------
-        epoch : int
-            Current training epoch.
-        step : int
-            Current training step within the epoch.
-        skill_text : str
-            Full text of the skill document at this point.
-        score : float
-            Evaluation score (0–1) for this skill version.
-        metadata : dict | None
-            Optional additional metadata to attach.
-        """
-        skill_hash = self._short_hash(skill_text)
+        """Store the skill version produced at *epoch*/*step*."""
+        skill_hash = self._short_hash(skill_text or "")
         base_meta: dict[str, Any] = {
             "event_type": "skill_iteration",
             "epoch": epoch,
             "step": step,
             "score": round(float(score), 6),
             "skill_hash": skill_hash,
-            "skill_length": len(skill_text),
+            "skill_length": len(skill_text or ""),
         }
         if metadata:
             base_meta.update(metadata)
@@ -122,41 +186,29 @@ class SkillMemory:
         content = (
             f"[SkillOpt] Epoch {epoch} Step {step} — skill_hash={skill_hash} "
             f"score={score:.4f}\n\n"
-            f"=== SKILL TEXT ===\n{skill_text[:4000]}"  # cap to avoid huge payloads
+            f"=== SKILL TEXT ===\n{skill_text or ''}"
         )
-
-        messages = [{"role": "user", "content": content}]
-        return self._add(messages, metadata=base_meta)
+        return self._add(content, metadata=base_meta)
 
     def store_reflection(
         self,
         epoch: int,
         step: int,
-        patches: list[dict],
+        patches: Any,
         scores: dict | None = None,
     ) -> Any:
-        """Store the result of a Reflect stage.
-
-        Parameters
-        ----------
-        epoch : int
-            Current training epoch.
-        step : int
-            Current training step.
-        patches : list[dict]
-            Raw patches produced by the reflection stage.
-        scores : dict | None
-            Optional dict of metric → value (e.g. ``{"hard": 0.7, "soft": 0.8}``).
-        """
-        n_patches = len(patches)
+        """Store a summary of the patches produced by one Reflect stage."""
+        valid = self._valid_patches(patches)
+        n_patches = len(valid)
         scores_str = json.dumps(scores or {}, ensure_ascii=False)
-        patch_summary = json.dumps(
-            [
-                {k: v for k, v in p.items() if k != "skill_text"}
-                for p in patches[:10]  # only first 10 to keep it concise
-            ],
-            ensure_ascii=False,
-        )
+        try:
+            patch_summary = json.dumps(
+                [{k: v for k, v in p.items() if k != "skill_text"} for p in valid[:10]],
+                ensure_ascii=False,
+                default=str,
+            )
+        except (TypeError, ValueError):
+            patch_summary = "[unserialisable patch summary]"
 
         base_meta: dict[str, Any] = {
             "event_type": "reflection",
@@ -172,108 +224,39 @@ class SkillMemory:
             f"{n_patches} patch(es) generated. Scores: {scores_str}\n\n"
             f"Patch summary:\n{patch_summary}"
         )
+        return self._add(content, metadata=base_meta)
 
-        messages = [{"role": "user", "content": content}]
-        return self._add(messages, metadata=base_meta)
+    def retrieve_relevant_context(self, query: str, limit: int | None = None) -> list[dict]:
+        """Return past memories relevant to *query* (empty on any failure)."""
+        if not self.settings.retrieval_enabled:
+            return []
+        return self._search(query, limit=limit or self.settings.retrieval_limit)
 
-    def retrieve_relevant_context(
-        self,
-        query: str,
-        limit: int = 5,
-    ) -> list[dict]:
-        """Retrieve past memories relevant to *query*.
+    def format_retrieved_context(self, memories: list[dict], max_chars: int = 2000) -> str:
+        """Render retrieved memories as text for inclusion in a prompt.
 
-        Parameters
-        ----------
-        query : str
-            Free-text query describing the context you want to retrieve.
-        limit : int
-            Maximum number of results to return.
-
-        Returns
-        -------
-        list[dict]
-            List of memory objects (each has at least a ``memory`` field).
+        Returns ``""`` when there is nothing useful, so callers can append
+        unconditionally without producing an empty heading.
         """
-        return self._search(query, limit=limit)
-
-    def get_best_skill(self, user_id: str | None = None) -> dict | None:
-        """Return the memory record for the highest-scored skill iteration.
-
-        Searches mem0 for skill_iteration records and picks the one with
-        the highest ``score`` in its metadata.
-
-        Parameters
-        ----------
-        user_id : str | None
-            Override the user_id for this query (defaults to ``self.user_id``).
-
-        Returns
-        -------
-        dict | None
-            The memory record with the highest score, or ``None`` if no skill
-            iterations have been stored yet.
-        """
-        results = self._client.search(
-            "skill iteration score evaluation",
-            user_id=user_id or self.user_id,
-            limit=50,
-        )
-        if isinstance(results, dict):
-            results = results.get("results", [])
-        if not results:
-            return None
-
-        best: dict | None = None
-        best_score = -1.0
-        for rec in results:
-            meta = rec.get("metadata") or {}
-            if meta.get("event_type") != "skill_iteration":
+        lines: list[str] = []
+        for rec in memories or []:
+            if not isinstance(rec, dict):
                 continue
-            try:
-                s = float(meta.get("score", -1))
-            except (TypeError, ValueError):
+            text = rec.get("memory") or rec.get("text") or ""
+            if not isinstance(text, str) or not text.strip():
                 continue
-            if s > best_score:
-                best_score = s
-                best = rec
+            lines.append(f"- {text.strip()}")
+        if not lines:
+            return ""
 
-        return best
+        body = "\n".join(lines)
+        if len(body) > max_chars:
+            body = body[:max_chars] + "\n[...truncated]"
+        return "## Relevant Memory From Previous Runs\n" + body
 
-    def store_experiment_result(
-        self,
-        config_name: str,
-        final_score: float,
-        skill_hash: str,
-    ) -> Any:
-        """Store the final outcome of an experiment run.
-
-        Parameters
-        ----------
-        config_name : str
-            Human-readable name / path of the config used for this run.
-        final_score : float
-            Best evaluation score achieved during the run.
-        skill_hash : str
-            Hash of the best skill version (from :meth:`store_skill_iteration`).
-        """
-        base_meta: dict[str, Any] = {
-            "event_type": "experiment_result",
-            "config_name": config_name,
-            "final_score": round(float(final_score), 6),
-            "skill_hash": skill_hash,
-        }
-
-        content = (
-            f"[SkillOpt] Experiment complete — config={config_name!r} "
-            f"final_score={final_score:.4f} best_skill_hash={skill_hash}"
-        )
-
-        messages = [{"role": "user", "content": content}]
-        return self._add(messages, metadata=base_meta)
+    def close(self) -> None:
+        """Release the worker thread. Safe to call more than once."""
+        self._pool.shutdown(wait=False)
 
     def __repr__(self) -> str:
-        return (
-            f"<SkillMemory user_id={self.user_id!r} "
-            f"client={self._client.__class__.__name__}>"
-        )
+        return f"<SkillMemory namespace={self.namespace!r} client={self._client.__class__.__name__}>"

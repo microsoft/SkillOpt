@@ -138,6 +138,54 @@ defaults to `claude` and can be overridden with `CLAUDE_CLI_BIN`.
 
 Benchmark-specific `env` keys are passed through to the adapter.
 
+## Persistent Memory (mem0) — optional, off by default
+
+Stores skill iterations and reflection summaries in [mem0](https://mem0.ai) and
+reads a small amount of relevant history back into the Reflect stage.
+
+**Disabled unless `mem0_enabled` is explicitly true.** A `MEM0_API_KEY` present
+in the environment for another application does *not* enable it. Install with
+`pip install 'skillopt[mem0]'`.
+
+Set these under `train:` in a structured config (every shipped config is
+structured), at the top level of a flat config, or via
+`--cfg-options mem0_enabled=true`. A ready-made example ships at
+`configs/features/mem0_memory.yaml`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `train.mem0_enabled` | bool | `false` | Master switch. Nothing is sent unless this is true |
+| `train.mem0_api_key` | str | empty | Falls back to `MEM0_API_KEY`, read only when enabled |
+| `train.mem0_namespace` | str | derived | Override the namespace; default is derived per project |
+| `train.mem0_retrieval_enabled` | bool | `true` | Read memory back into reflection; writes continue if false |
+| `train.mem0_retrieval_limit` | int | `5` | Max records fetched per retrieval |
+| `train.mem0_timeout_seconds` | float | `5.0` | Hard per-call bound; on timeout training continues |
+| `train.mem0_max_chars` | int | `4000` | Cap on any single stored payload, applied after redaction |
+
+### What leaves the machine
+
+When enabled, exactly two record types are sent, both redacted first:
+
+1. **Skill iteration** — epoch, step, score, skill hash and length, the `env`
+   and model names, and the skill text (capped at `mem0_max_chars`).
+2. **Reflection summary** — epoch, step, patch count, rollout scores, and a
+   JSON summary of up to 10 patches with any `skill_text` field removed.
+
+Retrieval sends the first 600 characters of the current skill as a similarity
+query.
+
+Before transmission every payload passes through
+`skillopt.memory.redaction.redact_for_upload`, which strips vendor API keys,
+bearer/basic tokens, JWTs, private keys, `key = value` secret assignments, the
+project root, and `/home/<user>`-style prefixes. Relative paths and filenames
+are deliberately preserved so stored memories stay useful.
+
+### Namespacing
+
+Memories are scoped to `skillopt:<env>:<digest>`, where the digest is a SHA-256
+prefix of the absolute project root. Stable across runs of one project, distinct
+across projects, and the raw path is never transmitted.
+
 ## Credential Environment Variables
 
 ### Azure-family backend

@@ -1,67 +1,137 @@
-"""Lightweight integration hooks for injecting SkillMemory into ReflACT training.
+"""Integration hooks binding :class:`SkillMemory` into the ReflACT loop.
 
-These hooks are designed to be **non-breaking**: if ``MEM0_API_KEY`` is not
-present in the environment, :func:`maybe_init_mem0` returns ``None`` and
-every ``hook_*`` function becomes a no-op.
+Every hook is a no-op when *memory* is ``None``, which is the state of any run
+that did not set ``mem0_enabled: true``. That keeps the trainer free of
+feature-flag branches: it calls the hooks unconditionally and they decide.
+
+The read/write pair is what makes this a memory rather than a log:
+
+* :func:`hook_pre_reflect` — **reads**. Runs before the Reflect stage and
+  appends relevant history to the reflection context, so past runs influence
+  the patches produced now.
+* :func:`hook_post_reflect` / :func:`hook_post_evaluate` — **write**.
 
 Typical usage inside ``trainer.py``::
 
     from skillopt.memory.trainer_hooks import (
-        maybe_init_mem0,
-        hook_post_evaluate,
-        hook_post_reflect,
+        maybe_init_mem0, hook_pre_reflect, hook_post_evaluate, hook_post_reflect,
     )
 
     memory = maybe_init_mem0(cfg)
 
-    # ... inside training loop, after evaluation gate:
-    hook_post_evaluate(memory, epoch, step, current_skill, gate_score, cfg)
+    # before the Reflect stage:
+    step_buffer_context = hook_pre_reflect(memory, current_skill, step_buffer_context)
 
-    # ... after reflection stage:
-    hook_post_reflect(memory, epoch, step, raw_patches)
+    # after reflection / after the evaluation gate:
+    hook_post_reflect(memory, epoch, step, raw_patches, scores=...)
+    hook_post_evaluate(memory, epoch, step, current_skill, gate_score, cfg)
 """
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
+
+from skillopt.memory.settings import resolve_settings
 
 if TYPE_CHECKING:
     from skillopt.memory.mem0_backend import SkillMemory
+
+# Longest slice of skill text used to build a retrieval query. The query is
+# only a similarity probe, so a head slice is enough and keeps the outbound
+# request small.
+_QUERY_CHARS = 600
 
 
 # ── Initialisation ────────────────────────────────────────────────────────────
 
 def maybe_init_mem0(cfg: dict) -> "SkillMemory | None":
-    """Attempt to initialise a :class:`~skillopt.memory.SkillMemory` instance.
+    """Initialise memory for this run, or return ``None``.
 
-    Reads ``MEM0_API_KEY`` from the environment. If the key is absent or
-    mem0ai is not installed, returns ``None`` (graceful degradation).
+    Returns ``None`` — sending nothing — unless **all** of the following hold:
 
-    Parameters
-    ----------
-    cfg : dict
-        Flat trainer config dict. The ``config_name`` key (if present) is used
-        to label experiment results.
-
-    Returns
-    -------
-    SkillMemory | None
-        A live ``SkillMemory`` instance, or ``None`` if mem0 is unavailable.
+    1. ``mem0_enabled`` is explicitly true in the config. A ``MEM0_API_KEY``
+       present in the environment for some other application is *not*
+       sufficient and never has been sufficient since this check existed.
+    2. An API key is resolvable (``mem0_api_key`` or ``MEM0_API_KEY``).
+    3. The optional ``mem0ai`` dependency is installed.
     """
-    api_key = os.environ.get("MEM0_API_KEY", "")
-    if not api_key:
+    settings = resolve_settings(cfg)
+    if not settings.enabled:
+        return None
+
+    if not settings.api_key:
+        print("  [mem0] mem0_enabled is set but no API key was found — memory disabled")
         return None
 
     try:
-        from skillopt.memory.mem0_backend import SkillMemory  # local import to avoid hard dep
+        from skillopt.memory.mem0_backend import SkillMemory, mem0_available
 
-        user_id = str(cfg.get("config_name") or cfg.get("env") or "skillopt")
-        memory = SkillMemory(api_key=api_key, user_id=user_id)
-        print(f"  [mem0] SkillMemory initialised — user_id={user_id!r}")
+        if not mem0_available():
+            print("  [mem0] mem0_enabled is set but mem0ai is not installed "
+                  "(pip install 'skillopt[mem0]') — memory disabled")
+            return None
+
+        memory = SkillMemory.from_settings(settings)
+        if memory is not None:
+            print(f"  [mem0] memory enabled — namespace={memory.namespace!r} "
+                  f"retrieval={'on' if settings.retrieval_enabled else 'off'}")
         return memory
-    except Exception as exc:  # pragma: no cover
-        print(f"  [mem0] WARNING: could not initialise SkillMemory: {exc}")
+    except Exception as exc:  # noqa: BLE001 - memory must never break training
+        print(f"  [mem0] WARNING: could not initialise memory: {exc}")
         return None
+
+
+# ── Pre-reflect hook (the read side) ──────────────────────────────────────────
+
+def hook_pre_reflect(
+    memory: "SkillMemory | None",
+    skill_text: str,
+    step_buffer_context: str = "",
+    query: str | None = None,
+) -> str:
+    """Return *step_buffer_context* with relevant past memories appended.
+
+    This is the one retrieval call per step. It is bounded by
+    ``mem0_timeout_seconds`` inside the backend, and on any failure — timeout,
+    network error, empty result — the original context is returned unchanged,
+    so reflection proceeds exactly as it would with memory disabled.
+
+    Parameters
+    ----------
+    memory : SkillMemory | None
+        Backend, or ``None`` for a run without memory (returns input unchanged).
+    skill_text : str
+        Current skill document; its head is used as the similarity probe.
+    step_buffer_context : str
+        Context already assembled for this step. Retrieved memory is appended
+        to it rather than replacing it.
+    query : str | None
+        Explicit query, overriding the skill-derived one. Used by tests.
+
+    Returns
+    -------
+    str
+        Possibly-augmented context, always safe to pass to ``adapter.reflect``.
+    """
+    if memory is None:
+        return step_buffer_context
+
+    try:
+        probe = query if query is not None else (skill_text or "")[:_QUERY_CHARS]
+        if not probe.strip():
+            return step_buffer_context
+
+        memories = memory.retrieve_relevant_context(probe)
+        block = memory.format_retrieved_context(memories)
+        if not block:
+            return step_buffer_context
+
+        print(f"  [mem0] retrieved {len(memories)} memory record(s) into reflection context")
+        if step_buffer_context and step_buffer_context.strip():
+            return f"{step_buffer_context}\n\n{block}"
+        return block
+    except Exception as exc:  # noqa: BLE001 - memory must never break training
+        print(f"  [mem0] WARNING: hook_pre_reflect failed: {exc}")
+        return step_buffer_context
 
 
 # ── Post-evaluate hook ────────────────────────────────────────────────────────
@@ -74,23 +144,7 @@ def hook_post_evaluate(
     score: float,
     cfg: dict,
 ) -> None:
-    """Called after the evaluation gate — stores the current skill + score.
-
-    Parameters
-    ----------
-    memory : SkillMemory | None
-        The memory backend. If ``None``, this function is a no-op.
-    epoch : int
-        Current training epoch.
-    step : int
-        Current training step.
-    skill : str
-        Full text of the current skill document.
-    score : float
-        Gate score for this skill version.
-    cfg : dict
-        Flat trainer config (used to extract optional metadata).
-    """
+    """Store the current skill and its gate score. No-op without memory."""
     if memory is None:
         return
     try:
@@ -106,7 +160,7 @@ def hook_post_evaluate(
             score=score,
             metadata=meta,
         )
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:  # noqa: BLE001 - memory must never break training
         print(f"  [mem0] WARNING: hook_post_evaluate failed: {exc}")
 
 
@@ -119,29 +173,15 @@ def hook_post_reflect(
     patches: list,
     scores: dict | None = None,
 ) -> None:
-    """Called after the Reflect stage — stores patch metadata.
-
-    Parameters
-    ----------
-    memory : SkillMemory | None
-        The memory backend. If ``None``, this function is a no-op.
-    epoch : int
-        Current training epoch.
-    step : int
-        Current training step.
-    patches : list
-        Raw patches returned by the reflection stage (list of dicts).
-    scores : dict | None
-        Optional rollout scores from this step (e.g. ``{"hard": 0.7}``).
-    """
+    """Store a summary of this step's patches. No-op without memory."""
     if memory is None:
         return
     try:
         memory.store_reflection(
             epoch=epoch,
             step=step,
-            patches=list(patches) if patches else [],
+            patches=patches,
             scores=scores,
         )
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:  # noqa: BLE001 - memory must never break training
         print(f"  [mem0] WARNING: hook_post_reflect failed: {exc}")

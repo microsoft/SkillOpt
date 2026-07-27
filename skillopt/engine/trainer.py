@@ -75,7 +75,12 @@ from skillopt.model import (
     set_optimizer_deployment,
 )
 from skillopt.utils import compute_score, skill_hash
-from skillopt.memory.trainer_hooks import maybe_init_mem0, hook_post_evaluate, hook_post_reflect
+from skillopt.memory.trainer_hooks import (
+    maybe_init_mem0,
+    hook_pre_reflect,
+    hook_post_evaluate,
+    hook_post_reflect,
+)
 
 
 # ── Skill-aware reflection: appendix flush ───────────────────────────────────
@@ -1161,11 +1166,18 @@ class ReflACTTrainer:
                     # Build step context from buffer
                     step_buffer_context = _format_step_buffer(step_buffer)
 
+                    # Memory read: relevant history for THIS reflection only.
+                    # Kept in a separate name so the LR decision and rewrite
+                    # prompts below continue to see the unaugmented context.
+                    reflect_context = hook_pre_reflect(
+                        memory, current_skill, step_buffer_context,
+                    )
+
                     raw_patches = adapter.reflect(
                         rollout_results, current_skill, batch_dir,
                         prediction_dir=pred_dir, patches_dir=patches_dir,
                         random_seed=batch_seed,
-                        step_buffer_context=step_buffer_context,
+                        step_buffer_context=reflect_context,
                         meta_skill_context=active_meta_skill,
                     )
                     failure_patches, success_patches = _normalise_patches(
