@@ -10,7 +10,7 @@ Covers:
   - Deployment setters
   - One opt-in real Hermes smoke test
 
-Follows the same ptest + monkeypatch pattern as test_qwen_backend.py.
+Follows the same pytest + monkeypatch pattern as test_qwen_backend.py.
 """
 from __future__ import annotations
 

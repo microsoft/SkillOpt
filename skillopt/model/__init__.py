@@ -447,14 +447,12 @@ def chat_messages_with_deployment(
     return_message: bool = False,
     timeout: int | None = None,
 ) -> tuple[Any, dict]:
-    if get_optimizer_backend() == "hermes_chat" or get_target_backend() == "hermes_chat":
-        # TODO: This dispatches to Hermes if EITHER optimizer OR target is
-        # hermes_chat, which breaks in a dual-backend scenario (e.g.
-        # optimizer=openai_chat, target=hermes_chat). The function receives
-        # ``deployment`` but doesn't know which role it applies to. A proper
-        # fix would route based on the deployment's role, or add a ``role``
-        # parameter. For now the ``or`` condition is conservative (Hermes
-        # handles both) but may need revisiting for dual-backend setups.
+    if get_optimizer_backend() == "hermes_chat" and get_target_backend() == "hermes_chat":
+        # Route to Hermes only when BOTH backends are hermes_chat.  When only
+        # one side is hermes_chat (dual-backend scenario) the function routes
+        # to OpenAI, which handles both sides via the generic OpenAI backend.
+        # A deployment-level ``role`` parameter would be cleaner but requires
+        # a broader API change — see the sibling function below.
         return _hermes.chat_messages_with_deployment(
             deployment=deployment,
             messages=messages,
@@ -490,10 +488,9 @@ def chat_with_deployment(
     reasoning_effort: str | None = None,
     timeout: int | None = None,
 ) -> tuple[str, dict]:
-    if get_optimizer_backend() == "hermes_chat" or get_target_backend() == "hermes_chat":
-        # TODO: Same limitation as chat_messages_with_deployment — dispatches to
-        # Hermes if EITHER role is hermes_chat. A proper fix needs deployment
-        # role awareness.
+    if get_optimizer_backend() == "hermes_chat" and get_target_backend() == "hermes_chat":
+        # Route to Hermes only when BOTH backends are hermes_chat.  Same
+        # rationale as chat_messages_with_deployment above.
         return _hermes.chat_with_deployment(
             deployment=deployment,
             system=system,

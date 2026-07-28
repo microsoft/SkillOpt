@@ -19,11 +19,11 @@ from skillopt.model.common import (
 
 HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
 
-# Profiles mutáveis — setters alteram estas variáveis
+# Mutable profiles — setters modify these variables
 _target_profile: str = os.environ.get("HERMES_TARGET_PROFILE", "default")
 _optimizer_profile: str = os.environ.get("HERMES_OPTIMIZER_PROFILE", "default")
 
-# Token tracker próprio — não usa o global de common.py
+# Own token tracker — does not use the global one from common.py
 _hermes_tracker = TokenTracker()
 
 
@@ -44,7 +44,6 @@ def _call_hermes(
     cmd = [HERMES_BIN, "--profile", profile, "chat", "-q", prompt]
     last_err: Exception | None = None
     for attempt in range(retries):
-        t0 = time.time()
         try:
             proc = subprocess.run(
                 cmd,
@@ -278,7 +277,7 @@ def set_target_deployment(deployment: str) -> None:
     ``deployment`` is interpreted as a Hermes profile name.
     """
     global _target_profile
-    _target_profile = deployment or default_model_for_backend("hermes")
+    _target_profile = deployment or "default"
     os.environ["HERMES_TARGET_PROFILE"] = _target_profile
 
 
@@ -288,7 +287,7 @@ def set_optimizer_deployment(deployment: str) -> None:
     ``deployment`` is interpreted as a Hermes profile name.
     """
     global _optimizer_profile
-    _optimizer_profile = deployment or default_model_for_backend("hermes")
+    _optimizer_profile = deployment or "default"
     os.environ["HERMES_OPTIMIZER_PROFILE"] = _optimizer_profile
 
 

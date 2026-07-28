@@ -32,9 +32,6 @@ def _filter_engine_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, An
         elif "skillopt_sleep_hermes_" in cwd:
             # Engine's own tempdir → skip
             continue
-        elif cwd.startswith("/tmp/") and len(cwd.split("/", 3)) <= 4:
-            # Very short-lived temp sessions; likely programmatic
-            continue
         else:
             out.append(s)
     return out
@@ -205,17 +202,11 @@ def harvest_hermes(
             where += " AND ended_at >= ?"
             params.append(since_epoch)
 
-    limit_clause = ""
-    cap = int(limit or 0)
-    if cap > 0:
-        limit_clause = " LIMIT ?"
-        params.append(cap)
-
     cursor.execute(
         f"""SELECT id, cwd, title, started_at, ended_at, model
             FROM sessions
             {where}
-            ORDER BY ended_at DESC{limit_clause}""",
+            ORDER BY ended_at DESC""",
         params,
     )
 

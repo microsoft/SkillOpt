@@ -1957,7 +1957,7 @@ class AzureResponsesBackend(AzureOpenAIBackend):
 # ── Hermes CLI backend ─────────────────────────────────────────────────────────
 
 class HermesBackend(CliBackend):
-    """Drives Hermes Agent CLI: `hermes --profile <name> chat -q "<prompt>"`."""
+    """Drives Hermes Agent CLI: `hermes --profile <name> chat -Q -q "<prompt>"`."""
 
     name = "hermes"
 
