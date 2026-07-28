@@ -1986,7 +1986,8 @@ class HermesBackend(CliBackend):
                 cwd=clean_cwd,
                 env={**os.environ, "HERMES_NO_COLOR": "1"},
             )
-        except Exception:
+        except Exception as exc:
+            self.last_call_error = f"Hermes CLI call failed: {exc}"
             return ""
         finally:
             try:
@@ -2004,6 +2005,7 @@ class HermesBackend(CliBackend):
             "Bitwarden Secrets Manager:",
             "Warning: Unknown",
             "session_id:",
+            "Exception ignored in:",
         )
         lines = raw.split("\n")
         body: list[str] = []
@@ -2014,11 +2016,21 @@ class HermesBackend(CliBackend):
                 continue
             if any(stripped.startswith(p) for p in skip_prefixes):
                 continue
-            if stripped.startswith("Exception") or stripped.startswith("Traceback"):
+            # Only detect traceback when we see the exact header; "Exception"
+            # alone is too aggressive (legitimate answers can start with it).
+            if stripped == "Traceback (most recent call last):":
                 in_traceback = True
                 continue
             if in_traceback:
-                continue
+                # Stay in traceback mode while we see frame lines
+                if stripped.startswith('File "') and ", line " in stripped:
+                    continue
+                if re.match(r"^\w+(Error|Exception|Warning):", stripped):
+                    continue
+                # End of traceback — emit this line (it might be the model's
+                # own response after the traceback block) but reset the flag
+                # so future lines are not skipped.
+                in_traceback = False
             body.append(line)
         result = "\n".join(body).strip()
         self._tokens += len(prompt) // 4 + len(result) // 4
