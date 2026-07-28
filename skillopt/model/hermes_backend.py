@@ -1,9 +1,8 @@
 """Hermes CLI chat backend for SkillOpt.
 
-Chama `hermes --profile <name> chat -q "<prompt>"` como target/optimizer.
-Possui token tracker próprio (separado do Claude/OpenAI) para evitar
-double-count. Profiles são mutáveis via set_target_deployment /
-set_optimizer_deployment.
+Calls ``hermes --profile <name> chat -q "<prompt>"`` as target/optimizer.
+Own token tracker (separate from Claude/OpenAI) to prevent double-counting.
+Profiles are mutable via ``set_target_deployment`` / ``set_optimizer_deployment``.
 """
 from __future__ import annotations
 
@@ -59,7 +58,6 @@ def _call_hermes(
             if attempt < retries - 1:
                 time.sleep(min(2 ** attempt, 10))
             continue
-        elapsed = time.time() - t0
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
             last_err = RuntimeError(stderr or f"Hermes CLI exited with code {proc.returncode}")

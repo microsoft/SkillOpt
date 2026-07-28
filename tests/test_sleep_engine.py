@@ -2472,7 +2472,7 @@ class TestHermesBackendCli(unittest.TestCase):
         self.assertIn("Line two", lines)
         self.assertIn("  indented line three", lines)
 
-    def test_hermes_home_overridable(self):
+    def test_hermes_env_overrides_are_read(self):
         """SKILLOPT_SLEEP_HERMES_PROFILE and HERMES_BIN are read from env."""
         from skillopt_sleep.backend import HermesBackend
 
@@ -2485,7 +2485,7 @@ class TestHermesBackendCli(unittest.TestCase):
             self.assertEqual(be.hermes_bin, "/custom/path/hermes")
             self.assertEqual(be.hermes_profile, "pro")
 
-    def test_hermes_home_falls_back_to_default(self):
+    def test_hermes_profile_defaults_when_no_env(self):
         """Without env overrides, hermes_profile defaults to HERMES_TARGET_PROFILE or 'default'."""
         from skillopt_sleep.backend import HermesBackend
 
