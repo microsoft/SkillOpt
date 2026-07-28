@@ -198,6 +198,10 @@ gate keeps the worst case bounded; keep it **on** by default.
 
 ## Learn more
 
+Staging a proposal for more than one skill, and adopting a reviewed subset of
+them with backups and hash receipts, is documented in
+[`docs/sleep/multi-skill-staging.md`](multi-skill-staging.md).
+
 See the [SkillOpt documentation index](../index.md), the
 [CLI reference](../reference/cli.md), and the integration-specific READMEs under
 [`plugins/`](https://github.com/microsoft/SkillOpt/tree/main/plugins).

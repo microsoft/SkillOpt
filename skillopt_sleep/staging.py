@@ -7,6 +7,7 @@ live files after taking a backup.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -438,6 +439,130 @@ def write_staging(
     with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     return out
+
+
+@dataclass
+class AdoptedSkill:
+    """Receipt for one adopted skill: where it landed and what changed."""
+
+    skill_name: str
+    live_skill_path: str
+    sha256_before: str          # "" when no live file existed yet
+    sha256_after: str
+    backup_path: str = ""       # "" when there was nothing to back up
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path: str) -> str:
+    """Hash a file's contents, or "" when it does not exist."""
+    if not os.path.exists(path):
+        return ""
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def staged_skills(staging_dir: str) -> List[Dict[str, Any]]:
+    """Manifest rows for the per-skill proposals staged in ``staging_dir``."""
+    with open(os.path.join(staging_dir, "manifest.json"), encoding="utf-8") as f:
+        manifest = json.load(f)
+    rows = manifest.get("skills") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _selected_rows(
+    rows: Sequence[Dict[str, Any]], skill_names: Optional[Sequence[str]]
+) -> List[Dict[str, Any]]:
+    """Rows for the reviewed subset, in manifest order, or every row."""
+    if skill_names is None:
+        return list(rows)
+    wanted = [str(n).strip() for n in skill_names]
+    if not wanted:
+        return []
+    known = {str(row.get("skill_name", "")) for row in rows}
+    unknown = [n for n in wanted if n not in known]
+    if unknown:
+        raise StagingError(f"no staged proposal for: {', '.join(sorted(unknown))}")
+    duplicates = {n for n in wanted if wanted.count(n) > 1}
+    if duplicates:
+        raise StagingError(f"skill selected twice: {', '.join(sorted(duplicates))}")
+    chosen = set(wanted)
+    return [row for row in rows if str(row.get("skill_name", "")) in chosen]
+
+
+def adopt_skills(
+    staging_dir: str, skill_names: Optional[Sequence[str]] = None
+) -> List[AdoptedSkill]:
+    """Adopt an explicitly reviewed subset of staged per-skill proposals.
+
+    ``skill_names`` selects which staged skills to adopt; ``None`` means every
+    staged skill. Nothing is adopted implicitly and skills outside the selection
+    are never touched.
+
+    Every selected proposal is validated first, each live file is backed up, and
+    the writes are rolled back as a set if any one of them fails, so a partial
+    adoption never survives. Returns a before/after sha256 receipt per skill and
+    also writes them to ``adopted_skills.json`` in the staging directory.
+    """
+    rows = _selected_rows(staged_skills(staging_dir), skill_names)
+    if not rows:
+        return []
+
+    plan: List[tuple] = []
+    for row in rows:
+        name = _safe_skill_name(row.get("skill_name"))
+        if not name:
+            raise StagingError(f"unsafe staged skill name: {row.get('skill_name')!r}")
+        live = _safe_live_path(row.get("live_skill_path"))
+        if not live:
+            raise StagingError(
+                f"unsafe live skill path for {name!r}: {row.get('live_skill_path')!r}"
+            )
+        staged = os.path.join(staging_dir, str(row.get("proposed_file") or ""))
+        if not os.path.isfile(staged):
+            raise StagingError(f"staged proposal missing for {name!r}: {staged}")
+        plan.append((name, live, staged))
+
+    backup_dir = os.path.join(staging_dir, "backup", "skills")
+    receipts: List[AdoptedSkill] = []
+    done: List[tuple] = []   # (live, original_bytes or None) for rollback
+    try:
+        for name, live, staged in plan:
+            with open(staged, encoding="utf-8") as f:
+                proposed = f.read()
+            original = None
+            backup_path = ""
+            if os.path.exists(live):
+                with open(live, "rb") as f:
+                    original = f.read()
+                skill_backup = os.path.join(backup_dir, name)
+                os.makedirs(skill_backup, exist_ok=True)
+                backup_path = os.path.join(skill_backup, os.path.basename(live))
+                shutil.copy2(live, backup_path)
+            before = _sha256_file(live)
+            _write_atomic(live, proposed)
+            done.append((live, original))
+            receipts.append(AdoptedSkill(
+                skill_name=name, live_skill_path=live, sha256_before=before,
+                sha256_after=_sha256_text(proposed), backup_path=backup_path,
+            ))
+    except BaseException:
+        for live, original in reversed(done):
+            if original is None:
+                if os.path.exists(live):
+                    os.unlink(live)
+            else:
+                with open(live, "wb") as f:
+                    f.write(original)
+        raise
+
+    _write_atomic(
+        os.path.join(staging_dir, "adopted_skills.json"),
+        json.dumps([r.__dict__ for r in receipts], ensure_ascii=False, indent=2),
+    )
+    return receipts
 
 
 def _backup(path: str, backup_dir: str) -> None:
