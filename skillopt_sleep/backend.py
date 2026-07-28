@@ -1961,12 +1961,46 @@ class HermesBackend(CliBackend):
 
     name = "hermes"
 
+    # Auth/config error markers that indicate a misconfigured Hermes CLI.
+    # When detected, we log a warning so the user doesn't mistake a
+    # broken setup for "nothing to optimize".
+    _AUTH_MARKERS = (
+        "401 Unauthorized",
+        "Not logged in",
+        "Please run /login",
+        "Authentication required",
+        "Invalid API key",
+        "Unauthorized: invalid",
+        "API key not configured",
+    )
+    _CONFIG_ERROR_MARKERS = (
+        "profile not found",
+        "unknown profile",
+        "config file not found",
+        "unable to load config",
+    )
+
     def __init__(self, model: str = "", timeout: int = 180) -> None:
         super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_HERMES_MODEL", ""),
                          timeout=timeout)
         self.hermes_bin = os.environ.get("HERMES_BIN", "hermes")
         self.hermes_profile = os.environ.get("SKILLOPT_SLEEP_HERMES_PROFILE",
                                             os.environ.get("HERMES_TARGET_PROFILE", "default"))
+
+    def _detect_cli_error(self, stdout: str, stderr: str) -> None:
+        """Log a warning if CLI output looks like an auth/config error."""
+        import logging
+        check_stdout = stdout if len(stdout) < 300 else ""
+        combined = check_stdout + "\n" + stderr
+        for marker in self._AUTH_MARKERS + self._CONFIG_ERROR_MARKERS:
+            if marker.lower() in combined.lower():
+                from skillopt_sleep.staging import redact_secrets
+                logging.getLogger("skillopt_sleep").warning(
+                    "Hermes CLI returned a likely auth/config error: %s",
+                    redact_secrets(combined[:200].replace("\n", " ")),
+                )
+                self.last_call_error = combined[:200]
+                return
 
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
         import re
@@ -1987,7 +2021,8 @@ class HermesBackend(CliBackend):
                 env={**os.environ, "HERMES_NO_COLOR": "1"},
             )
         except Exception as exc:
-            self.last_call_error = f"Hermes CLI call failed: {exc}"
+            msg = f"Hermes CLI call failed: {exc}"
+            self.last_call_error = msg[:200]
             return ""
         finally:
             try:
@@ -1997,9 +2032,11 @@ class HermesBackend(CliBackend):
                 pass
         if proc.returncode != 0:
             stderr = (proc.stderr or "").strip()
-            self.last_call_error = stderr[:500] if stderr else f"Hermes CLI exited with code {proc.returncode}"
+            self.last_call_error = (stderr[:200] if stderr
+                                    else f"Hermes CLI exited with code {proc.returncode}")
             return ""
         raw = (proc.stdout or "").strip()
+        self._detect_cli_error(raw, proc.stderr or "")
         # Strip known CLI boilerplate (notices, warnings, session IDs, tracebacks)
         skip_prefixes = (
             "Bitwarden Secrets Manager:",
@@ -2010,10 +2047,16 @@ class HermesBackend(CliBackend):
         lines = raw.split("\n")
         body: list[str] = []
         in_traceback = False
+        seen_content = False
         for line in lines:
             stripped = line.strip()
+            # Only skip leading blank lines; preserve intra-paragraph blanks.
             if not stripped:
+                if not seen_content:
+                    continue
+                body.append(line)
                 continue
+            seen_content = True
             if any(stripped.startswith(p) for p in skip_prefixes):
                 continue
             # Only detect traceback when we see the exact header; "Exception"

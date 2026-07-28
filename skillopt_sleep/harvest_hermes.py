@@ -60,6 +60,8 @@ def _fetch_messages(db_path: str, session_id: str) -> List[Dict[str, Any]]:
 def _build_digest(
     session: Dict[str, Any],
     messages: List[Dict[str, Any]],
+    *,
+    db_path: str = "",
     scope: str = "invoked",
     invoked_project: str = "",
 ) -> Optional[SessionDigest]:
@@ -119,6 +121,7 @@ def _build_digest(
                 out.append(x)
         return out
 
+    resolved_db = db_path or STATE_DB
     return SessionDigest(
         session_id=session_id,
         project=project,
@@ -131,7 +134,7 @@ def _build_digest(
         feedback_signals=[],
         n_user_turns=n_user,
         n_assistant_turns=n_asst,
-        raw_path=f"{STATE_DB}:{session_id}",
+        raw_path=f"{resolved_db}:{session_id}",
     )
 
 
@@ -176,7 +179,8 @@ def harvest_hermes(
     invoked_project : str
         Used when ``scope == "invoked"``.
     since_iso : str | None
-        ISO 8601; only sessions starting after this are kept.
+        ISO 8601; only sessions that **ended** after this are kept (we harvest
+        complete sessions only).
     limit : int
         Cap number of digests (0 = no cap).
     db_path : str
@@ -190,8 +194,10 @@ def harvest_hermes(
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # Build query with optional since filter
-    where = "WHERE cwd IS NOT NULL AND cwd != '' AND ended_at IS NOT NULL"
+    # Build query with optional since filter — _filter_engine_sessions()
+    # and project scoping handle cwd/user-session filtering, so we do not
+    # exclude gateway sessions (which have no cwd) at the SQL level.
+    where = "WHERE ended_at IS NOT NULL"
     params: List[Any] = []
     if since_iso:
         since_epoch = _epoch_from_iso(since_iso)
@@ -199,13 +205,18 @@ def harvest_hermes(
             where += " AND ended_at >= ?"
             params.append(since_epoch)
 
+    limit_clause = ""
+    cap = int(limit or 0)
+    if cap > 0:
+        limit_clause = " LIMIT ?"
+        params.append(cap)
+
     cursor.execute(
         f"""SELECT id, cwd, title, started_at, ended_at, model
             FROM sessions
             {where}
-            ORDER BY ended_at DESC
-            LIMIT ?""",
-        params + [(limit or 200)],
+            ORDER BY ended_at DESC{limit_clause}""",
+        params,
     )
 
     sessions = [dict(r) for r in cursor.fetchall()]
@@ -220,6 +231,7 @@ def harvest_hermes(
         msgs = _fetch_messages(db, sid)
         digest = _build_digest(
             s, msgs,
+            db_path=db,
             scope=scope,
             invoked_project=invoked_project,
         )

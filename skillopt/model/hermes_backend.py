@@ -38,7 +38,9 @@ def _call_hermes(
     """Call hermes CLI and return (response_text, token_info).
 
     Retries on non-zero exit with exponential backoff.
-    Sets ``last_call_error`` on the module on persistent failure.
+    Raises ``RuntimeError`` on persistent failure after all retries are exhausted.
+    Does NOT set a module-level ``last_call_error`` — failures are surfaced
+    via the raised exception.
     """
     cmd = [HERMES_BIN, "--profile", profile, "chat", "-q", prompt]
     last_err: Exception | None = None

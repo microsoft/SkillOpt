@@ -279,7 +279,16 @@ def run_sleep_cycle(
                    "evolve_skill", "evolve_memory")})
 
     # ── live skill/memory docs ───────────────────────────────────────────
-    live_memory_path = os.path.join(project, cfg.get("memory_filename", "CLAUDE.md"))
+    # When transcript_source is "hermes", default to AGENTS.md instead of
+    # CLAUDE.md unless the user explicitly set memory_filename.
+    default_memory = "CLAUDE.md"
+    if cfg.get("transcript_source") == "hermes":
+        default_memory = "AGENTS.md"
+    memory_filename = cfg.get("memory_filename", default_memory)
+    if memory_filename == default_memory and cfg.get("transcript_source") == "hermes":
+        # User did not explicitly override; use Hermes convention
+        memory_filename = "AGENTS.md"
+    live_memory_path = os.path.join(project, memory_filename)
     live_skill_path = cfg.managed_skill_path()
     _progress(cfg, f"live skill: {live_skill_path}")
     raw_skill = _read(live_skill_path)

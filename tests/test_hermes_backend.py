@@ -442,12 +442,12 @@ def test_hermes_backend_not_routed_when_not_selected(monkeypatch):
 
 
 @pytest.mark.slow
-def test_real_hermes_smoke():
-    """Verify the hermes CLI exists and responds.
+def test_hermes_cli_available_and_mocked():
+    """Verify the hermes CLI exists (if available) or works via mock.
 
     Marked @pytest.mark.slow (opt-in).
-    Run:  pytest tests/test_hermes_backend.py -k real_hermes_smoke --slow
-    or:   pytest tests/test_hermes_backend.py -k real_hermes_smoke -m slow
+    Run:  pytest tests/test_hermes_backend.py -k hermes_cli_available --slow
+    or:   pytest tests/test_hermes_backend.py -k hermes_cli_available -m slow
     """
     import subprocess as _sp
 
