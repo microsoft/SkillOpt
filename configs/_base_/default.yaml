@@ -49,7 +49,7 @@ model:
   # MiniMax backend settings (minimax_chat target)
   minimax_base_url: ""          # https://api.minimax.io/v1 if blank
   minimax_api_key: ""
-  minimax_model: "MiniMax-M2.7"
+  minimax_model: "MiniMax-M3"
   minimax_temperature: "0.7"
   minimax_max_tokens: "8000"
   minimax_enable_thinking: "false"

@@ -26,7 +26,7 @@ _BACKEND_DEFAULT_MODELS = {
     "claude_code_exec": "claude-sonnet-4-6",
     "cursor_exec": "composer-2.5",
     "qwen_chat": "Qwen/Qwen3.5-4B",
-    "minimax_chat": "MiniMax-M2.7",
+    "minimax_chat": "MiniMax-M3",
     "openai_compatible": "gpt-4o-mini",
 }
 
