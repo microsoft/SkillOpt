@@ -361,6 +361,89 @@ def test_slow_service_is_bounded():
     print(f"ok  7. slow service bounded ({elapsed:.2f}s, limit 0.2s)")
 
 
+# ── 9. Copilot review follow-ups ──────────────────────────────────────────────
+
+def test_retrieved_text_is_redacted_before_entering_the_prompt():
+    """Inbound redaction: mem0 is an external store and may hold raw secrets.
+
+    Anything it returns flows into the reflection prompt and on to the
+    optimizer's model provider, so it must be scrubbed on the way *in* as well
+    as on the way out.
+    """
+    poisoned = "Earlier run used sk-abcdefghijklmnop1234 from /home/alice/creds.txt"
+    settings = _enabled_settings()
+    client = FakeClient(search_results=[{"memory": poisoned}])
+    memory = SkillMemory(settings, client=client)
+
+    ctx = hook_pre_reflect(memory, "skill", "prior context")
+    assert "sk-abcdefghijklmnop1234" not in ctx, "secret from mem0 reached the prompt"
+    assert "/home/alice" not in ctx, "home path from mem0 reached the prompt"
+    assert "Earlier run used" in ctx, "redaction destroyed the whole record"
+    memory.close()
+    print("ok  9. retrieved text is redacted before entering the prompt")
+
+
+def test_repeated_timeouts_disable_the_backend():
+    """A wedged service must cost a bounded total, not a bounded amount per step.
+
+    With a single worker, a stuck call would otherwise make every later call
+    queue behind it and time out again, so the cost would recur every step.
+    """
+    settings = _enabled_settings(mem0_timeout_seconds=0.1)
+    client = FakeClient(search_results=[{"memory": "late"}], delay=5.0)
+    memory = SkillMemory(settings, client=client)
+
+    start = time.time()
+    for _ in range(6):
+        hook_pre_reflect(memory, "skill", "ctx")
+    elapsed = time.time() - start
+
+    assert memory._degraded, "backend should disable itself after repeated timeouts"
+    # 3 timeouts at 0.1s, then short-circuited: well under 6 x 0.1s.
+    assert elapsed < 1.0, f"repeated timeouts cost {elapsed:.2f}s — not bounded"
+    memory.close()
+    print(f"ok  9b. repeated timeouts disable the backend ({elapsed:.2f}s for 6 calls)")
+
+
+def test_timeout_does_not_block_the_next_call():
+    """The executor is retired on timeout, so a stuck thread is not serialising."""
+    settings = _enabled_settings(mem0_timeout_seconds=0.1)
+    client = FakeClient(search_results=[{"memory": "late"}], delay=5.0)
+    memory = SkillMemory(settings, client=client)
+
+    first_pool = memory._pool
+    hook_pre_reflect(memory, "skill", "ctx")
+    assert memory._pool is not first_pool, "executor was not retired after timeout"
+    memory.close()
+    print("ok  9c. executor is retired after a timeout")
+
+
+def test_close_is_idempotent_and_unregisters():
+    settings = _enabled_settings()
+    memory = SkillMemory(settings, client=FakeClient())
+    memory.close()
+    memory.close()  # must not raise
+    assert memory._closed
+    # A closed backend refuses further calls rather than resurrecting the pool.
+    assert memory.retrieve_relevant_context("anything") == []
+    print("ok  9d. close() is idempotent and stops further calls")
+
+
+def test_successful_call_resets_the_failure_counter():
+    settings = _enabled_settings()
+    client = FakeClient(fail=True)
+    memory = SkillMemory(settings, client=client)
+
+    memory.store_skill_iteration(epoch=0, step=0, skill_text="s", score=0.0)
+    assert memory._consecutive_failures == 1
+    client._fail = False
+    memory.store_skill_iteration(epoch=0, step=1, skill_text="s", score=0.0)
+    assert memory._consecutive_failures == 0, "a success should reset the counter"
+    assert not memory._degraded
+    memory.close()
+    print("ok  9e. a successful call resets the failure counter")
+
+
 # ── 8. Malformed patches ──────────────────────────────────────────────────────
 
 def test_malformed_patches_are_filtered_not_raised():
@@ -393,6 +476,11 @@ ALL_TESTS = [
     test_retrieval_can_be_disabled_independently,
     test_service_failure_degrades_gracefully,
     test_slow_service_is_bounded,
+    test_retrieved_text_is_redacted_before_entering_the_prompt,
+    test_repeated_timeouts_disable_the_backend,
+    test_timeout_does_not_block_the_next_call,
+    test_close_is_idempotent_and_unregisters,
+    test_successful_call_resets_the_failure_counter,
     test_malformed_patches_are_filtered_not_raised,
 ]
 

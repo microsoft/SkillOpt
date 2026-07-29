@@ -29,6 +29,7 @@ Usage::
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,11 @@ from typing import Any
 
 from skillopt.memory.redaction import redact_for_upload
 from skillopt.memory.settings import Mem0Settings
+
+# After this many consecutive timeouts/errors the backend stops calling out for
+# the rest of the run. Without it a single wedged request costs the full timeout
+# on *every* remaining step, because the queued call still has to time out.
+MAX_CONSECUTIVE_FAILURES = 3
 
 try:
     from mem0 import MemoryClient
@@ -72,6 +78,13 @@ class SkillMemory:
         # One worker: calls are already serialised by the training loop, and a
         # single thread keeps the timeout semantics easy to reason about.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem0")
+        self._consecutive_failures = 0
+        self._degraded = False
+        self._closed = False
+        # The pool's worker is non-daemon, so a thread wedged on a socket read
+        # would otherwise keep the interpreter alive at exit. Registering here
+        # guarantees cleanup even if the caller forgets or the run aborts.
+        atexit.register(self.close)
 
     # ── Construction ──────────────────────────────────────────────────────
 
@@ -90,21 +103,54 @@ class SkillMemory:
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
+    def _retire_pool(self) -> None:
+        """Abandon the current worker and start a fresh one.
+
+        A timed-out call leaves its thread blocked on a socket read, which
+        Python cannot cancel. Keeping that executor would serialise every
+        later call behind the wedged one, so each subsequent step would pay
+        the full timeout again and the queue would grow without bound.
+        Abandoning the pool bounds the damage to the one stuck thread.
+        """
+        old, self._pool = self._pool, ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem0")
+        try:
+            old.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # pragma: no cover - cancel_futures is 3.9+
+            old.shutdown(wait=False)
+
+    def _note_failure(self, reason: str) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not self._degraded:
+            self._degraded = True
+            print(f"  [mem0] disabled for the rest of this run after "
+                  f"{self._consecutive_failures} consecutive failures ({reason})")
+
     def _bounded(self, fn, *args, **kwargs) -> Any:
         """Run *fn* with a hard wall-clock bound; ``None`` on timeout or error.
 
         The worker thread may keep running after a timeout — Python cannot
         cancel a blocked socket read — but the *training step* is released on
-        schedule, which is the property that matters here.
+        schedule, and the executor is retired so the next step does not queue
+        behind it. After :data:`MAX_CONSECUTIVE_FAILURES` the backend stops
+        calling out entirely, so a persistently unreachable service costs a
+        bounded total rather than a bounded amount *per step*.
         """
+        if self._degraded or self._closed:
+            return None
         try:
             future = self._pool.submit(fn, *args, **kwargs)
-            return future.result(timeout=self.settings.timeout_seconds)
+            result = future.result(timeout=self.settings.timeout_seconds)
+            self._consecutive_failures = 0
+            return result
         except _FuturesTimeout:
             print(f"  [mem0] call exceeded {self.settings.timeout_seconds}s — continuing without it")
+            future.cancel()
+            self._retire_pool()
+            self._note_failure("timeout")
             return None
         except Exception as exc:  # noqa: BLE001 - memory must never break training
             print(f"  [mem0] call failed ({type(exc).__name__}: {exc}) — continuing without it")
+            self._note_failure(type(exc).__name__)
             return None
 
     def _payload(self, text: str) -> str:
@@ -235,6 +281,14 @@ class SkillMemory:
     def format_retrieved_context(self, memories: list[dict], max_chars: int = 2000) -> str:
         """Render retrieved memories as text for inclusion in a prompt.
 
+        Retrieved text is redacted **again** on the way in. Outbound redaction
+        alone is not enough: mem0 is an external store that may hold records
+        written by an older version of this code, by another tool, or by a
+        deliberately shared namespace. Anything returned from it flows straight
+        into the reflection prompt and on to the optimizer's model provider, so
+        it is untrusted input to a *second* third party and gets the same
+        treatment as anything leaving the process.
+
         Returns ``""`` when there is nothing useful, so callers can append
         unconditionally without producing an empty heading.
         """
@@ -245,7 +299,10 @@ class SkillMemory:
             text = rec.get("memory") or rec.get("text") or ""
             if not isinstance(text, str) or not text.strip():
                 continue
-            lines.append(f"- {text.strip()}")
+            clean = redact_for_upload(text, self.settings.project_root)
+            if not isinstance(clean, str) or not clean.strip():
+                continue
+            lines.append(f"- {clean.strip()}")
         if not lines:
             return ""
 
@@ -256,7 +313,17 @@ class SkillMemory:
 
     def close(self) -> None:
         """Release the worker thread. Safe to call more than once."""
-        self._pool.shutdown(wait=False)
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # pragma: no cover - cancel_futures is 3.9+
+            self._pool.shutdown(wait=False)
+        try:
+            atexit.unregister(self.close)
+        except Exception:  # noqa: BLE001 - cleanup must never raise
+            pass
 
     def __repr__(self) -> str:
         return f"<SkillMemory namespace={self.namespace!r} client={self._client.__class__.__name__}>"

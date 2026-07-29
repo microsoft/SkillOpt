@@ -2437,4 +2437,10 @@ class ReflACTTrainer:
                 f"calls={t['calls']})"
             )
 
+        # Release the memory worker thread. SkillMemory also registers an
+        # atexit hook, so an aborted run is covered too; this is the clean
+        # path so a long-lived process does not hold the thread until exit.
+        if memory is not None:
+            memory.close()
+
         return summary

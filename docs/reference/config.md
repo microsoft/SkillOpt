@@ -159,7 +159,7 @@ structured), at the top level of a flat config, or via
 | `train.mem0_namespace` | str | derived | Override the namespace; default is derived per project |
 | `train.mem0_retrieval_enabled` | bool | `true` | Read memory back into reflection; writes continue if false |
 | `train.mem0_retrieval_limit` | int | `5` | Max records fetched per retrieval |
-| `train.mem0_timeout_seconds` | float | `5.0` | Hard per-call bound; on timeout training continues |
+| `train.mem0_timeout_seconds` | float | `5.0` | Hard per-call bound. On timeout the executor is retired and training continues; after 3 consecutive failures memory disables itself for the run |
 | `train.mem0_max_chars` | int | `4000` | Cap on any single stored payload, applied after redaction |
 
 ### What leaves the machine
@@ -179,6 +179,19 @@ Before transmission every payload passes through
 bearer/basic tokens, JWTs, private keys, `key = value` secret assignments, the
 project root, and `/home/<user>`-style prefixes. Relative paths and filenames
 are deliberately preserved so stored memories stay useful.
+
+### Failure behaviour
+
+A call that exceeds `mem0_timeout_seconds` releases the training step on time and
+retires the worker, so the next step does not queue behind a wedged request. After
+three consecutive failures the backend stops calling out for the remainder of the run
+and logs once. A persistently unreachable service therefore costs a bounded total
+rather than a bounded amount on every step.
+
+Text retrieved from mem0 is redacted again before it is inserted into the reflection
+prompt. Outbound redaction alone is not sufficient: the store is external and may hold
+records written by an older version, another tool, or a shared namespace, and anything
+it returns is forwarded to the optimizer's model provider.
 
 ### Namespacing
 
