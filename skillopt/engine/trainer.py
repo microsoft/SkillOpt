@@ -337,6 +337,7 @@ _SECRET_KEYS = {
     "azure_api_key",
     "api_key",
     "openai_api_key",
+    "mem0_api_key",
 }
 
 

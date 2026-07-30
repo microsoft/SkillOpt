@@ -155,7 +155,7 @@ structured), at the top level of a flat config, or via
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `train.mem0_enabled` | bool | `false` | Master switch. Nothing is sent unless this is true |
-| `train.mem0_api_key` | str | empty | Falls back to `MEM0_API_KEY`, read only when enabled |
+| `train.mem0_api_key` | str | empty | Falls back to `MEM0_API_KEY`, read only when enabled. Redacted from `config.json` and the run summary; prefer the env var |
 | `train.mem0_namespace` | str | derived | Override the namespace; default is derived per project |
 | `train.mem0_retrieval_enabled` | bool | `true` | Read memory back into reflection; writes continue if false |
 | `train.mem0_retrieval_limit` | int | `5` | Max records fetched per retrieval |
@@ -196,8 +196,14 @@ it returns is forwarded to the optimizer's model provider.
 ### Namespacing
 
 Memories are scoped to `skillopt:<env>:<digest>`, where the digest is a SHA-256
-prefix of the absolute project root. Stable across runs of one project, distinct
-across projects, and the raw path is never transmitted.
+prefix of a **stable project identity** — the enclosing git repository root, or the
+current working directory when there is no repository. Stable across runs of one
+project, distinct across projects, and the raw path is never transmitted.
+
+Identity is deliberately *not* derived from `out_root`. The train/eval CLIs default that
+to `outputs/skillopt_<env>_<model>_<timestamp>`, so deriving from it would mint a new
+namespace on every run and cross-run retrieval would never return anything. `out_root`
+is still used to anchor path redaction, which is what it is right for.
 
 ## Credential Environment Variables
 

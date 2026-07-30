@@ -29,26 +29,26 @@ Usage::
 """
 from __future__ import annotations
 
-import atexit
 import hashlib
 import json
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as _FuturesTimeout
+import threading
 from typing import Any
 
 from skillopt.memory.redaction import redact_for_upload
 from skillopt.memory.settings import Mem0Settings
 
 # After this many consecutive timeouts/errors the backend stops calling out for
-# the rest of the run. Without it a single wedged request costs the full timeout
-# on *every* remaining step, because the queued call still has to time out.
+# the rest of the run, so a persistently unreachable service costs a bounded
+# total rather than a bounded amount on every step.
 MAX_CONSECUTIVE_FAILURES = 3
 
 try:
+    import httpx
     from mem0 import MemoryClient
     _MEM0_AVAILABLE = True
 except ImportError:
     _MEM0_AVAILABLE = False
+    httpx = None  # type: ignore[assignment]
     MemoryClient = None  # type: ignore[assignment,misc]
 
 
@@ -70,21 +70,22 @@ class SkillMemory:
                 raise ImportError("mem0ai is not installed. Run: pip install 'skillopt[mem0]'")
             if not settings.usable:
                 raise ValueError("SkillMemory requires mem0_enabled=true and an API key")
-            client = MemoryClient(api_key=settings.api_key)
+            # Enforce the timeout where the request actually happens. mem0's own
+            # default client uses timeout=300, and no amount of waiting on the
+            # caller's side can abort a socket read that the HTTP layer is still
+            # willing to wait 5 minutes for. Injecting the client is supported:
+            # mem0 only overrides base_url and headers on it.
+            client = MemoryClient(
+                api_key=settings.api_key,
+                client=httpx.Client(timeout=settings.timeout_seconds),
+            )
 
         self.settings = settings
         self.namespace = settings.namespace
         self._client = client
-        # One worker: calls are already serialised by the training loop, and a
-        # single thread keeps the timeout semantics easy to reason about.
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem0")
         self._consecutive_failures = 0
         self._degraded = False
         self._closed = False
-        # The pool's worker is non-daemon, so a thread wedged on a socket read
-        # would otherwise keep the interpreter alive at exit. Registering here
-        # guarantees cleanup even if the caller forgets or the run aborts.
-        atexit.register(self.close)
 
     # ── Construction ──────────────────────────────────────────────────────
 
@@ -103,21 +104,6 @@ class SkillMemory:
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
-    def _retire_pool(self) -> None:
-        """Abandon the current worker and start a fresh one.
-
-        A timed-out call leaves its thread blocked on a socket read, which
-        Python cannot cancel. Keeping that executor would serialise every
-        later call behind the wedged one, so each subsequent step would pay
-        the full timeout again and the queue would grow without bound.
-        Abandoning the pool bounds the damage to the one stuck thread.
-        """
-        old, self._pool = self._pool, ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem0")
-        try:
-            old.shutdown(wait=False, cancel_futures=True)
-        except TypeError:  # pragma: no cover - cancel_futures is 3.9+
-            old.shutdown(wait=False)
-
     def _note_failure(self, reason: str) -> None:
         self._consecutive_failures += 1
         if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES and not self._degraded:
@@ -128,30 +114,48 @@ class SkillMemory:
     def _bounded(self, fn, *args, **kwargs) -> Any:
         """Run *fn* with a hard wall-clock bound; ``None`` on timeout or error.
 
-        The worker thread may keep running after a timeout — Python cannot
-        cancel a blocked socket read — but the *training step* is released on
-        schedule, and the executor is retired so the next step does not queue
-        behind it. After :data:`MAX_CONSECUTIVE_FAILURES` the backend stops
-        calling out entirely, so a persistently unreachable service costs a
-        bounded total rather than a bounded amount *per step*.
+        Two layers, because neither alone is sufficient:
+
+        * The injected ``httpx.Client`` carries the same timeout, so the request
+          itself aborts rather than merely being abandoned. This is the layer
+          that actually stops the work.
+        * The call runs on a **daemon** thread, so even a pathologically stuck
+          request can never delay interpreter exit. A
+          ``ThreadPoolExecutor`` cannot provide this: its workers are
+          non-daemon and ``concurrent.futures`` installs an ``atexit`` hook that
+          joins them, so one blocked read would hang the process at shutdown no
+          matter what ``shutdown(wait=False)`` was told.
+
+        After :data:`MAX_CONSECUTIVE_FAILURES` the backend stops calling out
+        entirely.
         """
         if self._degraded or self._closed:
             return None
-        try:
-            future = self._pool.submit(fn, *args, **kwargs)
-            result = future.result(timeout=self.settings.timeout_seconds)
-            self._consecutive_failures = 0
-            return result
-        except _FuturesTimeout:
+
+        box: dict[str, Any] = {}
+
+        def _runner() -> None:
+            try:
+                box["value"] = fn(*args, **kwargs)
+            except BaseException as exc:  # noqa: BLE001 - reported on the caller's thread
+                box["error"] = exc
+
+        thread = threading.Thread(target=_runner, daemon=True, name="mem0-call")
+        thread.start()
+        thread.join(self.settings.timeout_seconds)
+
+        if thread.is_alive():
             print(f"  [mem0] call exceeded {self.settings.timeout_seconds}s — continuing without it")
-            future.cancel()
-            self._retire_pool()
             self._note_failure("timeout")
             return None
-        except Exception as exc:  # noqa: BLE001 - memory must never break training
+        if "error" in box:
+            exc = box["error"]
             print(f"  [mem0] call failed ({type(exc).__name__}: {exc}) — continuing without it")
             self._note_failure(type(exc).__name__)
             return None
+
+        self._consecutive_failures = 0
+        return box.get("value")
 
     def _payload(self, text: str) -> str:
         """The only route by which text becomes outbound content.
@@ -312,18 +316,21 @@ class SkillMemory:
         return "## Relevant Memory From Previous Runs\n" + body
 
     def close(self) -> None:
-        """Release the worker thread. Safe to call more than once."""
+        """Stop issuing calls, and close the underlying HTTP client.
+
+        Idempotent. There is no worker pool to join: calls run on daemon
+        threads, so nothing here is load-bearing for interpreter exit.
+        """
         if self._closed:
             return
         self._closed = True
-        try:
-            self._pool.shutdown(wait=False, cancel_futures=True)
-        except TypeError:  # pragma: no cover - cancel_futures is 3.9+
-            self._pool.shutdown(wait=False)
-        try:
-            atexit.unregister(self.close)
-        except Exception:  # noqa: BLE001 - cleanup must never raise
-            pass
+        inner = getattr(self._client, "client", None)
+        close_fn = getattr(inner, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:  # noqa: BLE001 - cleanup must never raise
+                pass
 
     def __repr__(self) -> str:
         return f"<SkillMemory namespace={self.namespace!r} client={self._client.__class__.__name__}>"

@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 
 # Ensure THIS repo's skillopt is imported (not an installed copy) when the
@@ -36,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from skillopt.memory.mem0_backend import SkillMemory  # noqa: E402
 from skillopt.memory.redaction import redact_for_upload  # noqa: E402
 from skillopt.memory.settings import (  # noqa: E402
+    project_identity,
     project_namespace,
     resolve_settings,
 )
@@ -405,17 +408,114 @@ def test_repeated_timeouts_disable_the_backend():
     print(f"ok  9b. repeated timeouts disable the backend ({elapsed:.2f}s for 6 calls)")
 
 
-def test_timeout_does_not_block_the_next_call():
-    """The executor is retired on timeout, so a stuck thread is not serialising."""
-    settings = _enabled_settings(mem0_timeout_seconds=0.1)
-    client = FakeClient(search_results=[{"memory": "late"}], delay=5.0)
-    memory = SkillMemory(settings, client=client)
+def test_blocked_request_cannot_prevent_interpreter_exit():
+    """Process-level proof, not caller-level.
 
-    first_pool = memory._pool
-    hook_pre_reflect(memory, "skill", "ctx")
-    assert memory._pool is not first_pool, "executor was not retired after timeout"
-    memory.close()
-    print("ok  9c. executor is retired after a timeout")
+    A caller-side timing assertion is not enough: with a
+    ``ThreadPoolExecutor`` the caller returned on schedule while
+    ``concurrent.futures``' atexit hook still joined the non-daemon worker, so
+    the process hung at shutdown forever. Calls now run on daemon threads, so
+    the only honest test is to start a real interpreter, wedge a request, and
+    require the process to exit on its own.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    child = textwrap.dedent(
+        """
+        import sys, time
+        sys.path.insert(0, %r)
+        from skillopt.memory.mem0_backend import SkillMemory
+        from skillopt.memory.settings import resolve_settings
+
+        class Wedged:
+            def search(self, q, **kw): time.sleep(600)
+            def add(self, m, **kw):    time.sleep(600)
+
+        s = resolve_settings(
+            {"mem0_enabled": True, "mem0_api_key": "m0-" + "x" * 24,
+             "mem0_timeout_seconds": 0.2},
+            env={},
+        )
+        m = SkillMemory(s, client=Wedged())
+        m.retrieve_relevant_context("probe")   # times out, thread stays blocked
+        m.close()
+        print("child-done", flush=True)
+        """
+    ) % repo_root
+
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "exit_probe.py")
+        with open(script, "w") as fh:
+            fh.write(child)
+
+        start = time.time()
+        try:
+            proc = subprocess.run(
+                [sys.executable, script],
+                capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                "interpreter did not exit within 60s — a blocked request is pinning the process"
+            ) from None
+        elapsed = time.time() - start
+
+    assert "child-done" in proc.stdout, f"child did not reach the end: {proc.stdout!r} {proc.stderr[-400:]!r}"
+    assert proc.returncode == 0, f"child exited {proc.returncode}: {proc.stderr[-400:]}"
+    print(f"ok  9c. a permanently blocked request cannot prevent interpreter exit ({elapsed:.1f}s)")
+
+
+def test_namespace_is_stable_across_different_out_roots():
+    """The run output directory must not change the namespace.
+
+    ``scripts/train.py`` defaults ``out_root`` to
+    ``outputs/skillopt_<env>_<model>_<timestamp>``, so deriving identity from it
+    minted a fresh namespace every run and cross-run retrieval could never
+    return anything. This is the regression test for that.
+    """
+    a = resolve_settings({
+        "mem0_enabled": True, "mem0_api_key": FAKE_KEY,
+        "env": "alfworld", "out_root": "/tmp/outputs/skillopt_alfworld_gpt_20260101-000000",
+    }, env={})
+    b = resolve_settings({
+        "mem0_enabled": True, "mem0_api_key": FAKE_KEY,
+        "env": "alfworld", "out_root": "/tmp/outputs/skillopt_alfworld_gpt_20260729-235959",
+    }, env={})
+
+    assert a.namespace == b.namespace, (
+        f"two runs of the same project resolved to different namespaces:\n"
+        f"  {a.namespace}\n  {b.namespace}"
+    )
+    # And the run directory must not leak into the namespace at all.
+    assert "20260101" not in a.namespace and "outputs" not in a.namespace
+
+    # Identity itself must come from somewhere other than the run directory.
+    identity = project_identity()
+    assert identity, "project identity should never be empty"
+    assert not identity.startswith("/tmp/outputs"), (
+        f"identity is still derived from the run directory: {identity}"
+    )
+    print("ok  9f. namespace is stable across different out_roots")
+
+
+def test_mem0_api_key_is_redacted_from_config_artifacts():
+    """A YAML-supplied key must not reach config.json or the run summary.
+
+    Both artifacts serialise through ``trainer._redact_cfg``, so covering it
+    covers both call sites (``config.json`` and ``summary["config"]``).
+    """
+    from skillopt.engine.trainer import _SECRET_KEYS, _redact_cfg
+
+    assert "mem0_api_key" in _SECRET_KEYS, "mem0_api_key missing from the central redaction set"
+
+    cfg = {"mem0_enabled": True, "mem0_api_key": FAKE_KEY, "env": "alfworld"}
+    redacted = _redact_cfg(cfg)
+
+    assert FAKE_KEY not in json.dumps(redacted), "key survived config redaction"
+    assert redacted["mem0_api_key"] != FAKE_KEY
+    assert redacted["env"] == "alfworld", "redaction damaged unrelated config"
+    # The original dict must not be mutated — the trainer keeps using it.
+    assert cfg["mem0_api_key"] == FAKE_KEY, "_redact_cfg mutated the live config"
+    print("ok  9g. mem0_api_key is redacted from config.json and the run summary")
 
 
 def test_close_is_idempotent_and_unregisters():
@@ -478,7 +578,9 @@ ALL_TESTS = [
     test_slow_service_is_bounded,
     test_retrieved_text_is_redacted_before_entering_the_prompt,
     test_repeated_timeouts_disable_the_backend,
-    test_timeout_does_not_block_the_next_call,
+    test_blocked_request_cannot_prevent_interpreter_exit,
+    test_namespace_is_stable_across_different_out_roots,
+    test_mem0_api_key_is_redacted_from_config_artifacts,
     test_close_is_idempotent_and_unregisters,
     test_successful_call_resets_the_failure_counter,
     test_malformed_patches_are_filtered_not_raised,

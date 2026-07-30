@@ -8,16 +8,22 @@ therefore inert here.
 
 Namespacing
 -----------
-Memories are scoped to a namespace derived from the *project root* rather than
-from a config name, so two checkouts that happen to share a config label do not
-read each other's memories. The project path is hashed rather than sent
-verbatim: the namespace has to be stable and unique, and it does not need to be
-legible to the remote service.
+Memories are scoped to a namespace derived from a *stable project identity*, so
+that a later run of the same project reads what earlier runs wrote. That
+identity must not come from ``out_root``: the train/eval CLIs default it to
+``outputs/skillopt_<env>_<model>_<timestamp>``, so deriving from it would mint a
+fresh namespace on every run and cross-run retrieval would never return
+anything. Identity is resolved as: an explicit ``mem0_namespace``, else the
+enclosing git repository root, else the current working directory.
+
+The path is hashed rather than sent verbatim: the namespace has to be stable and
+unique, and it does not need to be legible to the remote service.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 from dataclasses import dataclass
 
 # Ceiling on any single stored payload. Applied after redaction, so the cap is
@@ -46,12 +52,44 @@ class Mem0Settings:
         return bool(self.enabled and self.api_key)
 
 
-def project_namespace(project_root: str, env_name: str = "") -> str:
-    """A stable, project-specific namespace.
+def git_repo_root(start: str | None = None) -> str:
+    """Absolute path of the enclosing git work tree, or ``""`` if there is none.
 
-    Stable across runs of the same project (same absolute root → same digest)
-    and distinct across projects, which is what keeps unrelated experiments
-    from sharing a memory pool.
+    Preferred identity source: it is the same for every run of a checkout no
+    matter which output directory a run happens to write to, and no matter which
+    subdirectory the command was invoked from.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=start or os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        return ""
+    return os.path.abspath(out.stdout.strip()) if out.stdout.strip() else ""
+
+
+def project_identity(start: str | None = None) -> str:
+    """The stable path this project is identified by.
+
+    Never derived from ``out_root`` — see the module docstring for why.
+    """
+    return git_repo_root(start) or os.path.abspath(start or os.getcwd())
+
+
+def project_namespace(project_root: str, env_name: str = "") -> str:
+    """Hash *project_root* into a namespace.
+
+    Stable across runs of the same project (same absolute path → same digest)
+    and distinct across projects, which is what keeps unrelated experiments from
+    sharing a memory pool. Callers should pass :func:`project_identity`, not a
+    run output directory.
     """
     root = os.path.abspath(project_root or os.getcwd())
     digest = hashlib.sha256(root.encode("utf-8")).hexdigest()[:12]
@@ -106,10 +144,15 @@ def resolve_settings(cfg: dict | None, env: dict | None = None) -> Mem0Settings:
 
     api_key = str(cfg.get("mem0_api_key") or env.get("MEM0_API_KEY", "") or "")
 
-    project_root = os.path.abspath(str(cfg.get("out_root") or os.getcwd()))
+    # Identity for namespacing: deliberately NOT out_root, which is per-run.
+    identity = project_identity()
     namespace = str(cfg.get("mem0_namespace") or "").strip()
     if not namespace:
-        namespace = project_namespace(project_root, str(cfg.get("env") or ""))
+        namespace = project_namespace(identity, str(cfg.get("env") or ""))
+
+    # out_root still anchors *path redaction* — collapsing the run directory out
+    # of stored text is exactly what it is right for.
+    project_root = os.path.abspath(str(cfg.get("out_root") or identity))
 
     return Mem0Settings(
         enabled=True,
