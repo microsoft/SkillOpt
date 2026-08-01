@@ -517,47 +517,67 @@ const CFG_FIELDS = [
   ["azure_endpoint","azure / compat endpoint","text"],
   ["gate_mode","gate mode","select",["on","off"]],
   ["gate_metric","gate metric","select",["mixed","hard","soft"]],
-  ["gate_mixed_weight","mixed weight (soft share)","number"],
-  ["edit_budget","edit budget / night","number"],
-  ["holdout_fraction","holdout fraction (val)","number"],
-  ["max_tasks_per_night","max tasks / night","number"],
-  ["lookback_hours","lookback hours (first run)","number"],
-  ["dream_rollouts","dream rollouts (K)","number"],
-  ["dream_factor","dream factor","number"],
-  ["recall_k","recall K","number"],
-  ["llm_mine","LLM mining","select",["true","false"]],
-  ["evolve_skill","evolve SKILL.md","select",["true","false"]],
-  ["evolve_memory","evolve CLAUDE.md","select",["true","false"]],
-  ["evidence_log","evidence log","select",["true","false"]],
-  ["auto_adopt","auto-adopt (careful)","select",["false","true"]],
+  ["gate_mixed_weight","mixed weight (soft share)","float"],
+  ["edit_budget","edit budget / night","int"],
+  ["holdout_fraction","holdout fraction (val)","float"],
+  ["max_tasks_per_night","max tasks / night","int"],
+  ["lookback_hours","lookback hours (first run)","int"],
+  ["dream_rollouts","dream rollouts (K)","int"],
+  ["dream_factor","dream factor","int"],
+  ["recall_k","recall K","int"],
+  ["llm_mine","LLM mining","bool"],
+  ["evolve_skill","evolve SKILL.md","bool"],
+  ["evolve_memory","evolve CLAUDE.md","bool"],
+  ["evidence_log","evidence log","bool"],
+  ["auto_adopt","auto-adopt (careful)","bool",["false","true"]],
   ["preferences","house rules for the optimizer","text"],
 ];
+/* Every field declares its own kind, and both rendering and parsing key off
+   that kind — never off the label text. Renaming a label is a copy change,
+   not a silent type change that writes a string into config.json. */
 function renderConfig(){
   const g = $("#cfgGrid"); g.innerHTML = "";
   for(const [key,label,kind,opts] of CFG_FIELDS){
     const v = OV.config[key];
     const d = document.createElement("div"); d.className = "cfgitem";
-    if(kind==="select"){
-      d.innerHTML = `<label>${esc(label)}</label><select data-k='${key}'>` +
-        opts.map(o=>`<option value='${esc(o)}' ${String(v)===o?"selected":""}>${esc(o||"(inherit)")}</option>`).join("") + "</select>";
+    const choices = kind==="bool" ? (opts || ["true","false"]) : opts;
+    if(kind==="select" || kind==="bool"){
+      d.innerHTML = `<label>${esc(label)}</label><select data-k='${key}' data-kind='${kind}'>` +
+        choices.map(o=>`<option value='${esc(o)}' ${String(v)===o?"selected":""}>${esc(o||"(inherit)")}</option>`).join("") + "</select>";
+    } else if(kind==="int" || kind==="float"){
+      d.innerHTML = `<label>${esc(label)}</label><input data-k='${key}' data-kind='${kind}'` +
+        ` type='number' step='${kind==="int"?"1":"any"}' value='${esc(v??"")}'>`;
     } else {
-      d.innerHTML = `<label>${esc(label)}</label><input data-k='${key}' type='${kind==="number"?"text":"text"}' value='${esc(v??"")}'>`;
+      d.innerHTML = `<label>${esc(label)}</label><input data-k='${key}' data-kind='text' type='text' value='${esc(v??"")}'>`;
     }
     g.appendChild(d);
   }
 }
+function parseCfgValue(kind, raw){
+  const v = String(raw ?? "");
+  if(v === "") return "";                       // empty resets to the default
+  if(kind === "bool") return v === "true";
+  if(kind === "int" || kind === "float"){
+    const n = Number(v);
+    if(!Number.isFinite(n)) return null;        // signals a validation failure
+    return kind === "int" ? Math.trunc(n) : n;
+  }
+  return v;                                     // text/select stay strings
+}
 async function saveConfig(){
   const updates = {};
+  const bad = [];
   document.querySelectorAll("#cfgGrid [data-k]").forEach(el=>{
-    let v = el.value;
-    if(v==="true") v = true; else if(v==="false") v = false;
-    else if(v!=="" && !isNaN(Number(v)) && el.closest(".cfgitem").querySelector("label").textContent.match(/weight|budget|fraction|hours|tasks|rollouts|factor|K$|chars/i)) v = Number(v);
-    updates[el.dataset.k] = v;
+    const parsed = parseCfgValue(el.dataset.kind, el.value);
+    if(parsed === null){ bad.push(el.dataset.k); return; }
+    updates[el.dataset.k] = parsed;
   });
+  if(bad.length){ alert("Not a valid number: " + bad.join(", ")); return; }
   const r = await post("/api/config", {updates});
   if(r.ok){ OV.config = r.config; const m = $("#cfgMsg");
     m.classList.add("show"); setTimeout(()=>m.classList.remove("show"), 1600);
     renderConfig(); renderMap(); renderStages(); }
+  else if(r.error){ alert("Config not saved: " + r.error); }
 }
 
 /* ── run control ────────────────────────────────────────────────────── */

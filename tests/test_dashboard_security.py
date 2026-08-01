@@ -371,6 +371,161 @@ class TestBodyValidation(DashboardSecurityTestCase):
         self.assertNothingChanged("after non-object updates")
 
 
+class TestStagingPathContainment(DashboardSecurityTestCase):
+    """`os.path.basename` is not containment: basename("..") == "..".
+
+    Before this was fixed, /api/night/.. read the staging parent and
+    /api/adopt would copy whatever it found there over the live SKILL.md.
+    """
+
+    ESCAPES = ["..", "../..", "../" * 4, "/etc", "\\Windows",
+               ".", "", "C:\\Windows", "%2e%2e", "..%2f.."]
+
+    def test_night_read_cannot_escape_the_staging_root(self):
+        for ts in self.ESCAPES:
+            with self.subTest(ts=ts):
+                status, body, _r = self.request(
+                    "GET", "/api/night/" + ts, ctype="")
+                self.assertEqual(status, 404)
+                self.assertNotIn("report", body if isinstance(body, dict) else {})
+
+    def test_adopt_cannot_escape_the_staging_root(self):
+        for ts in self.ESCAPES:
+            with self.subTest(ts=ts):
+                status, _body, _r = self.post("/api/adopt", {"ts": ts})
+                self.assertEqual(status, 404)
+        self.assertEqual(self.adopted, [], "adopt escaped the staging root")
+
+    def test_adopt_rejects_non_string_ts(self):
+        for ts in [None, 42, ["a"], {"a": 1}, True]:
+            with self.subTest(ts=ts):
+                status, _body, _r = self.post("/api/adopt", {"ts": ts})
+                self.assertEqual(status, 404)
+        self.assertEqual(self.adopted, [])
+
+    def test_linked_night_pointing_outside_is_rejected(self):
+        """A link planted inside staging must not redirect the read out of it.
+
+        The name is a plain component, so only resolving it catches this.
+        Unprivileged Windows cannot create symlinks; a directory junction
+        exercises the same containment check there.
+        """
+        outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(outside, exist_ok=True)
+        with open(os.path.join(outside, "report.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        link = os.path.join(self.tmp.name, ".skillopt-sleep", "staging", "sneaky")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            if os.name != "nt":
+                self.skipTest("symlink creation not permitted on this platform")
+            import subprocess
+            created = subprocess.run(["cmd", "/c", "mklink", "/J", link, outside],
+                                     capture_output=True, text=True)
+            if not os.path.isdir(link):
+                self.skipTest(f"cannot create a link here: {created.stderr.strip()}")
+
+        status, _body, _r = self.request("GET", "/api/night/sneaky", ctype="")
+        self.assertEqual(status, 404)
+        status, _body, _r = self.post("/api/adopt", {"ts": "sneaky"})
+        self.assertEqual(status, 404)
+        self.assertEqual(self.adopted, [])
+
+    def test_the_real_night_is_still_reachable(self):
+        status, body, _r = self.request("GET", "/api/night/" + self.night, ctype="")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ts"], self.night)
+        status, body, _r = self.post("/api/adopt", {"ts": self.night})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.adopted), 1)
+
+
+class TestConfigValueTyping(DashboardSecurityTestCase):
+    """`load_config` does not type-coerce, so the API must."""
+
+    def test_numeric_strings_are_stored_as_numbers(self):
+        status, _body, _r = self.post("/api/config", {"updates": {
+            "edit_budget": "7", "gate_mixed_weight": "0.25",
+            "max_tasks_per_night": "12"}})
+        self.assertEqual(status, 200)
+        saved = self.saved_config()
+        self.assertEqual(saved["edit_budget"], 7)
+        self.assertIsInstance(saved["edit_budget"], int)
+        self.assertEqual(saved["gate_mixed_weight"], 0.25)
+        self.assertIsInstance(saved["gate_mixed_weight"], float)
+        self.assertIsInstance(saved["max_tasks_per_night"], int)
+
+    def test_boolean_strings_are_stored_as_booleans(self):
+        status, _body, _r = self.post("/api/config", {"updates": {
+            "llm_mine": "false", "evolve_skill": "true", "auto_adopt": False}})
+        self.assertEqual(status, 200)
+        saved = self.saved_config()
+        self.assertIs(saved["llm_mine"], False)
+        self.assertIs(saved["evolve_skill"], True)
+        self.assertIs(saved["auto_adopt"], False)
+
+    def test_free_text_is_not_coerced_to_a_boolean(self):
+        """The old blanket 'true' -> True turned house rules into a bool."""
+        status, _body, _r = self.post(
+            "/api/config", {"updates": {"preferences": "true"}})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.saved_config()["preferences"], "true")
+
+    def test_unparseable_numbers_are_rejected_and_nothing_is_written(self):
+        for key, value in [("edit_budget", "not-a-number"),
+                           ("gate_mixed_weight", "high"),
+                           ("max_tasks_per_night", "12 tasks"),
+                           ("llm_mine", "maybe")]:
+            with self.subTest(key=key):
+                status, body, _r = self.post(
+                    "/api/config", {"updates": {key: value}})
+                self.assertEqual(status, 400)
+                self.assertIn(key, body["error"])
+        self.assertEqual(self.saved_config(), {})
+
+    def test_a_bad_field_does_not_half_apply_the_form(self):
+        status, _body, _r = self.post("/api/config", {"updates": {
+            "edit_budget": "5", "gate_mixed_weight": "nonsense"}})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.saved_config(), {},
+                         "a rejected form must not persist its valid fields")
+
+
+class TestRunLauncherResilience(unittest.TestCase):
+    """A failed spawn must not raise out of the request-handler thread."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        stub = mock.Mock()
+        stub.state_dir = self.tmp.name
+        patch = mock.patch.object(dashboard, "load_config", return_value=stub)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_spawn_failure_returns_a_structured_error(self):
+        state = dashboard._RunState()
+        with mock.patch.object(dashboard.subprocess, "Popen",
+                               side_effect=OSError("no interpreter")):
+            result = state.start(self.tmp.name, dry_run=True)
+        self.assertFalse(result["ok"])
+        self.assertIn("no interpreter", result["error"])
+        self.assertFalse(state.running())
+        # The launcher stays usable after a failure.
+        self.assertEqual(state.status()["running"], False)
+
+    def test_log_handle_is_released_to_the_child(self):
+        state = dashboard._RunState()
+        with mock.patch.object(dashboard.subprocess, "Popen") as popen:
+            popen.return_value.poll.return_value = 0
+            result = state.start(self.tmp.name, dry_run=True)
+        self.assertTrue(result["ok"])
+        # Windows refuses to remove a file the parent still holds open, so a
+        # successful unlink proves the parent closed its copy.
+        os.unlink(state.log_path)
+
+
 class TestNoPermissiveCors(DashboardSecurityTestCase):
     def test_no_cors_headers_are_ever_emitted(self):
         probes = [

@@ -36,6 +36,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 from skillopt_sleep import prompts as prompt_registry
 from skillopt_sleep.config import DEFAULTS, HOME_STATE_DIR, load_config
@@ -93,17 +94,61 @@ def _user_config_file() -> str:
     return os.path.join(HOME_STATE_DIR, "config.json")
 
 
+def _coerce_config_value(key: str, value: Any) -> Any:
+    """Coerce a submitted value to the type of the built-in default.
+
+    ``load_config`` does not type-coerce, so a string where a number belongs
+    reaches the arithmetic downstream (``edit_budget: "4"``). The default's
+    type is the schema — this is the only place that knows it, and it is
+    enforced server-side because the client is not the only possible caller.
+    """
+    default = DEFAULTS.get(key)
+    if isinstance(default, bool):  # before int: bool is a subclass of int
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+        raise ValueError(f"{key} must be a boolean")
+    if isinstance(default, int):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be an integer") from None
+    if isinstance(default, float):
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a number") from None
+    if isinstance(default, str):
+        if isinstance(value, (dict, list)):
+            raise ValueError(f"{key} must be a string")
+        return str(value)
+    return value
+
+
 def _write_config(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge validated updates into the user config file.
+
+    Raises ValueError if any submitted value cannot be coerced; nothing is
+    written in that case, so a bad field cannot half-apply a form.
+    """
     path = _user_config_file()
     current = _read_json(path) or {}
+    accepted: Dict[str, Any] = {}
+    removed = []
     for k, v in updates.items():
         if k not in _EDITABLE_KEYS:
             continue
         if v is None or v == "":
-            # empty resets the key to the built-in default
-            current.pop(k, None)
+            removed.append(k)  # empty resets the key to the built-in default
         else:
-            current[k] = v
+            accepted[k] = _coerce_config_value(k, v)
+    for k in removed:
+        current.pop(k, None)
+    current.update(accepted)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(current, f, ensure_ascii=False, indent=2)
@@ -158,15 +203,25 @@ class _RunState:
             cfg = load_config(invoked_project=project)
             self.log_path = os.path.join(cfg.state_dir, "dashboard-run.log")
             os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
-            self.mode = "dry-run" if dry_run else "run"
-            cmd = [sys.executable, "-m", "skillopt_sleep", self.mode,
+            mode = "dry-run" if dry_run else "run"
+            cmd = [sys.executable, "-m", "skillopt_sleep", mode,
                    "--project", project, "--progress"]
-            log = open(self.log_path, "w", encoding="utf-8")
             no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            self.proc = subprocess.Popen(
-                cmd, stdout=log, stderr=subprocess.STDOUT,
-                creationflags=no_window, cwd=project or None,
-            )
+            try:
+                # The child inherits a dup of this descriptor, so the parent
+                # closes its own copy immediately rather than leaving the log
+                # held open (and, on Windows, locked) for the server's life.
+                with open(self.log_path, "w", encoding="utf-8") as log:
+                    self.proc = subprocess.Popen(
+                        cmd, stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=no_window, cwd=project or None,
+                    )
+            except OSError as exc:
+                # A failed spawn must not raise out of the request thread —
+                # that would drop the connection and leave the UI hanging.
+                self.proc = None
+                return {"ok": False, "error": f"could not start {mode}: {exc}"}
+            self.mode = mode
             return {"ok": True, "mode": self.mode}
 
     def status(self) -> Dict[str, Any]:
@@ -179,6 +234,40 @@ class _RunState:
             rc = self.proc.poll()
         return {"running": self.running(), "returncode": rc,
                 "mode": self.mode, "tail": tail}
+
+
+def _night_dir(project: str, ts: str) -> Optional[str]:
+    """Resolve a night id to its staging directory, or None if it is not one.
+
+    ``os.path.basename`` alone is not containment: it leaves ``".."`` intact,
+    so ``/api/night/..`` resolved to the staging parent and ``/api/adopt``
+    would have copied whatever it found there over the live SKILL.md and
+    CLAUDE.md. Reject anything that is not a plain single path component, then
+    confirm the *resolved* path is still under the staging root so a symlink
+    planted in staging cannot redirect the read either.
+    """
+    name = str(ts or "")
+    if not name or name in {".", ".."}:
+        return None
+    if name != os.path.basename(name):  # separators, drive letters, absolutes
+        return None
+    if os.sep in name or (os.altsep and os.altsep in name):
+        return None
+
+    root = staging_root(project)
+    candidate = os.path.join(root, name)
+    try:
+        real_root = os.path.realpath(root)
+        real_candidate = os.path.realpath(candidate)
+        if os.path.commonpath([real_root, real_candidate]) != real_root:
+            return None
+        if real_candidate == real_root:
+            return None
+    except (OSError, ValueError):  # unrelated roots / different drives
+        return None
+    if not os.path.isdir(real_candidate):
+        return None
+    return candidate
 
 
 def _split_host(value: str) -> Tuple[str, str]:
@@ -342,9 +431,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             })
             return
         if path.startswith("/api/night/"):
-            ts = os.path.basename(path[len("/api/night/"):])
-            d = os.path.join(staging_root(self.project), ts)
-            if not os.path.isdir(d):
+            ts = unquote(path[len("/api/night/"):])
+            d = _night_dir(self.project, ts)
+            if d is None:
                 self._json({"error": "unknown night"}, 404)
                 return
             self._json({
@@ -378,7 +467,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not isinstance(updates, dict):
                 self._json({"error": "updates must be an object"}, 400)
                 return
-            saved = _write_config(updates)
+            try:
+                saved = _write_config(updates)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, 400)
+                return
             cfg = load_config(invoked_project=self.project)
             self._json({"ok": True, "saved": saved,
                         "config": {k: cfg.get(k) for k in sorted(_EDITABLE_KEYS)}})
@@ -395,9 +488,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self.run_state.start(self.project, bool(body.get("dry_run"))))
             return
         if path == "/api/adopt":
-            ts = os.path.basename(str(body.get("ts", "")))
-            d = os.path.join(staging_root(self.project), ts)
-            if not os.path.isdir(d):
+            d = _night_dir(self.project, body.get("ts", ""))
+            if d is None:
                 self._json({"error": "unknown night"}, 404)
                 return
             try:
