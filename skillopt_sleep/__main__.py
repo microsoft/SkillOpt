@@ -5,6 +5,7 @@
     python -m skillopt_sleep status     # show state + latest staged proposal
     python -m skillopt_sleep adopt      # apply the latest staged proposal (with backup)
     python -m skillopt_sleep harvest    # just print what would be mined (debug)
+    python -m skillopt_sleep dashboard  # local control panel on 127.0.0.1
 
 Common flags:
     --project PATH      project to evolve (default: cwd)
@@ -531,6 +532,12 @@ def main(argv=None) -> int:
     p_unsched = sub.add_parser("unschedule", help="remove the nightly cron entry")
     _add_common(p_unsched)
     p_unsched.add_argument("--all", action="store_true", help="remove all managed entries")
+    p_dash = sub.add_parser(
+        "dashboard", help="serve the local control-panel dashboard (127.0.0.1)")
+    _add_common(p_dash)
+    p_dash.add_argument("--port", type=int, default=8321)
+    p_dash.add_argument("--no-browser", action="store_true",
+                        help="don't auto-open the browser")
 
     args = parser.parse_args(argv)
     if args.cmd == "run":
@@ -543,6 +550,10 @@ def main(argv=None) -> int:
         return cmd_adopt(args)
     if args.cmd == "harvest":
         return cmd_harvest(args)
+    if args.cmd == "dashboard":
+        from skillopt_sleep.dashboard import serve
+        return serve(project=args.project or os.getcwd(), port=args.port,
+                     open_browser=not args.no_browser)
     if args.cmd == "schedule":
         return cmd_schedule(args)
     if args.cmd == "unschedule":
