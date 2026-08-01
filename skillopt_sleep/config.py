@@ -20,6 +20,7 @@ HOME_STATE_DIR = os.path.expanduser("~/.skillopt-sleep")
 CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
 CURSOR_HOME = os.path.expanduser("~/.cursor")
+ANTIGRAVITY_HOME = os.path.expanduser("~/.gemini/antigravity")
 
 
 DEFAULTS: Dict[str, Any] = {
@@ -27,8 +28,10 @@ DEFAULTS: Dict[str, Any] = {
     "claude_home": CLAUDE_HOME,
     "codex_home": CODEX_HOME,
     "cursor_home": CURSOR_HOME,
+    "antigravity_home": ANTIGRAVITY_HOME,
     "vscode_workspace_storage": "",  # "" => auto-detect platform defaults
-    "transcript_source": "claude",  # "claude" | "codex" | "copilot" | "cursor" | "auto"
+    # "claude" | "codex" | "copilot" | "cursor" | "antigravity" | "auto"
+    "transcript_source": "claude",
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
     "invoked_project": "",        # filled at runtime (cwd) when projects == "invoked"
     "lookback_hours": 72,         # harvest window when no prior sleep recorded
@@ -127,6 +130,11 @@ class SleepConfig:
     def cursor_projects_dir(self) -> str:
         cursor_home = os.path.abspath(os.path.expanduser(str(self.data["cursor_home"])))
         return os.path.join(cursor_home, "projects")
+
+    @property
+    def antigravity_conversations_dir(self) -> str:
+        home = os.path.abspath(os.path.expanduser(str(self.data["antigravity_home"])))
+        return os.path.join(home, "conversations")
 
     @property
     def vscode_workspace_storage(self) -> str:
