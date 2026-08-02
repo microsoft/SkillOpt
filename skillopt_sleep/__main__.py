@@ -14,7 +14,7 @@ Common flags:
     --target-skill-path PATH explicit live SKILL.md to stage/adopt
     --tasks-file PATH   reviewed TaskRecord JSON file to replay instead of harvesting
     --backend mock|claude|codex|copilot|cursor|handoff
-    --source claude|codex|copilot|cursor|auto
+    --source claude|codex|copilot|cursor|antigravity|auto
     --vscode-workspace-storage PATH
     --model NAME
     --lookback-hours N
@@ -80,10 +80,14 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
     p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
     p.add_argument("--cursor-home", default="", help="override ~/.cursor for Cursor session harvest")
-    p.add_argument("--source", default="", choices=["", "claude", "codex", "copilot", "cursor", "auto"],
+    p.add_argument("--source", default="",
+                   choices=["", "claude", "codex", "copilot", "cursor",
+                            "antigravity", "auto"],
                    help="session transcript source")
     p.add_argument("--vscode-workspace-storage", default="",
                    help="override VS Code User/workspaceStorage root for copilot source")
+    p.add_argument("--antigravity-home", default="",
+                   help="override ~/.gemini/antigravity for antigravity source")
     p.add_argument("--lookback-hours", type=int, default=None,
                    help="harvest window in hours; 0 = scan full history")
     p.add_argument("--edit-budget", type=int, default=0)
@@ -124,6 +128,10 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["codex_home"] = os.path.abspath(args.codex_home)
     if getattr(args, "cursor_home", ""):
         overrides["cursor_home"] = os.path.abspath(os.path.expanduser(args.cursor_home))
+    if getattr(args, "antigravity_home", ""):
+        overrides["antigravity_home"] = os.path.abspath(
+            os.path.expanduser(args.antigravity_home)
+        )
     if getattr(args, "source", ""):
         overrides["transcript_source"] = args.source
     if getattr(args, "vscode_workspace_storage", ""):
