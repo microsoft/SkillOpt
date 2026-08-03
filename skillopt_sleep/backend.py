@@ -1954,6 +1954,131 @@ class AzureResponsesBackend(AzureOpenAIBackend):
         return ""
 
 
+# ── Hermes CLI backend ─────────────────────────────────────────────────────────
+
+class HermesBackend(CliBackend):
+    """Drives Hermes Agent CLI: `hermes --profile <name> chat -Q -q "<prompt>"`."""
+
+    name = "hermes"
+
+    # Auth/config error markers that indicate a misconfigured Hermes CLI.
+    # When detected, we log a warning so the user doesn't mistake a
+    # broken setup for "nothing to optimize".
+    _AUTH_MARKERS = (
+        "401 Unauthorized",
+        "Not logged in",
+        "Please run /login",
+        "Authentication required",
+        "Invalid API key",
+        "Unauthorized: invalid",
+        "API key not configured",
+    )
+    _CONFIG_ERROR_MARKERS = (
+        "profile not found",
+        "unknown profile",
+        "config file not found",
+        "unable to load config",
+    )
+
+    def __init__(self, model: str = "", timeout: int = 180) -> None:
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_HERMES_MODEL", ""),
+                         timeout=timeout)
+        self.hermes_bin = os.environ.get("HERMES_BIN", "hermes")
+        self.hermes_profile = os.environ.get("SKILLOPT_SLEEP_HERMES_PROFILE",
+                                            os.environ.get("HERMES_TARGET_PROFILE", "default"))
+
+    def _detect_cli_error(self, stdout: str, stderr: str) -> None:
+        """Log a warning if CLI output looks like an auth/config error."""
+        import logging
+        check_stdout = stdout if len(stdout) < 300 else ""
+        combined = check_stdout + "\n" + stderr
+        for marker in self._AUTH_MARKERS + self._CONFIG_ERROR_MARKERS:
+            if marker.lower() in combined.lower():
+                from skillopt_sleep.staging import redact_secrets
+                logging.getLogger("skillopt_sleep").warning(
+                    "Hermes CLI returned a likely auth/config error: %s",
+                    redact_secrets(combined[:200].replace("\n", " ")),
+                )
+                self.last_call_error = combined[:200]
+                return
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        import re
+        import tempfile
+        cmd = [
+            self.hermes_bin,
+            "--profile", self.hermes_profile,
+            "chat", "-Q", "-q", prompt,
+        ]
+        clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_hermes_")
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=clean_cwd,
+                env={**os.environ, "HERMES_NO_COLOR": "1"},
+            )
+        except Exception as exc:
+            msg = f"Hermes CLI call failed: {exc}"
+            self.last_call_error = msg[:200]
+            return ""
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(clean_cwd, ignore_errors=True)
+            except Exception:
+                pass
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            self.last_call_error = (stderr[:200] if stderr
+                                    else f"Hermes CLI exited with code {proc.returncode}")
+            return ""
+        raw = (proc.stdout or "").strip()
+        self._detect_cli_error(raw, proc.stderr or "")
+        # Strip known CLI boilerplate (notices, warnings, session IDs, tracebacks)
+        skip_prefixes = (
+            "Bitwarden Secrets Manager:",
+            "Warning: Unknown",
+            "session_id:",
+            "Exception ignored in:",
+        )
+        lines = raw.split("\n")
+        body: list[str] = []
+        in_traceback = False
+        seen_content = False
+        for line in lines:
+            stripped = line.strip()
+            # Only skip leading blank lines; preserve intra-paragraph blanks.
+            if not stripped:
+                if not seen_content:
+                    continue
+                body.append(line)
+                continue
+            seen_content = True
+            if any(stripped.startswith(p) for p in skip_prefixes):
+                continue
+            # Only detect traceback when we see the exact header; "Exception"
+            # alone is too aggressive (legitimate answers can start with it).
+            if stripped == "Traceback (most recent call last):":
+                in_traceback = True
+                continue
+            if in_traceback:
+                # Stay in traceback mode while we see frame lines
+                if stripped.startswith('File "') and ", line " in stripped:
+                    continue
+                if re.match(r"^\w+(Error|Exception|Warning):", stripped):
+                    continue
+                # End of traceback — emit this line (it might be the model's
+                # own response after the traceback block) but reset the flag
+                # so future lines are not skipped.
+                in_traceback = False
+            body.append(line)
+        result = "\n".join(body).strip()
+        return result
+
+
 def get_backend(
     name: str,
     *,
@@ -1972,6 +2097,8 @@ def get_backend(
         return ClaudeCliBackend(model=model, claude_path=claude_path)
     if n in {"codex", "codex_cli", "openai_codex"}:
         return CodexCliBackend(model=model, codex_path=codex_path, project_dir=project_dir)
+    if n in {"hermes", "hermes_chat", "hermes_cli"}:
+        return HermesBackend(model=model)
     if n in {"azure", "azure_openai", "aoai"}:
         return AzureOpenAIBackend(deployment=model, endpoint=azure_endpoint)
     if n in {"azure-responses", "azure_responses", "aoai-responses", "responses"}:

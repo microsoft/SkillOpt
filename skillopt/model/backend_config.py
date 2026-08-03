@@ -58,11 +58,12 @@ def set_optimizer_backend(backend: str) -> None:
         "minimax_chat",
         "openai_compatible",
         "codex_exec",
+        "hermes_chat",
     }:
         raise ValueError(
             f"Unsupported optimizer backend: {OPTIMIZER_BACKEND!r}. "
             "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', "
-            "'openai_compatible', and 'codex_exec'."
+            "'openai_compatible', 'codex_exec', and 'hermes_chat'."
         )
     os.environ["OPTIMIZER_BACKEND"] = OPTIMIZER_BACKEND
 
@@ -74,11 +75,21 @@ def get_optimizer_backend() -> str:
 def set_target_backend(backend: str) -> None:
     global TARGET_BACKEND
     TARGET_BACKEND = normalize_backend_name(backend or "openai_chat")
-    if TARGET_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "openai_compatible", "codex_exec", "claude_code_exec", "cursor_exec"}:
+    if TARGET_BACKEND not in {
+        "openai_chat",
+        "claude_chat",
+        "qwen_chat",
+        "minimax_chat",
+        "openai_compatible",
+        "codex_exec",
+        "claude_code_exec",
+        "cursor_exec",
+        "hermes_chat",
+    }:
         raise ValueError(
             f"Unsupported target backend: {TARGET_BACKEND!r}. "
             "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', "
-            "'openai_compatible', 'codex_exec', 'claude_code_exec', and 'cursor_exec'."
+            "'openai_compatible', 'codex_exec', 'claude_code_exec', 'cursor_exec', and 'hermes_chat'."
         )
     os.environ["TARGET_BACKEND"] = TARGET_BACKEND
 
@@ -99,11 +110,19 @@ def is_optimizer_chat_backend() -> bool:
         "minimax_chat",
         "openai_compatible",
         "codex_exec",
+        "hermes_chat",
     }
 
 
 def is_target_chat_backend() -> bool:
-    return TARGET_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "openai_compatible"}
+    return TARGET_BACKEND in {
+        "openai_chat",
+        "claude_chat",
+        "qwen_chat",
+        "minimax_chat",
+        "openai_compatible",
+        "hermes_chat",
+    }
 
 
 def configure_codex_exec(
