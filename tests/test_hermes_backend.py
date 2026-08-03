@@ -8,16 +8,14 @@ Covers:
   - Token tracker isolation (no double-count with Claude)
   - Message API contracts (tools, retries, return_message)
   - Deployment setters
-  - One opt-in real Hermes smoke test
+  - Two opt-in real Hermes smoke tests (CLI availability + real chat/backend-path)
 
 Follows the same pytest + monkeypatch pattern as test_qwen_backend.py.
 """
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
-from unittest import mock
 
 import pytest
 
@@ -438,16 +436,16 @@ def test_hermes_backend_not_routed_when_not_selected(monkeypatch):
     assert get_target_backend() != "hermes_chat"
 
 
-# ── 9. Smoke test (opt-in, requires real hermes CLI) ──────────────────────────
+# ── 9. Smoke tests (opt-in, require real hermes CLI) ──────────────────────────
 
 
 @pytest.mark.slow
-def test_hermes_cli_available_and_mocked():
-    """Verify the hermes CLI exists (if available) or works via mock.
+def test_hermes_cli_available() -> None:
+    """Probe that the hermes binary is on PATH and functional.
 
-    Marked @pytest.mark.slow (opt-in).
-    Run:  pytest tests/test_hermes_backend.py -k hermes_cli_available --slow
-    or:   pytest tests/test_hermes_backend.py -k hermes_cli_available -m slow
+    Runs ``hermes --version``. Skips if the binary is missing, broken,
+    or produces a non-zero exit. This is a fast gate to avoid running
+    the expensive real-chat smoke when no CLI is present.
     """
     import subprocess as _sp
 
@@ -466,12 +464,82 @@ def test_hermes_cli_available_and_mocked():
     if proc.returncode != 0:
         pytest.skip(f"hermes CLI not working (exit {proc.returncode}): {proc.stderr}")
 
-    # Now try a real chat call
-    _use_hermes()
-    recorder = _RunRecorder(response="smoke test ok")
-    with mock.patch("subprocess.run", return_value=_FakeProc(
-        stdout="smoke test ok", stderr="", returncode=0
-    )):
-        text, usage = chat_target("Be concise.", "Say hello", retries=1)
-        assert isinstance(text, str)
-        assert usage["total_tokens"] > 0
+
+@pytest.mark.slow
+def test_real_hermes_chat_smoke() -> None:
+    """Real Hermes chat smoke — validates profile, auth, flags, and response parsing.
+
+    Runs ONLY when ``SKILLOPT_REAL_HERMES=1`` is set in the environment.
+    When the opt-in is active, failures MUST fail the test (no silent skip)
+    because the point is to catch real CLI breakage.
+
+    Two independent code paths are exercised:
+
+    1. **Direct subprocess.run** — constrained CLI flags (-Q, --max-turns 1,
+       --ignore-user-config, --ignore-rules) to confirm the CLI itself works.
+    2. **Backend-path** — ``skillopt.model.hermes_backend.chat_target(...)``
+       to confirm the production code path (profile resolution, prompt building,
+       token tracking) functions end-to-end.
+    """
+    if not os.environ.get("SKILLOPT_REAL_HERMES"):
+        pytest.skip("set SKILLOPT_REAL_HERMES=1 to run real Hermes chat smoke")
+
+    import subprocess as _sp
+
+    profile = os.environ.get("SKILLOPT_REAL_HERMES_PROFILE", "default")
+
+    # ── 1. Direct CLI invocation ─────────────────────────────────────────
+    stdout = ""
+    try:
+        proc = _sp.run(
+            [
+                "hermes",
+                "--profile", profile,
+                "chat",
+                "-q", "Reply with exactly: pong",
+                "-Q",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--max-turns", "1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "HERMES_NO_COLOR": "1"},
+        )
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        assert proc.returncode == 0, (
+            f"Direct CLI returned {proc.returncode}\n"
+            f"STDERR: {stderr[-500:]}\n"
+            f"STDOUT: {stdout[-500:]}"
+        )
+    except FileNotFoundError:
+        pytest.fail("hermes binary not found during real smoke — "
+                     "run test_hermes_cli_available first")
+
+    assert "pong" in stdout.lower(), (
+        f"Direct CLI output missing 'pong': {stdout[-300:]}"
+    )
+
+    # ── 2. Backend-path call (production code path) ─────────────────────
+    set_target_backend("hermes_chat")
+    # Set the profile via env so _call_hermes picks it up
+    os.environ["HERMES_TARGET_PROFILE"] = profile
+
+    text, usage = _hermes.chat_target(
+        "Be terse.",
+        "Reply with exactly: pong",
+        retries=1,
+        timeout=120,
+    )
+
+    assert isinstance(text, str) and len(text) > 0, (
+        f"Backend-path returned empty/invalid text: {text!r}"
+    )
+    assert "pong" in text.lower(), (
+        f"Backend-path output missing 'pong': {text[-300:]}"
+    )
+    assert usage["total_tokens"] > 0, (
+        f"Backend-path usage missing total_tokens: {usage}"
+    )

@@ -38,17 +38,36 @@ def _filter_engine_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 def _fetch_messages(db_path: str, session_id: str) -> List[Dict[str, Any]]:
-    """Return all messages for a session, ordered by id."""
+    """Return all messages for a session, ordered by id.
+
+    Gracefully handles the ``tool_name`` column or whole ``messages`` table
+    being absent (schema drift).
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute(
-        """SELECT role, content, tool_name, timestamp
-           FROM messages
-           WHERE session_id = ? AND role IN ('user', 'assistant')
-           ORDER BY id""",
-        (session_id,),
-    )
+    try:
+        try:
+            cursor.execute(
+                """SELECT role, content, tool_name, timestamp
+                   FROM messages
+                   WHERE session_id = ? AND role IN ('user', 'assistant')
+                   ORDER BY id""",
+                (session_id,),
+            )
+        except sqlite3.OperationalError:
+            # Column or table mismatch — retry without tool_name
+            cursor.execute(
+                """SELECT role, content, timestamp
+                   FROM messages
+                   WHERE session_id = ? AND role IN ('user', 'assistant')
+                   ORDER BY id""",
+                (session_id,),
+            )
+    except sqlite3.OperationalError:
+        # Table missing entirely
+        conn.close()
+        return []
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -202,13 +221,28 @@ def harvest_hermes(
             where += " AND ended_at >= ?"
             params.append(since_epoch)
 
-    cursor.execute(
-        f"""SELECT id, cwd, title, started_at, ended_at, model
-            FROM sessions
-            {where}
-            ORDER BY ended_at DESC""",
-        params,
-    )
+    try:
+        cursor.execute(
+            f"""SELECT id, cwd, title, started_at, ended_at, model
+                FROM sessions
+                {where}
+                ORDER BY ended_at DESC""",
+            params,
+        )
+    except sqlite3.OperationalError:
+        # Table missing or column mismatch (e.g. no 'title' column) —
+        # retry without title, or bail out if sessions table is absent.
+        try:
+            cursor.execute(
+                f"""SELECT id, cwd, started_at, ended_at, model
+                    FROM sessions
+                    {where}
+                    ORDER BY ended_at DESC""",
+                params,
+            )
+        except sqlite3.OperationalError:
+            conn.close()
+            return []
 
     sessions = [dict(r) for r in cursor.fetchall()]
     conn.close()

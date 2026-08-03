@@ -80,6 +80,9 @@ include = ["skillopt", "skillopt.*", "skillopt_sleep", "skillopt_sleep.*", "skil
 line-length = 120
 target-version = "py310"
 
+[tool.pytest.ini_options]
+markers = ["slow: opt-in tests that invoke the real Hermes CLI or network"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
