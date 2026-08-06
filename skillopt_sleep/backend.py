@@ -1221,7 +1221,7 @@ class CopilotCliBackend(CliBackend):
             "--stream", "off",
             "--no-color",
             "--log-level", "none",
-            "--allow-all-tools",
+            "--allowed-tools", os.environ.get("COPILOT_ALLOWED_TOOLS", "Bash"),
             "-C", clean_cwd,
         ]
         if not self.full_env:
@@ -1336,7 +1336,7 @@ class CopilotCliBackend(CliBackend):
                 "--stream", "off",
                 "--no-color",
                 "--log-level", "none",
-                "--allow-all-tools",
+                "--allowed-tools", os.environ.get("COPILOT_ALLOWED_TOOLS", "Bash"),
                 "-C", work,
             ]
             if not self.full_env:
