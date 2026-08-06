@@ -46,6 +46,10 @@ searchqa = ["datasets>=2.18.0"]
 docs = ["mkdocs-material>=9.5.0", "mkdocstrings[python]>=0.24.0"]
 # WebUI dashboard
 webui = ["gradio>=4.0.0"]
+# Optional mem0-backed persistent memory. Deliberately excluded from `all`:
+# installing it is harmless (uploads still require mem0_enabled: true), but
+# a data-export integration should be an explicit choice at install time too.
+mem0 = ["mem0ai>=0.1.0"]
 # Development tools
 dev = ["ruff>=0.4.0", "pytest>=8.0.0"]
 # All optional dependencies (except docs/dev/webui)
