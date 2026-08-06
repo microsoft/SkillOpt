@@ -29,7 +29,7 @@ _BACKEND_DEFAULT_MODELS = {
     # deployments (not the CLI model, which uses the copilot_chat model keys)
     # and keeps the openai_chat optimizer for copilot_exec non-empty.
     "qwen_chat": "Qwen/Qwen3.5-4B",
-    "minimax_chat": "MiniMax-M2.7",
+    "minimax_chat": "MiniMax-M3",
     "openai_compatible": "gpt-4o-mini",
 }
 

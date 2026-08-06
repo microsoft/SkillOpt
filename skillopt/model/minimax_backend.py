@@ -37,6 +37,28 @@ TARGET_DEPLOYMENT = os.environ.get(
     default_model_for_backend("minimax_chat"),
 )
 
+# Per-model thinking capability. MiniMax-M2.7 requires always-on thinking, so it
+# must ignore the shared MINIMAX_ENABLE_THINKING flag; MiniMax-M3 supports
+# adaptive/disabled thinking, which the flag controls (disabled by default).
+_MODEL_THINKING_MODES: dict[str, tuple[str, ...]] = {
+    "MiniMax-M3": ("adaptive", "disabled"),
+    "MiniMax-M2.7": ("always_on",),
+}
+
+
+def _resolve_enable_thinking(deployment: str) -> bool:
+    """Return the effective ``enable_thinking`` flag for ``deployment``.
+
+    Models that only support always-on thinking force the flag on regardless of
+    the configured default; models that allow disabled/adaptive thinking honor
+    the shared ``ENABLE_THINKING`` setting.
+    """
+    modes = _MODEL_THINKING_MODES.get(str(deployment or "").strip())
+    if modes and "disabled" not in modes and "always_on" in modes:
+        return True
+    return ENABLE_THINKING
+
+
 _config_lock = threading.Lock()
 tracker = TokenTracker()
 
@@ -144,7 +166,9 @@ def _chat_messages_impl(
         "messages": _json_safe(messages),
         "max_tokens": min(max_completion_tokens, MAX_TOKENS),
     }
-    payload["chat_template_kwargs"] = {"enable_thinking": ENABLE_THINKING}
+    payload["chat_template_kwargs"] = {
+        "enable_thinking": _resolve_enable_thinking(deployment or TARGET_DEPLOYMENT)
+    }
     if TEMPERATURE is not None:
         payload["temperature"] = TEMPERATURE
     if tools:
