@@ -15,7 +15,7 @@ from unittest import mock
 from skillopt_sleep.backend import MockBackend, exact_score, keyword_soft_score
 from skillopt_sleep.config import load_config
 from skillopt_sleep.consolidate import consolidate
-from skillopt_sleep.cycle import run_sleep_cycle
+from skillopt_sleep.cycle import _render_report_md, run_sleep_cycle
 from skillopt_sleep.experiments.personas import programmer_persona, researcher_persona
 from skillopt_sleep.harvest import _detect_feedback, _is_meta_prompt, digest_transcript
 from skillopt_sleep.memory import apply_edits, current_learned_lines, extract_learned, set_learned
@@ -27,7 +27,13 @@ from skillopt_sleep.mine import (
     mine,
 )
 from skillopt_sleep.staging import adopt
-from skillopt_sleep.types import EditRecord, SessionDigest, SleepReport, TaskRecord
+from skillopt_sleep.types import (
+    EditRecord,
+    SessionDigest,
+    SkillGroupReport,
+    SleepReport,
+    TaskRecord,
+)
 
 
 class TestScoring(unittest.TestCase):
@@ -2377,3 +2383,158 @@ class TestGroupTasksBySkillHint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestMultiSkillReportWiring(unittest.TestCase):
+    """The per-skill rows reach the emitted report (issue #120 follow-up)."""
+
+    def _hinted_tasks(self):
+        # Two skills' worth of evidence in one night. dataclasses.replace keeps
+        # the personas' real task shape rather than inventing a fixture.
+        from dataclasses import replace
+        research = assign_splits(researcher_persona(), holdout_fraction=0.34, seed=42)
+        programming = assign_splits(programmer_persona(), holdout_fraction=0.34, seed=1)
+        tagged = [replace(t, skill_hint="research-skill") for t in research]
+        tagged += [replace(t, id=f"prog-{t.id}", skill_hint="programming-skill")
+                   for t in programming]
+        return tagged
+
+    def test_multi_skill_report_is_off_by_default(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj, projects="invoked", backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned", auto_adopt=False,
+            )
+            outcome = run_sleep_cycle(cfg, seed_tasks=self._hinted_tasks())
+            # Opt-in: hinted evidence alone must not add rows or extra calls.
+            self.assertEqual(outcome.report.skill_groups, [])
+
+    def test_a_mixed_night_emits_one_independent_row_per_skill(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj, projects="invoked", backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned", auto_adopt=False,
+                multi_skill_report=True,
+            )
+            outcome = run_sleep_cycle(cfg, seed_tasks=self._hinted_tasks())
+            rows = outcome.report.skill_groups
+            names = [r.skill_name for r in rows]
+            self.assertIn("research-skill", names)
+            self.assertIn("programming-skill", names)
+
+            # Independence is the property under test: each row carries its own
+            # verdict and its own task count, not the night's aggregate.
+            for row in rows:
+                self.assertTrue(row.status)
+                self.assertGreater(row.n_tasks, 0)
+            self.assertEqual(len(rows), len(set(names)), "rows must not duplicate a skill")
+
+            # Independent verdicts, not one aggregate copied across rows: the
+            # two groups reach the gate on their own evidence and their own
+            # task counts.
+            self.assertTrue(all(r.status == "consolidated" for r in rows))
+            self.assertNotEqual(rows[0].n_tasks, rows[1].n_tasks)
+            self.assertNotEqual(rows[0].baseline_score, rows[1].baseline_score)
+
+    def test_a_mixed_night_reports_an_accepted_and_a_rejected_group(self):
+        # The case the maintainer asked for: one night, one group accepted and
+        # another rejected, each row carrying its own verdict. The rejected
+        # group is a genuine gate outcome rather than a contrived one — a group
+        # with a single task cannot validate, so the gate refuses to certify it.
+        from dataclasses import replace
+        tasks = self._hinted_tasks()
+        tasks.append(replace(tasks[0], id="thin-1", skill_hint="thin-skill"))
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj, projects="invoked", backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned", auto_adopt=False,
+                multi_skill_report=True,
+            )
+            outcome = run_sleep_cycle(cfg, seed_tasks=tasks)
+            rows = {r.skill_name: r for r in outcome.report.skill_groups}
+            self.assertTrue(rows["research-skill"].accepted)
+            self.assertTrue(rows["programming-skill"].accepted)
+            self.assertFalse(rows["thin-skill"].accepted)
+            self.assertEqual(rows["thin-skill"].gate_action, "reject_unverified")
+            # The rejection is contained: it does not pull the others down.
+            self.assertEqual(rows["research-skill"].gate_action, "accept_new_best")
+
+    def test_report_md_shows_each_group_and_marks_an_uncertifiable_score(self):
+        # report.md is the page a human reads before /sleep adopt, so the rows
+        # have to reach it, not only report.json. And a reject_unverified score
+        # was measured on the tasks the edits came from — the comparison the
+        # gate refuses to certify — so it must not read as a plain improvement.
+        from dataclasses import replace
+        tasks = self._hinted_tasks()
+        tasks.append(replace(tasks[0], id="thin-1", skill_hint="thin-skill"))
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj, projects="invoked", backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned", auto_adopt=False,
+                multi_skill_report=True,
+            )
+            outcome = run_sleep_cycle(cfg, seed_tasks=tasks)
+            with open(os.path.join(outcome.staging_dir, "report.md"),
+                      encoding="utf-8") as handle:
+                md = handle.read()
+            self.assertIn("## Per-skill groups", md)
+            self.assertIn("`research-skill`", md)
+            self.assertIn("`thin-skill`", md)
+            thin = [ln for ln in md.splitlines() if "`thin-skill`" in ln][0]
+            self.assertIn("rejected", thin)
+            self.assertIn("(unvalidated)", thin)
+            accepted = [ln for ln in md.splitlines() if "`research-skill`" in ln][0]
+            self.assertNotIn("(unvalidated)", accepted)
+
+    def test_report_md_keeps_untrusted_group_text_inside_one_table_row(self):
+        report = SleepReport(
+            night=1,
+            project="/repo/example",
+            skill_groups=[SkillGroupReport(
+                skill_name="skill|`one\nnext",
+                status="failed",
+                reason="backend `bad`\nline | broken",
+            )],
+        )
+        md = _render_report_md(
+            report,
+            {"backend": "mock", "replay_mode": "deterministic"},
+        )
+        row = [line for line in md.splitlines() if "skill&#124;" in line][0]
+        self.assertEqual(row.count("|"), 7)
+        self.assertIn("skill&#124;&#96;one next", row)
+        self.assertIn("backend &#96;bad&#96; line &#124; broken", row)
+
+    def test_report_md_has_no_group_section_when_the_feature_is_off(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj, projects="invoked", backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned", auto_adopt=False,
+            )
+            outcome = run_sleep_cycle(cfg, seed_tasks=self._hinted_tasks())
+            with open(os.path.join(outcome.staging_dir, "report.md"),
+                      encoding="utf-8") as handle:
+                self.assertNotIn("## Per-skill groups", handle.read())
+
+    def test_group_rows_survive_into_the_staged_report_json(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            cfg = load_config(
+                invoked_project=proj, projects="invoked", backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                managed_skill_name="skillopt-sleep-learned", auto_adopt=False,
+                multi_skill_report=True,
+            )
+            outcome = run_sleep_cycle(cfg, seed_tasks=self._hinted_tasks())
+            report_json = os.path.join(outcome.staging_dir, "report.json")
+            self.assertTrue(os.path.exists(report_json))
+            with open(report_json, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            # Persisted, not merely present on the in-memory object.
+            self.assertTrue(payload.get("skill_groups"))
+            self.assertIn(payload["skill_groups"][0]["skill_name"],
+                          {"research-skill", "programming-skill"})

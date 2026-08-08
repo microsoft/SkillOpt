@@ -22,7 +22,12 @@ from skillopt_sleep.config import SleepConfig, load_config
 from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.memory import ensure_skill_scaffold
-from skillopt_sleep.mine import mine
+from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
+from skillopt_sleep.multi_skill import (
+    SkillGroup,
+    consolidate_groups,
+    skill_group_reports,
+)
 from skillopt_sleep.staging import adopt as adopt_staging
 from skillopt_sleep.staging import redact_secrets
 from skillopt_sleep.staging import write_staging
@@ -160,6 +165,18 @@ def _discard_unstaged_evidence(path: str) -> None:
             break
 
 
+def _markdown_table_text(value: object) -> str:
+    """Keep untrusted evidence text inside one readable Markdown table cell."""
+    text = " ".join(str(value).splitlines())
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("|", "&#124;")
+        .replace("`", "&#96;")
+    )
+
+
 def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
     lines = [
         f"# SkillOpt-Sleep — night {report.night} report",
@@ -210,6 +227,43 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         for e in report.unmatched_edits:
             anchor = f"  \n  _anchor: `{e.anchor}`_" if e.anchor else ""
             lines.append(f"- [{e.target}/{e.op}] {e.content}{anchor}")
+        lines.append("")
+    if report.skill_groups:
+        # The reviewer decides per skill, so the per-skill verdicts belong on
+        # the page they actually read. Without this the rows reach report.json
+        # only, and a human reviewing the night sees a single aggregate verdict
+        # that no individual skill necessarily earned.
+        lines.append("## Per-skill groups")
+        lines.append(
+            "_Each row is one skill's own evidence and its own gate decision. "
+            "A rejected group does not block its neighbours, and an accepted "
+            "one does not vouch for them._")
+        lines.append("")
+        lines.append("| Skill | Decision | Gate | Tasks | Held-out | Edits |")
+        lines.append("|---|---|---|---|---|---|")
+        for g in report.skill_groups:
+            name = _markdown_table_text(g.skill_name or "_(no skill name)_")
+            if g.status == "consolidated":
+                decision = "accepted" if g.accepted else "rejected"
+                scores = f"{g.baseline_score:.3f} → {g.candidate_score:.3f}"
+                if g.gate_action == "reject_unverified":
+                    # This is the one score the gate explicitly refuses to
+                    # trust: it was measured on the same tasks the edits came
+                    # from, which is how a reward hack reaches 1.000. Printing
+                    # it bare reads as an improvement that was rejected for no
+                    # reason, so say why the number does not count.
+                    scores += " (unvalidated)"
+                edits = f"{g.n_applied_edits} applied / {g.n_rejected_edits} rejected"
+            else:
+                # skipped and failed groups never reached the gate; showing a
+                # 0.000 score for them would read as a measured result.
+                decision = g.status
+                scores = "—"
+                edits = "—"
+            reason = f" — {_markdown_table_text(g.reason)}" if g.reason else ""
+            lines.append(
+                f"| `{name}` | **{decision}**{reason} | {g.gate_action or '—'} "
+                f"| {g.n_tasks} | {scores} | {edits} |")
         lines.append("")
     if report.notes:
         lines.append("## Notes")
@@ -469,6 +523,36 @@ def run_sleep_cycle(
     report.edits = result.applied_edits
     report.rejected_edits = result.rejected_edits
     report.unmatched_edits = result.unmatched_edits
+
+    # ── 4b. optional per-skill group reporting ───────────────────────────
+    # Off by default. When enabled, tonight's tasks are grouped by their skill
+    # hint and each group is consolidated independently so the report carries a
+    # row per skill instead of one aggregate verdict. This costs one extra
+    # consolidation per hinted group, which is why it is opt-in rather than
+    # automatic; a night whose evidence produces only the catch-all group adds
+    # no rows and no calls.
+    #
+    # Each group currently starts from the same managed document. Resolving a
+    # hinted group to its own live SKILL.md is the resolver's job and is not
+    # wired here yet, so a row describes what that group's evidence did to the
+    # managed skill, not to a separate file.
+    if cfg.get("multi_skill_report", False):
+        managed_name = cfg.get("managed_skill_name", "skillopt-sleep-learned")
+        grouped = group_tasks_by_skill_hint(tasks, managed_name)
+        if len(grouped) > 1:
+            _progress(cfg, f"multi-skill report: groups={len(grouped)}")
+            group_outcomes = consolidate_groups(
+                backend,
+                [SkillGroup(name, skill, rows) for name, rows in grouped.items()],
+                memory,
+                edit_budget=cfg.get("edit_budget", 4),
+                gate_metric=cfg.get("gate_metric", "mixed"),
+                gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
+                gate_mode=cfg.get("gate_mode", "on"),
+                night=night,
+            )
+            report.skill_groups = skill_group_reports(group_outcomes)
+
     report.tokens_used = backend.tokens_used()
     report.ended_at = _now_iso(clock)
 
