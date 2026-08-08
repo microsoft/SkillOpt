@@ -11,8 +11,10 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
-from typing import Any, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional
 
 from skillopt_sleep.types import SleepReport
 
@@ -234,6 +236,174 @@ def redact_secrets(value: Any) -> Any:
     return value
 
 
+class StagingError(ValueError):
+    """A proposal could not be staged safely (bad name, bad target, collision)."""
+
+
+@dataclass
+class SkillProposal:
+    """One skill's proposed document plus the live file it would replace."""
+
+    skill_name: str
+    proposed_skill: str
+    live_skill_path: str
+
+
+def _safe_skill_name(name: object) -> str:
+    """Return a skill name usable as a single path segment, else ""."""
+    if not isinstance(name, str):
+        return ""
+    candidate = name.strip()
+    if not candidate or candidate in {os.curdir, os.pardir}:
+        return ""
+    if candidate.startswith("~") or os.path.isabs(candidate):
+        return ""
+    if os.path.splitdrive(candidate)[0]:
+        return ""
+    separators = {"/", "\\", os.sep, os.altsep or os.sep}
+    if any(sep in candidate for sep in separators):
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+        return ""
+    # The name becomes a filename, so reject what Windows cannot store. Without
+    # this the write fails with an OSError from deep inside staging instead of
+    # a StagingError naming the offending skill.
+    if any(ch in candidate for ch in ':*?"<>|'):
+        return ""
+    if candidate[-1] in {".", " "}:
+        return ""
+    return candidate
+
+
+def _safe_live_path(path: object) -> str:
+    """Return an absolute, traversal-free ``*.md`` target path, else ""."""
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    raw = path.strip()
+    if raw.startswith("~"):
+        return ""
+    # Reject traversal on the RAW input, before normalising. Normalising first
+    # would silently resolve "/live/../../etc/SKILL.md" into "/etc/SKILL.md"
+    # and then accept it, because no ".." survives the collapse -- turning a
+    # traversal guard into a traversal helper.
+    if any(part in {os.curdir, os.pardir} for part in raw.replace("\\", "/").split("/")):
+        return ""
+    # Only then normalise, so a caller is not forced to hand over an already
+    # canonical string. The old form demanded input == normpath(input), which
+    # rejected benign duplicate separators and every forward-slash absolute
+    # path on Windows (normpath rewrites those to backslashes, so a safe path
+    # never matched itself).
+    candidate = os.path.normpath(raw)
+    if not os.path.isabs(candidate):
+        return ""
+    if not candidate.endswith(".md"):
+        return ""
+    return candidate
+
+
+def proposal_filename(skill_name: str) -> str:
+    """Staged filename for one skill's proposal (unique per skill name)."""
+    return f"proposed_SKILL.{skill_name}.md"
+
+
+def _write_atomic(path: str, text: str) -> None:
+    """Write ``text`` to ``path`` atomically, so review never sees half a file."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def skill_proposal_rows(proposals: Iterable[SkillProposal]) -> List[Dict[str, Any]]:
+    """Validate proposals and return their manifest rows, in input order.
+
+    Raises :class:`StagingError` on an unusable skill name, an unsafe live target
+    path, or a collision on the skill name, the staged filename, or the live
+    path: a night must never stage two skills into one file or point a proposal
+    at the wrong one.
+
+    Staged filenames are compared case-insensitively. Skill names are
+    case-sensitive, so ``Research`` and ``research`` are two different skills on
+    a case-sensitive filesystem — but their proposal files land in one staging
+    directory, and on macOS and Windows that directory is case-insensitive, so
+    the second write silently replaces the first and the manifest then points a
+    surviving filename at another skill's content. Refusing the pair is the
+    conservative reading of the promise above.
+    """
+    rows: List[Dict[str, Any]] = []
+    seen_paths: Dict[str, str] = {}
+    seen_files: Dict[str, str] = {}
+    for proposal in proposals:
+        name = _safe_skill_name(proposal.skill_name)
+        if not name:
+            raise StagingError(f"unsafe skill name for staging: {proposal.skill_name!r}")
+        live = _safe_live_path(proposal.live_skill_path)
+        if not live:
+            raise StagingError(
+                f"unsafe live skill path for {name!r}: {proposal.live_skill_path!r}"
+            )
+        if any(row["skill_name"] == name for row in rows):
+            raise StagingError(f"duplicate skill name in staging fan-out: {name!r}")
+        proposed_file = proposal_filename(name)
+        # casefold, not lower: it folds Unicode pairs lower() leaves distinct,
+        # which is the comparison a case-insensitive filesystem actually makes.
+        file_key = proposed_file.casefold()
+        if file_key in seen_files:
+            raise StagingError(
+                f"skills {seen_files[file_key]!r} and {name!r} stage to the same "
+                f"file on a case-insensitive filesystem: {proposed_file}"
+            )
+        # Same reasoning for the live target: /x/A.md and /x/a.md are one file
+        # on macOS and Windows, so an exact-string check lets two skills
+        # overwrite each other's live document. casefold rather than
+        # os.path.normcase: normcase only folds case on Windows, so it is a
+        # no-op on the macOS box where the collision is just as real.
+        live_key = live.casefold()
+        if live_key in seen_paths:
+            raise StagingError(
+                f"skills {seen_paths[live_key]!r} and {name!r} target the same file: {live}"
+            )
+        seen_paths[live_key] = name
+        seen_files[file_key] = name
+        rows.append({
+            "skill_name": name,
+            "proposed_file": proposed_file,
+            "live_skill_path": live,
+        })
+    return rows
+
+
+def write_skill_proposals(
+    out_dir: str, proposals: Iterable[SkillProposal]
+) -> List[Dict[str, Any]]:
+    """Stage one uniquely named proposal file per skill; return manifest rows.
+
+    Every proposal is validated before anything is written, so a rejected
+    fan-out leaves no partial files behind.
+    """
+    # Materialise once. The signature accepts any Iterable, so a generator is
+    # legal input — and it would otherwise be drained by the validation pass,
+    # leaving the write loop with nothing to iterate and returning a full set
+    # of manifest rows for files that were never created.
+    proposals = list(proposals)
+    rows = skill_proposal_rows(proposals)
+    if not rows:
+        return rows
+    os.makedirs(out_dir, exist_ok=True)
+    for row, proposal in zip(rows, proposals):
+        _write_atomic(os.path.join(out_dir, row["proposed_file"]), proposal.proposed_skill)
+    return rows
+
+
 def _ts_dir() -> str:
     return time.strftime("%Y%m%d-%H%M%S", time.localtime())
 
@@ -279,15 +449,22 @@ def write_staging(
     live_memory_path: str,
     report_md: str,
     out_dir: str = "",
+    skill_proposals: Iterable[SkillProposal] = (),
 ) -> str:
     """Write proposals + report into staging/<ts>/ and return that path.
 
     ``out_dir`` lets the cycle pre-create the night's staging folder at cycle
     START, so incremental artifacts (evidence.jsonl) accumulate in the same
     place the report lands.
+
+    ``skill_proposals`` stages one extra uniquely named file and manifest row per
+    skill for a multi-skill night. Left empty, the staging layout and manifest
+    are exactly the legacy single-proposal ones.
     """
     out = out_dir or os.path.join(staging_root(project), _ts_dir())
     os.makedirs(out, exist_ok=True)
+
+    skill_rows = write_skill_proposals(out, skill_proposals)
 
     manifest = {
         "live_skill_path": live_skill_path,
@@ -296,6 +473,8 @@ def write_staging(
         "has_memory": proposed_memory is not None,
         "accepted": report.accepted,
     }
+    if skill_rows:
+        manifest["skills"] = skill_rows
     if proposed_skill is not None:
         with open(os.path.join(out, "proposed_SKILL.md"), "w", encoding="utf-8") as f:
             f.write(proposed_skill)
