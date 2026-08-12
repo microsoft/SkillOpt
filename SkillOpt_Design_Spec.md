@@ -1,13 +1,15 @@
 # SkillOpt Design Spec
 
 ## __Problem Statement:__
-Our current SA pipeline uses an LLM to perform 3 tasks, `boundary detection for annotations`, `verification for whether the annotations are correct`, and `extracting properties from annotations`.  These tasks all use prompts to guide the LLM into getting the correct answer, which often takes manual tuning to achieve acceptable results. 
+Our current SA pipeline uses an LLM to perform 3 tasks, `boundary detection for annotations & initial property assignment`, `verification for whether the annotations are correct`, and `extracting properties from annotations`.  These tasks all use prompts to guide the LLM into getting the correct answer, which often takes iterative manual tuning to achieve acceptable results. 
 
 
 __This raises 2 main problems:__
 
 1. __Difficult to Tune__: When tuning LLM prompts, it is often not transparent as to what change will cause what outcome. This means that we are often left blindly making changes, without any concrete metric of whether the changes we make are actually beneficial or not. 
-2. __Time Consuming__: Ties into the previous issue. The human review process takes time which significantly slows down engineering output and productivity.  
+2. __Time Consuming__: Ties into the previous issue. The human review process takes a long time which significantly slows down engineering output and productivity.  
+
+This project looks only to fix these problems for `boundary detection for annotations & initial property assignment`, although the results should be generalizable such that it is easy to apply to the other 2 tasks
 
 
 ## __Solution__
@@ -19,8 +21,8 @@ To solve both of these issues, we plan to use SkillOpt. SkillOpt is a repo that 
 We use this general loop:
 
 For each epoch, for each step:
-1. Target executes tasks with current best prompt
-2. From the task results, __trajectories__ are created containing data about task execution
+1. Harness executes tasks with current best prompt
+2. __trajectories__ and __RolloutResults__ are created containing data about task execution
 3. __Optimizer__ (a LLM Model) analyzes __trajectories__ and __RolloutResults__, then creates a __patch__, an object containing suggested edits
 4. Smaller __patches__ are merged into one patch 
 5. The edits in a __patch__ will be ranked, and then clipped to be <= __learning rate__
@@ -33,15 +35,13 @@ This solves both of our problems:
 
 
 ## __In Scope:__ 
-1. Use SkillOpt to **tune the prompt** in the SA pipeline which handles `boundary detection`
+1. Use SkillOpt to **tune the prompt** in the SA pipeline which handles `boundary detection & initial property assignment`
 2. Manually reviewing annotations to create a ground-truth dataset
 3. Handling of partial credit (a field extracted but slightly malformed shouldn't score the same as a missing field)
 
 ## __Out of Scope:__
-1. Use SkillOpt to **tune the prompt** in the SA pipeline which handles `validation` and `property extraction` 
-
+1. Use SkillOpt to **tune the prompt** in the SA pipeline which handles `validation` and `property enrichment` 
 2. **Streamline client onboarding with SkillOpt** so manual review and tuning of definitions is no longer needed.
-
    Current prompt-tuning process for a new client:
    1. Copy the most recent client definition matching the concept (minutes, agendas, etc.)
    2. Tailor the definition to the new client's files.
@@ -51,17 +51,17 @@ This solves both of our problems:
    6. Repeat 3–5 until recall ≥ 92%.
    
 ## __File Structure:__
-We are forking the SkilOpt repository. The only files we edit are under `configs/`, `data/`, and `skillopt/envs/_annotation_boundary` 
+We are forking the SkilOpt repository. The only files we edit are under `configs/`, `data/`, and `skillopt/envs/_annotation_detection` 
 ```
 SkillOpt/
 ├── ...
 ├── configs/
 │   ├── ...
-│   └── annotation_boundary/        <-- Currently named as annotation_boundary. Need better name probably. 
+│   └── annotation_detection/
 │       └── default.yaml
 ├── data/
 │   ├── ...
-│   └── annotation_boundary_split/        <-- Currently named as annotation_boundary. Need better name probably. 
+│   └── annotation_detection_split/
 │       ├── test
 |       ├── train
 │       ├── val
@@ -71,8 +71,17 @@ SkillOpt/
 │   └── envs/
 │       ├── ...
 |       ├── _common/
+|       │   ├── adapters/
+|       │   │   ├── json_file_result_writer.py
+|       │   │   └── json_item_loader.py
+|       │   └── ports/
+|       │       ├── harness.py
+|       │       ├── item_loader.py
+|       │       └── result_writer.py
 |       ├── _annotation_common/
-│       └── _annotation_boundary/       <-- Currently named as annotation_boundary. Need better name probably. 
+|       │   └── adapters/
+|       │       └── sa_pipeline_harness.py
+│       └── _annotation_detection/
 │           ├── prompts/
 │           │   ├── analyst_error.md
 │           │   ├── analyst_success.md
@@ -85,7 +94,6 @@ SkillOpt/
 │           ├── evaluator.py
 │           └── rollout.py
 ├── ...
-├── OVERVIEW.md
 └── SkillOpt_Design_Spec.md
 ```
 
@@ -95,6 +103,12 @@ SkillOpt/
 type UnitInterval = float
 type SoftScore = float
 type HardScore = int
+
+type Seed = int
+type BatchSize = int
+type FilePath = str
+type Skill = str
+type Chunk = str
 ```
 
 ```python
@@ -151,130 +165,238 @@ Trajectory = ToolCallTrajectory | StepTrajectory | VerificationTrajectory | Mess
 
 ```python
 class RolloutResult(TypedDict):
-    id: str # required 
-    soft: SoftScore # required 
-    hard: HardScore # required 
+    id: str  # required
+    soft: SoftScore  # required
+    hard: HardScore  # required
     predicted_answer: str
-    task_description: str # makes llm accurate
+    task_description: str  # makes llm accurate
     question: str
     reference_text: str
-    task_type: str # required for minibatch
+    task_type: str  # required for minibatch
     target_system_prompt: str
     target_user_prompt: str
-    n_turns: int # cosmetic; for prints
+    n_turns: int  # cosmetic; for prints
 ```
+
+```python
+class DatasetType(StrEnum):
+    MINUTE = "minute"
+    AGENDA = "agenda"...
+```
+
+```python
+class ApplicationType(StrEnum):
+    CVPC_BC = "cvpc_bc"
+    MF_CT = "mf_ct"...
+```
+
 
 ## __Use Case Types:__
+### Ports & Adaptors (all examples are driven)
 ```python
-AnnotationBoundryAdaptor(EnvAdapter)  #EnvAdapter is defined by SkillOpt
+class Harness[InputT, LLMOutputT](ABC):
+    @abstractmethod
+    def forward(self, input: InputT, skill: Skill) -> LLMOutputT
 ```
 
 ```python
-AnnotationBoundryDataLoader(SplitDataLoader)
+# Find the Chunk and SAOutput Type. 
+class SAPipelineHarness(Harness[Chunk, SAOutput]):
+    @override
+    def forward(self: Harness, input: Chunk, skill: Skill) -> SAOutput
+```
+<br/><br/>
+
+```python
+class ItemLoader[ItemT](ABC):
+    @abstractmethod
+    def get_data(self) -> list[ItemT]
 ```
 
+```python
+class JSONItemLoader(ItemLoader):
+    path: FilePath
+
+    def __init__(self, path: FilePath):
+        # Set Filepath here to use in get_data
+        pass
+    
+    @override
+    def get_data(self) -> list[dict[str, object]]
+```
+
+<br/><br/>
+
+```python
+class ResultWriter[ResultT](ABC):
+    @abstractmethod
+    def write(self, key: str, result: ResultT) -> None ... # return None since we are writing to files/db's
+```
+
+``` python
+class JsonFileResultWriter[ResultT](ResultWriter[ResultT]):
+    def __init__(self, out_dir: Path, filename: str) -> None:
+        self._out_dir = out_dir
+        self._filename = filename
+
+    @override
+    def write(self, key: str, result: ResultT) -> None:
+        path = self._out_dir / "predictions" / key / self._filename
+        ...
+``` 
+<br/><br/>
+
+### Skill Opt 
+```python
+AnnotationDetectionAdaptor(EnvAdapter)  # EnvAdapter is defined by SkillOpt
+```
+
+```python
+AnnotationDetectionDataLoader(SplitDataLoader)
+```
 
 ```python 
 @dataclass 
 AnnotatedChunk():
-    # TODO: Check if Femina has a type for these
     chunk: str 
     ground_truth_span_indexs: list[tuple[int, int]]
     ground_truth_properties: list[Property]
 ```
 
+``` python
+# This is how annotated chunks look like in the new domain types. Discuss with Doc to turn the list type into list[AnnotatedSpan]
+class AgendaAnnotatedChunk(BaseModel):
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    chunk_index: int
+    chunk_text: Chunk
+    annotated_spans: list[AgendaItemAnnotatedSpan]
+
+
+class MotionAnnotatedChunk(BaseModel):
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
+
+    chunk_index: int
+    chunk_text: Chunk
+    annotated_spans: list[MotionAnnotatedSpan]
+
+
+# ... and more [concepts]AnnotatedChunks for all concepts
+```
+
 ```python 
 # Returned from SplitDataLoader.load_split_items
 @dataclass 
-AnnotationBoundryTask():
+AnnotationDetectionTask():
     id: str
     annotated_chunk: AnnotatedChunk
-```
+    # These properties will be used for task_type
+    datasource: DatasourceType
+    application: ApplicationType
+    year: YearType
 
+```
 
 
 ```python
 @dataclass
-AnnotationBoundryBatchSpec(BatchSpec): 
+AnnotationDetectionBatchSpec(BatchSpec): 
     phase: BatchPhase
     split: BatchSplit
-    seed: int
-    batch_size: int
-    payload: list[AnnotationBoundryTask]
+    seed: Seed
+    batch_size: BatchSize
+    payload: list[AnnotationDetectionTask]
     metadata: dict[str, Any] = field(default_factory=dict)
 
 ```
 
-
 ```python
-# Enforce that AnnotationBoundryEnv should be = list[AnnotationBoundryBatchSpec.payload]
-AnnotationBoundryEnv = NewType("AnnotationBoundryEnv", list[AnnotationBoundryTask]): 
+# Enforce that AnnotationDetectionEnv should be = list[AnnotationDetectionBatchSpec.payload]
+AnnotationDetectionEnv = NewType("AnnotationDetectionEnv", list[AnnotationDetectionTask]): 
 ```
 
 ## __Functions:__
 `dataloader.py`
 ```python
-AnnotationBoundryDataLoader.load_split_items(split_path: str) -> list[AnnotationBoundryTask]
+AnnotationDetectionDataLoader.load_split_items(split_path: FilePath) -> list[AnnotationDetectionTask]
 ```
 
 `adaptor.py`
 ```python
 # Use implementation from template_env
-AnnotationBoundryAdaptor.__init__() -> None
+AnnotationDetectionAdaptor.__init__() -> None
 ```
 
 ```python
 # Use implementation from template_env
-AnnotationBoundryAdaptor.setup() -> None
-```
-
-```python;
-AnnotationBoundryAdaptor.get_dataloader() -> AnnotationBoundryDataLoader
+AnnotationDetectionAdaptor.setup() -> None
 ```
 
 ```python
-AnnotationBoundryAdaptor.build_env_from_batch(BatchSpec: AnnotationBoundryBatchSpec) -> AnnotationBoundryEnv
+AnnotationDetectionAdaptor.get_dataloader() -> AnnotationDetectionDataLoader
 ```
 
 ```python
-AnnotationBoundryAdaptor.build_train_env(batch_size: int, seed: int, **kwargs) -> AnnotationBoundryEnv
+AnnotationDetectionAdaptor.build_env_from_batch(BatchSpec: AnnotationDetectionBatchSpec) -> AnnotationDetectionEnv
+```
+
+```python
+AnnotationDetectionAdaptor.build_train_env(batch_size: BatchSize, seed: Seed, **kwargs) -> AnnotationDetectionEnv
 ```
 
 ```python
 # env_num is the number of eval cases to run. Feel like it should be called eval_num?
 # Also env_num = 0 means run all cases, which I think is pretty stupid and unclear
-AnnotationBoundryAdaptor.build_eval_env(env_num: int, split: BatchSplit, seed: int, **kwargs) -> AnnotationBoundryEnv
+AnnotationDetectionAdaptor.build_eval_env(env_num: Count, split: BatchSplit, seed: Seed, **kwargs) -> AnnotationDetectionEnv
 ```
 
 ```python 
-AnnotationBoundryAdaptor.get_task_types() -> list[literal["annotation_boundry"]]
+AnnotationDetectionAdaptor.get_task_types() -> list[literal["annotation_detection"]]
 ```
 
 ```python
 # Note that this function must also write a trajectory to disk at `<out_dir>/predictions/<id>/conversation.json` to be read by reflect
 # Feel like it's not great that this happens in this function, but can't really change it?
-AnnotationBoundryAdaptor.rollout() -> list[RolloutResult] # See if we need to make a unique rollout result later
+AnnotationDetectionAdaptor.rollout(
+    env_manager: AnnotationDetectionEnv,
+    skill_content: Skill,
+    out_dir: FilePath,) -> list[RolloutResult] 
 ```
 
 `evaluator.py`
 ```python
+# evalutator should ONLY be responsible for returning the metric
+
 from difflib import SequenceMatcher
 
-# evalutator should ONLY be responsible for returning the metric
-def intersection_over_union(prediction: str, ground_truth: str) -> UnitInterval:
-    intersection = SequenceMatcher(None, prediction, ground_truth).find_longest_match()
-    union = len(prediction) + len(ground_truth) - intersection.size
-    return intersection.size / union if union else 0.0
 
-def property_coverage_rate(prediction: str, ground_truth: str) -> UnitInterval:
+class SpanNotFoundError(ValueError):
+    """A predicted span could not be located in its chunk."""
+
+
+def find_boundary(chunk_text: str, span: str) -> tuple[int, int]:
+    if (start := chunk_text.find(span)) == -1:
+        raise SpanNotFoundError()
+    return (start, start + len(span))
+
+
+# for boundary overlap metrics
+def intersection_over_union(prediction: list[int], ground_truth: list[int]) -> UnitInterval:
     pass
+
+
+# for property correctness metric
+def property_coverage_rate(prediction: str, ground_truth: str) -> UnitInterval:
+    pass  # copy code from performance test of SA pipeline
 ```
 
 `rollout.py`
 ```python
 run_batch(env_manager, ...) -> list[RolloutResult]  # pretty sure we need a RolloutResult type
     items: list[dict] = env_manager
-    return _rollout_one(item: dict, ...)
+    results = [_rollout_one(item: dict, ...) for item in items]
+    write_results_to_json(results) # need to write result per batch
+    return results
 ```
 
 ```python
@@ -287,21 +409,46 @@ _rollout_one(item: dict, ...) -> RolloutResult
         max_completion_tokens=max_completion_tokens,
     )
     # 'hard' score routes trajectory to success vs. error analyst; `soft` is the actual score
-    soft, hard = score(prediction, item.get("ground_truth", ""))
+    hard, soft = _score(prediction, item.get("ground_truth", ""))
     
     # ... more code above and below but ignore the details
-    return RolloutResult(...)
+    result = RolloutResult(...)
+    write_results_to_json(result) # need to write result per item
+    return result
 ```
 
 
 ```python
 #  score should handle the evaluator result threshold, not the evaluator 
-_score(prediction: str, ground_truth: str) -> tuple[SoftScore, HardScore]:
-    soft = intersection_over_union(prediction, ground_truth) # IoU score between 0-1
+_score(prediction: str, ground_truth: str) -> tuple[HardScore, SoftScore]:
+    property_metric = property_coverage_rate()
+    iou_metric = intersection_over_union(prediction, ground_truth)
+
+    soft = min(property_metric, iou_metric)
     hard = soft > 0.5 # arbitrarily set to 0.5 threshold
-    return soft, hard
+    
+    return hard, soft
 ```
 
 
-NOTES:
-dataloader.load_split_data -> dataloader.build_train/eval_batch -> dataloader.build_env_from_batch -> adaptor.build_train/eval_env
+
+
+
+
+
+
+Notes about Hexagonal Architecture:
+
+
+```
+What exactly a port is and isn't is largely a matter of taste. At the one extreme, every use case could be given its own port, producing hundreds of ports for many applications. Alternatively, one could imagine merging all primary ports and all secondary ports so there are only two ports, a left side and a right side.
+
+Neither extreme appears optimal.
+
+The weather system described in the Known Uses has four natural ports: the weather feed, the administrator, the notified subscribers, the subscriber database. A coffee machine controller has four natural ports: the user, the database containing the recipes and prices, the dispensers, and the coin box. A hospital medication system might have three: one for the nurse, one for the prescription database, and one for the computer-controller medication dispensers.
+
+It doesn't appear that there is any particular damage in choosing the "wrong" number of ports, so that remains a matter of intuition. My selection tends to favor a small number, two, three or four ports, as described above and in the Known Uses.
+```
+
+
+
