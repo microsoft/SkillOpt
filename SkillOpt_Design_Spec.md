@@ -14,6 +14,8 @@ This project looks only to fix these problems for `boundary detection for annota
 
 ## __Solution__
 To solve both of these issues, we plan to use SkillOpt. SkillOpt is a repo that allows us to tune prompts by following a similar loop as training a Deep Learning model. See [the deep learning analogy](../docs/guide/dl-analogy.md) for a clear comparison.
+
+We also plan on following Hexagonal Architecture to ensure the pipeline's core depends only on the ports it owns, meaning future swaps with other interfaces can be done much easier using adapters.
  
 
 ### __General Idea__
@@ -51,7 +53,7 @@ This solves both of our problems:
    6. Repeat 3–5 until recall ≥ 92%.
    
 ## __File Structure:__
-We are forking the SkilOpt repository. The only files we edit are under `configs/`, `data/`, and `skillopt/envs/_annotation_detection` 
+We are forking the SkilOpt repository. The only files we edit are under `configs/`, `data/`, and `skillopt/envs/` 
 ```
 SkillOpt/
 ├── ...
