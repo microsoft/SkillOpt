@@ -15,8 +15,11 @@ This project looks only to fix these problems for `boundary detection for annota
 ## __Solution__
 To solve both of these issues, we plan to use SkillOpt. SkillOpt is a repo that allows us to tune prompts by following a similar loop as training a Deep Learning model. See [the deep learning analogy](../docs/guide/dl-analogy.md) for a clear comparison.
 
-We also plan on following Hexagonal Architecture to ensure the pipeline's core depends only on the ports it owns, meaning future swaps with other interfaces can be done much easier using adapters.
- 
+We also plan on following Alistair Cockburn's [Hexagonal Architecture](https://jmgarridopaz.github.io/content/hexagonalarchitecture.html) to ensure the pipeline's core depends only on the ports it owns, meaning future swaps with other interfaces can be done much easier using adapters. This also keeps the domain logic free of infrastructure concerns, so changes to how results are persisted don't ripple into how they're evaluated. A few other key factors to keep in mind when working with hexagonal architecture are:
+1. Each port needs a test adapter. On the driven side that means an implementation and on the driving side, a caller.
+2. Hexagonal Architecture reduces techical debt as more maintainability = less technical debt.
+3. Technology evolves more frequently than business logic does. So, in applications where the business logic is tied to technology, you can't do technology changes without touching business logic which is annoying/bad. Hexagonal architecture avoids this by simply swapping the adapter.
+4. When you start developing and coding, you can focus just on business logic, deferring decisions about which framework and technology you are going to use. You can choose a technology later, and code an adapter for it.
 
 ### __General Idea__
 
@@ -248,6 +251,30 @@ class JsonFileResultWriter[ResultT](ResultWriter[ResultT]):
 ``` 
 <br/><br/>
 
+``` python
+class CosmosFileResultWriter[ResultT](ResultWriter[ResultT]):
+    def __init__(self, container: ContainerProxy, run_id: str) -> None:
+        self._container = container
+        self._run_id = run_id
+
+    @override
+    def write(self, key: str, result: ResultT) -> None:
+        doc: CosmosWrittenResult = {"id": key, "runId": self._run_id, "payload": result}
+        self._container.upsert_item(doc)
+``` 
+<br/><br/>
+
+``` python
+class MockResultWriter[ResultT: BaseModel](ResultWriter[ResultT]):
+    def __init__(self) -> None:
+        self.written: MockWrittenResult = {}
+
+    @override
+    def write(self, key: str, result: ResultT) -> None:
+        self.written[key] = result
+``` 
+<br/><br/>
+
 ### Skill Opt 
 ```python
 AnnotationDetectionAdaptor(EnvAdapter)  # EnvAdapter is defined by SkillOpt
@@ -317,7 +344,7 @@ AnnotationDetectionBatchSpec(BatchSpec):
 AnnotationDetectionEnv = NewType("AnnotationDetectionEnv", list[AnnotationDetectionTask]): 
 ```
 
-## __Functions:__
+## __Files & Functions:__
 `dataloader.py`
 ```python
 AnnotationDetectionDataLoader.load_split_items(split_path: FilePath) -> list[AnnotationDetectionTask]
