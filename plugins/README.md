@@ -97,11 +97,14 @@ optimization.
   CLI, authentication, or provider access. See
   [the CLI reference](../docs/reference/cli.md#opencode-source-and-backend) for
   its retained-data boundary.
-- The core `opencode` backend uses the installed OpenCode CLI for plain model
-  calls. It keeps the user's login and file-based global configuration
-  while disabling project configuration, tool use, external plugins, and
-  configured MCP servers for those calls. Tool-aware replay and a native
-  OpenCode plugin or command are not included yet.
+- The core `opencode` backend uses the installed OpenCode CLI. Plain calls
+  disable project configuration, model-initiated tool invocation, external
+  plugins, and configured MCP servers. Tool-aware replay requires explicit
+  opt-in. It exposes only temporary synthetic tools with randomized names and
+  fixed results, then verifies which tools OpenCode actually invoked. See the
+  [CLI reference](../docs/reference/cli.md#opencode-source-and-backend) for
+  history and isolation details. A native OpenCode plugin or command is not
+  included.
 - Outbound prompts are not currently guaranteed to be free of secrets. Do not
   use a third-party provider on sensitive transcripts without reviewing the data
   source and the provider's retention policy.
@@ -146,6 +149,7 @@ Common implemented flags include:
 | `--pi-path PATH` | auto-detect `pi` | select the Pi coding-agent CLI executable |
 | `--opencode-path PATH` | `SKILLOPT_SLEEP_OPENCODE_PATH`, then `opencode` on `PATH`/`PATHEXT` | select the OpenCode CLI executable |
 | `--opencode-db PATH` | `OPENCODE_DB`, then `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` | select the OpenCode SQLite history database |
+| `--opencode-tool-replay` | off | enable OpenCode tool-aware replay for `tool_called` checks in rule judges |
 | `--project PATH` | current directory | select the project and invoked harvest scope |
 | `--scope invoked\|all` | `invoked` | limit transcript harvesting |
 | `--target-skill-path PATH` | managed skill | select a specific `SKILL.md` to stage/adopt |

@@ -139,6 +139,7 @@ Actions are `run`, `dry-run`, `status`, `adopt`, `harvest`, `schedule`, and
 | `--pi-path PATH` | Path to the installed Pi coding-agent CLI |
 | `--opencode-path PATH` | Path to the installed OpenCode CLI |
 | `--opencode-db PATH` | Path to the OpenCode SQLite history database |
+| `--opencode-tool-replay` | Enable OpenCode tool-aware replay for `tool_called` checks in rule judges |
 | `--preferences TEXT` | House rules supplied to reflection |
 | `--lookback-hours N` | Initial transcript lookback; `0` scans all history |
 | `--max-sessions N` / `--max-tasks N` | Bound the harvested workload |
@@ -256,6 +257,9 @@ Install and configure OpenCode using its
 [official documentation](https://opencode.ai/docs/), then confirm the CLI is
 available with `opencode --version`.
 
+SkillOpt's OpenCode backend, including tool-aware replay, has been tested with
+OpenCode CLI `1.18.15`. Other versions may work but have not been validated.
+
 If OpenCode is on `PATH`, no path option is needed. Otherwise use
 `--opencode-path`, the `opencode_path` config key, or
 `SKILLOPT_SLEEP_OPENCODE_PATH`. Use `--model`, the `model` config key, or
@@ -268,28 +272,41 @@ skillopt-sleep run --project "$(pwd)" \
   --model provider/model --max-sessions 5 --max-tasks 3 --progress
 ```
 
-Plain calls run from a temporary directory with project configuration, tool
-use, and external plugins disabled. Before contacting the model, SkillOpt
-discovers the resolved MCP configuration, disables every
-configured MCP server for the call, and verifies that none remains enabled. If
-that check fails, the model call is not made. Tool-aware replay is not yet
-supported.
+Plain calls run from a temporary directory with project configuration and
+model-initiated tool invocation disabled. Before contacting the model, SkillOpt
+discovers the resolved MCP configuration, disables every configured MCP server
+for the call, and verifies that none remains enabled. If that check fails, the
+model call is not made.
 
-The child process keeps normal OpenCode file-based global configuration and
-data directories. SkillOpt sets `OPENCODE_CONFIG_CONTENT` for the child process
-to define the temporary agent and disable configured MCP servers. This replaces
-the user's existing value in that child process, so settings supplied only
-through that value are unavailable. Because `--pure` skips external plugins,
+OpenCode tool-aware replay is disabled by default. Enable it explicitly with
+`--opencode-tool-replay` or `"opencode_tool_replay": true` in
+`~/.skillopt-sleep/config.json`. It applies only to tasks whose rule judge
+contains a non-empty `tool_called` check. In a fresh temporary workspace,
+SkillOpt creates synthetic tools with randomized names and fixed results, then
+verifies which tools OpenCode actually invoked. Historical tool arguments and
+results are neither retained nor replayed. Configured MCP servers remain
+disabled, and the invocation allowlist includes only these temporary tools.
+
+Both modes continue to use OpenCode's normal data directory and file-based
+global configuration. OpenCode may discover or initialize custom JS/TS tools
+from its global configuration directories, although SkillOpt does not allow the
+model to invoke them. SkillOpt replaces `OPENCODE_CONFIG_CONTENT` in the child
+process to define the temporary agent and disable configured MCP servers, so
+settings present only in the user's original value are unavailable. Because
+`--pure` skips external plugins,
 authentication or provider setup that depends on one of those plugins is also
-unavailable. Calls may appear in the user's normal OpenCode session history;
-these controls are invocation settings, not complete account or process
-isolation.
+unavailable. Calls may appear in the user's OpenCode session history. During
+tool-aware replay, the fixed input (`synthetic`), fixed result, and temporary
+project metadata may remain there as well. These controls are invocation
+settings, not complete account or process isolation.
 
 The managed scheduler stores the backend but not `--source`, `--opencode-db`,
-`--opencode-path`, or `--model`. Put `transcript_source`, `opencode_db`,
-`opencode_path`, and `model` in `~/.skillopt-sleep/config.json` as needed. Use
-absolute database and executable paths, and verify OpenCode access when the
-scheduled run uses the backend.
+`--opencode-path`, `--opencode-tool-replay`, or `--model`. Put
+`transcript_source`, `opencode_db`, `opencode_path`, and `model` in
+`~/.skillopt-sleep/config.json` as needed. Add
+`"opencode_tool_replay": true` only when the scheduled run should enable
+tool-aware replay. Use absolute database and executable paths, and verify
+OpenCode access when the scheduled run uses the backend.
 
 ### Cursor source and backend
 
