@@ -23,8 +23,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
+import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
@@ -865,39 +868,54 @@ class ClaudeCliBackend(CliBackend):
                 pass
 
 
+_OPENCODE_SYNTHETIC_TOOL_QUERY = "synthetic"
+_OPENCODE_SYNTHETIC_TOOL_RESULT = "Synthetic replay result available."
+_OPENCODE_STREAM_ERRORS = {
+    "malformed_jsonl": "returned malformed JSONL",
+    "invalid_event": "returned an invalid JSONL event",
+    "mixed_session": "returned mixed sessions",
+    "error_event": "emitted an error event",
+    "unexpected_tool_event": "attempted unsupported tool use",
+    "invalid_tool_event": "returned an invalid tool event",
+    "unexpected_tool_id": "used an unexpected tool",
+    "tool_error": "reported a failed synthetic tool",
+    "incomplete_stream": "returned an incomplete stream",
+    "missing_final_text": "returned no final answer after tool use",
+    "empty_response": "returned an empty response",
+}
+
+
+class OpenCodeError(RuntimeError):
+    """An OpenCode failure with a message that is safe to expose to users."""
+
+    def __init__(self, message: str, *, prompt_chars: int = 0) -> None:
+        super().__init__(message)
+        self.prompt_chars = prompt_chars
+
+
+@dataclass(frozen=True)
+class _OpenCodeReplayProject:
+    agent_name: str
+    tool_mapping: Dict[str, str]
+
+
 def resolve_opencode_path(explicit: str = "") -> str:
     """Find the OpenCode CLI, including Windows npm ``.CMD`` launchers."""
-    import shutil
-
-    candidate = os.path.expanduser(
-        explicit or os.environ.get("SKILLOPT_SLEEP_OPENCODE_PATH", "") or "opencode"
-    )
+    candidate = os.path.expanduser(explicit or os.environ.get("SKILLOPT_SLEEP_OPENCODE_PATH", "") or "opencode")
     resolved = shutil.which(candidate)
     if resolved:
-        # Make the result absolute before the child changes directory.
         return os.path.abspath(resolved)
-    if os.path.dirname(candidate):
-        # Do the same for a path-like value even if the file does not exist yet.
-        return os.path.abspath(candidate)
-    # Otherwise let the operating system find the command on PATH when it runs.
-    return candidate
+    return os.path.abspath(candidate) if os.path.dirname(candidate) else candidate
 
 
-def _parse_opencode_jsonl_text(raw: str) -> Tuple[str, str]:
-    """Extract text and an error code from one OpenCode JSONL response."""
+def _parse_opencode_jsonl_events(raw: str, expected_tool_ids: Optional[set[str]] = None) -> Tuple[str, List[str], str]:
+    """Extract final text and the IDs of validated, completed tool calls from OpenCode JSONL."""
     text_parts: List[str] = []
-    session_id = ""
+    called: List[str] = []
+    session_id = last_event = ""
     saw_step_start = False
-    last_known_event_type = ""
-    known_event_types = {"error", "reasoning", "step_finish", "step_start", "text", "tool_use"}
-    expected_part_types = {
-        "reasoning": "reasoning",
-        "step_finish": "step-finish",
-        "step_start": "step-start",
-        "text": "text",
-        "tool_use": "tool",
-    }
-
+    needs_final_text = False
+    known = {"reasoning", "step_finish", "step_start", "text", "tool_use"}
     for raw_line in raw.splitlines():
         line = raw_line.strip()
         if not line:
@@ -905,46 +923,149 @@ def _parse_opencode_jsonl_text(raw: str) -> Tuple[str, str]:
         try:
             event = json.loads(line)
         except (ValueError, RecursionError):
-            return "", "malformed_jsonl"
+            return "", [], "malformed_jsonl"
         if not isinstance(event, dict):
-            return "", "invalid_event"
-
-        event_type = event.get("type")
-        event_session_id = event.get("sessionID")
+            return "", [], "invalid_event"
+        event_type, event_session = event.get("type"), event.get("sessionID")
         if not isinstance(event_type, str) or not event_type:
-            return "", "invalid_event"
-        if not isinstance(event_session_id, str) or not event_session_id:
-            return "", "invalid_event"
-        if not session_id:
-            session_id = event_session_id
-        elif event_session_id != session_id:
-            return "", "mixed_session"
-
-        if event_type not in known_event_types:
-            continue
-        last_known_event_type = event_type
+            return "", [], "invalid_event"
+        if not isinstance(event_session, str) or not event_session:
+            return "", [], "invalid_event"
+        if session_id and event_session != session_id:
+            return "", [], "mixed_session"
+        session_id = event_session
         if event_type == "error":
-            return "", "error_event"
-
-        part = event.get("part")
-        if not isinstance(part, dict) or part.get("type") != expected_part_types[event_type]:
-            return "", "invalid_event"
-        if event_type == "tool_use":
-            return "", "unexpected_tool_event"
-        if event_type == "step_start":
-            saw_step_start = True
-        elif event_type == "text":
+            return "", [], "error_event"
+        if event_type not in known:
+            continue
+        last_event, part = event_type, event.get("part")
+        if event_type == "text":
+            if not isinstance(part, dict) or part.get("type") != "text":
+                return "", [], "invalid_event"
             text = part.get("text")
             if not isinstance(text, str):
-                return "", "invalid_event"
+                return "", [], "invalid_event"
             text_parts.append(text)
-
-    if not saw_step_start or last_known_event_type != "step_finish":
-        return "", "incomplete_stream"
+            needs_final_text = needs_final_text and not bool(text.strip())
+        elif event_type == "tool_use":
+            if expected_tool_ids is None:
+                return "", [], "unexpected_tool_event"
+            if not isinstance(part, dict) or part.get("type") != "tool":
+                return "", [], "invalid_tool_event"
+            tool_id, state = part.get("tool"), part.get("state")
+            if not isinstance(tool_id, str) or not isinstance(state, dict):
+                return "", [], "invalid_tool_event"
+            if tool_id not in expected_tool_ids:
+                return "", [], "unexpected_tool_id"
+            if state.get("status") == "error":
+                return "", [], "tool_error"
+            if (
+                state.get("status") != "completed"
+                or state.get("input") != {"query": _OPENCODE_SYNTHETIC_TOOL_QUERY}
+                or state.get("output") != _OPENCODE_SYNTHETIC_TOOL_RESULT
+            ):
+                return "", [], "invalid_tool_event"
+            called.append(tool_id)
+            text_parts.clear()
+            needs_final_text = True
+        elif event_type in {"step_start", "step_finish"}:
+            part_type = "step-start" if event_type == "step_start" else "step-finish"
+            if not isinstance(part, dict) or part.get("type") != part_type:
+                return "", [], "invalid_event"
+            saw_step_start = saw_step_start or event_type == "step_start"
+        elif not isinstance(part, dict) or part.get("type") != "reasoning":
+            return "", [], "invalid_event"
+    if not saw_step_start or last_event != "step_finish":
+        return "", [], "incomplete_stream"
+    if needs_final_text:
+        return "", [], "missing_final_text"
     text = "\n".join(text_parts).strip()
-    if not text:
-        return "", "empty_response"
-    return text, ""
+    return (text, called, "") if text else ("", [], "empty_response")
+
+
+def _write_exclusive_text(path: str, content: str, encoding: str = "utf-8") -> None:
+    with open(path, "x", encoding=encoding, newline="\n") as output:
+        output.write(content)
+
+
+def _normalize_opencode_tool_names(tools: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for value in tools:
+        if not isinstance(value, str):
+            raise OpenCodeError("OpenCode CLI tool replay received an invalid tool list")
+        name, folded = value.strip(), value.strip().casefold()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", name):
+            raise OpenCodeError("OpenCode CLI tool replay received an invalid tool list")
+        if folded not in seen:
+            seen.add(folded)
+            normalized.append(name)
+    if not normalized or len(normalized) > 32:
+        raise OpenCodeError("OpenCode CLI tool replay received an invalid tool list")
+    return normalized
+
+
+def _prepare_opencode_replay_project(work: str, tools: List[str]) -> _OpenCodeReplayProject:
+    """Create a replay project with a Git boundary, offline metadata, and randomly named JavaScript tools."""
+    try:
+        project_id = f"skillopt-sleep-{secrets.token_hex(32)}"
+        git_dir = os.path.join(work, ".git")
+        os.makedirs(os.path.join(git_dir, "objects"))
+        os.makedirs(os.path.join(git_dir, "refs", "heads"))
+        git_files = {
+            "HEAD": "ref: refs/heads/main\n",
+            "config": "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n",
+            "opencode": project_id + "\n",
+        }
+        for name, content in git_files.items():
+            _write_exclusive_text(os.path.join(git_dir, name), content, "ascii")
+        agent = f"skillopt-sleep-{secrets.token_hex(16)}"
+        mapping = {name: f"skillopt_replay_{secrets.token_hex(16)}" for name in tools}
+        if len(set(mapping.values())) != len(mapping):
+            raise ValueError("random tool identifier collision")
+        config_dir, package_name = os.path.join(work, ".opencode"), "skillopt-opencode-replay"
+        tool_dir = os.path.join(config_dir, "tools")
+        os.makedirs(tool_dir)
+        os.makedirs(os.path.join(config_dir, "node_modules"))
+        root = {"name": package_name, "dependencies": {"@opencode-ai/plugin": "0.0.0"}}
+        metadata = {
+            "package.json": {**root, "private": True},
+            "package-lock.json": {
+                "name": package_name,
+                "lockfileVersion": 3,
+                "requires": True,
+                "packages": {"": root},
+            },
+        }
+        for name, payload in metadata.items():
+            _write_exclusive_text(os.path.join(config_dir, name), json.dumps(payload, separators=(",", ":")))
+        for logical_name, tool_id in mapping.items():
+            description = f"Controlled synthetic stand-in for the {logical_name} tool."
+            source = (
+                f"const query = {json.dumps(_OPENCODE_SYNTHETIC_TOOL_QUERY)};\n"
+                f"const result = {json.dumps(_OPENCODE_SYNTHETIC_TOOL_RESULT)};\n"
+                "export default {\n"
+                f"  description: {json.dumps(description)},\n"
+                '  args: { query: { type: "string", description: "Use exactly synthetic." } },\n'
+                "  async execute(args) {\n"
+                '    if (args === null || typeof args !== "object" || '
+                "Object.keys(args).length !== 1 || args.query !== query) {\n"
+                '      throw new Error("Invalid synthetic replay input.");\n'
+                "    }\n"
+                "    return result;\n"
+                "  },\n};\n"
+            )
+            _write_exclusive_text(os.path.join(tool_dir, f"{tool_id}.js"), source)
+        return _OpenCodeReplayProject(agent, mapping)
+    except Exception:
+        raise OpenCodeError("OpenCode CLI tool replay could not be prepared") from None
+
+
+def _opencode_temporary_workspace(prefix: str, error: str) -> tempfile.TemporaryDirectory:
+    try:
+        return tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True)
+    except Exception:
+        raise OpenCodeError(error) from None
 
 
 class OpenCodeCliBackend(CliBackend):
@@ -957,202 +1078,206 @@ class OpenCodeCliBackend(CliBackend):
         model: str = "",
         opencode_path: str = "",
         timeout: int = 180,
+        tool_replay: bool = False,
     ) -> None:
         super().__init__(
             model=model or os.environ.get("SKILLOPT_SLEEP_OPENCODE_MODEL", ""),
             timeout=timeout,
         )
         self.opencode_path = resolve_opencode_path(opencode_path)
+        # Require the literal True so config strings cannot enable synthetic tools.
+        self.tool_replay = tool_replay is True
 
-    def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
-        """Do not cache failed OpenCode calls."""
-        if key in self._cache:
-            # A cached answer makes any earlier error irrelevant to this call.
-            self.last_call_error = ""
-        out = super()._cached_call(key, prompt, max_tokens=max_tokens)
-        if not out:
-            self._cache.pop(key, None)
-        return out
-
-    def _read_mcp_disabled_statuses(
+    def _run_process(
         self,
+        command: List[str],
         env: Dict[str, str],
         work: str,
-        stage: str,
-    ) -> Optional[Dict[str, bool]]:
-        """Return whether each configured MCP server is explicitly disabled."""
+        *,
+        operation: str,
+        input_text: Optional[str] = None,
+        report_exit_code: bool = False,
+        exception_action: str = "completed",
+    ) -> subprocess.CompletedProcess[str]:
+        kwargs: Dict[str, Any] = {
+            "capture_output": True,
+            "creationflags": _NO_WINDOW,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "timeout": self.timeout,
+            "cwd": work,
+            "env": env,
+        }
+        if input_text is not None:
+            kwargs["input"] = input_text
         try:
-            proc = subprocess.run(
-                [self.opencode_path, "debug", "config", "--pure"],
-                capture_output=True,
-                creationflags=_NO_WINDOW,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self.timeout,
-                cwd=work,
-                env=env,
-            )
+            proc = subprocess.run(command, **kwargs)
         except subprocess.TimeoutExpired:
-            self.last_call_error = f"OpenCode CLI {stage} timed out after {self.timeout}s"
-            return None
+            raise OpenCodeError(f"{operation} timed out after {self.timeout}s") from None
         except Exception:
-            self.last_call_error = f"OpenCode CLI {stage} could not be completed"
-            return None
+            raise OpenCodeError(f"{operation} could not be {exception_action}") from None
+        if proc.returncode:
+            detail = f"exited {proc.returncode}" if report_exit_code else "failed"
+            raise OpenCodeError(f"{operation} {detail}")
+        return proc
 
-        if proc.returncode != 0:
-            self.last_call_error = f"OpenCode CLI {stage} exited {proc.returncode}"
-            return None
+    def _read_debug_json(
+        self,
+        args: List[str],
+        env: Dict[str, str],
+        work: str,
+        operation: str,
+        report_exit_code: bool = False,
+    ) -> Dict[str, Any]:
+        proc = self._run_process(
+            [self.opencode_path, "debug", *args, "--pure"],
+            env,
+            work,
+            operation=operation,
+            report_exit_code=report_exit_code,
+        )
         try:
-            resolved = json.loads(proc.stdout or "")
+            value = json.loads(proc.stdout or "")
         except (ValueError, RecursionError, TypeError):
-            self.last_call_error = f"OpenCode CLI {stage} returned invalid configuration"
-            return None
-        if not isinstance(resolved, dict):
-            self.last_call_error = f"OpenCode CLI {stage} returned invalid configuration"
-            return None
+            value = None
+        if not isinstance(value, dict):
+            raise OpenCodeError(f"{operation} returned invalid configuration")
+        return value
 
-        mcp = resolved.get("mcp", {})
-        if not isinstance(mcp, dict):
-            self.last_call_error = f"OpenCode CLI {stage} returned invalid MCP configuration"
-            return None
-        disabled_by_name: Dict[str, bool] = {}
-        for name, entry in mcp.items():
-            if not isinstance(name, str) or not isinstance(entry, dict):
-                self.last_call_error = f"OpenCode CLI {stage} returned invalid MCP configuration"
-                return None
-            disabled_by_name[name] = entry.get("enabled") is False
-        return disabled_by_name
+    @staticmethod
+    def _build_child_environment(work: str, permission: Dict[str, str], tools: bool = False) -> Dict[str, str]:
+        env = os.environ.copy()
+        for key in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"):
+            if env.get(key):
+                env[key] = os.path.abspath(os.path.expanduser(env[key]))
+        env.update(
+            {
+                "NO_COLOR": "1",
+                "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+                "OPENCODE_DISABLE_PROJECT_CONFIG": "0" if tools else "1",
+                "OPENCODE_DISABLE_SHARE": "1",
+                "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
+                "OPENCODE_PERMISSION": json.dumps(permission, separators=(",", ":")),
+                "OPENCODE_PURE": "1",
+            }
+        )
+        npm: Dict[str, str] = {}
+        blocked = {"OPENCODE_DIRECT_TRACE"}
+        if tools:
+            env.update({"OPENCODE_DISABLE_LSP_DOWNLOAD": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1"})
+            npm = {
+                "npm_config_audit": "false",
+                "npm_config_cache": os.path.join(work, ".npm-cache"),
+                "npm_config_fetch_retries": "0",
+                "npm_config_fetch_retry_maxtimeout": "100",
+                "npm_config_fetch_retry_mintimeout": "100",
+                "npm_config_fetch_timeout": "1000",
+                "npm_config_fund": "false",
+                "npm_config_offline": "true",
+                "npm_config_update_notifier": "false",
+            }
+            blocked |= {key.upper() for key in npm} | {
+                "GIT_COMMON_DIR",
+                "GIT_DIR",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_WORK_TREE",
+            }
+        env = {key: value for key, value in env.items() if key.upper() not in blocked}
+        env.update(npm, PWD=work)
+        env.pop("OLDPWD", None)
+        return env
 
-    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
-        import secrets
-
-        del max_tokens
-        self.last_call_error = ""
-        # Use a per-call agent so settings from the user's default agent do not apply.
-        agent_name = f"skillopt-sleep-{secrets.token_hex(16)}"
-        work = tempfile.mkdtemp(prefix="skillopt_sleep_opencode_")
-        cmd = [
+    def _build_run_command(self, work: str, agent: str, title: str) -> List[str]:
+        command = [
             self.opencode_path,
             "run",
             "--pure",
             "--format",
             "json",
             "--agent",
-            agent_name,
+            agent,
             "--title",
-            "skillopt-sleep",
+            title,
             "--dir",
             work,
         ]
-        if self.model:
-            cmd += ["--model", self.model]
+        return command + (["--model", self.model] if self.model else [])
 
-        # Keep the user's login and file-based global settings.
-        env = os.environ.copy()
-        # The child changes directory below, so resolve relative config paths now.
-        for key in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"):
-            value = env.get(key)
-            if value:
-                env[key] = os.path.abspath(os.path.expanduser(value))
-        env.update(
-            {
-                "NO_COLOR": "1",
-                "OPENCODE_DISABLE_AUTOUPDATE": "1",
-                "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
-                "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-                "OPENCODE_DISABLE_SHARE": "1",
-                "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
-                "OPENCODE_PERMISSION": '{"*":"deny"}',
-                "OPENCODE_PURE": "1",
-            }
-        )
-        env["PWD"] = work
-        env.pop("OLDPWD", None)
-        # Define the per-call agent without changing the user's config files.
-        plain_config = {
-            "agent": {
-                agent_name: {
-                    "mode": "primary",
-                    "permission": {"*": "deny"},
-                }
-            }
-        }
-        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
-            plain_config,
-            separators=(",", ":"),
-        )
+    def _read_mcp_config(self, env: Dict[str, str], work: str, stage: str) -> Tuple[Dict[str, Any], Dict[str, bool]]:
+        resolved = self._read_debug_json(["config"], env, work, f"OpenCode CLI {stage}", True)
+        mcp = resolved.get("mcp", {})
+        if not isinstance(mcp, dict) or any(
+            not isinstance(name, str) or not isinstance(entry, dict) for name, entry in mcp.items()
+        ):
+            raise OpenCodeError(f"OpenCode CLI {stage} returned invalid MCP configuration")
+        return resolved, {name: entry.get("enabled") is False for name, entry in mcp.items()}
+
+    def _disable_and_verify_mcp(self, env: Dict[str, str], work: str, config: Dict[str, Any]) -> None:
+        _resolved, discovered = self._read_mcp_config(env, work, "MCP discovery")
+        # Disable every discovered MCP server, including those already disabled.
+        effective = {**config, "mcp": {name: {"enabled": False} for name in sorted(discovered)}}
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(effective, separators=(",", ":"))
+        verified, statuses = self._read_mcp_config(env, work, "MCP verification")
+        if any(not disabled for disabled in statuses.values()):
+            raise OpenCodeError("OpenCode CLI could not disable every configured MCP server")
+        if verified.get("snapshot") is not False:
+            raise OpenCodeError("OpenCode CLI could not disable session snapshots")
+
+    def _verify_tool_allowlist(self, env: Dict[str, str], work: str, agent: str, expected: set[str]) -> None:
+        resolved = self._read_debug_json(["agent", agent], env, work, "OpenCode CLI tool permission verification")
+        tools = resolved.get("tools")
+        if not isinstance(tools, dict) or any(
+            not isinstance(name, str) or not isinstance(value, bool) for name, value in tools.items()
+        ):
+            raise OpenCodeError("OpenCode CLI tool permission verification returned invalid configuration")
+        if {name for name, enabled in tools.items() if enabled} != expected:
+            raise OpenCodeError("OpenCode CLI could not restrict tools to the replay allowlist")
+
+    def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
+        """Keep failed OpenCode calls out of the cache."""
+        if key in self._cache:
+            self.last_call_error = ""
+        out = super()._cached_call(key, prompt, max_tokens=max_tokens)
+        if not out:
+            self._cache.pop(key, None)
+        return out
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        del max_tokens
+        self.last_call_error = ""
         try:
-            # Tool permissions alone do not disable configured MCP servers. Read
-            # the merged config, disable every server it contains, and verify the
-            # result before calling the model.
-            discovered_mcp_statuses = self._read_mcp_disabled_statuses(
-                env, work, "MCP discovery"
-            )
-            if discovered_mcp_statuses is None:
-                return ""
-            plain_config["mcp"] = {
-                name: {"enabled": False} for name in sorted(discovered_mcp_statuses)
-            }
-            env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
-                plain_config,
-                separators=(",", ":"),
-            )
-            verified_mcp_statuses = self._read_mcp_disabled_statuses(
-                env, work, "MCP verification"
-            )
-            if verified_mcp_statuses is None:
-                return ""
-            if any(not disabled for disabled in verified_mcp_statuses.values()):
-                self.last_call_error = "OpenCode CLI could not disable every configured MCP server"
-                return ""
-
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    creationflags=_NO_WINDOW,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=self.timeout,
-                    cwd=work,
-                    env=env,
-                    input=prompt,
+            with _opencode_temporary_workspace(
+                "skillopt_sleep_opencode_",
+                "OpenCode CLI workspace could not be prepared",
+            ) as work:
+                try:
+                    agent = f"skillopt-sleep-{secrets.token_hex(16)}"
+                except Exception:
+                    raise OpenCodeError("OpenCode CLI workspace could not be prepared") from None
+                permission = {"*": "deny"}
+                config = {"snapshot": False, "agent": {agent: {"mode": "primary", "permission": permission}}}
+                env = self._build_child_environment(work, permission)
+                env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config, separators=(",", ":"))
+                self._disable_and_verify_mcp(env, work, config)
+                proc = self._run_process(
+                    self._build_run_command(work, agent, "skillopt-sleep"),
+                    env,
+                    work,
+                    operation="OpenCode CLI",
+                    input_text=prompt,
+                    report_exit_code=True,
+                    exception_action="executed",
                 )
-            except subprocess.TimeoutExpired:
-                self.last_call_error = f"OpenCode CLI timed out after {self.timeout}s"
-                return ""
-            except Exception:
-                self.last_call_error = "OpenCode CLI could not be executed"
-                return ""
-        finally:
-            try:
-                import shutil
-
-                shutil.rmtree(work, ignore_errors=True)
-            except Exception:
-                pass
-
-        if proc.returncode != 0:
-            self.last_call_error = f"OpenCode CLI exited {proc.returncode}"
+                text, _called, error = _parse_opencode_jsonl_events(proc.stdout or "")
+                if error:
+                    detail = _OPENCODE_STREAM_ERRORS.get(error, "returned an unknown JSONL error")
+                    raise OpenCodeError(f"OpenCode CLI {detail}")
+                return text
+        except OpenCodeError as exc:
+            self.last_call_error = str(exc)
             return ""
-        text, error_code = _parse_opencode_jsonl_text(proc.stdout or "")
-        if error_code:
-            error_messages = {
-                "malformed_jsonl": "OpenCode CLI returned malformed JSONL",
-                "invalid_event": "OpenCode CLI returned an invalid JSONL event",
-                "mixed_session": "OpenCode CLI returned mixed sessions",
-                "error_event": "OpenCode CLI emitted an error event",
-                "unexpected_tool_event": "OpenCode CLI attempted unsupported tool use",
-                "incomplete_stream": "OpenCode CLI returned an incomplete stream",
-                "empty_response": "OpenCode CLI returned an empty response",
-            }
-            self.last_call_error = error_messages.get(
-                error_code, "OpenCode CLI returned an unknown JSONL error"
-            )
-            return ""
-        return text
 
     def attempt_with_tools(
         self,
@@ -1161,9 +1286,79 @@ class OpenCodeCliBackend(CliBackend):
         memory: str,
         tools: List[str],
     ) -> Tuple[str, List[str]]:
-        del task, skill, memory, tools
-        self.last_call_error = "OpenCode CLI tool replay is not supported"
-        return "", []
+        self.last_call_error = ""
+        if not self.tool_replay:
+            self.last_call_error = (
+                "OpenCode CLI tool replay is not supported without explicit "
+                "opencode_tool_replay opt-in"
+            )
+            return "", []
+        try:
+            logical_tools = _normalize_opencode_tool_names(tools)
+            with _opencode_temporary_workspace(
+                "skillopt_sleep_opencode_tools_",
+                "OpenCode CLI tool replay could not be prepared",
+            ) as work:
+                project = _prepare_opencode_replay_project(work, logical_tools)
+                expected = set(project.tool_mapping.values())
+                permission = {"*": "deny", **dict.fromkeys(expected, "allow")}
+                agent_config: Dict[str, Any] = {"mode": "primary", "permission": permission}
+                if self.model:
+                    agent_config["model"] = self.model
+                config: Dict[str, Any] = {
+                    "share": "disabled",
+                    "autoupdate": False,
+                    "formatter": False,
+                    "lsp": False,
+                    "snapshot": False,
+                    "permission": permission,
+                    "agent": {project.agent_name: agent_config},
+                }
+                env = self._build_child_environment(work, permission, True)
+                env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config, separators=(",", ":"))
+                self._disable_and_verify_mcp(env, work, config)
+                self._verify_tool_allowlist(env, work, project.agent_name, expected)
+                tool_lines = "\n".join(
+                    f"- Logical tool {json.dumps(name)} is available as `{tool_id}`; when required, "
+                    f'invoke it with {{"query":{json.dumps(_OPENCODE_SYNTHETIC_TOOL_QUERY)}}}.'
+                    for name, tool_id in project.tool_mapping.items()
+                )
+                prompt = (
+                    "Complete the task. Apply the skill and memory rules exactly, including any rule "
+                    "requiring a tool call before answering. Treat a 'Learned preferences' block as hard "
+                    "constraints that override earlier conflicting skill text. The tools below are controlled "
+                    "synthetic stand-ins. Use one only when the task, skill, or memory requires its logical "
+                    "tool; do not call a tool merely because it is listed. When required, invoke the random "
+                    "internal ID instead of claiming that you called it. Each call returns the same fixed result.\n\n"
+                    f"# Controlled tools\n{tool_lines}\n\n# Skill\n{skill or '(none)'}\n\n"
+                    f"# Memory\n{memory or '(none)'}\n\n# Task\n{task.intent}\n\n{task.context_excerpt}\n\n"
+                    "Return only the final answer text."
+                )
+                try:
+                    proc = self._run_process(
+                        self._build_run_command(work, project.agent_name, "skillopt-sleep-tool-replay"),
+                        env,
+                        work,
+                        operation="OpenCode CLI tool replay",
+                        input_text=prompt,
+                        exception_action="executed",
+                    )
+                    text, called_ids, error = _parse_opencode_jsonl_events(proc.stdout or "", expected)
+                    if error:
+                        detail = _OPENCODE_STREAM_ERRORS.get(error, "returned an unknown JSONL error")
+                        raise OpenCodeError(f"OpenCode CLI tool replay {detail}")
+                except OpenCodeError as exc:
+                    raise OpenCodeError(str(exc), prompt_chars=len(prompt)) from None
+                called = set(called_ids)
+                called_tools = [
+                    name for name, tool_id in project.tool_mapping.items() if tool_id in called
+                ]
+        except OpenCodeError as exc:
+            self._tokens += exc.prompt_chars // 4
+            self.last_call_error = str(exc)
+            return "", []
+        self._tokens += len(prompt) // 4 + len(text) // 4
+        return text, called_tools
 
 
 def resolve_codex_path(explicit: str = "") -> str:
@@ -2280,6 +2475,7 @@ def get_backend(
     pi_path: str = "",
     cursor_path: str = "",
     opencode_path: str = "",
+    opencode_tool_replay: bool = False,
     azure_endpoint: str = "",
     project_dir: str = "",
 ) -> Backend:
@@ -2300,7 +2496,11 @@ def get_backend(
     if n in {"cursor", "cursor_agent", "cursor_cli"}:
         return CursorCliBackend(model=model, cursor_path=cursor_path)
     if n in {"opencode", "opencode_cli", "opencode-cli"}:
-        return OpenCodeCliBackend(model=model, opencode_path=opencode_path)
+        return OpenCodeCliBackend(
+            model=model,
+            opencode_path=opencode_path,
+            tool_replay=opencode_tool_replay,
+        )
     if n in {"handoff", "session", "file"}:
         # Lazy import: handoff_backend imports CliBackend from this module.
         from skillopt_sleep.handoff_backend import HandoffBackend
@@ -2323,6 +2523,7 @@ def build_backend(
     pi_path: str = "",
     cursor_path: str = "",
     opencode_path: str = "",
+    opencode_tool_replay: bool = False,
     azure_endpoint: str = "",
     preferences: str = "",
     project_dir: str = "",
@@ -2343,6 +2544,7 @@ def build_backend(
             pi_path=pi_path,
             cursor_path=cursor_path,
             opencode_path=opencode_path,
+            opencode_tool_replay=opencode_tool_replay,
             azure_endpoint=azure_endpoint,
             project_dir=project_dir,
         )
@@ -2350,11 +2552,13 @@ def build_backend(
         return be
     tgt = get_backend(target_backend or backend, model=target_model or model,
                       codex_path=codex_path, pi_path=pi_path, cursor_path=cursor_path,
-                      opencode_path=opencode_path, azure_endpoint=azure_endpoint,
+                      opencode_path=opencode_path, opencode_tool_replay=opencode_tool_replay,
+                      azure_endpoint=azure_endpoint,
                       project_dir=project_dir)
     opt = get_backend(optimizer_backend or backend, model=optimizer_model or model,
                       codex_path=codex_path, pi_path=pi_path, cursor_path=cursor_path,
-                      opencode_path=opencode_path, azure_endpoint=azure_endpoint,
+                      opencode_path=opencode_path, opencode_tool_replay=opencode_tool_replay,
+                      azure_endpoint=azure_endpoint,
                       project_dir=project_dir)
     opt.preferences = preferences  # reflect runs on the optimizer
     dual = DualBackend(target=tgt, optimizer=opt)

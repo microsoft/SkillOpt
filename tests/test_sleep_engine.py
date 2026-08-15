@@ -1332,6 +1332,27 @@ class TestToolLoop(unittest.TestCase):
         self.assertEqual(r1.hard, 1.0)
         self.assertEqual(r1.tools_called, ["search"])
 
+    def test_replay_rejects_a_self_reported_tool_marker_without_execution(self):
+        from skillopt_sleep.backend import Backend
+        from skillopt_sleep.replay import replay_one
+
+        class MarkerOnlyBackend(Backend):
+            def attempt_with_tools(self, task, skill, memory, tools):
+                return "TOOL_CALL: search", []
+
+        task = TaskRecord(
+            id="qa-marker",
+            project="/p",
+            intent="answer the question",
+            reference_kind="rule",
+            judge={"kind": "rule", "checks": [{"op": "tool_called", "arg": "search"}]},
+        )
+
+        result = replay_one(MarkerOnlyBackend(), task, "", "")
+
+        self.assertEqual(result.hard, 0.0)
+        self.assertEqual(result.tools_called, [])
+
 
 class TestFullCycleAndAdopt(unittest.TestCase):
     def test_cycle_stage_then_adopt_with_backup(self):

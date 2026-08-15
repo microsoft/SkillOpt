@@ -83,6 +83,11 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cursor-path", default="", help="path to the Cursor Agent CLI")
     p.add_argument("--pi-path", default="", help="path to the Pi coding-agent CLI")
     p.add_argument("--opencode-path", default="", help="path to the OpenCode CLI")
+    p.add_argument(
+        "--opencode-tool-replay",
+        action="store_true",
+        help="allow controlled synthetic tools for OpenCode tool-aware replay",
+    )
     p.add_argument("--claude-home", default="", help="override ~/.claude (also isolates state)")
     p.add_argument("--codex-home", default="", help="override ~/.codex for archived session harvest")
     p.add_argument("--cursor-home", default="", help="override ~/.cursor for Cursor session harvest")
@@ -134,6 +139,8 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["cursor_path"] = os.path.abspath(os.path.expanduser(args.cursor_path))
     if getattr(args, "opencode_path", ""):
         overrides["opencode_path"] = os.path.abspath(os.path.expanduser(args.opencode_path))
+    if getattr(args, "opencode_tool_replay", False):
+        overrides["opencode_tool_replay"] = True
     if getattr(args, "claude_home", ""):
         overrides["claude_home"] = os.path.abspath(args.claude_home)
     if getattr(args, "codex_home", ""):

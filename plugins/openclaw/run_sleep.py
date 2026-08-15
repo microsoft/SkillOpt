@@ -44,6 +44,7 @@ def get_backend(
     pi_path="",
     cursor_path="",
     opencode_path="",
+    opencode_tool_replay=False,
     azure_endpoint="",
     project_dir="",
 ):
@@ -57,6 +58,7 @@ def get_backend(
         pi_path=pi_path,
         cursor_path=cursor_path,
         opencode_path=opencode_path,
+        opencode_tool_replay=opencode_tool_replay,
         azure_endpoint=azure_endpoint,
         project_dir=project_dir,
     )

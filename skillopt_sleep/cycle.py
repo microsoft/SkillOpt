@@ -56,6 +56,7 @@ def _make_model_key(cfg: SleepConfig) -> str:
             pi_path=cfg.get("pi_path", ""),
             cursor_path=cfg.get("cursor_path", ""),
             opencode_path=cfg.get("opencode_path", ""),
+            opencode_tool_replay=cfg.get("opencode_tool_replay", False),
             azure_endpoint=cfg.get("azure_endpoint", ""),
             project_dir=cfg.get("invoked_project", "") or os.getcwd(),
         )
@@ -360,6 +361,7 @@ def run_sleep_cycle(
         pi_path=cfg.get("pi_path", ""),
         cursor_path=cfg.get("cursor_path", ""),
         opencode_path=cfg.get("opencode_path", ""),
+        opencode_tool_replay=cfg.get("opencode_tool_replay", False),
         azure_endpoint=cfg.get("azure_endpoint", ""),
         preferences=cfg.get("preferences", ""),
         project_dir=project,
@@ -392,16 +394,20 @@ def run_sleep_cycle(
             redact=bool(cfg.get("redact_secrets", True)),
         )
         evidence.attach(backend, ev)
+        cycle_config = {k: cfg.get(k) for k in (
+            "backend", "model", "optimizer_backend", "optimizer_model",
+            "target_backend", "target_model", "gate_mode", "gate_metric",
+            "gate_mixed_weight", "gate_no_regression", "edit_budget",
+            "holdout_fraction",
+            "dream_rollouts", "dream_factor", "recall_k",
+            "max_tasks_per_night", "lookback_hours", "llm_mine",
+            "evolve_skill", "evolve_memory")}
+        cycle_config["opencode_tool_replay"] = (
+            cfg.get("opencode_tool_replay", False) is True
+        )
         ev.log("cycle", "start", night=night, project=project,
                backend=backend.name, model=cfg.get("model", ""),
-               config={k: cfg.get(k) for k in (
-                   "backend", "model", "optimizer_backend", "optimizer_model",
-                   "target_backend", "target_model", "gate_mode", "gate_metric",
-                   "gate_mixed_weight", "gate_no_regression", "edit_budget",
-                   "holdout_fraction",
-                   "dream_rollouts", "dream_factor", "recall_k",
-                   "max_tasks_per_night", "lookback_hours", "llm_mine",
-                   "evolve_skill", "evolve_memory")})
+               config=cycle_config)
 
     # ── live skill/memory docs ───────────────────────────────────────────
     live_memory_path = os.path.join(project, "CLAUDE.md")
@@ -659,6 +665,9 @@ def run_sleep_cycle(
                     json_safe({
                         "night": night,
                         "backend": cfg.get("backend"),
+                        "opencode_tool_replay": (
+                            cfg.get("opencode_tool_replay", False) is True
+                        ),
                         "gate_mode": cfg.get("gate_mode"),
                         "gate_no_regression": cfg.get("gate_no_regression", False),
                         "n_tasks": len(tasks),

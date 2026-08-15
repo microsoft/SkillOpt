@@ -1,11 +1,13 @@
 """Opt-in live tests for the OpenCode CLI backend.
 
 These tests make real model calls through the user's OpenCode installation,
-account, and configuration.  They run unchanged on Windows and POSIX, but are
-skipped unless ``SKILLOPT_TEST_REAL_OPENCODE=1`` is set.  An opted-in run also
-requires an explicit model in ``SKILLOPT_SLEEP_OPENCODE_MODEL`` so the
-provider/model selection is explicit.  They may incur provider charges and
-create entries in the user's OpenCode session history.
+account, and configuration. They support Windows and POSIX, but are skipped
+unless ``SKILLOPT_TEST_REAL_OPENCODE=1`` is set. An opted-in run also requires
+an explicit model in ``SKILLOPT_SLEEP_OPENCODE_MODEL`` so model selection is
+explicit. They may incur provider charges and create entries
+in the user's OpenCode session history. The tool-aware replay test also runs one
+generated JavaScript tool with a fixed result inside an isolated temporary
+project.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -24,10 +27,10 @@ from skillopt_sleep.backend import _NO_WINDOW, OpenCodeCliBackend, resolve_openc
 from skillopt_sleep.config import DEFAULTS, SleepConfig
 from skillopt_sleep.cycle import run_sleep_cycle
 from skillopt_sleep.evidence import read_events
+from skillopt_sleep.replay import replay_one
 from skillopt_sleep.types import TaskRecord
 
 _LIVE_ENABLED = os.environ.get("SKILLOPT_TEST_REAL_OPENCODE", "").strip() == "1"
-_PLAIN_MARKER = "SKILLOPT_OPENCODE_PLAIN_OK_7F3C"
 _CYCLE_MARKER = "SKILLOPT_OPENCODE_CYCLE_OK_9A6D"
 
 pytestmark = pytest.mark.skipif(
@@ -52,16 +55,6 @@ def _live_settings() -> tuple[str, str]:
             pytrace=False,
         )
     return model, opencode_path
-
-
-def _require_marker(response: str, marker: str, backend: OpenCodeCliBackend) -> None:
-    """Fail without copying provider output into pytest's assertion report."""
-    if backend.last_call_error:
-        pytest.fail("the real OpenCode call failed", pytrace=False)
-    if not response:
-        pytest.fail("the real OpenCode call returned no text", pytrace=False)
-    if marker not in response:
-        pytest.fail("the real OpenCode response did not contain the requested marker", pytrace=False)
 
 
 def _add_mcp_canary(monkeypatch, tmp_path: Path) -> tuple[Path, str]:
@@ -130,27 +123,92 @@ def _require_mcp_canary_configured(opencode_path: str, mcp_name: str, tmp_path: 
         pytest.fail("the real OpenCode config did not include the MCP canary", pytrace=False)
 
 
-def test_real_opencode_plain_replay(monkeypatch, tmp_path):
-    """Exercise one public backend attempt against the real OpenCode CLI."""
+def _add_ancestor_tool_canary(monkeypatch, tmp_path: Path) -> tuple[Path, Path, list[Path]]:
+    """Place a load-time canary in an ancestor directory outside the replay Git boundary."""
+    outer = tmp_path / "tool-project-parent"
+    tool_dir = outer / ".opencode" / "tools"
+    tool_dir.mkdir(parents=True)
+    marker = tmp_path / "ancestor-tool-loaded.txt"
+    (tool_dir / "ancestor_canary.js").write_text(
+        'import { writeFileSync } from "node:fs";\n'
+        f"writeFileSync({json.dumps(str(marker))}, 'loaded', 'utf8');\n"
+        "export default {\n"
+        "  description: 'Ancestor configuration canary',\n"
+        "  args: {},\n"
+        "  async execute() { return 'ancestor canary'; },\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    replay_workspaces: list[Path] = []
+
+    def make_replay_workspace(prefix: str, _error: str) -> tempfile.TemporaryDirectory:
+        workspace = tempfile.TemporaryDirectory(
+            prefix=prefix,
+            dir=outer,
+            ignore_cleanup_errors=True,
+        )
+        replay_workspaces.append(Path(workspace.name))
+        return workspace
+
+    monkeypatch.setattr(
+        "skillopt_sleep.backend._opencode_temporary_workspace",
+        make_replay_workspace,
+    )
+    return marker, outer, replay_workspaces
+
+
+def test_real_opencode_tool_replay(monkeypatch, tmp_path):
+    """Exercise one synthetic tool call through the real OpenCode CLI and verify local scoring."""
     model, opencode_path = _live_settings()
     monkeypatch.setenv("SKILLOPT_SLEEP_PROMPTS_PATH", str(tmp_path / "no-prompt-overrides.json"))
     mcp_marker, mcp_name = _add_mcp_canary(monkeypatch, tmp_path)
     _require_mcp_canary_configured(opencode_path, mcp_name, tmp_path)
-
-    backend = OpenCodeCliBackend(model=model, opencode_path=opencode_path)
-    task = TaskRecord(
-        id="opencode-live-plain",
-        project=str(tmp_path),
-        intent=f"Reply with exactly this text and nothing else: {_PLAIN_MARKER}",
-        reference_kind="exact",
-        reference=_PLAIN_MARKER,
+    ancestor_tool_marker, ancestor_outer, replay_workspaces = _add_ancestor_tool_canary(
+        monkeypatch,
+        tmp_path,
     )
 
-    response = backend.attempt(task, skill="", memory="")
+    backend = OpenCodeCliBackend(
+        model=model,
+        opencode_path=opencode_path,
+        tool_replay=True,
+    )
+    task = TaskRecord(
+        id="opencode-live-tool",
+        project=str(tmp_path),
+        intent="Call the controlled search stand-in, then give a short final answer.",
+        reference_kind="rule",
+        judge={
+            "kind": "rule",
+            "checks": [{"op": "tool_called", "arg": "search"}],
+        },
+    )
 
+    result = replay_one(
+        backend,
+        task,
+        "Before answering, you MUST call the search tool.",
+        "",
+    )
+
+    if len(replay_workspaces) != 1:
+        pytest.fail("the real OpenCode tool replay did not create one workspace", pytrace=False)
+    replay_workspace = replay_workspaces[0]
+    try:
+        replay_workspace.resolve().relative_to(ancestor_outer.resolve())
+    except (OSError, ValueError):
+        pytest.fail("the real OpenCode tool replay escaped its canary boundary", pytrace=False)
+    if replay_workspace.exists():
+        pytest.fail("the real OpenCode tool replay did not clean up its workspace", pytrace=False)
     if mcp_marker.exists():
-        pytest.fail("the real OpenCode call started a configured MCP server", pytrace=False)
-    _require_marker(response, _PLAIN_MARKER, backend)
+        pytest.fail("the real OpenCode tool call started a configured MCP server", pytrace=False)
+    if ancestor_tool_marker.exists():
+        pytest.fail("the real OpenCode tool call loaded ancestor project tools", pytrace=False)
+    if backend.last_call_error:
+        pytest.fail("the real OpenCode tool-aware replay failed", pytrace=False)
+    if not result.response or result.hard != 1.0 or result.tools_called != ["search"]:
+        pytest.fail("the real OpenCode tool invocation was not verified", pytrace=False)
 
 
 def test_real_opencode_cycle_smoke(monkeypatch, tmp_path):
@@ -162,6 +220,8 @@ def test_real_opencode_cycle_smoke(monkeypatch, tmp_path):
     project.mkdir()
     monkeypatch.setenv("SKILLOPT_SLEEP_PROMPTS_PATH", str(tmp_path / "no-prompt-overrides.json"))
     monkeypatch.setenv("SKILLOPT_SLEEP_WORKERS", "1")
+    mcp_marker, mcp_name = _add_mcp_canary(monkeypatch, tmp_path)
+    _require_mcp_canary_configured(opencode_path, mcp_name, tmp_path)
 
     cfg = SleepConfig(
         data={
@@ -198,6 +258,8 @@ def test_real_opencode_cycle_smoke(monkeypatch, tmp_path):
 
     outcome = run_sleep_cycle(cfg, seed_tasks=[task])
 
+    if mcp_marker.exists():
+        pytest.fail("the real OpenCode cycle started a configured MCP server", pytrace=False)
     staging_dir = Path(outcome.staging_dir)
     try:
         staging_dir.resolve().relative_to(project.resolve())
@@ -232,18 +294,10 @@ def test_real_opencode_cycle_smoke(monkeypatch, tmp_path):
         pytest.fail("the live cycle diagnostics did not record a successful replay", pytrace=False)
 
     events = read_events(str(artifact_paths["evidence.jsonl"]))
-    uncached_model_calls = [
-        event
-        for event in events
-        if event.get("stage") == "replay" and event.get("event") == "model_call" and not event.get("cache_hit")
-    ]
     model_calls = [
         event
         for event in events
-        if event.get("stage") == "replay"
-        and event.get("event") == "model_call"
-        and event.get("kind") == "attempt"
-        and not event.get("cache_hit")
+        if event.get("stage") == "replay" and event.get("event") == "model_call" and not event.get("cache_hit")
     ]
     replay_results = [
         event
@@ -253,7 +307,7 @@ def test_real_opencode_cycle_smoke(monkeypatch, tmp_path):
     cycle_ends = [event for event in events if event.get("stage") == "cycle" and event.get("event") == "end"]
 
     # Keep any provider text in the temporary evidence file and out of pytest output.
-    if len(uncached_model_calls) != 1 or len(model_calls) != 1:
+    if len(model_calls) != 1 or model_calls[0].get("kind") != "attempt":
         pytest.fail(
             "the live cycle did not make exactly one uncached OpenCode model call",
             pytrace=False,
@@ -271,5 +325,5 @@ def test_real_opencode_cycle_smoke(monkeypatch, tmp_path):
         pytest.fail("the live cycle did not reach completion", pytrace=False)
     if outcome.report.n_tasks != 1 or outcome.report.n_replayed != 1:
         pytest.fail("the live cycle report did not record its seeded replay", pytrace=False)
-    if not outcome.staging_dir or outcome.adopted or outcome.adopted_paths:
+    if outcome.adopted or outcome.adopted_paths:
         pytest.fail("the live cycle did not preserve review-before-adopt behavior", pytrace=False)

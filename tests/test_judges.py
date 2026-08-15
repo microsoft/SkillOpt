@@ -16,7 +16,7 @@ from skillopt_sleep.tasks_file import load_tasks_file
 class TestCheckOperators(unittest.TestCase):
     def _score(self, op, arg, response, tools=None):
         return score_rule_judge({"kind": "rule", "checks": [{"op": op, "arg": arg}]},
-                                response, tools or [])
+                                response, tools)
 
     def test_contains_is_case_insensitive(self) -> None:
         self.assertEqual(self._score("contains", "Key Risks", "the KEY RISKS section")[0], 1.0)
@@ -36,6 +36,16 @@ class TestCheckOperators(unittest.TestCase):
     def test_tool_called_via_marker(self) -> None:
         self.assertEqual(self._score("tool_called", "search", "TOOL_CALL: search")[0], 1.0)
         self.assertEqual(self._score("tool_called", "search", "nope", ["search"])[0], 1.0)
+
+    def test_tool_marker_cannot_replace_explicit_execution_evidence(self) -> None:
+        self.assertEqual(
+            self._score("tool_called", "search", "TOOL_CALL: search", [])[0],
+            0.0,
+        )
+        self.assertEqual(
+            self._score("tool_called", "search", "TOOL_CALL: search", ["lookup"])[0],
+            0.0,
+        )
 
     def test_unknown_op_does_not_block(self) -> None:
         self.assertEqual(self._score("no_such_op", "x", "anything")[0], 1.0)

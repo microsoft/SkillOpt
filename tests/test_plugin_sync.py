@@ -124,10 +124,28 @@ class TestPluginParity(unittest.TestCase):
         self.assertNotIn("**kwargs", text)
 
         script = f"""
+import inspect
 import runpy
 import sys
 sys.path.insert(0, {os.path.dirname(OPENCLAW_RUNNER)!r})
-runpy.run_path({OPENCLAW_RUNNER!r}, run_name="openclaw_runner_test")
+runner = runpy.run_path({OPENCLAW_RUNNER!r}, run_name="openclaw_runner_test")
+wrapped_get_backend = runner["get_backend"]
+assert inspect.signature(wrapped_get_backend).parameters["opencode_tool_replay"].default is False
+
+enabled = wrapped_get_backend(
+    "opencode",
+    opencode_path="unused-opencode",
+    opencode_tool_replay=True,
+)
+assert enabled.tool_replay is True, enabled.tool_replay
+
+stringly_enabled = wrapped_get_backend(
+    "opencode",
+    opencode_path="unused-opencode",
+    opencode_tool_replay="true",
+)
+assert stringly_enabled.tool_replay is False, stringly_enabled.tool_replay
+
 from skillopt_sleep.backend import build_backend
 backend = build_backend(
     backend="mock",
