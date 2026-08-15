@@ -83,14 +83,8 @@ def _is_refusal(response: str) -> bool:
     return len(content) < 600
 
 
-def _check(
-    op: str,
-    arg: Any,
-    response: str,
-    tools_called: List[str],
-    *,
-    allow_tool_marker: bool,
-) -> Tuple[bool, str]:
+def _check(op: str, arg: Any, response: str,
+           tools_called: List[str]) -> Tuple[bool, str]:
     """Evaluate one check.
 
     Returns ``(passed, problem)``. ``problem`` is non-empty only when the check
@@ -122,11 +116,8 @@ def _check(
         name = str(arg).lower()
         if any(name == t.lower() for t in tools_called):
             return True, ""
-        if allow_tool_marker:
-            # Preserve the legacy self-reported marker when no execution data
-            # is available.
-            return bool(re.search(r"(?i)\btool_call\s*:\s*%s\b" % re.escape(name), r)), ""
-        return False, ""
+        # single-shot approximation: the agent emits an explicit marker
+        return bool(re.search(r"(?i)\btool_call\s*:\s*%s\b" % re.escape(name), r)), ""
     # unknown op: do not block
     return True, ""
 
@@ -245,20 +236,11 @@ def score_rule_judge(
     checks = (judge or {}).get("checks", []) or []
     if not checks:
         return 0.0, 0.0, "no checks"
-    # Providing tools_called means execution evidence is available, even when
-    # the list is empty. Only callers that omit it may use the legacy marker.
-    allow_tool_marker = tools_called is None
     tools_called = tools_called or []
     passed = 0
     failed_desc: List[str] = []
     for c in checks:
-        ok, problem = _check(
-            c.get("op", ""),
-            c.get("arg"),
-            response,
-            tools_called,
-            allow_tool_marker=allow_tool_marker,
-        )
+        ok, problem = _check(c.get("op", ""), c.get("arg"), response, tools_called)
         if ok:
             passed += 1
         else:
