@@ -685,6 +685,7 @@ def configure_qwen_chat(
 
 def configure_minimax_chat(
     *,
+    region: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     temperature: float | str | None = None,
@@ -693,6 +694,7 @@ def configure_minimax_chat(
     enable_thinking: bool | str | None = None,
 ) -> None:
     _minimax.configure_minimax_chat(
+        region=region,
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,

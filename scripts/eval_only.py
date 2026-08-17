@@ -218,6 +218,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--copilot_chat_optimizer_model", type=str)
     p.add_argument("--copilot_chat_target_model", type=str)
     p.add_argument("--copilot_chat_timeout", type=int)
+    p.add_argument("--minimax_region", type=str)
     p.add_argument("--minimax_base_url", type=str)
     p.add_argument("--minimax_api_key", type=str)
     p.add_argument("--minimax_model", type=str)
@@ -307,6 +308,7 @@ def main() -> None:
                 "copilot_chat_optimizer_model": "model.copilot_chat_optimizer_model",
                 "copilot_chat_target_model": "model.copilot_chat_target_model",
                 "copilot_chat_timeout": "model.copilot_chat_timeout",
+                "minimax_region": "model.minimax_region",
                 "minimax_base_url": "model.minimax_base_url",
                 "minimax_api_key": "model.minimax_api_key",
                 "minimax_model": "model.minimax_model",
@@ -531,6 +533,7 @@ def main() -> None:
         target_enable_thinking=cfg.get("target_qwen_chat_enable_thinking"),
     )
     configure_minimax_chat(
+        region=cfg.get("minimax_region") or None,
         base_url=cfg.get("minimax_base_url") or None,
         api_key=cfg.get("minimax_api_key") or None,
         temperature=cfg.get("minimax_temperature"),

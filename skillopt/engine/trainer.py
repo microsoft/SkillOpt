@@ -792,6 +792,7 @@ class ReflACTTrainer:
             target_enable_thinking=cfg.get("target_qwen_chat_enable_thinking"),
         )
         configure_minimax_chat(
+            region=cfg.get("minimax_region") or None,
             base_url=cfg.get("minimax_base_url") or None,
             api_key=cfg.get("minimax_api_key") or None,
             temperature=cfg.get("minimax_temperature"),

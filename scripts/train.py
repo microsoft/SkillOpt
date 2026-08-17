@@ -192,6 +192,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target_qwen_chat_timeout_seconds", type=float)
     p.add_argument("--target_qwen_chat_max_tokens", type=int)
     p.add_argument("--target_qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--minimax_region", type=str)
     p.add_argument("--minimax_base_url", type=str)
     p.add_argument("--minimax_api_key", type=str)
     p.add_argument("--minimax_model", type=str)
@@ -412,6 +413,7 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "target_qwen_chat_timeout_seconds": "model.target_qwen_chat_timeout_seconds",
     "target_qwen_chat_max_tokens": "model.target_qwen_chat_max_tokens",
     "target_qwen_chat_enable_thinking": "model.target_qwen_chat_enable_thinking",
+    "minimax_region": "model.minimax_region",
     "minimax_base_url": "model.minimax_base_url",
     "minimax_api_key": "model.minimax_api_key",
     "minimax_model": "model.minimax_model",

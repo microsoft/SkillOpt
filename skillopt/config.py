@@ -112,6 +112,7 @@ _FLATTEN_MAP: dict[str, str] = {
     "model.target_qwen_chat_timeout_seconds": "target_qwen_chat_timeout_seconds",
     "model.target_qwen_chat_max_tokens": "target_qwen_chat_max_tokens",
     "model.target_qwen_chat_enable_thinking": "target_qwen_chat_enable_thinking",
+    "model.minimax_region": "minimax_region",
     "model.minimax_base_url": "minimax_base_url",
     "model.minimax_api_key": "minimax_api_key",
     "model.minimax_model": "minimax_model",

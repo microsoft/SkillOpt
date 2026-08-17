@@ -63,6 +63,12 @@ The current MiniMax adapter has one shared deployment. Set
 `model.minimax_model` when MiniMax is the target; a mixed-backend run cannot
 independently select a MiniMax optimizer model and a different target model.
 
+MiniMax is served from region-specific hosts. Select one with
+`model.minimax_region` (or `MINIMAX_REGION`) instead of hardcoding a host:
+`global_en` (default) resolves to `https://api.minimax.io/v1` and `cn_zh`
+resolves to `https://api.minimaxi.com/v1`. An explicit
+`model.minimax_base_url` or `MINIMAX_BASE_URL` overrides the region default.
+
 For a generic compatible provider, select the role backends explicitly rather
 than relying on a high-level shorthand:
 
@@ -200,7 +206,8 @@ Model credentials are loaded from environment variables:
 | `CURSOR_API_KEY` | `cursor_exec` | Optional authentication method understood directly by Cursor Agent |
 | `QWEN_CHAT_BASE_URL` | `qwen_chat` | Local Qwen/vLLM endpoint |
 | `QWEN_CHAT_MODEL` | `qwen_chat` | Served model name for direct library use; train/eval YAML role models take precedence |
-| `MINIMAX_BASE_URL` | `minimax_chat` | MiniMax-compatible base URL |
+| `MINIMAX_REGION` | `minimax_chat` | Service region: `global_en` (default) or `cn_zh`; selects the base URL |
+| `MINIMAX_BASE_URL` | `minimax_chat` | MiniMax-compatible base URL; overrides the region default |
 | `MINIMAX_API_KEY` | `minimax_chat` | MiniMax API key |
 | `COPILOT_EXEC_PATH` | `copilot_chat`, `copilot_exec` | Optional path to `copilot`; defaults to `copilot` |
 | `COPILOT_EXEC_HOME` | `copilot_chat`, `copilot_exec` | Optional `COPILOT_HOME` override isolating CLI config; sign-in state lives outside it |

@@ -25,6 +25,9 @@ selecting the generic OpenAI-compatible backend.
 MiniMax currently has one shared deployment. `model.minimax_model` is applied
 when MiniMax is the target; mixed-backend runs cannot independently choose a
 MiniMax optimizer model and a different target model.
+`model.minimax_region` selects the service region: `global_en` (default)
+resolves to `https://api.minimax.io/v1` and `cn_zh` resolves to
+`https://api.minimaxi.com/v1`. `model.minimax_base_url` overrides it.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -64,7 +67,7 @@ defaults to `claude` and can be overridden with `CLAUDE_CLI_BIN`.
 |---|---|
 | `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, and `enable_thinking` |
 | `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides |
-| `model.minimax_*` | MiniMax `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
+| `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
 | `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
 | `model.cursor_exec_path` | Cursor Agent executable path; default `cursor-agent` |

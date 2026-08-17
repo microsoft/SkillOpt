@@ -55,7 +55,8 @@ model:
   target_azure_openai_managed_identity_client_id: ""
 
   # MiniMax backend settings (minimax_chat target)
-  minimax_base_url: ""          # https://api.minimax.io/v1 if blank
+  minimax_region: ""            # global_en (default) or cn_zh; selects the base URL
+  minimax_base_url: ""          # region base URL if blank
   minimax_api_key: ""
   minimax_model: "MiniMax-M2.7"
   minimax_temperature: "0.7"
