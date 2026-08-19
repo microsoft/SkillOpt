@@ -1,0 +1,18 @@
+# dsh-skillopt bundle patch layer.
+# When a profile lists this bundle, this patch inserts the plugin rows below.
+#
+# Usage in a profile's cordis.patch.yml / dsh.profile bundles list:
+#   bundles:
+#     - dsh-skillopt
+# or with a local checkout:
+#   - insert:
+#       - id: skillopt
+#         name: './src/index.js'
+
+- insert:
+    - id: skillopt
+      name: './src/index.js'
+      # config:
+      #   backend: mock            # mock = no provider calls (default)
+      #   project: /path/to/project
+      #   preferences: 'Prefer pytest. Keep commits imperative.'

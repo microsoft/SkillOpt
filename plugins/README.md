@@ -10,7 +10,7 @@ runtime dependency on the paper's `skillopt/` experiment package.
 
 ## Available integrations
 
-Five integrations wrap the shared `skillopt_sleep` CLI. OpenClaw is a separate
+Six integrations wrap the shared `skillopt_sleep` CLI. OpenClaw is a separate
 reference adaptation with its own backend and setup assumptions.
 
 | Platform | Folder | Mechanism | Status |
@@ -20,6 +20,7 @@ reference adaptation with its own backend and setup assumptions.
 | **Cursor** | [`cursor/`](cursor) | native command and skill, project skill target, and shared runner | installable shared-engine integration |
 | **GitHub Copilot** | [`copilot/`](copilot) | MCP server exposing seven `sleep_*` tools | shared-engine MCP integration |
 | **Devin** | [`devin/`](devin) | MCP server plus Devin transcript conversion | shared-engine MCP integration |
+| **DeepSeek Harness** | [`dsh/`](dsh) | Cordis plugin: 7 native `skillopt_*` tools, skill, bundle patch layer | installable shared-engine integration |
 | **OpenClaw** | [`openclaw/`](openclaw) | custom DeepSeek/Ollama wrapper | independent reference adaptation; review and adapt before use |
 
 ## Install
@@ -34,6 +35,7 @@ for your workflow.
 | **Cursor** | `bash plugins/cursor/install.sh` (macOS/Linux) or `powershell -File plugins/cursor/install.ps1` (Windows) | `/skillopt-sleep status` |
 | **Copilot** | register `plugins/copilot/mcp_server.py` using its example MCP config | ask Copilot to run `sleep_status` |
 | **Devin** | register `plugins/devin/mcp_server.py` using its example MCP config | ask Devin to run `sleep_status` |
+| **DeepSeek Harness** | add `dsh-skillopt` to the profile's bundles, or `pnpm dsh web --patch ./plugins/dsh/cordis.patch.yml` | ask the agent to use `skillopt_status` |
 | **OpenClaw** | follow and adapt [`openclaw/README.md`](openclaw/README.md) | validate paths, credentials, and tasks locally |
 
 Python 3.10 or newer is required. Real CLI backends also require the selected
