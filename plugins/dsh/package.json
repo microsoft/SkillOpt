@@ -7,7 +7,6 @@
   "files": [
     "src",
     "skills",
-    "docs",
     "scripts",
     "cordis.patch.yml",
     "README.md",
