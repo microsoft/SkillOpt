@@ -43,6 +43,9 @@ configs/**/*.local.yaml
 .secrets/
 .codex_azure*/
 
+# Local MCP server config — references the machine's GITHUB_PAT, never commit
+.mcp.json
+
 # Internal docs (not for open-source release)
 docs/ablation_plan.md
 docs/ablation_paper_tables.md

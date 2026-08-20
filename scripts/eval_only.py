@@ -382,7 +382,11 @@ def main() -> None:
             _set_role("optimizer_backend", "codex_exec")
             _set_role("target_backend", "codex_exec")
         elif backend == "claude_code_exec":
-            _set_role("optimizer_backend", "openai_chat")
+            # Both roles default to Claude Code so reflection sees the full
+            # trajectory. A role pinned to a non-default value (e.g. minimax_chat)
+            # still overrides; an explicit --optimizer_backend openai_chat does
+            # not, because openai_chat is one of the base-config defaults.
+            _set_role("optimizer_backend", "claude_code_exec")
             _set_role("target_backend", "claude_code_exec")
         elif backend == "cursor_exec":
             _set_role("optimizer_backend", "openai_chat")
