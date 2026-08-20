@@ -73,6 +73,7 @@ _FLATTEN_MAP: dict[str, str] = {
     "model.copilot_chat_target_model": "copilot_chat_target_model",
     "model.copilot_chat_timeout": "copilot_chat_timeout",
     "model.codex_trace_to_optimizer": "codex_trace_to_optimizer",
+    "model.claude_trace_to_optimizer": "claude_trace_to_optimizer",
     "model.azure_endpoint": "azure_endpoint",
     "model.azure_api_version": "azure_api_version",
     "model.azure_api_key": "azure_api_key",

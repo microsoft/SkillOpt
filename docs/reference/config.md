@@ -70,6 +70,8 @@ defaults to `claude` and can be overridden with `CLAUDE_CLI_BIN`.
 | `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
 | `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
+| `model.codex_trace_to_optimizer` | When `true` (default) and target is `codex_exec`, inject the agent's codex trace steps into the reflection prompt |
+| `model.claude_trace_to_optimizer` | When `true` (default) and target is `claude_code_exec`, inject the agent's claude trace steps into the reflection prompt |
 | `model.cursor_exec_path` | Cursor Agent executable path; default `cursor-agent` |
 | `model.cursor_exec_sandbox` | Cursor sandbox mode: `enabled` (default) or `disabled`; file-edit rollouts require `enabled` |
 | `model.copilot_exec_path` | GitHub Copilot CLI executable path; default `copilot` |

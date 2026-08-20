@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import traceback
 import warnings
@@ -322,6 +323,14 @@ def _persist_claude_artifacts(work_dir: str, raw: str, response: str) -> None:
         prefix="claude",
         summary_builder=_build_claude_trace_summary,
     )
+    # Structured trace steps for the reflector (issue #233): expose what the
+    # agent actually did, not just the collapsed final answer.
+    steps_text = format_claude_trace_steps(raw)
+    if steps_text:
+        pred_dir = os.path.dirname(work_dir.rstrip(os.sep))
+        steps_path = os.path.join(pred_dir, "claude_trace_steps.txt")
+        with open(steps_path, "w", encoding="utf-8") as f:
+            f.write(steps_text)
 
 
 def _persist_cursor_artifacts(work_dir: str, raw: str, response: str) -> None:
@@ -429,6 +438,125 @@ def extract_codex_trace_prefix(raw: str, *, after_step: int) -> str:
     lines = parsed["trace_body"].splitlines()
     end_line = int(steps[clamped - 1]["end_line"]) - int(steps[0]["start_line"])
     return "\n".join(lines[:end_line]).strip()
+
+
+# ── Claude Code trace steps (SDK messages → compact steps) ──────────────────
+# The Claude Code SDK serializes its full session into ``messages``: most
+# entries are bookkeeping (init / thinking_tokens), the rest are assistant text,
+# tool calls, and tool results.  Flatten those into numbered steps so the
+# reflector can see what the agent actually did without paying the full raw
+# payload size.
+
+
+def _claude_step_truncate(text: str, limit: int) -> str:
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"...[+{len(text) - limit} chars]"
+
+
+def _summarize_claude_tool_call(name: str, input_data: Any) -> str:
+    name = str(name or "")
+    if isinstance(input_data, dict):
+        if name == "Read":
+            return f"Read {input_data.get('file_path', '')}"
+        if name == "Glob":
+            return f"Glob {input_data.get('pattern', '')}"
+        if name == "Grep":
+            return f"Grep {input_data.get('pattern', '')}"
+        if name == "Bash":
+            return f"Bash {input_data.get('command', '')}"
+    return _claude_step_truncate(f"{name} {json.dumps(input_data, ensure_ascii=False)}", 500)
+
+
+def _iter_claude_json_blocks(raw: str):
+    """Yield each JSON object embedded in ``raw``.
+
+    ``run_claude_code_exec`` prefixes every attempt with a
+    ``===== CLAUDE ... ATTEMPT n =====`` header, so the persisted payload is not
+    a single JSON document.  Split on those headers and parse each block.
+    """
+    for chunk in re.split(r"(?m)^={5,}.*={5,}\s*$", raw or ""):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            yield json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+
+
+def parse_claude_trace_steps(raw: str) -> list[dict]:
+    """Parse serialized Claude Code SDK messages into ordered, compact steps.
+
+    Returns a list of ``{"index", "type", "summary"}`` dicts where ``type`` is
+    one of ``text`` / ``tool_call`` / ``tool_result``.  System bookkeeping
+    events (init, thinking tokens) are dropped; tool results are truncated to
+    keep the trace small.
+    """
+    steps: list[dict] = []
+    for block in _iter_claude_json_blocks(raw):
+        messages = block.get("messages") if isinstance(block, dict) else None
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("subtype") in {"init", "thinking_tokens"}:
+                continue
+            data = message.get("data")
+            if isinstance(data, dict) and data.get("type") == "system":
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                # Terminal result message carries the final text.
+                text = str(message.get("result") or "").strip()
+                if text:
+                    steps.append({"type": "text", "summary": _claude_step_truncate(text, 500)})
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if "name" in item and "input" in item:
+                    steps.append({
+                        "type": "tool_call",
+                        "summary": _summarize_claude_tool_call(item.get("name"), item.get("input")),
+                    })
+                elif "tool_use_id" in item:
+                    body = item.get("content")
+                    if isinstance(body, list):
+                        text_parts: list[str] = []
+                        for part in body:
+                            if isinstance(part, dict):
+                                part_text = part.get("content")
+                                if isinstance(part_text, str):
+                                    text_parts.append(part_text)
+                            elif isinstance(part, str):
+                                text_parts.append(part)
+                        body = "\n".join(text_parts)
+                    summary = _claude_step_truncate(body, 200)
+                    if item.get("is_error"):
+                        summary = f"[error] {summary}"
+                    steps.append({"type": "tool_result", "summary": summary})
+                else:
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        steps.append({"type": "text", "summary": _claude_step_truncate(text, 500)})
+    for index, step in enumerate(steps, 1):
+        step["index"] = index
+    return steps
+
+
+def format_claude_trace_steps(raw: str, *, max_chars: int = 4000) -> str:
+    """Render parsed Claude Code SDK trace into numbered compact steps."""
+    steps = parse_claude_trace_steps(raw)
+    if not steps:
+        return ""
+    rendered = [f"[{step['index']}] {step['type']}: {step['summary']}" for step in steps]
+    text = "\n".join(rendered)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[claude trace steps truncated]..."
+    return text
 
 
 _DENIED_DATA_DIR_NAMES = {"officeqa_split", "sealqa_split"}
@@ -857,6 +985,243 @@ def run_claude_code_exec(
     combined = "\n\n".join(all_raw)
     _persist_claude_artifacts(work_dir, combined, last_response)
     return last_response, combined
+
+
+# ── Claude Code *chat* mode (optimizer role) ────────────────────────────────
+# The functions above run Claude Code as the *target* exec backend: they embed
+# the target preamble, force the ANSWER_SCHEMA structured output, and read from
+# a prepared workspace.  When Claude Code is instead selected as the optimizer
+# backend (claude_code_exec), reflection calls need a plain-text model call with
+# the analyst's own system prompt and no tooling — mirroring claude_backend's
+# chat path but driven through the same Claude Code CLI/SDK as the target.
+
+
+def _claude_chat_text_from_messages(messages: list[Any]) -> str:
+    """Extract the final assistant text from SDK chat-mode messages.
+
+    With ``output_format={"type": "text"}`` the SDK ends with a result message
+    whose ``result`` holds the final text; fall back to the last text block of
+    the final assistant message.
+    """
+    for msg in reversed(messages):
+        result = getattr(msg, "result", None)
+        if isinstance(result, str) and result.strip():
+            return result
+        content = getattr(msg, "content", None)
+        if content is None and isinstance(msg, dict):
+            content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                return text
+    return ""
+
+
+def _claude_chat_usage_from_event(event: Any) -> dict[str, int]:
+    """Convert an SDK/CLI result usage payload into the shared usage shape."""
+    usage = getattr(event, "usage", {}) if not isinstance(event, dict) else (event or {}).get("usage", {})
+    if isinstance(usage, dict):
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        output_tokens = int(usage.get("output_tokens", 0) or 0)
+    else:
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    return {
+        "prompt_tokens": input_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def _run_claude_code_sdk_chat_exec(
+    *,
+    system: str,
+    prompt: str,
+    model: str,
+    timeout: int,
+    schema: dict[str, Any] | None = None,
+    effort: str | None = None,
+) -> tuple[str, dict]:
+    from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+    async def _query() -> tuple[str, dict]:
+        # Optimizer chat call: no workspace, no tools, optional schema.
+        with tempfile.TemporaryDirectory(prefix="skillopt_claude_code_chat_") as tmp:
+            system_prompt: dict[str, Any] = {
+                "type": "preset",
+                "preset": "claude_code",
+                "append": system or "",
+            }
+            kwargs: dict[str, Any] = {
+                "system_prompt": system_prompt,
+                "output_format": (
+                    {"type": "json_schema", "schema": schema}
+                    if schema is not None
+                    else {"type": "text"}
+                ),
+                "allowed_tools": [],
+                "cwd": tmp,
+                "permission_mode": "bypassPermissions",
+            }
+            config = get_claude_code_exec_config()
+            effort_value = _claude_effort(effort if effort is not None else config.get("effort"))
+            if effort_value:
+                kwargs["effort"] = effort_value
+            max_thinking_tokens = int(config.get("max_thinking_tokens", 0) or 0)
+            if max_thinking_tokens > 0:
+                kwargs["max_thinking_tokens"] = max_thinking_tokens
+            options = ClaudeAgentOptions(**kwargs)
+            if model:
+                options.model = model.split("/", 1)[1] if model.startswith("anthropic/") else model
+
+            messages = []
+            async with ClaudeSDKClient(options) as client:
+                await client.query(prompt)
+                messages = [msg async for msg in client.receive_response()]
+        last = messages[-1] if messages else None
+        if schema is not None:
+            payload = _extract_claude_structured_output(messages)
+            text = _json_dumps(payload) if isinstance(payload, dict) else ""
+            if not text:
+                result = getattr(last, "result", None)
+                if isinstance(result, str) and result.strip():
+                    text = result
+        else:
+            text = _claude_chat_text_from_messages(messages)
+        usage_info = _claude_chat_usage_from_event(last)
+        return text, usage_info
+
+    return _run_async(asyncio.wait_for(_query(), timeout=timeout))
+
+
+def _run_claude_code_cli_chat_exec(
+    *,
+    system: str,
+    prompt: str,
+    model: str,
+    timeout: int,
+    schema: dict[str, Any] | None = None,
+    effort: str | None = None,
+) -> tuple[str, dict]:
+    config = get_claude_code_exec_config()
+    cmd = [
+        str(config["path"]),
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "dontAsk",
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    if schema is not None:
+        cmd.extend(["--schema", json.dumps(schema, ensure_ascii=False)])
+    if config.get("profile"):
+        cmd.extend(["--settings", '{"env":{"CLAUDE_CODE_USE_BEDROCK":"0"}}'])
+        cmd.extend(["--append-system-prompt", f"Profile: {config['profile']}"])
+    effort_value = _claude_effort(effort if effort is not None else config.get("effort"))
+    if effort_value:
+        cmd.extend(["--effort", effort_value])
+
+    with tempfile.TemporaryDirectory(prefix="skillopt_claude_code_chat_") as tmp:
+        # System prompt via file, not argv, to avoid the Windows argv cap.
+        system_path = os.path.join(tmp, "system_prompt.txt")
+        with open(system_path, "w", encoding="utf-8") as system_fh:
+            system_fh.write(system or "")
+        cmd.extend(["--append-system-prompt-file", system_path])
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout or 300,
+            cwd=tmp,
+        )
+
+    stderr_text = (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        raise RuntimeError(stderr_text or f"Claude Code CLI exited with code {proc.returncode}")
+    stream = []
+    for raw_line in (proc.stdout or "").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            stream.append(json.loads(raw_line))
+        except json.JSONDecodeError:
+            continue
+    result_event = None
+    for event in reversed(stream):
+        if event.get("type") == "result":
+            result_event = event
+            break
+    if result_event is None:
+        raise RuntimeError("Claude Code CLI did not return a result event.")
+    text = str(result_event.get("result") or result_event.get("content") or "")
+    usage_info = _claude_chat_usage_from_event(result_event)
+    return text, usage_info
+
+
+def run_claude_code_chat(
+    *,
+    system: str,
+    prompt: str,
+    model: str,
+    timeout: int,
+    schema: dict[str, Any] | None = None,
+    effort: str | None = None,
+) -> tuple[str, dict]:
+    """Run Claude Code as a plain chat model (optimizer role).
+
+    ``effort`` overrides the configured ``claude_code_exec_effort``; when ``None``
+    the config value (default "medium") is used, matching the target-exec path.
+    """
+    config = get_claude_code_exec_config()
+    mode = _sdk_mode(config.get("use_sdk"))
+    retries = int(config.get("empty_response_retries", 0) or 0)
+    last_text = ""
+    last_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    for _attempt in range(retries + 1):
+        if mode != "cli":
+            try:
+                text, usage_info = _run_claude_code_sdk_chat_exec(
+                    system=system,
+                    prompt=prompt,
+                    model=model,
+                    timeout=timeout,
+                    schema=schema,
+                    effort=effort,
+                )
+                last_text = text
+                last_usage = usage_info
+                if text.strip():
+                    return text, usage_info
+            except (ImportError, ModuleNotFoundError):
+                if mode == "sdk":
+                    raise
+            except Exception:  # noqa: BLE001
+                if mode == "sdk":
+                    raise
+        if mode != "sdk":
+            text, usage_info = _run_claude_code_cli_chat_exec(
+                system=system,
+                prompt=prompt,
+                model=model,
+                timeout=timeout,
+                schema=schema,
+                effort=effort,
+            )
+            last_text = text
+            last_usage = usage_info
+            if text.strip():
+                return text, usage_info
+
+    return last_text, last_usage
 
 
 def _run_codex_sdk_exec(

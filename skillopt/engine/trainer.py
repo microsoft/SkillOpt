@@ -452,6 +452,27 @@ def _resolve_train_size(cfg: dict, dataloader) -> int:
 _ROLE_BACKEND_DEFAULTS = (None, "", "openai_chat")
 
 
+def _configure_trace_to_optimizer_gates(target_backend: str, cfg: dict) -> None:
+    """Turn on trace-to-optimizer gates for the exec target's trace artifact.
+
+    Sets ``REFLACT_CODEX_TRACE_TO_OPTIMIZER`` (codex) and
+    ``REFLACT_CLAUDE_TRACE_TO_OPTIMIZER`` (claude) to ``"1"`` only when the
+    target actually runs on that exec backend and the matching config knob is
+    on.  ``skillopt.gradient.reflect.fmt_minibatch_trajectories`` reads these
+    env vars, so a non-exec target never pays the injection.
+    """
+    os.environ["REFLACT_CODEX_TRACE_TO_OPTIMIZER"] = (
+        "1"
+        if target_backend == "codex_exec" and cfg.get("codex_trace_to_optimizer", False)
+        else "0"
+    )
+    os.environ["REFLACT_CLAUDE_TRACE_TO_OPTIMIZER"] = (
+        "1"
+        if target_backend == "claude_code_exec" and cfg.get("claude_trace_to_optimizer", False)
+        else "0"
+    )
+
+
 def _resolve_role_backends(
     backend: str, optimizer_backend: str | None, target_backend: str | None
 ) -> tuple[str, str]:
@@ -478,7 +499,12 @@ def _resolve_role_backends(
         if target_backend in _ROLE_BACKEND_DEFAULTS:
             target_backend = "codex_exec"
     elif backend == "claude_code_exec":
-        optimizer_backend = optimizer_backend or "openai_chat"
+        # Both roles default to Claude Code so reflection sees the full
+        # trajectory. A role pinned to a non-default value (e.g. minimax_chat)
+        # still overrides; an explicit --optimizer_backend openai_chat does not,
+        # because openai_chat is one of the base-config defaults.
+        if optimizer_backend in _ROLE_BACKEND_DEFAULTS:
+            optimizer_backend = "claude_code_exec"
         if target_backend in _ROLE_BACKEND_DEFAULTS:
             target_backend = "claude_code_exec"
     elif backend == "cursor_exec":
@@ -802,11 +828,7 @@ class ReflACTTrainer:
         minimax_model_cfg = cfg.get("minimax_model")
         if minimax_model_cfg and cfg.get("target_backend") == "minimax_chat":
             set_target_deployment(str(minimax_model_cfg))
-        os.environ["REFLACT_CODEX_TRACE_TO_OPTIMIZER"] = (
-            "1"
-            if target_backend == "codex_exec" and cfg.get("codex_trace_to_optimizer", False)
-            else "0"
-        )
+        _configure_trace_to_optimizer_gates(target_backend, cfg)
         reasoning = cfg.get("reasoning_effort", "") or None
         set_reasoning_effort(reasoning)
         print(

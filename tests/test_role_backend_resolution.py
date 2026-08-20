@@ -52,7 +52,7 @@ def test_eval_only_backend_label_preserves_explicit_cli_role_override() -> None:
         ("cursor_exec", ("openai_chat", "cursor_exec")),
         ("claude", ("claude_chat", "claude_chat")),
         ("claude_chat", ("claude_chat", "claude_chat")),
-        ("claude_code_exec", ("openai_chat", "claude_code_exec")),
+        ("claude_code_exec", ("claude_code_exec", "claude_code_exec")),
         ("codex", ("codex_exec", "codex_exec")),
         ("codex_exec", ("codex_exec", "codex_exec")),
         ("qwen", ("openai_chat", "qwen_chat")),
@@ -125,7 +125,7 @@ def test_explicit_optimizer_is_preserved_while_default_target_is_resolved(
     [
         ("claude", "claude_chat"),
         ("codex", "codex_exec"),
-        ("claude_code_exec", "openai_chat"),
+        ("claude_code_exec", "claude_code_exec"),
         ("cursor", "openai_chat"),
         ("copilot", "copilot_chat"),
         ("copilot_exec", "openai_chat"),
