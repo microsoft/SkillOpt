@@ -209,6 +209,19 @@ def fmt_minibatch_trajectories(
                 f"{codex_probe_trace_steps}\n"
             )
 
+        # Claude Code exec backend (issue #233): the SDK's full session trace is
+        # persisted as claude_trace_steps.txt; surface it so the analyst sees the
+        # agent's actual tool activity instead of only the collapsed final answer.
+        # Gated like the codex summary above: only the trainer turns it on, and
+        # only when the target actually runs on claude_code_exec.
+        if os.environ.get("REFLACT_CLAUDE_TRACE_TO_OPTIMIZER", "0") == "1":
+            claude_steps_path = os.path.join(prediction_dir, tid, "claude_trace_steps.txt")
+            if os.path.exists(claude_steps_path):
+                with open(claude_steps_path, encoding="utf-8") as f:
+                    claude_steps = f.read().strip()
+                if claude_steps:
+                    header += f"\n#### Claude Trace Steps\n{claude_steps}\n"
+
         preview = item.get("spreadsheet_preview", "")
         if not preview:
             preview_path = os.path.join(prediction_dir, tid, "spreadsheet_preview.txt")

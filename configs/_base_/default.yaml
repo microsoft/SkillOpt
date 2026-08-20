@@ -35,6 +35,7 @@ model:
   copilot_chat_target_model: ""
   copilot_chat_timeout: null         # preserves COPILOT_CHAT_TIMEOUT or the built-in default
   codex_trace_to_optimizer: true
+  claude_trace_to_optimizer: true
   azure_openai_endpoint: ""           # e.g. "https://your-resource.openai.azure.com/"
   azure_openai_api_version: "2024-12-01-preview"
   azure_openai_api_key: ""       # Fill locally if you do not export AZURE_OPENAI_API_KEY

@@ -133,11 +133,12 @@ def set_optimizer_backend(backend: str) -> None:
         "openai_compatible",
         "copilot_chat",
         "codex_exec",
+        "claude_code_exec",
     }:
         raise ValueError(
             f"Unsupported optimizer backend: {OPTIMIZER_BACKEND!r}. "
             "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', "
-            "'openai_compatible', 'copilot_chat', and 'codex_exec'."
+            "'openai_compatible', 'copilot_chat', 'codex_exec', and 'claude_code_exec'."
         )
     os.environ["OPTIMIZER_BACKEND"] = OPTIMIZER_BACKEND
 
@@ -176,6 +177,7 @@ def is_optimizer_chat_backend() -> bool:
         "openai_compatible",
         "copilot_chat",
         "codex_exec",
+        "claude_code_exec",
     }
 
 
