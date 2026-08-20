@@ -224,8 +224,8 @@ login, or contact a model provider. Source selection remains explicit:
 `--source auto` keeps Codex-then-Claude precedence and does not select OpenCode.
 
 The database path is selected from `--opencode-db` or the `opencode_db` config
-key, then `OPENCODE_DB`, then
-`${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`. A relative
+key, then `OPENCODE_DB`, then `%LOCALAPPDATA%\opencode\opencode.db` or `%APPDATA%\opencode\opencode.db` on Windows or
+`${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` on POSIX. A relative
 `OPENCODE_DB` value is resolved below OpenCode's data directory;
 `OPENCODE_DB=:memory:` has no persistent history to harvest.
 

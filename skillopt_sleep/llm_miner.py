@@ -10,8 +10,9 @@ For each recurring intent it extracts:
   * a `rubric` (what a good answer must satisfy). A rubric, when present, is
     always stored as the reference and scored by the backend's judge() -- it
     resists the reward-hacking that literal/format checks invite. Programmatic
-    `contains`/`regex`/`section_present`/`tool_called` checks are kept only as a
-    fallback reference for the intents where the miner supplies no rubric.
+    `contains`/`regex`/`section_present`/`section_contains`/`tool_called` checks
+    are kept only as a fallback reference for the intents where the miner
+    supplies no rubric.
   * a preference signal (was the user satisfied?) to weight failures
 
 It is deliberately conservative: it only emits a task when it can name a
@@ -58,7 +59,10 @@ def _mk_task(d: SessionDigest, obj: Dict[str, Any], idx: int) -> TaskRecord | No
     # op that needs one) would crash or fail forever. Drop those here, and keep
     # the accepted shapes aligned with validate_checks() so a mined tasks file
     # never fails validation later (it rejects bools and negative bounds).
-    _needs_str_arg = {"section_present", "regex", "contains", "not_contains", "tool_called"}
+    _needs_str_arg = {
+        "section_present", "section_contains", "regex", "contains",
+        "not_contains", "tool_called",
+    }
     # Trimming a regex would change what it matches (leading/trailing spaces are
     # significant in a pattern), so only substring/tool/heading args are stripped.
     _strip_arg = _needs_str_arg - {"regex"}

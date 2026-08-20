@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from typing import Any, Iterable, List, Optional
 from urllib.request import pathname2url
@@ -43,14 +44,33 @@ _REQUIRED_COLUMNS = {
 }
 
 
-def default_opencode_db() -> str:
-    """Return the OpenCode database selected by its environment variables."""
+def _opencode_data_candidates() -> List[str]:
+    """Where OpenCode may keep its data directory, most specific first."""
     data_home = os.environ.get("XDG_DATA_HOME", "")
     if data_home:
-        data_dir = os.path.abspath(os.path.expanduser(data_home))
-    else:
-        data_dir = os.path.join(os.path.expanduser("~"), ".local", "share")
-    opencode_data = os.path.join(data_dir, "opencode")
+        return [os.path.join(os.path.abspath(os.path.expanduser(data_home)), "opencode")]
+
+    candidates: List[str] = []
+    if sys.platform == "win32":
+        for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("APPDATA")):
+            if base:
+                candidates.append(
+                    os.path.join(os.path.abspath(os.path.expanduser(base)), "opencode")
+                )
+    candidates.append(
+        os.path.join(os.path.expanduser("~"), ".local", "share", "opencode")
+    )
+    return list(dict.fromkeys(candidates))
+
+
+def default_opencode_db() -> str:
+    """Return the OpenCode database selected by its environment variables."""
+    candidates = _opencode_data_candidates()
+    opencode_data = candidates[0]
+    for candidate in candidates:
+        if os.path.exists(os.path.join(candidate, "opencode.db")):
+            opencode_data = candidate
+            break
 
     configured = os.environ.get("OPENCODE_DB", "")
     if configured == ":memory:":

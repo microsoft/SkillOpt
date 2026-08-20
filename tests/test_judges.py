@@ -33,6 +33,62 @@ class TestCheckOperators(unittest.TestCase):
         for text in ("## Key Risks", "**Key Risks:**", "Key Risks: something"):
             self.assertEqual(self._score("section_present", "Key Risks", text)[0], 1.0, text)
 
+    def test_section_present_preserves_strict_trailing_text_behavior(self) -> None:
+        self.assertEqual(self._score("section_present", "Key Risks", "### 1. Key Risks")[0], 1.0)
+        self.assertEqual(
+            self._score(
+                "section_present",
+                "Key Risks",
+                "### 1. Key Risks (Риски) — overview",
+            )[0],
+            0.0,
+        )
+
+    def test_section_contains_accepts_numbered_bilingual_and_annotated_headings(self) -> None:
+        headings = (
+            "### 1. Key Risks",
+            "### 1. Key Risks (Риски)",
+            "### Key Risks — likelihood and impact",
+        )
+        for text in headings:
+            self.assertEqual(self._score("section_contains", "Key Risks", text)[0], 1.0, text)
+
+    def test_section_contains_honors_atx_syntax_boundaries(self) -> None:
+        accepted = ("# Key Risks", "###### Key Risks", "   ## Key Risks")
+        rejected = (
+            "    ## Key Risks",
+            "\t## Key Risks",
+            "####### Key Risks",
+            "##Key Risks",
+        )
+        for text in accepted:
+            self.assertEqual(self._score("section_contains", "Key Risks", text)[0], 1.0, text)
+        for text in rejected:
+            self.assertEqual(self._score("section_contains", "Key Risks", text)[0], 0.0, text)
+
+    def test_section_contains_rejects_non_atx_and_body_text(self) -> None:
+        responses = (
+            "The Key Risks section discusses liquidity and execution.",
+            "**Key Risks:**",
+            "Key Risks: liquidity and execution",
+            "Key Risks\n---------",
+            "> ## Key Risks",
+            "Opening paragraph\nThe Key Risks are below.\nClosing paragraph",
+        )
+        for text in responses:
+            self.assertEqual(self._score("section_contains", "Key Risks", text)[0], 0.0, text)
+
+    def test_section_contains_is_literal_and_case_insensitive(self) -> None:
+        name = "Key Risks [P1].*"
+        self.assertEqual(
+            self._score("section_contains", name, "## KEY RISKS [P1].* — overview")[0],
+            1.0,
+        )
+        self.assertEqual(
+            self._score("section_contains", name, "## Key Risks P1 anything")[0],
+            0.0,
+        )
+
     def test_tool_called_via_marker(self) -> None:
         self.assertEqual(self._score("tool_called", "search", "TOOL_CALL: search")[0], 1.0)
         self.assertEqual(self._score("tool_called", "search", "nope", ["search"])[0], 1.0)
@@ -133,7 +189,7 @@ class TestValidateChecks(unittest.TestCase):
         self.assertTrue(any("always passes" in w for w in warnings), warnings)
 
     def test_empty_string_operator_arguments_are_errors(self) -> None:
-        for op in ("regex", "section_present", "contains", "tool_called"):
+        for op in ("regex", "section_present", "section_contains", "contains", "tool_called"):
             errors, _warnings = validate_checks(
                 {"checks": [{"op": op, "arg": "  "}]}
             )

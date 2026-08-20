@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,12 +31,54 @@ class QwenChatConfig:
     enable_thinking: bool
     deployment: str
     use_max_completion_tokens: bool = False
+    # Wire policy for the vLLM/SGLang ``chat_template_kwargs`` extension.
+    # See ``THINKING_MODES``; resolved from the legacy ``enable_thinking`` when
+    # no explicit mode is configured.
+    thinking_mode: str = "server_default"
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ``chat_template_kwargs`` is a vLLM/SGLang extension: OpenAI and Azure reject
+# unknown top-level request fields with HTTP 400. The wire policy therefore has
+# three states rather than two, and the default omits the key entirely so that
+# strict gateways keep working (#28).
+THINKING_MODE_SERVER_DEFAULT = "server_default"
+THINKING_MODE_ENABLED = "enabled"
+THINKING_MODE_DISABLED = "disabled"
+THINKING_MODES = (
+    THINKING_MODE_SERVER_DEFAULT,
+    THINKING_MODE_ENABLED,
+    THINKING_MODE_DISABLED,
+)
+# Accepted spellings for the "let the server decide" mode.
+_SERVER_DEFAULT_ALIASES = {"", "server_default", "server-default", "unset", "auto", "none", "null"}
+
+
+def _parse_thinking_mode(value: Any) -> str:
+    """Return a canonical thinking mode.
+
+    Booleans map onto the explicit modes so that YAML ``true``/``false`` and
+    programmatic booleans work. Unknown strings raise: this controls whether a
+    reproduced run thinks or not, so a typo must never silently pick a mode.
+    """
+    if isinstance(value, bool):
+        return THINKING_MODE_ENABLED if value else THINKING_MODE_DISABLED
+    normalized = str(value if value is not None else "").strip().lower().replace("-", "_")
+    if normalized in _SERVER_DEFAULT_ALIASES:
+        return THINKING_MODE_SERVER_DEFAULT
+    if normalized in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return THINKING_MODE_ENABLED
+    if normalized in {"0", "false", "no", "off", "disabled", "disable"}:
+        return THINKING_MODE_DISABLED
+    raise ValueError(
+        f"Unsupported Qwen thinking mode: {value!r}. "
+        f"Supported values are {sorted(THINKING_MODES)}."
+    )
 
 
 def _parse_optional_float(value: Any) -> float | None:
@@ -64,6 +107,29 @@ def _role_env(role: str, key: str, default: str) -> str:
 _OMIT_SENTINELS = {"", "none", "off", "null"}
 
 
+def _resolve_thinking_mode(role: str) -> str:
+    """Return the wire policy for a role.
+
+    Precedence: role-specific ``THINKING_MODE`` env -> generic ``THINKING_MODE``
+    env -> the legacy ``ENABLE_THINKING`` env. The legacy key keeps its historic
+    wire behavior exactly: ``true`` emits ``enable_thinking: true`` and ``false``
+    omits the key (the fix from #28), so upgrading changes nothing on the wire
+    until the new key is set.
+    """
+    for key in (f"{role.upper()}_QWEN_CHAT_THINKING_MODE", "QWEN_CHAT_THINKING_MODE"):
+        if key in os.environ and os.environ[key].strip():
+            return _parse_thinking_mode(os.environ[key])
+    for key in (f"{role.upper()}_QWEN_CHAT_ENABLE_THINKING", "QWEN_CHAT_ENABLE_THINKING"):
+        if key in os.environ and os.environ[key].strip():
+            # Legacy false means "omit", not "send false".
+            return (
+                THINKING_MODE_ENABLED
+                if _parse_bool(os.environ[key])
+                else THINKING_MODE_SERVER_DEFAULT
+            )
+    return THINKING_MODE_SERVER_DEFAULT
+
+
 def _resolve_temperature(role: str) -> float | None:
     """Return the temperature, or None to omit it entirely.
 
@@ -90,6 +156,7 @@ def _initial_config(role: str) -> QwenChatConfig:
         max_tokens=_parse_int(_role_env(role, "MAX_TOKENS", "8000"), 8000),
         temperature=_resolve_temperature(role),
         enable_thinking=_parse_bool(_role_env(role, "ENABLE_THINKING", "false")),
+        thinking_mode=_resolve_thinking_mode(role),
         use_max_completion_tokens=_parse_bool(_role_env(role, "USE_MAX_COMPLETION_TOKENS", "false")),
         deployment=(
             os.environ.get(f"{role_upper}_QWEN_CHAT_MODEL")
@@ -197,6 +264,26 @@ def _post_chat_completion(
         raise RuntimeError(f"Qwen chat API returned non-JSON response: {raw[:1000]}") from e
 
 
+# Emitted at most once per role: a server that accepts the omission is exactly
+# where a silent divergence between published and reproduced numbers hides.
+_thinking_warned: set[str] = set()
+
+
+def _warn_server_default_thinking_once(role: str) -> None:
+    if role in _thinking_warned:
+        return
+    _thinking_warned.add(role)
+    warnings.warn(
+        f"qwen_chat {role}: thinking mode is left to the server's chat template "
+        "(chat_template_kwargs is not sent). Qwen3 templates enable thinking by "
+        "default, so results depend on the serving stack and may not reproduce. "
+        f"Set model.{role}_qwen_chat_thinking_mode (or model.qwen_chat_thinking_mode) "
+        "to 'enabled' or 'disabled' to pin it.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def _chat_messages_impl(
     messages: list[dict[str, Any]],
     max_completion_tokens: int,
@@ -220,8 +307,12 @@ def _chat_messages_impl(
         "messages": _json_safe(messages),
         token_key: token_limit,
     }
-    if config.enable_thinking:
-        payload["chat_template_kwargs"] = {"enable_thinking": True}
+    if config.thinking_mode != THINKING_MODE_SERVER_DEFAULT:
+        payload["chat_template_kwargs"] = {
+            "enable_thinking": config.thinking_mode == THINKING_MODE_ENABLED
+        }
+    else:
+        _warn_server_default_thinking_once(role)
     if config.temperature is not None:
         payload["temperature"] = config.temperature
     if tools:
@@ -260,6 +351,7 @@ def configure_qwen_chat(
     timeout_seconds: float | str | None = None,
     max_tokens: int | str | None = None,
     enable_thinking: bool | str | None = None,
+    thinking_mode: str | None = None,
     use_max_completion_tokens: bool | str | None = None,
     optimizer_base_url: str | None = None,
     optimizer_api_key: str | None = None,
@@ -267,6 +359,7 @@ def configure_qwen_chat(
     optimizer_timeout_seconds: float | str | None = None,
     optimizer_max_tokens: int | str | None = None,
     optimizer_enable_thinking: bool | str | None = None,
+    optimizer_thinking_mode: str | None = None,
     optimizer_use_max_completion_tokens: bool | str | None = None,
     target_base_url: str | None = None,
     target_api_key: str | None = None,
@@ -274,6 +367,7 @@ def configure_qwen_chat(
     target_timeout_seconds: float | str | None = None,
     target_max_tokens: int | str | None = None,
     target_enable_thinking: bool | str | None = None,
+    target_thinking_mode: str | None = None,
     target_use_max_completion_tokens: bool | str | None = None,
 ) -> None:
     with _config_lock:
@@ -289,6 +383,8 @@ def configure_qwen_chat(
             os.environ["QWEN_CHAT_MAX_TOKENS"] = str(max_tokens)
         if enable_thinking is not None:
             os.environ["QWEN_CHAT_ENABLE_THINKING"] = "true" if _parse_bool(enable_thinking) else "false"
+        if thinking_mode is not None:
+            os.environ["QWEN_CHAT_THINKING_MODE"] = _parse_thinking_mode(thinking_mode)
         if use_max_completion_tokens is not None:
             os.environ["QWEN_CHAT_USE_MAX_COMPLETION_TOKENS"] = (
                 "true" if _parse_bool(use_max_completion_tokens) else "false"
@@ -302,6 +398,7 @@ def configure_qwen_chat(
             timeout_seconds=(optimizer_timeout_seconds if optimizer_timeout_seconds is not None else timeout_seconds),
             max_tokens=optimizer_max_tokens if optimizer_max_tokens is not None else max_tokens,
             enable_thinking=(optimizer_enable_thinking if optimizer_enable_thinking is not None else enable_thinking),
+            thinking_mode=(optimizer_thinking_mode if optimizer_thinking_mode is not None else thinking_mode),
             use_max_completion_tokens=(
                 optimizer_use_max_completion_tokens
                 if optimizer_use_max_completion_tokens is not None
@@ -317,6 +414,7 @@ def configure_qwen_chat(
             timeout_seconds=(target_timeout_seconds if target_timeout_seconds is not None else timeout_seconds),
             max_tokens=target_max_tokens if target_max_tokens is not None else max_tokens,
             enable_thinking=(target_enable_thinking if target_enable_thinking is not None else enable_thinking),
+            thinking_mode=(target_thinking_mode if target_thinking_mode is not None else thinking_mode),
             use_max_completion_tokens=(
                 target_use_max_completion_tokens
                 if target_use_max_completion_tokens is not None
@@ -335,6 +433,7 @@ def _update_config(
     timeout_seconds: float | str | None = None,
     max_tokens: int | str | None = None,
     enable_thinking: bool | str | None = None,
+    thinking_mode: str | None = None,
     use_max_completion_tokens: bool | str | None = None,
 ) -> None:
     env_prefix = role.upper()
@@ -357,11 +456,41 @@ def _update_config(
     if enable_thinking is not None:
         config.enable_thinking = _parse_bool(enable_thinking)
         os.environ[f"{env_prefix}_QWEN_CHAT_ENABLE_THINKING"] = "true" if config.enable_thinking else "false"
+        # Legacy key: true emits an explicit true, false omits the key (#28).
+        config.thinking_mode = (
+            THINKING_MODE_ENABLED if config.enable_thinking else THINKING_MODE_SERVER_DEFAULT
+        )
+    if thinking_mode is not None:
+        resolved = _parse_thinking_mode(thinking_mode)
+        if enable_thinking is not None:
+            legacy = THINKING_MODE_ENABLED if _parse_bool(enable_thinking) else THINKING_MODE_SERVER_DEFAULT
+            if legacy != resolved:
+                raise ValueError(
+                    f"Conflicting Qwen thinking settings for the {role} role: "
+                    f"enable_thinking={enable_thinking!r} implies {legacy!r} but "
+                    f"thinking_mode={thinking_mode!r} requests {resolved!r}. "
+                    "Set only thinking_mode."
+                )
+        config.thinking_mode = resolved
+        os.environ[f"{env_prefix}_QWEN_CHAT_THINKING_MODE"] = resolved
+        config.enable_thinking = resolved == THINKING_MODE_ENABLED
     if use_max_completion_tokens is not None:
         config.use_max_completion_tokens = _parse_bool(use_max_completion_tokens)
         os.environ[f"{env_prefix}_QWEN_CHAT_USE_MAX_COMPLETION_TOKENS"] = (
             "true" if config.use_max_completion_tokens else "false"
         )
+
+
+def get_thinking_modes() -> dict[str, str]:
+    """Return the resolved per-role wire policy, for run metadata.
+
+    Reports what will actually be sent rather than the raw config input, which
+    may be absent when the policy came from the environment.
+    """
+    return {
+        "optimizer": OPTIMIZER_CONFIG.thinking_mode,
+        "target": TARGET_CONFIG.thinking_mode,
+    }
 
 
 def get_max_tokens() -> int:

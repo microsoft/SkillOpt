@@ -106,7 +106,7 @@ def test_not_contains_requires_an_arg() -> None:
 
 
 def test_shape_ops_are_the_formatting_ops() -> None:
-    assert SHAPE_OPS == {"section_present", "max_chars", "min_chars"}
+    assert SHAPE_OPS == {"section_present", "section_contains", "max_chars", "min_chars"}
 
 
 def test_is_shape_only_flags_a_formatting_judge() -> None:
@@ -176,6 +176,22 @@ def test_shape_only_checks_still_used_when_no_rubric_offered() -> None:
     )
     assert task is not None
     assert task.reference_kind == "rule"
+
+
+def test_miner_keeps_section_contains_when_no_rubric_offered() -> None:
+    task = _mk_task(
+        _digest(),
+        {
+            "intent": "write a report with an annotated risks heading",
+            "checks": [{"op": "section_contains", "arg": "  Key Risks  "}],
+            "rubric": "",
+            "satisfied": True,
+        },
+        0,
+    )
+    assert task is not None
+    assert task.reference_kind == "rule"
+    assert task.judge["checks"] == [{"op": "section_contains", "arg": "Key Risks"}]
 
 
 def test_outcome_checks_also_lose_to_the_rubric() -> None:
@@ -399,4 +415,3 @@ def test_char_bound_accepts_integral_forms(arg, expected) -> None:
 def test_char_bound_rejects_non_integers(bad) -> None:
     with pytest.raises((ValueError, TypeError)):
         char_bound(bad)
-

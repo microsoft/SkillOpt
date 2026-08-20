@@ -1,7 +1,11 @@
 """Runtime backend configuration for optimizer/target model calls."""
 from __future__ import annotations
 
+import json
 import os
+import warnings
+from collections.abc import Mapping
+from typing import Any
 
 from skillopt.model.common import normalize_backend_name
 
@@ -12,13 +16,34 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _coerce_bool_setting(value: Any, *, name: str) -> bool:
+    """Parse a config boolean without treating non-empty strings as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    elif isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(
+        f"Invalid {name}: {value!r}. Expected a boolean or one of "
+        "true/false, yes/no, on/off, or 1/0."
+    )
+
+
 OPTIMIZER_BACKEND = normalize_backend_name(os.environ.get("OPTIMIZER_BACKEND", "openai_chat"))
 TARGET_BACKEND = normalize_backend_name(os.environ.get("TARGET_BACKEND", "openai_chat"))
 
-CODEX_EXEC_PATH = os.environ.get("CODEX_EXEC_PATH", "codex")
-CODEX_EXEC_SANDBOX = os.environ.get("CODEX_EXEC_SANDBOX", "workspace-write")
+CODEX_EXEC_PATH = os.environ.get("CODEX_EXEC_PATH") or os.environ.get("CODEX_CLI_BIN") or os.environ.get("CODEX_PATH") or "codex"
+CODEX_EXEC_SANDBOX = os.environ.get("CODEX_EXEC_SANDBOX") or os.environ.get("CODEX_SANDBOX_MODE") or os.environ.get("CODEX_SANDBOX") or "workspace-write"
 CODEX_EXEC_PROFILE = os.environ.get("CODEX_EXEC_PROFILE", "")
-CODEX_EXEC_FULL_AUTO = _parse_bool(os.environ.get("CODEX_EXEC_FULL_AUTO"), True)
+_CODEX_EXEC_FULL_AUTO_ENV = os.environ.get("CODEX_EXEC_FULL_AUTO")
+# Kept as a compatibility symbol only.  The retired --full-auto flag is never
+# emitted, regardless of the deprecated environment/config value.
+CODEX_EXEC_FULL_AUTO = False
 CODEX_EXEC_REASONING_EFFORT = os.environ.get("CODEX_EXEC_REASONING_EFFORT", "none")
 CODEX_EXEC_USE_SDK = os.environ.get("CODEX_EXEC_USE_SDK", "auto")
 CODEX_EXEC_NETWORK_ACCESS = _parse_bool(os.environ.get("CODEX_EXEC_NETWORK_ACCESS"), False)
@@ -38,6 +63,47 @@ COPILOT_EXEC_ALLOW_ALL_TOOLS = (
 COPILOT_CHAT_OPTIMIZER_MODEL = os.environ.get("COPILOT_CHAT_OPTIMIZER_MODEL", "")
 COPILOT_CHAT_TARGET_MODEL = os.environ.get("COPILOT_CHAT_TARGET_MODEL", "")
 COPILOT_CHAT_TIMEOUT = os.environ.get("COPILOT_CHAT_TIMEOUT", "600")
+
+if _CODEX_EXEC_FULL_AUTO_ENV is not None:
+    warnings.warn(
+        "CODEX_EXEC_FULL_AUTO is deprecated and ignored; use "
+        "CODEX_EXEC_SANDBOX and CODEX_EXEC_APPROVAL_POLICY instead",
+        FutureWarning,
+        stacklevel=2,
+    )
+
+
+# A train/eval configuration is a complete runtime snapshot.  Preserve the
+# environment-derived values from process startup so loading a later config
+# cannot inherit path or permission settings applied by an earlier run in the
+# same process.
+_CODEX_EXEC_BASELINE = {
+    "path": CODEX_EXEC_PATH,
+    "sandbox": CODEX_EXEC_SANDBOX,
+    "profile": CODEX_EXEC_PROFILE,
+    "reasoning_effort": CODEX_EXEC_REASONING_EFFORT,
+    "use_sdk": CODEX_EXEC_USE_SDK,
+    "network_access": CODEX_EXEC_NETWORK_ACCESS,
+    "web_search": CODEX_EXEC_WEB_SEARCH,
+    "approval_policy": CODEX_EXEC_APPROVAL_POLICY,
+}
+_CODEX_EXEC_MUTATED_ENV_KEYS = (
+    "CODEX_EXEC_PATH",
+    "CODEX_CLI_BIN",
+    "CODEX_EXEC_SANDBOX",
+    "CODEX_SANDBOX_MODE",
+    "CODEX_EXEC_PROFILE",
+    "CODEX_EXEC_REASONING_EFFORT",
+    "CODEX_EXEC_USE_SDK",
+    "CODEX_EXEC_NETWORK_ACCESS",
+    "CODEX_EXEC_WEB_SEARCH",
+    "CODEX_EXEC_APPROVAL_POLICY",
+)
+_CODEX_EXEC_ENV_BASELINE = {
+    key: os.environ[key]
+    for key in _CODEX_EXEC_MUTATED_ENV_KEYS
+    if key in os.environ
+}
 
 
 def _parse_int(value: str | None, default: int) -> int:
@@ -117,6 +183,19 @@ def is_target_chat_backend() -> bool:
     return TARGET_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "openai_compatible", "copilot_chat"}
 
 
+_ALLOWED_CODEX_SANDBOXES = frozenset({"read-only", "workspace-write", "danger-full-access"})
+
+
+def validate_exec_sandbox(sandbox: str) -> str:
+    s = str(sandbox).strip()
+    if s not in _ALLOWED_CODEX_SANDBOXES:
+        raise ValueError(
+            f"Invalid codex_exec sandbox: {sandbox!r}. "
+            f"Allowed values are: {sorted(_ALLOWED_CODEX_SANDBOXES)}"
+        )
+    return s
+
+
 def configure_codex_exec(
     *,
     path: str | None = None,
@@ -125,38 +204,113 @@ def configure_codex_exec(
     full_auto: bool | None = None,
     reasoning_effort: str | None = None,
     use_sdk: str | None = None,
-    network_access: bool | None = None,
-    web_search: bool | None = None,
+    network_access: bool | str | int | None = None,
+    web_search: bool | str | int | None = None,
     approval_policy: str | None = None,
 ) -> None:
-    global CODEX_EXEC_PATH, CODEX_EXEC_SANDBOX, CODEX_EXEC_PROFILE, CODEX_EXEC_FULL_AUTO, CODEX_EXEC_REASONING_EFFORT, CODEX_EXEC_USE_SDK, CODEX_EXEC_NETWORK_ACCESS, CODEX_EXEC_WEB_SEARCH, CODEX_EXEC_APPROVAL_POLICY
+    global CODEX_EXEC_PATH, CODEX_EXEC_SANDBOX, CODEX_EXEC_PROFILE, CODEX_EXEC_REASONING_EFFORT, CODEX_EXEC_USE_SDK, CODEX_EXEC_NETWORK_ACCESS, CODEX_EXEC_WEB_SEARCH, CODEX_EXEC_APPROVAL_POLICY
+    parsed_network_access = (
+        None
+        if network_access is None
+        else _coerce_bool_setting(network_access, name="codex_exec_network_access")
+    )
+    parsed_web_search = (
+        None
+        if web_search is None
+        else _coerce_bool_setting(web_search, name="codex_exec_web_search")
+    )
     if path is not None:
         CODEX_EXEC_PATH = str(path).strip() or "codex"
         os.environ["CODEX_EXEC_PATH"] = CODEX_EXEC_PATH
+        os.environ["CODEX_CLI_BIN"] = CODEX_EXEC_PATH
     if sandbox is not None:
-        CODEX_EXEC_SANDBOX = str(sandbox).strip() or "workspace-write"
+        val = str(sandbox).strip() or "workspace-write"
+        validate_exec_sandbox(val)
+        CODEX_EXEC_SANDBOX = val
         os.environ["CODEX_EXEC_SANDBOX"] = CODEX_EXEC_SANDBOX
+        os.environ["CODEX_SANDBOX_MODE"] = CODEX_EXEC_SANDBOX
     if profile is not None:
         CODEX_EXEC_PROFILE = str(profile).strip()
         os.environ["CODEX_EXEC_PROFILE"] = CODEX_EXEC_PROFILE
     if full_auto is not None:
-        CODEX_EXEC_FULL_AUTO = bool(full_auto)
-        os.environ["CODEX_EXEC_FULL_AUTO"] = "true" if CODEX_EXEC_FULL_AUTO else "false"
+        warnings.warn(
+            "codex_exec_full_auto is deprecated and ignored; use "
+            "codex_exec_sandbox and codex_exec_approval_policy instead",
+            FutureWarning,
+            stacklevel=2,
+        )
     if reasoning_effort is not None:
         CODEX_EXEC_REASONING_EFFORT = str(reasoning_effort).strip() or "none"
         os.environ["CODEX_EXEC_REASONING_EFFORT"] = CODEX_EXEC_REASONING_EFFORT
     if use_sdk is not None:
         CODEX_EXEC_USE_SDK = str(use_sdk).strip().lower() or "auto"
         os.environ["CODEX_EXEC_USE_SDK"] = CODEX_EXEC_USE_SDK
-    if network_access is not None:
-        CODEX_EXEC_NETWORK_ACCESS = bool(network_access)
+    if parsed_network_access is not None:
+        CODEX_EXEC_NETWORK_ACCESS = parsed_network_access
         os.environ["CODEX_EXEC_NETWORK_ACCESS"] = "true" if CODEX_EXEC_NETWORK_ACCESS else "false"
-    if web_search is not None:
-        CODEX_EXEC_WEB_SEARCH = bool(web_search)
+    if parsed_web_search is not None:
+        CODEX_EXEC_WEB_SEARCH = parsed_web_search
         os.environ["CODEX_EXEC_WEB_SEARCH"] = "true" if CODEX_EXEC_WEB_SEARCH else "false"
     if approval_policy is not None:
         CODEX_EXEC_APPROVAL_POLICY = str(approval_policy).strip() or "never"
         os.environ["CODEX_EXEC_APPROVAL_POLICY"] = CODEX_EXEC_APPROVAL_POLICY
+
+
+def _first_nonempty(config: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = config.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _restore_codex_exec_baseline() -> None:
+    """Restore process-start globals and the exact environment-key state."""
+    global CODEX_EXEC_PATH, CODEX_EXEC_SANDBOX, CODEX_EXEC_PROFILE, CODEX_EXEC_REASONING_EFFORT, CODEX_EXEC_USE_SDK, CODEX_EXEC_NETWORK_ACCESS, CODEX_EXEC_WEB_SEARCH, CODEX_EXEC_APPROVAL_POLICY
+    CODEX_EXEC_PATH = _CODEX_EXEC_BASELINE["path"]
+    CODEX_EXEC_SANDBOX = _CODEX_EXEC_BASELINE["sandbox"]
+    CODEX_EXEC_PROFILE = _CODEX_EXEC_BASELINE["profile"]
+    CODEX_EXEC_REASONING_EFFORT = _CODEX_EXEC_BASELINE["reasoning_effort"]
+    CODEX_EXEC_USE_SDK = _CODEX_EXEC_BASELINE["use_sdk"]
+    CODEX_EXEC_NETWORK_ACCESS = _CODEX_EXEC_BASELINE["network_access"]
+    CODEX_EXEC_WEB_SEARCH = _CODEX_EXEC_BASELINE["web_search"]
+    CODEX_EXEC_APPROVAL_POLICY = _CODEX_EXEC_BASELINE["approval_policy"]
+    for key in _CODEX_EXEC_MUTATED_ENV_KEYS:
+        if key in _CODEX_EXEC_ENV_BASELINE:
+            os.environ[key] = _CODEX_EXEC_ENV_BASELINE[key]
+        else:
+            os.environ.pop(key, None)
+
+
+def configure_codex_exec_from_config(config: Mapping[str, Any]) -> None:
+    """Configure Codex exec from a flattened train/eval configuration.
+
+    Dedicated ``codex_exec_*`` keys take precedence over legacy aliases.  The
+    ordering is centralized here so training and eval-only cannot drift.
+    """
+    _restore_codex_exec_baseline()
+    configure_codex_exec(
+        path=_first_nonempty(
+            config,
+            "codex_exec_path",
+            "codex_path",
+            "codex_cli_bin",
+            "codex_bin",
+        ),
+        sandbox=_first_nonempty(
+            config,
+            "codex_exec_sandbox",
+            "sandbox",
+            "codex_sandbox",
+        ),
+        profile=_first_nonempty(config, "codex_exec_profile"),
+        full_auto=config.get("codex_exec_full_auto"),
+        reasoning_effort=_first_nonempty(config, "codex_exec_reasoning_effort"),
+        use_sdk=_first_nonempty(config, "codex_exec_use_sdk"),
+        network_access=config.get("codex_exec_network_access"),
+        web_search=config.get("codex_exec_web_search"),
+        approval_policy=_first_nonempty(config, "codex_exec_approval_policy"),
+    )
 
 
 def get_codex_exec_config() -> dict[str, str | bool | int]:
@@ -172,6 +326,27 @@ def get_codex_exec_config() -> dict[str, str | bool | int]:
         "approval_policy": CODEX_EXEC_APPROVAL_POLICY,
         "empty_response_retries": EXEC_EMPTY_RESPONSE_RETRIES,
     }
+
+
+def build_codex_exec_cli_config_overrides(
+    config: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Translate shared network/search settings to Codex CLI overrides."""
+    effective = get_codex_exec_config() if config is None else config
+    network_enabled = _coerce_bool_setting(
+        effective.get("network_access", False),
+        name="codex_exec_network_access",
+    )
+    search_enabled = _coerce_bool_setting(
+        effective.get("web_search", False),
+        name="codex_exec_web_search",
+    )
+    network_access = "true" if network_enabled else "false"
+    web_search = "live" if search_enabled else "disabled"
+    return [
+        f"sandbox_workspace_write.network_access={network_access}",
+        f"web_search={json.dumps(web_search)}",
+    ]
 
 
 def configure_claude_code_exec(

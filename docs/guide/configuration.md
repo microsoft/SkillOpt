@@ -41,7 +41,7 @@ model:
 | `openai_chat` | ✓ | ✓ | Azure OpenAI, or its explicit compatibility auth mode |
 | `openai_compatible` | ✓ | ✓ | Generic OpenAI Chat Completions endpoint |
 | `claude_chat` | ✓ | ✓ | Claude Code CLI (`claude -p`) |
-| `qwen_chat` | ✓ | ✓ | Qwen served through an OpenAI-compatible local endpoint |
+| `qwen_chat` | ✓ | ✓ | Qwen served through an OpenAI-compatible endpoint (self-hosted vLLM/SGLang or a hosted gateway) |
 | `minimax_chat` | ✓ | ✓ | MiniMax API |
 | `copilot_chat` | ✓ | ✓ | GitHub Copilot CLI (`copilot -p`); alias `copilot` |
 | `codex_exec` | — | ✓ | Codex CLI execution harness |
@@ -62,6 +62,12 @@ that require those features must use another chat backend.
 The current MiniMax adapter has one shared deployment. Set
 `model.minimax_model` when MiniMax is the target; a mixed-backend run cannot
 independently select a MiniMax optimizer model and a different target model.
+
+MiniMax is served from region-specific hosts. Select one with
+`model.minimax_region` (or `MINIMAX_REGION`) instead of hardcoding a host:
+`global_en` (default) resolves to `https://api.minimax.io/v1` and `cn_zh`
+resolves to `https://api.minimaxi.com/v1`. An explicit
+`model.minimax_base_url` or `MINIMAX_BASE_URL` overrides the region default.
 
 For a generic compatible provider, select the role backends explicitly rather
 than relying on a high-level shorthand:
@@ -198,9 +204,11 @@ Model credentials are loaded from environment variables:
 | `CURSOR_EXEC_PATH` | `cursor_exec` | Optional path to `cursor-agent`; defaults to `cursor-agent` |
 | `CURSOR_EXEC_SANDBOX` | `cursor_exec` | Cursor sandbox mode: `enabled` (default) or `disabled` |
 | `CURSOR_API_KEY` | `cursor_exec` | Optional authentication method understood directly by Cursor Agent |
-| `QWEN_CHAT_BASE_URL` | `qwen_chat` | Local Qwen/vLLM endpoint |
+| `QWEN_CHAT_BASE_URL` | `qwen_chat` | OpenAI-compatible Qwen endpoint: self-hosted vLLM/SGLang or a hosted gateway |
+| `QWEN_CHAT_THINKING_MODE` | `qwen_chat` | `server_default` (default; omit `chat_template_kwargs`), `enabled`, or `disabled`; per-role `OPTIMIZER_`/`TARGET_` variants take precedence |
 | `QWEN_CHAT_MODEL` | `qwen_chat` | Served model name for direct library use; train/eval YAML role models take precedence |
-| `MINIMAX_BASE_URL` | `minimax_chat` | MiniMax-compatible base URL |
+| `MINIMAX_REGION` | `minimax_chat` | Service region: `global_en` (default) or `cn_zh`; selects the base URL |
+| `MINIMAX_BASE_URL` | `minimax_chat` | MiniMax-compatible base URL; overrides the region default |
 | `MINIMAX_API_KEY` | `minimax_chat` | MiniMax API key |
 | `COPILOT_EXEC_PATH` | `copilot_chat`, `copilot_exec` | Optional path to `copilot`; defaults to `copilot` |
 | `COPILOT_EXEC_HOME` | `copilot_chat`, `copilot_exec` | Optional `COPILOT_HOME` override isolating CLI config; sign-in state lives outside it |

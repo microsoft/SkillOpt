@@ -7,6 +7,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- Additive `section_contains` rule-judge operator for literal,
+  case-insensitive matching within numbered, bilingual, or annotated ATX
+  Markdown headings. The legacy `section_present` behavior is unchanged.
 - **OpenCode transcript source** (`--source opencode`) for SkillOpt-Sleep. It
   reads visible user/assistant text and tool names from OpenCode's local SQLite
   history without requiring its CLI, login, or a provider connection.
@@ -74,6 +77,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
   implemented by @wilyan09007 in #219).
 
 ### Fixed
+- Apply Codex executable and sandbox aliases consistently across inherited
+  YAML, CLI overrides, training, and eval-only entry points. Codex CLI calls
+  now use explicit sandbox and approval settings instead of the retired
+  `--full-auto` flag (thanks @RohithPariki, #220).
 - Preserve fractional rollout hard scores instead of coercing them to binary
   values (thanks @zixuanguo786-ctrl, #104).
 - Reject duplicate and overlapping IDs while materializing SearchQA manifests

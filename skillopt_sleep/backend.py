@@ -474,6 +474,8 @@ class CliBackend(Backend):
                     return f"the response must be at least {arg} characters long"
                 if op == "section_present":
                     return f"the response must contain a section/heading titled '{arg}'"
+                if op == "section_contains":
+                    return f"a markdown heading must contain the text '{arg}'"
                 if op == "regex":
                     return f"the response must match the pattern /{arg}/ (e.g. include that label)"
                 if op == "contains":
@@ -1763,6 +1765,24 @@ class CopilotCliBackend(CliBackend):
 
     @staticmethod
     def _parse_jsonl_response(raw: str) -> str:
+        """Concatenate assistant text from a Copilot JSONL event stream.
+
+        Behaviourally identical to ``skillopt.model.copilot_backend``'s
+        ``parse_copilot_jsonl``; vendored because this package keeps ZERO
+        dependency on the research package (see the module docstring of
+        ``skillopt_sleep.gate`` for the same arrangement). Keep the two in sync.
+
+        A malformed event must never take down the whole stream: the CLI emits
+        one JSON object per line, so a single bad line loses at most that line's
+        text while the surrounding ``assistant.message`` events still parse.
+        ``data`` is therefore type-checked rather than assumed to be an object.
+        A truthy non-dict (``"text"``, ``5``, a non-empty list) would otherwise
+        raise ``AttributeError`` from the field access, which no caller catches.
+
+        The exception list is deliberately wider than the research-package copy:
+        ``json.loads`` raises ``RecursionError`` rather than ``JSONDecodeError``
+        on a deeply nested payload.
+        """
         parts: List[str] = []
         for line in raw.splitlines():
             line = line.strip()
@@ -1772,8 +1792,13 @@ class CopilotCliBackend(CliBackend):
                 obj = json.loads(line)
             except (ValueError, RecursionError, TypeError):
                 continue
+            if not isinstance(obj, dict):
+                continue
             if obj.get("type") == "assistant.message":
-                content = (obj.get("data") or {}).get("content")
+                data = obj.get("data")
+                if not isinstance(data, dict):
+                    continue
+                content = data.get("content")
                 if isinstance(content, str) and content:
                     parts.append(content)
         return "\n".join(parts).strip()

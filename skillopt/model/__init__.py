@@ -14,6 +14,7 @@ from skillopt.model import qwen_backend as _qwen
 from skillopt.model.backend_config import (  # noqa: F401
     configure_claude_code_exec,
     configure_codex_exec,
+    configure_codex_exec_from_config,
     configure_copilot_chat,
     configure_copilot_exec,
     configure_cursor_exec,
@@ -641,6 +642,7 @@ def configure_qwen_chat(
     timeout_seconds: float | str | None = None,
     max_tokens: int | str | None = None,
     enable_thinking: bool | str | None = None,
+    thinking_mode: str | None = None,
     use_max_completion_tokens: bool | str | None = None,
     optimizer_base_url: str | None = None,
     optimizer_api_key: str | None = None,
@@ -648,6 +650,7 @@ def configure_qwen_chat(
     optimizer_timeout_seconds: float | str | None = None,
     optimizer_max_tokens: int | str | None = None,
     optimizer_enable_thinking: bool | str | None = None,
+    optimizer_thinking_mode: str | None = None,
     optimizer_use_max_completion_tokens: bool | str | None = None,
     target_base_url: str | None = None,
     target_api_key: str | None = None,
@@ -655,6 +658,7 @@ def configure_qwen_chat(
     target_timeout_seconds: float | str | None = None,
     target_max_tokens: int | str | None = None,
     target_enable_thinking: bool | str | None = None,
+    target_thinking_mode: str | None = None,
     target_use_max_completion_tokens: bool | str | None = None,
 ) -> None:
     _qwen.configure_qwen_chat(
@@ -664,6 +668,7 @@ def configure_qwen_chat(
         timeout_seconds=timeout_seconds,
         max_tokens=max_tokens,
         enable_thinking=enable_thinking,
+        thinking_mode=thinking_mode,
         use_max_completion_tokens=use_max_completion_tokens,
         optimizer_base_url=optimizer_base_url,
         optimizer_api_key=optimizer_api_key,
@@ -671,6 +676,7 @@ def configure_qwen_chat(
         optimizer_timeout_seconds=optimizer_timeout_seconds,
         optimizer_max_tokens=optimizer_max_tokens,
         optimizer_enable_thinking=optimizer_enable_thinking,
+        optimizer_thinking_mode=optimizer_thinking_mode,
         optimizer_use_max_completion_tokens=optimizer_use_max_completion_tokens,
         target_base_url=target_base_url,
         target_api_key=target_api_key,
@@ -678,12 +684,19 @@ def configure_qwen_chat(
         target_timeout_seconds=target_timeout_seconds,
         target_max_tokens=target_max_tokens,
         target_enable_thinking=target_enable_thinking,
+        target_thinking_mode=target_thinking_mode,
         target_use_max_completion_tokens=target_use_max_completion_tokens,
     )
 
 
+def get_qwen_thinking_modes() -> dict[str, str]:
+    """Resolved per-role Qwen thinking wire policy (for run metadata)."""
+    return _qwen.get_thinking_modes()
+
+
 def configure_minimax_chat(
     *,
+    region: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     temperature: float | str | None = None,
@@ -692,6 +705,7 @@ def configure_minimax_chat(
     enable_thinking: bool | str | None = None,
 ) -> None:
     _minimax.configure_minimax_chat(
+        region=region,
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,

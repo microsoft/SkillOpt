@@ -17,7 +17,40 @@ from skillopt.model.common import (
     default_model_for_backend,
 )
 
-BASE_URL = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+# The service is reachable through region-specific hostnames, so the selected
+# region decides which OpenAI-compatible base URL the chat calls use.  An
+# explicit ``MINIMAX_BASE_URL`` still wins over the region default.
+REGION_BASE_URLS = {
+    "global_en": "https://api.minimax.io/v1",
+    "cn_zh": "https://api.minimaxi.com/v1",
+}
+DEFAULT_REGION = "global_en"
+
+
+def normalize_region(region: str | None) -> str:
+    """Return a supported region key, defaulting to the global region."""
+    normalized = str(region or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return DEFAULT_REGION
+    if normalized not in REGION_BASE_URLS:
+        raise ValueError(
+            f"Unsupported MiniMax region: {region!r}. "
+            f"Supported values are {sorted(REGION_BASE_URLS)}."
+        )
+    return normalized
+
+
+def base_url_for_region(region: str | None) -> str:
+    """Return the OpenAI-compatible base URL for a region."""
+    return REGION_BASE_URLS[normalize_region(region)]
+
+
+REGION = normalize_region(os.environ.get("MINIMAX_REGION"))
+# An explicit base URL (a proxy or a private gateway) must survive a later
+# region selection, so remember whether the current value was chosen by the
+# user or merely derived from the region default.
+_BASE_URL_EXPLICIT = bool(os.environ.get("MINIMAX_BASE_URL", "").strip())
+BASE_URL = os.environ.get("MINIMAX_BASE_URL", "").strip() or base_url_for_region(REGION)
 API_KEY = os.environ.get("MINIMAX_API_KEY", "")
 TIMEOUT_SECONDS = float(os.environ.get("MINIMAX_TIMEOUT_SECONDS", "300") or 300)
 MAX_TOKENS = int(os.environ.get("MINIMAX_MAX_TOKENS", "8000") or 8000)
@@ -177,6 +210,7 @@ def _chat_messages_impl(
 
 def configure_minimax_chat(
     *,
+    region: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     temperature: float | str | None = None,
@@ -184,11 +218,21 @@ def configure_minimax_chat(
     max_tokens: int | str | None = None,
     enable_thinking: bool | str | None = None,
 ) -> None:
-    global BASE_URL, API_KEY, TEMPERATURE, TIMEOUT_SECONDS, MAX_TOKENS, ENABLE_THINKING
+    global BASE_URL, API_KEY, TEMPERATURE, TIMEOUT_SECONDS, MAX_TOKENS, ENABLE_THINKING, REGION
+    global _BASE_URL_EXPLICIT
     with _config_lock:
-        if base_url is not None:
-            BASE_URL = str(base_url).strip() or BASE_URL
+        if base_url is not None and str(base_url).strip():
+            BASE_URL = str(base_url).strip()
+            _BASE_URL_EXPLICIT = True
             os.environ["MINIMAX_BASE_URL"] = BASE_URL
+        if region is not None:
+            REGION = normalize_region(region)
+            os.environ["MINIMAX_REGION"] = REGION
+            # Only fill in the region default when no explicit base URL is in
+            # play; otherwise a configured proxy would be silently discarded.
+            if not _BASE_URL_EXPLICIT:
+                BASE_URL = base_url_for_region(REGION)
+                os.environ["MINIMAX_BASE_URL"] = BASE_URL
         if api_key is not None:
             API_KEY = str(api_key).strip()
             os.environ["MINIMAX_API_KEY"] = API_KEY
@@ -212,6 +256,14 @@ def configure_minimax_chat(
 
 def get_max_tokens() -> int:
     return MAX_TOKENS
+
+
+def get_region() -> str:
+    return REGION
+
+
+def get_base_url() -> str:
+    return BASE_URL
 
 
 def chat_target(

@@ -25,6 +25,9 @@ selecting the generic OpenAI-compatible backend.
 MiniMax currently has one shared deployment. `model.minimax_model` is applied
 when MiniMax is the target; mixed-backend runs cannot independently choose a
 MiniMax optimizer model and a different target model.
+`model.minimax_region` selects the service region: `global_en` (default)
+resolves to `https://api.minimax.io/v1` and `cn_zh` resolves to
+`https://api.minimaxi.com/v1`. `model.minimax_base_url` overrides it.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -58,14 +61,44 @@ Every shared key also has an `optimizer_azure_openai_*` and
 defaults to `claude` and can be overridden with `CLAUDE_CLI_BIN`.
 `ANTHROPIC_API_KEY` is one authentication option understood by the CLI.
 
+### Qwen thinking mode
+
+`qwen_chat` speaks the OpenAI chat-completions protocol, so it reaches both
+self-hosted servers (vLLM, SGLang) and hosted OpenAI-compatible gateways.
+`chat_template_kwargs` is a vLLM/SGLang extension: OpenAI, Azure OpenAI, and
+strict gateways reject the unknown body field with HTTP 400, and non-Qwen vLLM
+models served with it may emit `<think>` output without an `<answer>` tag.
+Because the correct wire policy therefore depends on the serving stack rather
+than on a boolean preference, it is an explicit three-state setting:
+
+| `thinking_mode` | On the wire |
+|---|---|
+| `server_default` (default) | `chat_template_kwargs` is **not sent**; the server's chat template decides |
+| `enabled` | sends `chat_template_kwargs: {"enable_thinking": true}` |
+| `disabled` | sends `chat_template_kwargs: {"enable_thinking": false}` |
+
+`server_default` is the portable default and works against any
+OpenAI-compatible endpoint, but Qwen3 chat templates enable thinking by
+default, so the outcome depends on the serving stack and template version. The
+backend warns once per role when a request is sent under `server_default`. For
+reproducible runs pin `enabled` or `disabled`; the resolved per-role mode is
+recorded in the run's `config.json` under `resolved_qwen_thinking_modes`.
+
+The legacy `model.qwen_chat_enable_thinking` boolean keeps its historical
+meaning exactly — `true` sends `enable_thinking: true`, `false` omits the field
+(it never sent an explicit `false`) — so existing configs are unaffected.
+Setting both keys to conflicting values raises an error rather than picking a
+winner. Prefer `thinking_mode`; use `disabled` when you need the field sent.
+
 ### Qwen, MiniMax, and Exec Backends
 
 | Parameter family | Description |
 |---|---|
-| `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, and `enable_thinking` |
-| `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides |
-| `model.minimax_*` | MiniMax `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
-| `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy |
+| `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, `thinking_mode`, and the legacy `enable_thinking` |
+| `model.qwen_chat_thinking_mode` | Wire policy for `chat_template_kwargs.enable_thinking`: `server_default` (default; omit the field), `enabled`, or `disabled`. See [Qwen thinking mode](#qwen-thinking-mode) |
+| `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides, including `*_qwen_chat_thinking_mode` |
+| `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
+| `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
 | `model.cursor_exec_path` | Cursor Agent executable path; default `cursor-agent` |
 | `model.cursor_exec_sandbox` | Cursor sandbox mode: `enabled` (default) or `disabled`; file-edit rollouts require `enabled` |
@@ -74,6 +107,37 @@ defaults to `claude` and can be overridden with `CLAUDE_CLI_BIN`.
 | `model.copilot_exec_allow_all_tools` | Optional opt-in to `--allow-all-tools`; unset by default so `COPILOT_EXEC_ALLOW_ALL_TOOLS` remains authoritative |
 | `model.copilot_chat_optimizer_model` / `model.copilot_chat_target_model` | Optional per-role `--model` IDs for `copilot_chat` |
 | `model.copilot_chat_timeout` | Per-call timeout in seconds for `copilot_chat` |
+
+For compatibility, `model.codex_bin`, `model.codex_cli_bin`, and
+`model.codex_path` are aliases for `model.codex_exec_path`;
+`model.codex_sandbox` and `model.sandbox` are aliases for
+`model.codex_exec_sandbox`. The canonical `codex_exec_*` name wins when both
+forms occur in the same YAML layer. A child config or command-line override
+still overrides its base config, whichever accepted spelling it uses.
+The aliases may also be supplied without the `model.` prefix through
+`--cfg-options`; with a structured config they are applied to the `model`
+section.
+
+`model.codex_exec_full_auto` and `--codex_exec_full_auto` remain accepted for
+backward compatibility but are deprecated and ignored. Set
+`model.codex_exec_sandbox` and `model.codex_exec_approval_policy` explicitly.
+
+Blank or `null` Codex values in the shipped base config leave the corresponding
+`CODEX_EXEC_*` environment variable in control. The effective precedence is an
+explicit command-line/YAML value, then the environment, then the built-in safe
+default (`codex`, `workspace-write`, and approval policy `never`).
+
+`model.codex_exec_network_access` controls outbound network access only while
+the Codex sandbox is `workspace-write`; it cannot restrict
+`danger-full-access`. `model.codex_exec_web_search` independently selects live
+web search when true and disables web search when false. These settings are
+forwarded consistently to both SDK and CLI execution paths.
+
+> [!WARNING]
+> `danger-full-access` grants the Codex process unrestricted filesystem access.
+> Use it only in an appropriately isolated environment, such as a disposable
+> container. The same warning applies to environment aliases such as
+> `CODEX_SANDBOX_MODE=danger-full-access`.
 
 ## Training (`train`)
 

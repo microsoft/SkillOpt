@@ -33,7 +33,7 @@ force_utf8_stdout_stderr()
 from skillopt.model import (
     configure_azure_openai,
     configure_claude_code_exec,
-    configure_codex_exec,
+    configure_codex_exec_from_config,
     configure_copilot_chat,
     configure_copilot_exec,
     configure_cursor_exec,
@@ -192,7 +192,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--codex_exec_path", type=str)
     p.add_argument("--codex_exec_sandbox", type=str)
     p.add_argument("--codex_exec_profile", type=str)
-    p.add_argument("--codex_exec_full_auto", type=_BOOL)
+    p.add_argument(
+        "--codex_exec_full_auto",
+        type=_BOOL,
+        help=(
+            "Deprecated and ignored; use --codex_exec_sandbox and "
+            "--codex_exec_approval_policy"
+        ),
+    )
     p.add_argument("--codex_exec_reasoning_effort", type=str)
     p.add_argument("--codex_exec_use_sdk", type=str)
     p.add_argument("--codex_exec_network_access", type=_BOOL)
@@ -211,6 +218,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--copilot_chat_optimizer_model", type=str)
     p.add_argument("--copilot_chat_target_model", type=str)
     p.add_argument("--copilot_chat_timeout", type=int)
+    p.add_argument("--minimax_region", type=str)
     p.add_argument("--minimax_base_url", type=str)
     p.add_argument("--minimax_api_key", type=str)
     p.add_argument("--minimax_model", type=str)
@@ -300,6 +308,7 @@ def main() -> None:
                 "copilot_chat_optimizer_model": "model.copilot_chat_optimizer_model",
                 "copilot_chat_target_model": "model.copilot_chat_target_model",
                 "copilot_chat_timeout": "model.copilot_chat_timeout",
+                "minimax_region": "model.minimax_region",
                 "minimax_base_url": "model.minimax_base_url",
                 "minimax_api_key": "model.minimax_api_key",
                 "minimax_model": "model.minimax_model",
@@ -487,17 +496,7 @@ def main() -> None:
     set_target_backend(cfg.get("target_backend", "openai_chat"))
     set_optimizer_deployment(cfg.get("optimizer_model", default_model_for_backend(backend)))
     set_target_deployment(cfg.get("target_model", default_model_for_backend(backend)))
-    configure_codex_exec(
-        path=cfg.get("codex_exec_path", "codex"),
-        sandbox=cfg.get("codex_exec_sandbox", "workspace-write"),
-        profile=cfg.get("codex_exec_profile", ""),
-        full_auto=cfg.get("codex_exec_full_auto", False),
-        reasoning_effort=cfg.get("codex_exec_reasoning_effort", "none"),
-        use_sdk=cfg.get("codex_exec_use_sdk", None),
-        network_access=cfg.get("codex_exec_network_access", False),
-        web_search=cfg.get("codex_exec_web_search", False),
-        approval_policy=cfg.get("codex_exec_approval_policy", "never"),
-    )
+    configure_codex_exec_from_config(cfg)
     configure_claude_code_exec(
         path=cfg.get("claude_code_exec_path", "claude"),
         profile=cfg.get("claude_code_exec_profile", ""),
@@ -526,14 +525,17 @@ def main() -> None:
         timeout_seconds=cfg.get("qwen_chat_timeout_seconds"),
         max_tokens=cfg.get("qwen_chat_max_tokens"),
         enable_thinking=cfg.get("qwen_chat_enable_thinking"),
+        thinking_mode=cfg.get("qwen_chat_thinking_mode"),
         target_base_url=cfg.get("target_qwen_chat_base_url") or None,
         target_api_key=cfg.get("target_qwen_chat_api_key") or None,
         target_temperature=cfg.get("target_qwen_chat_temperature"),
         target_timeout_seconds=cfg.get("target_qwen_chat_timeout_seconds"),
         target_max_tokens=cfg.get("target_qwen_chat_max_tokens"),
         target_enable_thinking=cfg.get("target_qwen_chat_enable_thinking"),
+        target_thinking_mode=cfg.get("target_qwen_chat_thinking_mode"),
     )
     configure_minimax_chat(
+        region=cfg.get("minimax_region") or None,
         base_url=cfg.get("minimax_base_url") or None,
         api_key=cfg.get("minimax_api_key") or None,
         temperature=cfg.get("minimax_temperature"),

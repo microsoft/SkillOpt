@@ -62,12 +62,13 @@ from skillopt.model import (
     chat_optimizer,
     configure_azure_openai,
     configure_claude_code_exec,
-    configure_codex_exec,
+    configure_codex_exec_from_config,
     configure_copilot_chat,
     configure_copilot_exec,
     configure_cursor_exec,
     configure_minimax_chat,
     configure_qwen_chat,
+    get_qwen_thinking_modes,
     get_token_summary,
     reset_token_tracker,
     set_reasoning_effort,
@@ -671,6 +672,18 @@ class ReflACTTrainer:
         out_root = cfg["out_root"]
         os.makedirs(out_root, exist_ok=True)
 
+        # Backends must be visible during adapter setup.  SpreadsheetBench, for
+        # example, validates its mode against the configured target backend.
+        backend = cfg.get("model_backend", "azure_openai")
+        optimizer_backend, target_backend = _resolve_role_backends(
+            backend, cfg.get("optimizer_backend"), cfg.get("target_backend")
+        )
+        cfg["optimizer_backend"] = optimizer_backend
+        cfg["target_backend"] = target_backend
+        set_optimizer_backend(optimizer_backend)
+        set_target_backend(target_backend)
+        configure_codex_exec_from_config(cfg)
+
         # ── Adapter setup (one-time init) ────────────────────────────
         adapter.setup(cfg)
         dataloader = adapter.get_dataloader()
@@ -700,7 +713,6 @@ class ReflACTTrainer:
             return env_manager, batch.batch_size
 
         # ── Configure models ─────────────────────────────────────────────
-        backend = cfg.get("model_backend", "azure_openai")
         configure_azure_openai(
             endpoint=(
                 cfg.get("azure_openai_endpoint")
@@ -737,26 +749,8 @@ class ReflACTTrainer:
                 cfg.get("target_azure_openai_managed_identity_client_id") or None
             ),
         )
-        optimizer_backend, target_backend = _resolve_role_backends(
-            backend, cfg.get("optimizer_backend"), cfg.get("target_backend")
-        )
-        cfg["optimizer_backend"] = optimizer_backend
-        cfg["target_backend"] = target_backend
-        set_optimizer_backend(optimizer_backend)
-        set_target_backend(target_backend)
         set_optimizer_deployment(cfg["optimizer_model"])
         set_target_deployment(cfg["target_model"])
-        configure_codex_exec(
-            path=cfg.get("codex_exec_path", "codex"),
-            sandbox=cfg.get("codex_exec_sandbox", "workspace-write"),
-            profile=cfg.get("codex_exec_profile", ""),
-            full_auto=cfg.get("codex_exec_full_auto", False),
-            reasoning_effort=cfg.get("codex_exec_reasoning_effort", "none"),
-            use_sdk=cfg.get("codex_exec_use_sdk", None),
-            network_access=cfg.get("codex_exec_network_access", False),
-            web_search=cfg.get("codex_exec_web_search", False),
-            approval_policy=cfg.get("codex_exec_approval_policy", "never"),
-        )
         configure_claude_code_exec(
             path=cfg.get("claude_code_exec_path", "claude"),
             profile=cfg.get("claude_code_exec_profile", ""),
@@ -785,20 +779,24 @@ class ReflACTTrainer:
             timeout_seconds=cfg.get("qwen_chat_timeout_seconds"),
             max_tokens=cfg.get("qwen_chat_max_tokens"),
             enable_thinking=cfg.get("qwen_chat_enable_thinking"),
+            thinking_mode=cfg.get("qwen_chat_thinking_mode"),
             optimizer_base_url=cfg.get("optimizer_qwen_chat_base_url") or None,
             optimizer_api_key=cfg.get("optimizer_qwen_chat_api_key") or None,
             optimizer_temperature=cfg.get("optimizer_qwen_chat_temperature"),
             optimizer_timeout_seconds=cfg.get("optimizer_qwen_chat_timeout_seconds"),
             optimizer_max_tokens=cfg.get("optimizer_qwen_chat_max_tokens"),
             optimizer_enable_thinking=cfg.get("optimizer_qwen_chat_enable_thinking"),
+            optimizer_thinking_mode=cfg.get("optimizer_qwen_chat_thinking_mode"),
             target_base_url=cfg.get("target_qwen_chat_base_url") or None,
             target_api_key=cfg.get("target_qwen_chat_api_key") or None,
             target_temperature=cfg.get("target_qwen_chat_temperature"),
             target_timeout_seconds=cfg.get("target_qwen_chat_timeout_seconds"),
             target_max_tokens=cfg.get("target_qwen_chat_max_tokens"),
             target_enable_thinking=cfg.get("target_qwen_chat_enable_thinking"),
+            target_thinking_mode=cfg.get("target_qwen_chat_thinking_mode"),
         )
         configure_minimax_chat(
+            region=cfg.get("minimax_region") or None,
             base_url=cfg.get("minimax_base_url") or None,
             api_key=cfg.get("minimax_api_key") or None,
             temperature=cfg.get("minimax_temperature"),
@@ -881,6 +879,10 @@ class ReflACTTrainer:
         cfg["samples_per_epoch"] = train_size
         cfg["skill_update_mode"] = update_mode
         cfg["lr_control_mode"] = lr_control_mode
+        # Record the resolved Qwen thinking policy: it can come from the
+        # environment, so the raw config alone does not describe the run.
+        if "qwen_chat" in (cfg.get("optimizer_backend"), cfg.get("target_backend"), cfg.get("backend")):
+            cfg["resolved_qwen_thinking_modes"] = get_qwen_thinking_modes()
 
         # Save config after deriving runtime values.
         with open(os.path.join(out_root, "config.json"), "w") as f:

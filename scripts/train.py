@@ -180,18 +180,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--qwen_chat_timeout_seconds", type=float)
     p.add_argument("--qwen_chat_max_tokens", type=int)
     p.add_argument("--qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--qwen_chat_thinking_mode", type=str)
     p.add_argument("--optimizer_qwen_chat_base_url", type=str)
     p.add_argument("--optimizer_qwen_chat_api_key", type=str)
     p.add_argument("--optimizer_qwen_chat_temperature", type=float)
     p.add_argument("--optimizer_qwen_chat_timeout_seconds", type=float)
     p.add_argument("--optimizer_qwen_chat_max_tokens", type=int)
     p.add_argument("--optimizer_qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--optimizer_qwen_chat_thinking_mode", type=str)
     p.add_argument("--target_qwen_chat_base_url", type=str)
     p.add_argument("--target_qwen_chat_api_key", type=str)
     p.add_argument("--target_qwen_chat_temperature", type=float)
     p.add_argument("--target_qwen_chat_timeout_seconds", type=float)
     p.add_argument("--target_qwen_chat_max_tokens", type=int)
     p.add_argument("--target_qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--target_qwen_chat_thinking_mode", type=str)
+    p.add_argument("--minimax_region", type=str)
     p.add_argument("--minimax_base_url", type=str)
     p.add_argument("--minimax_api_key", type=str)
     p.add_argument("--minimax_model", type=str)
@@ -201,7 +205,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--codex_exec_path", type=str)
     p.add_argument("--codex_exec_sandbox", type=str)
     p.add_argument("--codex_exec_profile", type=str)
-    p.add_argument("--codex_exec_full_auto", type=_BOOL)
+    p.add_argument(
+        "--codex_exec_full_auto",
+        type=_BOOL,
+        help=(
+            "Deprecated and ignored; use --codex_exec_sandbox and "
+            "--codex_exec_approval_policy"
+        ),
+    )
     p.add_argument("--codex_exec_reasoning_effort", type=str)
     p.add_argument("--codex_exec_use_sdk", type=str)
     p.add_argument("--codex_exec_network_access", type=_BOOL)
@@ -393,18 +404,22 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "qwen_chat_timeout_seconds": "model.qwen_chat_timeout_seconds",
     "qwen_chat_max_tokens": "model.qwen_chat_max_tokens",
     "qwen_chat_enable_thinking": "model.qwen_chat_enable_thinking",
+    "qwen_chat_thinking_mode": "model.qwen_chat_thinking_mode",
     "optimizer_qwen_chat_base_url": "model.optimizer_qwen_chat_base_url",
     "optimizer_qwen_chat_api_key": "model.optimizer_qwen_chat_api_key",
     "optimizer_qwen_chat_temperature": "model.optimizer_qwen_chat_temperature",
     "optimizer_qwen_chat_timeout_seconds": "model.optimizer_qwen_chat_timeout_seconds",
     "optimizer_qwen_chat_max_tokens": "model.optimizer_qwen_chat_max_tokens",
     "optimizer_qwen_chat_enable_thinking": "model.optimizer_qwen_chat_enable_thinking",
+    "optimizer_qwen_chat_thinking_mode": "model.optimizer_qwen_chat_thinking_mode",
     "target_qwen_chat_base_url": "model.target_qwen_chat_base_url",
     "target_qwen_chat_api_key": "model.target_qwen_chat_api_key",
     "target_qwen_chat_temperature": "model.target_qwen_chat_temperature",
     "target_qwen_chat_timeout_seconds": "model.target_qwen_chat_timeout_seconds",
     "target_qwen_chat_max_tokens": "model.target_qwen_chat_max_tokens",
     "target_qwen_chat_enable_thinking": "model.target_qwen_chat_enable_thinking",
+    "target_qwen_chat_thinking_mode": "model.target_qwen_chat_thinking_mode",
+    "minimax_region": "model.minimax_region",
     "minimax_base_url": "model.minimax_base_url",
     "minimax_api_key": "model.minimax_api_key",
     "minimax_model": "model.minimax_model",

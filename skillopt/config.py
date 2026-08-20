@@ -26,6 +26,19 @@ _STRUCTURED_SECTIONS = frozenset({
     "model", "train", "gradient", "optimizer", "evaluation", "env",
 })
 
+# Canonical Codex config keys and their legacy aliases, in fallback order.
+# Aliases are normalized within each YAML layer before inheritance is merged so
+# a child alias can override a canonical value inherited from its base.
+_CODEX_CONFIG_ALIASES: dict[str, tuple[str, ...]] = {
+    "codex_exec_path": ("codex_path", "codex_cli_bin", "codex_bin"),
+    "codex_exec_sandbox": ("sandbox", "codex_sandbox"),
+}
+_CODEX_ALIAS_TO_CANONICAL = {
+    alias: canonical
+    for canonical, aliases in _CODEX_CONFIG_ALIASES.items()
+    for alias in aliases
+}
+
 # ── Structured → flat key mapping ────────────────────────────────────────
 
 _FLATTEN_MAP: dict[str, str] = {
@@ -87,18 +100,22 @@ _FLATTEN_MAP: dict[str, str] = {
     "model.qwen_chat_timeout_seconds": "qwen_chat_timeout_seconds",
     "model.qwen_chat_max_tokens": "qwen_chat_max_tokens",
     "model.qwen_chat_enable_thinking": "qwen_chat_enable_thinking",
+    "model.qwen_chat_thinking_mode": "qwen_chat_thinking_mode",
     "model.optimizer_qwen_chat_base_url": "optimizer_qwen_chat_base_url",
     "model.optimizer_qwen_chat_api_key": "optimizer_qwen_chat_api_key",
     "model.optimizer_qwen_chat_temperature": "optimizer_qwen_chat_temperature",
     "model.optimizer_qwen_chat_timeout_seconds": "optimizer_qwen_chat_timeout_seconds",
     "model.optimizer_qwen_chat_max_tokens": "optimizer_qwen_chat_max_tokens",
     "model.optimizer_qwen_chat_enable_thinking": "optimizer_qwen_chat_enable_thinking",
+    "model.optimizer_qwen_chat_thinking_mode": "optimizer_qwen_chat_thinking_mode",
     "model.target_qwen_chat_base_url": "target_qwen_chat_base_url",
     "model.target_qwen_chat_api_key": "target_qwen_chat_api_key",
     "model.target_qwen_chat_temperature": "target_qwen_chat_temperature",
     "model.target_qwen_chat_timeout_seconds": "target_qwen_chat_timeout_seconds",
     "model.target_qwen_chat_max_tokens": "target_qwen_chat_max_tokens",
     "model.target_qwen_chat_enable_thinking": "target_qwen_chat_enable_thinking",
+    "model.target_qwen_chat_thinking_mode": "target_qwen_chat_thinking_mode",
+    "model.minimax_region": "minimax_region",
     "model.minimax_base_url": "minimax_base_url",
     "model.minimax_api_key": "minimax_api_key",
     "model.minimax_model": "minimax_model",
@@ -143,6 +160,11 @@ _FLATTEN_MAP: dict[str, str] = {
     "env.out_root": "out_root",
 }
 
+_FLAT_TO_STRUCTURED = {
+    flat_key: dotted
+    for dotted, flat_key in _FLATTEN_MAP.items()
+}
+
 
 # ── Deep merge ───────────────────────────────────────────────────────────
 
@@ -155,6 +177,58 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = copy.deepcopy(val)
     return result
+
+
+def _normalize_codex_aliases_in_mapping(mapping: dict) -> None:
+    """Replace Codex aliases in one config layer with canonical keys."""
+    for canonical, aliases in _CODEX_CONFIG_ALIASES.items():
+        if canonical not in mapping:
+            for alias in aliases:
+                if alias in mapping:
+                    mapping[canonical] = mapping[alias]
+                    break
+        for alias in aliases:
+            mapping.pop(alias, None)
+
+
+def _normalize_codex_config_aliases(cfg: dict) -> dict:
+    """Return a deep copy with structured and legacy Codex aliases resolved."""
+    normalized = copy.deepcopy(cfg)
+    _normalize_codex_aliases_in_mapping(normalized)
+    model = normalized.get("model")
+    if isinstance(model, dict):
+        _normalize_codex_aliases_in_mapping(model)
+    return normalized
+
+
+def _nested_key_present(cfg: dict, dotted: str) -> bool:
+    """Return whether *cfg* explicitly contains one structured key."""
+    section, key = dotted.split(".", 1)
+    section_cfg = cfg.get(section)
+    return isinstance(section_cfg, dict) and key in section_cfg
+
+
+def _remove_nested_key(cfg: dict, dotted: str) -> None:
+    """Remove one structured key without changing the config's shape."""
+    section, key = dotted.split(".", 1)
+    section_cfg = cfg.get(section)
+    if isinstance(section_cfg, dict):
+        section_cfg.pop(key, None)
+
+
+def _resolve_layer_format_duplicates(cfg: dict) -> None:
+    """Prefer canonical structured keys over equivalent flat keys in a layer."""
+    for dotted, flat_key in _FLATTEN_MAP.items():
+        if _nested_key_present(cfg, dotted):
+            cfg.pop(flat_key, None)
+
+
+def _drop_base_keys_overridden_by_layer(base: dict, override: dict) -> None:
+    """Honor child precedence when inheritance mixes flat and structured YAML."""
+    for dotted, flat_key in _FLATTEN_MAP.items():
+        if flat_key in override or _nested_key_present(override, dotted):
+            base.pop(flat_key, None)
+            _remove_nested_key(base, dotted)
 
 
 # ── YAML loading with _base_ inheritance ─────────────────────────────────
@@ -172,9 +246,18 @@ def _load_yaml(path: str, _visited: set[str] | None = None) -> dict:
         cfg = yaml.safe_load(f) or {}
 
     base_ref = cfg.pop("_base_", None)
+    # Normalize this layer before merging it with its base.  Otherwise a base
+    # canonical key would incorrectly mask the equivalent alias in a child.
+    cfg = _normalize_codex_config_aliases(cfg)
+    _resolve_layer_format_duplicates(cfg)
     if base_ref:
         base_path = os.path.join(os.path.dirname(abs_path), base_ref)
         base_cfg = _load_yaml(base_path, _visited)
+        # A child value must win even when the child and base use opposite
+        # representations of the same setting (for example ``batch_size`` vs
+        # ``train.batch_size`` or ``codex_path`` vs
+        # ``model.codex_exec_path``).
+        _drop_base_keys_overridden_by_layer(base_cfg, cfg)
         cfg = _deep_merge(base_cfg, cfg)
 
     return cfg
@@ -195,12 +278,20 @@ def is_structured(cfg: dict) -> bool:
 def flatten_config(cfg: dict) -> dict:
     """Convert a structured config to the flat dict expected by the trainer.
 
-    If *cfg* is already flat, returns a shallow copy unchanged.
+    If *cfg* is already flat, returns a normalized copy.
     """
+    cfg = _normalize_codex_config_aliases(cfg)
     if not is_structured(cfg):
         return dict(cfg)
 
-    flat: dict[str, Any] = {}
+    # A mixed inheritance chain can legitimately contain legacy top-level
+    # values alongside structured sections.  Preserve those values; explicit
+    # structured keys below take precedence within the same YAML layer.
+    flat: dict[str, Any] = {
+        key: val
+        for key, val in cfg.items()
+        if key not in _STRUCTURED_SECTIONS
+    }
 
     # Apply the explicit mapping
     for dotted, flat_key in _FLATTEN_MAP.items():
@@ -249,6 +340,11 @@ def apply_overrides(cfg: dict, overrides: list[str]) -> None:
     Supports both ``section.key=value`` (for structured configs) and
     ``key=value`` (for flat configs or flat keys in env section).
     """
+    # Keep the source file's format stable across the whole override list.  A
+    # dotted override on a legacy flat file must not create a section that then
+    # causes all of its existing top-level settings to be discarded.
+    structured = is_structured(cfg)
+
     for item in overrides:
         if "=" not in item:
             raise ValueError(f"Invalid override (expected key=value): {item!r}")
@@ -257,13 +353,25 @@ def apply_overrides(cfg: dict, overrides: list[str]) -> None:
 
         if "." in key:
             section, subkey = key.split(".", 1)
-            if section in cfg and isinstance(cfg[section], dict):
+            if section == "model":
+                subkey = _CODEX_ALIAS_TO_CANONICAL.get(subkey, subkey)
+            dotted = f"{section}.{subkey}"
+            if not structured and dotted in _FLATTEN_MAP:
+                cfg[_FLATTEN_MAP[dotted]] = val
+            elif not structured and section == "env":
+                cfg[subkey] = val
+            elif section in cfg and isinstance(cfg[section], dict):
                 cfg[section][subkey] = val
             else:
                 cfg.setdefault(section, {})[subkey] = val
         else:
-            # Flat key — apply to top level (for legacy compat)
-            cfg[key] = val
+            canonical = _CODEX_ALIAS_TO_CANONICAL.get(key, key)
+            dotted = _FLAT_TO_STRUCTURED.get(canonical)
+            if structured and dotted:
+                section, subkey = dotted.split(".", 1)
+                cfg.setdefault(section, {})[subkey] = val
+            else:
+                cfg[canonical] = val
 
 
 # ── Public API ───────────────────────────────────────────────────────────

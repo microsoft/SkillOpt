@@ -1435,6 +1435,26 @@ class TestCopilotBackend(unittest.TestCase):
         raw = '{"type":"assistant.message","data":' + "9" * 5000 + "}"
         self.assertEqual(CopilotCliBackend._parse_jsonl_response(raw), "")
 
+    def test_parse_jsonl_skips_non_dict_data_without_losing_stream(self):
+        # A malformed event must cost only its own line: the surrounding
+        # assistant.message events still have to reach the caller. Mirrors
+        # tests/test_copilot_exec_backend.py for the research-package copy.
+        from skillopt_sleep.backend import CopilotCliBackend
+        for bad in ('"text"', "5", "[1,2]", "true"):
+            raw = "\n".join([
+                '{"type":"assistant.message","data":{"content":"first"}}',
+                '{"type":"assistant.message","data":' + bad + "}",
+                '{"type":"assistant.message","data":{"content":"second"}}',
+            ])
+            with self.subTest(data=bad):
+                self.assertEqual(
+                    CopilotCliBackend._parse_jsonl_response(raw), "first\nsecond"
+                )
+
+    def test_parse_jsonl_ignores_non_object_top_level(self):
+        from skillopt_sleep.backend import CopilotCliBackend
+        self.assertEqual(CopilotCliBackend._parse_jsonl_response("[]\nnull\n"), "")
+
     def test_isolated_home_by_default(self):
         from skillopt_sleep.backend import CopilotCliBackend
         be = CopilotCliBackend()

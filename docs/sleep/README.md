@@ -35,6 +35,14 @@ candidate; an absent numeric score aborts evaluation. Task-level changes are
 included in `report.md`, `report.json`, `diagnostics.json`, the CLI's `--json`
 output, and the evidence log.
 
+Rule-based heading checks are intentionally additive. `section_present` keeps
+its legacy strict behavior for existing task sets: an ATX heading cannot append
+text after the requested name. Use `section_contains` when a numbered,
+bilingual, or annotated ATX Markdown heading should pass; it matches the
+requested text literally and case-insensitively within the ATX heading only,
+not in bold lines, labels, or ordinary body text. Both operators are shape-only
+checks and should be paired with an outcome check or substantive rubric.
+
 > **Data boundary.** Harvesting is local and read-only. The `mock` backend makes no
 > provider calls. A real backend, however, sends truncated excerpts from harvested
 > sessions and derived tasks to the provider you select for mining, replay, judging,

@@ -148,7 +148,7 @@ Common implemented flags include:
 | `--pi-home PATH` | `~/.pi` | select the parent directory containing `agent/sessions` |
 | `--pi-path PATH` | auto-detect `pi` | select the Pi coding-agent CLI executable |
 | `--opencode-path PATH` | `SKILLOPT_SLEEP_OPENCODE_PATH`, then `opencode` on `PATH`/`PATHEXT` | select the OpenCode CLI executable |
-| `--opencode-db PATH` | `OPENCODE_DB`, then `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` | select the OpenCode SQLite history database |
+| `--opencode-db PATH` | `OPENCODE_DB`, `%LOCALAPPDATA%`/`%APPDATA%` (Windows), or `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` | select the OpenCode SQLite history database |
 | `--opencode-tool-replay` | off | enable OpenCode tool-aware replay for `tool_called` checks in rule judges |
 | `--project PATH` | current directory | select the project and invoked harvest scope |
 | `--scope invoked\|all` | `invoked` | limit transcript harvesting |

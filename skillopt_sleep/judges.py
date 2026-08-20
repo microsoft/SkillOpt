@@ -4,7 +4,8 @@ Implements the programmatic check operators used by gbrain-evals'
 skillopt-v1 benchmark so we can score skill outputs locally, with NO judge
 API call:
 
-  * section_present <name>   — a markdown heading containing <name> exists
+  * section_present <name>   — legacy strict heading/bold/label check
+  * section_contains <name>  — an ATX markdown heading contains literal <name>
   * regex <pattern>          — the pattern matches the response
   * max_chars <n>            — response length <= n
   * min_chars <n>            — response length >= n
@@ -17,9 +18,9 @@ API call:
 
 Ops divide into two families, and the distinction is load-bearing:
 
-  * *shape* ops (section_present, max_chars, min_chars) constrain how an answer
-    is formatted. They are trivially satisfiable by an optimizer — adding a
-    heading scores 1.0 without the answer improving at all.
+  * *shape* ops (section_present, section_contains, max_chars, min_chars)
+    constrain how an answer is formatted. They are trivially satisfiable by an
+    optimizer — adding a heading scores 1.0 without the answer improving at all.
   * *outcome* ops (contains, not_contains, no_refusal, regex, tool_called)
     constrain what the answer actually does.
 
@@ -47,6 +48,21 @@ def _section_present(response: str, name: str) -> bool:
     # also accept "Name:" style label at line start
     label = re.compile(r"(?im)^\s*%s\s*:" % re.escape(name))
     return bool(label.search(response or ""))
+
+
+def _section_contains(response: str, name: str) -> bool:
+    """Whether an ATX Markdown heading contains ``name`` literally.
+
+    Unlike the legacy ``section_present`` check, this opt-in operator permits
+    text before and after the requested name, such as numbering, translations,
+    or subtitles. Only ATX heading lines with one to six markers and up to three
+    leading spaces are inspected, so body text and other Markdown constructs do
+    not satisfy the check. ``casefold`` gives literal, Unicode-aware,
+    case-insensitive matching without interpreting regex metacharacters.
+    """
+    needle = name.casefold()
+    heading = re.compile(r"(?m)^ {0,3}#{1,6}(?:[ \t]+|$)([^\n]*)$")
+    return any(needle in match.group(1).casefold() for match in heading.finditer(response or ""))
 
 
 _REFUSAL_PREFIXES = (
@@ -94,6 +110,8 @@ def _check(op: str, arg: Any, response: str,
     r = response or ""
     if op == "section_present":
         return _section_present(r, str(arg)), ""
+    if op == "section_contains":
+        return _section_contains(r, str(arg)), ""
     if op == "regex":
         try:
             return bool(re.search(str(arg), r)), ""
@@ -123,13 +141,15 @@ def _check(op: str, arg: Any, response: str,
 
 
 KNOWN_OPS = frozenset({
-    "section_present", "regex", "max_chars", "min_chars", "contains",
-    "not_contains", "no_refusal", "tool_called",
+    "section_present", "section_contains", "regex", "max_chars", "min_chars",
+    "contains", "not_contains", "no_refusal", "tool_called",
 })
 
 # Ops that only constrain formatting. An optimizer satisfies these by editing
 # the output template, which is why a judge made solely of them is gameable.
-SHAPE_OPS = frozenset({"section_present", "max_chars", "min_chars"})
+SHAPE_OPS = frozenset({
+    "section_present", "section_contains", "max_chars", "min_chars",
+})
 
 
 def is_shape_only(judge: Any) -> bool:
@@ -197,7 +217,10 @@ def validate_checks(judge: Any) -> Tuple[List[str], List[str]]:
                 f"check #{i} op must be a string, got {type(op).__name__}"
             )
             continue
-        if op in {"regex", "section_present", "contains", "tool_called", "not_contains"} and (
+        if op in {
+            "regex", "section_present", "section_contains", "contains",
+            "tool_called", "not_contains",
+        } and (
             arg is None or not str(arg).strip()
         ):
             errors.append(f"check #{i} {op} needs a non-empty arg")

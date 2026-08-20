@@ -48,7 +48,8 @@ For each task return:
      Formatting checks are available but weak, because an assistant can satisfy
      them by reformatting without answering any better. Use them only alongside
      an outcome check, never alone:
-        {"op":"section_present","arg":"<heading text>"}
+        {"op":"section_present","arg":"<strict heading text>"}
+        {"op":"section_contains","arg":"<literal text anywhere in an ATX heading>"}
         {"op":"max_chars","arg":<int>}
         {"op":"min_chars","arg":<int>}
      Only include checks you are confident a GOOD answer must satisfy.

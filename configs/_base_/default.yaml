@@ -10,15 +10,14 @@ model:
   reasoning_effort: medium
   rewrite_reasoning_effort: ""
   rewrite_max_completion_tokens: 64000
-  codex_exec_path: codex
-  codex_exec_sandbox: workspace-write
+  codex_exec_path: ""       # blank preserves CODEX_EXEC_PATH or the built-in default
+  codex_exec_sandbox: ""    # blank preserves CODEX_EXEC_SANDBOX or workspace-write
   codex_exec_profile: ""
-  codex_exec_full_auto: false
-  codex_exec_reasoning_effort: none
-  codex_exec_use_sdk: auto
-  codex_exec_network_access: false
-  codex_exec_web_search: false
-  codex_exec_approval_policy: never
+  codex_exec_reasoning_effort: ""
+  codex_exec_use_sdk: null
+  codex_exec_network_access: null
+  codex_exec_web_search: null
+  codex_exec_approval_policy: ""
   claude_code_exec_path: claude
   claude_code_exec_profile: ""
   claude_code_exec_use_sdk: auto
@@ -55,8 +54,17 @@ model:
   target_azure_openai_ad_scope: "https://cognitiveservices.azure.com/.default"
   target_azure_openai_managed_identity_client_id: ""
 
+  # Qwen backend settings (qwen_chat roles). `chat_template_kwargs` is a
+  # vLLM/SGLang extension that OpenAI/Azure reject, so the wire policy is
+  # explicit: server_default omits the key (safe default), enabled/disabled
+  # send it. Pin "disabled" to reproduce the published non-thinking numbers.
+  qwen_chat_thinking_mode: ""            # server_default (default) | enabled | disabled
+  optimizer_qwen_chat_thinking_mode: ""  # per-role override
+  target_qwen_chat_thinking_mode: ""     # per-role override
+
   # MiniMax backend settings (minimax_chat target)
-  minimax_base_url: ""          # https://api.minimax.io/v1 if blank
+  minimax_region: ""            # global_en (default) or cn_zh; selects the base URL
+  minimax_base_url: ""          # region base URL if blank
   minimax_api_key: ""
   minimax_model: "MiniMax-M2.7"
   minimax_temperature: "0.7"
