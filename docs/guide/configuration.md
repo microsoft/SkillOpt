@@ -41,7 +41,7 @@ model:
 | `openai_chat` | ✓ | ✓ | Azure OpenAI, or its explicit compatibility auth mode |
 | `openai_compatible` | ✓ | ✓ | Generic OpenAI Chat Completions endpoint |
 | `claude_chat` | ✓ | ✓ | Claude Code CLI (`claude -p`) |
-| `qwen_chat` | ✓ | ✓ | Qwen served through an OpenAI-compatible local endpoint |
+| `qwen_chat` | ✓ | ✓ | Qwen served through an OpenAI-compatible endpoint (self-hosted vLLM/SGLang or a hosted gateway) |
 | `minimax_chat` | ✓ | ✓ | MiniMax API |
 | `copilot_chat` | ✓ | ✓ | GitHub Copilot CLI (`copilot -p`); alias `copilot` |
 | `codex_exec` | — | ✓ | Codex CLI execution harness |
@@ -204,7 +204,8 @@ Model credentials are loaded from environment variables:
 | `CURSOR_EXEC_PATH` | `cursor_exec` | Optional path to `cursor-agent`; defaults to `cursor-agent` |
 | `CURSOR_EXEC_SANDBOX` | `cursor_exec` | Cursor sandbox mode: `enabled` (default) or `disabled` |
 | `CURSOR_API_KEY` | `cursor_exec` | Optional authentication method understood directly by Cursor Agent |
-| `QWEN_CHAT_BASE_URL` | `qwen_chat` | Local Qwen/vLLM endpoint |
+| `QWEN_CHAT_BASE_URL` | `qwen_chat` | OpenAI-compatible Qwen endpoint: self-hosted vLLM/SGLang or a hosted gateway |
+| `QWEN_CHAT_THINKING_MODE` | `qwen_chat` | `server_default` (default; omit `chat_template_kwargs`), `enabled`, or `disabled`; per-role `OPTIMIZER_`/`TARGET_` variants take precedence |
 | `QWEN_CHAT_MODEL` | `qwen_chat` | Served model name for direct library use; train/eval YAML role models take precedence |
 | `MINIMAX_REGION` | `minimax_chat` | Service region: `global_en` (default) or `cn_zh`; selects the base URL |
 | `MINIMAX_BASE_URL` | `minimax_chat` | MiniMax-compatible base URL; overrides the region default |

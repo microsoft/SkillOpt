@@ -61,12 +61,42 @@ Every shared key also has an `optimizer_azure_openai_*` and
 defaults to `claude` and can be overridden with `CLAUDE_CLI_BIN`.
 `ANTHROPIC_API_KEY` is one authentication option understood by the CLI.
 
+### Qwen thinking mode
+
+`qwen_chat` speaks the OpenAI chat-completions protocol, so it reaches both
+self-hosted servers (vLLM, SGLang) and hosted OpenAI-compatible gateways.
+`chat_template_kwargs` is a vLLM/SGLang extension: OpenAI, Azure OpenAI, and
+strict gateways reject the unknown body field with HTTP 400, and non-Qwen vLLM
+models served with it may emit `<think>` output without an `<answer>` tag.
+Because the correct wire policy therefore depends on the serving stack rather
+than on a boolean preference, it is an explicit three-state setting:
+
+| `thinking_mode` | On the wire |
+|---|---|
+| `server_default` (default) | `chat_template_kwargs` is **not sent**; the server's chat template decides |
+| `enabled` | sends `chat_template_kwargs: {"enable_thinking": true}` |
+| `disabled` | sends `chat_template_kwargs: {"enable_thinking": false}` |
+
+`server_default` is the portable default and works against any
+OpenAI-compatible endpoint, but Qwen3 chat templates enable thinking by
+default, so the outcome depends on the serving stack and template version. The
+backend warns once per role when a request is sent under `server_default`. For
+reproducible runs pin `enabled` or `disabled`; the resolved per-role mode is
+recorded in the run's `config.json` under `resolved_qwen_thinking_modes`.
+
+The legacy `model.qwen_chat_enable_thinking` boolean keeps its historical
+meaning exactly — `true` sends `enable_thinking: true`, `false` omits the field
+(it never sent an explicit `false`) — so existing configs are unaffected.
+Setting both keys to conflicting values raises an error rather than picking a
+winner. Prefer `thinking_mode`; use `disabled` when you need the field sent.
+
 ### Qwen, MiniMax, and Exec Backends
 
 | Parameter family | Description |
 |---|---|
-| `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, and `enable_thinking` |
-| `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides |
+| `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, `thinking_mode`, and the legacy `enable_thinking` |
+| `model.qwen_chat_thinking_mode` | Wire policy for `chat_template_kwargs.enable_thinking`: `server_default` (default; omit the field), `enabled`, or `disabled`. See [Qwen thinking mode](#qwen-thinking-mode) |
+| `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides, including `*_qwen_chat_thinking_mode` |
 | `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
 | `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
