@@ -365,6 +365,28 @@ def _safe_live_path(path: object) -> str:
     return candidate
 
 
+def _live_target_within_roots(live: str, roots: Iterable[str]) -> bool:
+    """Return True when ``live`` resolves inside one of ``roots``.
+
+    ``_safe_live_path`` only proves a target is absolute, traversal-free and
+    ``*.md``; it accepts any such path on the machine. Containment is a separate
+    question and the manifest is not a trust boundary -- a tampered
+    ``live_skill_path`` with self-consistent pins otherwise redirects an adopt
+    onto an arbitrary file. Callers pass the roots recorded when the night was
+    staged and must run this AFTER the existing ``realpath(live) == live``
+    identity check, so a symlinked ancestor cannot make an outside target look
+    contained.
+    """
+    real_live = os.path.realpath(live)
+    for root in roots:
+        if not isinstance(root, str) or not root.strip():
+            continue
+        real_root = os.path.realpath(os.path.abspath(os.path.expanduser(root)))
+        if _path_is_within(real_live, real_root):
+            return True
+    return False
+
+
 def proposal_filename(skill_name: str) -> str:
     """Staged filename for one skill's proposal (unique per skill name)."""
     return f"proposed_SKILL.{skill_name}.md"
@@ -950,6 +972,7 @@ def write_staging(
     report_md: str,
     out_dir: str = "",
     skill_proposals: Iterable[SkillProposal] = (),
+    skill_roots: Iterable[str] = (),
 ) -> str:
     """Write proposals + report into staging/<ts>/ and return that path.
 
@@ -1031,6 +1054,24 @@ def write_staging(
     }
     if skill_rows:
         manifest["skills"] = skill_rows
+        # The roots the fan-out actually resolved from. Recorded so adoption can
+        # re-check containment instead of trusting each row's live path.
+        recorded_roots = [
+            os.path.abspath(os.path.expanduser(str(root)))
+            for root in skill_roots
+            if isinstance(root, str) and str(root).strip()
+        ]
+        if not recorded_roots:
+            # Low-level callers may not know the search roots. Every live target
+            # is <root>/<name>/SKILL.md, so the root each resolved path sits in
+            # is derivable here -- at stage time, from paths we just resolved
+            # ourselves, never from the manifest we are about to trust later.
+            recorded_roots = [
+                os.path.dirname(os.path.dirname(os.path.abspath(str(row["live_skill_path"]))))
+                for row in skill_rows
+                if str(row.get("live_skill_path") or "").strip()
+            ]
+        manifest["skill_roots"] = list(dict.fromkeys(recorded_roots))
     if legacy:
         manifest["legacy"] = legacy
     artifacts: List[tuple[str, str]] = [
@@ -1237,6 +1278,32 @@ def staged_skills(staging_dir: str) -> List[Dict[str, Any]]:
     return rows
 
 
+def staged_skill_roots(staging_dir: str) -> List[str]:
+    """The skills roots recorded when this night was staged."""
+    manifest_path = os.path.join(staging_dir, "manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise StagingError(f"cannot read staging manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise StagingError("staging manifest must be a JSON object")
+    roots = manifest.get("skill_roots")
+    if not isinstance(roots, list) or not roots:
+        raise StagingError(
+            "staging manifest is missing 'skill_roots'; it was written by an older "
+            "version that could not confine adoption. Discard and restage this night."
+        )
+    out: List[str] = []
+    for root in roots:
+        if not isinstance(root, str) or not root.strip():
+            raise StagingError("staging manifest 'skill_roots' must be non-empty strings")
+        if not os.path.isabs(root):
+            raise StagingError(f"staging manifest 'skill_roots' entry is not absolute: {root}")
+        out.append(root)
+    return out
+
+
 def _selected_rows(
     rows: Sequence[Dict[str, Any]], skill_names: Optional[Sequence[str]]
 ) -> List[Dict[str, Any]]:
@@ -1385,7 +1452,12 @@ def _adopt_target_ok(
         )
 
 
-def _adopt_live_target_ok(name: str, live: str, expected_realpath: str) -> None:
+def _adopt_live_target_ok(
+    name: str,
+    live: str,
+    expected_realpath: str,
+    roots: Iterable[str] = (),
+) -> None:
     _adopt_target_ok(
         repr(name),
         live,
@@ -1396,6 +1468,13 @@ def _adopt_live_target_ok(name: str, live: str, expected_realpath: str) -> None:
     if _filesystem_key(os.path.basename(parent)) != _filesystem_key(name):
         raise StagingError(
             f"live skill path for {name!r} is not {name}/SKILL.md: {live}"
+        )
+    # Shape is not location. Run this only after ``_adopt_target_ok`` has proved
+    # ``realpath(live) == live``, so a symlinked ancestor cannot fake containment.
+    if roots and not _live_target_within_roots(live, roots):
+        raise StagingError(
+            f"live skill path for {name!r} is outside the skills roots recorded "
+            f"when this night was staged: {live}"
         )
 
 
@@ -2628,6 +2707,7 @@ def adopt_skills(
     initial_rows = _selected_rows(initial_all_rows, skill_names)
     if not initial_rows:
         return []
+    skill_roots = staged_skill_roots(staging_dir)
     initial_live_paths: List[str] = []
     for row in initial_rows:
         live = _safe_live_path(row.get("live_skill_path"))
@@ -2680,7 +2760,7 @@ def adopt_skills(
                     f"staged skill {name!r} is missing safe live baseline pins; "
                     "discard and restage this night"
                 )
-            _adopt_live_target_ok(name, live, expected_realpath)
+            _adopt_live_target_ok(name, live, expected_realpath, skill_roots)
 
             expected_file = proposal_filename(name)
             if row.get("proposed_file") != expected_file:

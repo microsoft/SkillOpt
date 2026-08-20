@@ -79,6 +79,79 @@ class TwoSkillNight:
         )
 
 
+class TestAdoptionIsConfinedToTheStagedRoots(unittest.TestCase):
+    """A manifest is data, not a trust boundary.
+
+    ``_safe_live_path`` only proves a target is absolute, traversal-free and
+    ``*.md``; it accepts any such path on the machine. Adoption must therefore
+    re-check that each live target still sits under a skills root recorded when
+    the night was staged, or a tampered ``live_skill_path`` with self-consistent
+    pins redirects the write onto an arbitrary file.
+    """
+
+    def _retarget(self, staging, skill_name, new_live):
+        manifest_path = os.path.join(staging, "manifest.json")
+        with open(manifest_path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        for row in manifest["skills"]:
+            if row["skill_name"] == skill_name:
+                row["live_skill_path"] = new_live
+                row["live_realpath"] = new_live
+                if row.get("live_sha256"):
+                    if os.path.exists(new_live):
+                        with open(new_live, "rb") as h:
+                            row["live_sha256"] = hashlib.sha256(h.read()).hexdigest()
+                    else:
+                        row["live_sha256"] = ""
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+
+    def test_manifest_retargeted_onto_an_outside_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = TwoSkillNight(tmp)
+            outside = os.path.join(tmp, "outside", "alpha", "SKILL.md")
+            os.makedirs(os.path.dirname(outside), exist_ok=True)
+            _write(outside, "# victim\n")
+            self._retarget(night.staging, "alpha", outside)
+            with self.assertRaises(StagingError) as ctx:
+                adopt_skills(night.staging, ["alpha"])
+            self.assertIn("outside the skills roots", str(ctx.exception))
+            # Fails closed: the victim file is untouched.
+            with open(outside, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "# victim\n")
+
+    def test_manifest_retargeted_to_create_a_new_outside_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = TwoSkillNight(tmp)
+            outside_dir = os.path.join(tmp, "outside", "alpha")
+            os.makedirs(outside_dir, exist_ok=True)
+            outside = os.path.join(outside_dir, "SKILL.md")
+            self._retarget(night.staging, "alpha", outside)
+            with self.assertRaises(StagingError):
+                adopt_skills(night.staging, ["alpha"])
+            self.assertFalse(os.path.exists(outside))
+
+    def test_a_manifest_without_recorded_roots_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = TwoSkillNight(tmp)
+            manifest_path = os.path.join(night.staging, "manifest.json")
+            with open(manifest_path, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            del manifest["skill_roots"]
+            with open(manifest_path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle)
+            with self.assertRaises(StagingError) as ctx:
+                adopt_skills(night.staging, ["alpha"])
+            self.assertIn("skill_roots", str(ctx.exception))
+
+    def test_the_ordinary_in_root_adoption_still_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            night = TwoSkillNight(tmp)
+            adopt_skills(night.staging, ["alpha", "beta"])
+            with open(night.alpha_live, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "# alpha v2\n")
+
+
 class TestStagedSkills(unittest.TestCase):
     def test_rows_are_readable_from_the_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
