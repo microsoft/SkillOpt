@@ -78,6 +78,12 @@ from skillopt.model import (
 )
 from skillopt.model.common import normalize_backend_name
 from skillopt.utils import compute_score, skill_hash
+from skillopt.memory.trainer_hooks import (
+    maybe_init_mem0,
+    hook_pre_reflect,
+    hook_post_evaluate,
+    hook_post_reflect,
+)
 
 
 # ── Skill-aware reflection: appendix flush ───────────────────────────────────
@@ -334,6 +340,7 @@ _SECRET_KEYS = {
     "azure_api_key",
     "api_key",
     "openai_api_key",
+    "mem0_api_key",
 }
 
 
@@ -1095,6 +1102,8 @@ class ReflACTTrainer:
         # ── Training loop ────────────────────────────────────────────────
         t_loop_start = time.time()
 
+        memory = maybe_init_mem0(cfg)
+
         if resume_from > total_steps:
             print(f"\n  [skip] all {total_steps} steps complete — jumping to evaluation")
 
@@ -1211,11 +1220,18 @@ class ReflACTTrainer:
                     # Build step context from buffer
                     step_buffer_context = _format_step_buffer(step_buffer)
 
+                    # Memory read: relevant history for THIS reflection only.
+                    # Kept in a separate name so the LR decision and rewrite
+                    # prompts below continue to see the unaugmented context.
+                    reflect_context = hook_pre_reflect(
+                        memory, current_skill, step_buffer_context,
+                    )
+
                     raw_patches = adapter.reflect(
                         rollout_results, current_skill, batch_dir,
                         prediction_dir=pred_dir, patches_dir=patches_dir,
                         random_seed=batch_seed,
-                        step_buffer_context=step_buffer_context,
+                        step_buffer_context=reflect_context,
                         meta_skill_context=active_meta_skill,
                     )
                     failure_patches, success_patches = _normalise_patches(
@@ -1256,6 +1272,11 @@ class ReflACTTrainer:
                 step_rec["accumulation_batches"] = accum_rollout_stats
                 step_rec["timing"]["rollout_s"] = round(total_rollout_time, 1)
                 step_rec["timing"]["reflect_s"] = round(total_reflect_time, 1)
+
+                hook_post_reflect(
+                    memory, epoch, global_step, all_raw_patches,
+                    scores={"hard": agg_hard, "soft": agg_soft},
+                )
 
                 n_total_patches = len(all_failure_patches) + len(all_success_patches)
                 step_rec["n_patches"] = n_total_patches
@@ -1574,6 +1595,10 @@ class ReflACTTrainer:
                     gate.action == "force_accept" and best_step == global_step
                 ):
                     best_origin = current_origin
+
+                hook_post_evaluate(
+                    memory, epoch, global_step, current_skill, current_score, cfg,
+                )
 
                 if use_skill_aware:
                     current_skill = _flush_skill_aware_appendix(
@@ -2465,5 +2490,11 @@ class ReflACTTrainer:
                 f"completion={t['completion_tokens']:,} "
                 f"calls={t['calls']})"
             )
+
+        # Release the memory worker thread. SkillMemory also registers an
+        # atexit hook, so an aborted run is covered too; this is the clean
+        # path so a long-lived process does not hold the thread until exit.
+        if memory is not None:
+            memory.close()
 
         return summary
