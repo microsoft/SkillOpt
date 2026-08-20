@@ -46,6 +46,10 @@ def base_url_for_region(region: str | None) -> str:
 
 
 REGION = normalize_region(os.environ.get("MINIMAX_REGION"))
+# An explicit base URL (a proxy or a private gateway) must survive a later
+# region selection, so remember whether the current value was chosen by the
+# user or merely derived from the region default.
+_BASE_URL_EXPLICIT = bool(os.environ.get("MINIMAX_BASE_URL", "").strip())
 BASE_URL = os.environ.get("MINIMAX_BASE_URL", "").strip() or base_url_for_region(REGION)
 API_KEY = os.environ.get("MINIMAX_API_KEY", "")
 TIMEOUT_SECONDS = float(os.environ.get("MINIMAX_TIMEOUT_SECONDS", "300") or 300)
@@ -215,15 +219,20 @@ def configure_minimax_chat(
     enable_thinking: bool | str | None = None,
 ) -> None:
     global BASE_URL, API_KEY, TEMPERATURE, TIMEOUT_SECONDS, MAX_TOKENS, ENABLE_THINKING, REGION
+    global _BASE_URL_EXPLICIT
     with _config_lock:
+        if base_url is not None and str(base_url).strip():
+            BASE_URL = str(base_url).strip()
+            _BASE_URL_EXPLICIT = True
+            os.environ["MINIMAX_BASE_URL"] = BASE_URL
         if region is not None:
             REGION = normalize_region(region)
             os.environ["MINIMAX_REGION"] = REGION
-            BASE_URL = base_url_for_region(REGION)
-            os.environ["MINIMAX_BASE_URL"] = BASE_URL
-        if base_url is not None:
-            BASE_URL = str(base_url).strip() or BASE_URL
-            os.environ["MINIMAX_BASE_URL"] = BASE_URL
+            # Only fill in the region default when no explicit base URL is in
+            # play; otherwise a configured proxy would be silently discarded.
+            if not _BASE_URL_EXPLICIT:
+                BASE_URL = base_url_for_region(REGION)
+                os.environ["MINIMAX_BASE_URL"] = BASE_URL
         if api_key is not None:
             API_KEY = str(api_key).strip()
             os.environ["MINIMAX_API_KEY"] = API_KEY

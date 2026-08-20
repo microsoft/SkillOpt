@@ -919,10 +919,83 @@ def test_default_database_honors_windows_appdata(monkeypatch, tmp_path: Path) ->
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("OPENCODE_DB", raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     monkeypatch.delenv("APPDATA", raising=False)
 
     assert default_opencode_db() == os.path.abspath(local_app_data / "opencode" / "opencode.db")
+
+
+def test_default_database_honors_windows_roaming_appdata(monkeypatch, tmp_path: Path) -> None:
+    """A session with only APPDATA set still resolves below Roaming."""
+    roaming = tmp_path / "Roaming"
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("OPENCODE_DB", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setenv("APPDATA", str(roaming))
+
+    assert default_opencode_db() == os.path.abspath(roaming / "opencode" / "opencode.db")
+
+
+def test_default_database_prefers_the_appdata_root_that_has_the_database(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Both roots are set (the usual Windows session) but only Roaming has the db."""
+    local_app_data = tmp_path / "LocalAppData"
+    roaming = tmp_path / "Roaming"
+    roaming_db = roaming / "opencode" / "opencode.db"
+    roaming_db.parent.mkdir(parents=True)
+    roaming_db.write_bytes(b"")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("OPENCODE_DB", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("APPDATA", str(roaming))
+
+    assert default_opencode_db() == os.path.abspath(roaming_db)
+
+
+def test_default_database_prefers_local_appdata_when_neither_exists(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """With no database on disk the Local root stays the reported default."""
+    local_app_data = tmp_path / "LocalAppData"
+    roaming = tmp_path / "Roaming"
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("OPENCODE_DB", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("APPDATA", str(roaming))
+
+    assert default_opencode_db() == os.path.abspath(
+        local_app_data / "opencode" / "opencode.db"
+    )
+
+
+def test_relative_opencode_db_resolves_below_the_selected_windows_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A relative OPENCODE_DB follows the root that actually holds the database."""
+    local_app_data = tmp_path / "LocalAppData"
+    roaming = tmp_path / "Roaming"
+    roaming_db = roaming / "opencode" / "opencode.db"
+    roaming_db.parent.mkdir(parents=True)
+    roaming_db.write_bytes(b"")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("APPDATA", str(roaming))
+    monkeypatch.setenv("OPENCODE_DB", "nightly.db")
+
+    assert default_opencode_db() == os.path.abspath(
+        roaming / "opencode" / "nightly.db"
+    )
 
 
 def test_default_database_falls_back_to_home_local_share(monkeypatch, tmp_path: Path) -> None:

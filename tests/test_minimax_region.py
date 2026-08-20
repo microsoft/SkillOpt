@@ -14,7 +14,7 @@ from skillopt.model import minimax_backend
 _GLOBAL_BASE_URL = "https://api.minimax.io/v1"
 _CN_BASE_URL = "https://api.minimaxi.com/v1"
 _ENV_KEYS = ("MINIMAX_REGION", "MINIMAX_BASE_URL")
-_GLOBAL_KEYS = ("REGION", "BASE_URL")
+_GLOBAL_KEYS = ("REGION", "BASE_URL", "_BASE_URL_EXPLICIT")
 
 
 @pytest.fixture(autouse=True)
@@ -116,3 +116,41 @@ def test_configure_rejects_unsupported_region() -> None:
     with pytest.raises(ValueError, match="Unsupported MiniMax region"):
         minimax_backend.configure_minimax_chat(region="apac")
     assert minimax_backend.get_base_url() == before
+
+
+def test_env_base_url_survives_a_later_region_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proxy set via MINIMAX_BASE_URL is not clobbered by model.minimax_region."""
+    module = _reload_with_env(
+        monkeypatch,
+        MINIMAX_REGION=None,
+        MINIMAX_BASE_URL="https://proxy.internal/v1",
+    )
+    try:
+        module.configure_minimax_chat(region="cn_zh", base_url=None)
+        assert module.get_region() == "cn_zh"
+        assert module.get_base_url() == "https://proxy.internal/v1"
+        assert os.environ["MINIMAX_BASE_URL"] == "https://proxy.internal/v1"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(minimax_backend)
+
+
+def test_explicit_base_url_survives_a_later_region_only_call() -> None:
+    """Once configured explicitly, the base URL outlives subsequent region switches."""
+    minimax_backend.configure_minimax_chat(base_url="https://proxy.internal/v1")
+    minimax_backend.configure_minimax_chat(region="cn_zh")
+    assert minimax_backend.get_region() == "cn_zh"
+    assert minimax_backend.get_base_url() == "https://proxy.internal/v1"
+
+    minimax_backend.configure_minimax_chat(region="global_en")
+    assert minimax_backend.get_base_url() == "https://proxy.internal/v1"
+
+
+def test_region_still_applies_when_base_url_is_blank() -> None:
+    """A blank base_url (the usual `cfg.get(...) or None`) keeps region selection working."""
+    minimax_backend.configure_minimax_chat(region="cn_zh", base_url=None)
+    assert minimax_backend.get_base_url() == _CN_BASE_URL
+    minimax_backend.configure_minimax_chat(region="global_en", base_url="")
+    assert minimax_backend.get_base_url() == _GLOBAL_BASE_URL
