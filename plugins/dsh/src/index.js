@@ -8,8 +8,17 @@
 
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'skillopt'
+
+// Plugin directory (absolute) — used to resolve the bundled engine script so
+// it works regardless of the dsh process cwd.
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url)) + '/..'
+
+// Exported for the canary test (scripts/canary.mjs).
+export { buildArgv, quoteArgv }
 
 // Wait for the tool registry and the shell executor before applying.
 export const inject = ['tools', 'shell']
@@ -21,10 +30,11 @@ export const inject = ['tools', 'shell']
 export const Config = Schema.object({
   pythonCmd: Schema.string()
     .default('python')
-    .description('Python interpreter used to run the skillopt_sleep engine'),
+    .description('Python interpreter used to run the engine bootstrap (scripts/sleep.py)'),
   module: Schema.string()
-    .default('skillopt_sleep')
-    .description('Python module that implements the skillopt-sleep CLI'),
+    .description('Override: run `python -m <module>` directly instead of the bootstrap script'),
+  engineScript: Schema.string()
+    .description('Override: path to the engine bootstrap script (default: scripts/sleep.py)'),
   project: Schema.string()
     .description('Default project directory for sleep cycles'),
   scope: Schema.union(['all', 'invoked']).description('Harvest scope'),
@@ -41,6 +51,9 @@ export const Config = Schema.object({
   editBudget: Schema.number().description('Max bounded edits per cycle (default 4)'),
   preferences: Schema.string().description('House rules injected into the reflection prior'),
   jsonOutput: Schema.boolean().default(false).description('Emit machine-readable JSON where supported'),
+  autoAdopt: Schema.boolean()
+    .default(false)
+    .description('OPERATOR-ONLY: auto-adopt a passed proposal without asking. The model cannot toggle this; set it in cordis.yml.'),
   timeoutMs: Schema.number()
     .default(600_000)
     .description('Per-call engine timeout in milliseconds (default 10 min)'),
@@ -50,34 +63,68 @@ export const Config = Schema.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildCommand(config, action, explicit = {}, extras = []) {
-  const python = config.pythonCmd || 'python'
-  const module = config.module || 'skillopt_sleep'
-  const parts = [python, '-m', module, action]
+// Quote one argv element for a POSIX shell (bash). Single quotes are literal;
+// an embedded single quote is expressed as '\'' (close quote, escaped quote,
+// reopen quote) — the only portable POSIX spelling. PowerShell is not a target
+// here: dsh's ctx.shell executes via `bash -c` (LocalBashExecutor), so the
+// quoting only needs to be bash-correct.
+function q(value) {
+  const s = String(value)
+  return `'${s.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * Build the argv array for the engine with config defaults and per-call
+ * overrides. Returns an ARRAY (not a joined string); execute() quotes each
+ * element and lets shell.resolve() apply workdir/output-cap/sandbox defaults.
+ *
+ * The engine is invoked through scripts/sleep.py, which mirrors the official
+ * SkillOpt runner: it resolves a source checkout (repo root), picks a
+ * Python >= 3.10, and falls back to the `skillopt-sleep` CLI or an installed
+ * package. `config.module` still works as a direct `python -m <module>` escape
+ * hatch for users who prefer it.
+ */
+function buildArgv(config, action, explicit = {}, extras = []) {
+  const parts = [config.pythonCmd || 'python']
+  if (config.module) {
+    // explicit escape hatch: python -m <module>
+    parts.push('-m', config.module)
+  } else {
+    // default: the bundled bootstrap mirrors the official runner; resolve it
+    // absolutely so it works no matter what cwd dsh was started from.
+    parts.push(config.engineScript || join(PLUGIN_DIR, 'scripts', 'sleep.py'))
+  }
+  parts.push(action)
   const push = (flag, value) => {
     if (value !== undefined && value !== null && value !== '') parts.push(flag, String(value))
   }
-  if (explicit.project !== undefined) push('--project', explicit.project)
+  const has = (v) => v !== undefined && v !== null && v !== ''
+  if (has(explicit.project)) push('--project', explicit.project)
   else push('--project', config.project)
-  if (explicit.scope !== undefined) push('--scope', explicit.scope)
+  if (has(explicit.scope)) push('--scope', explicit.scope)
   else push('--scope', config.scope)
-  if (explicit.source !== undefined) push('--source', explicit.source)
+  if (has(explicit.source)) push('--source', explicit.source)
   else push('--source', config.source)
-  if (explicit.backend !== undefined) push('--backend', explicit.backend)
+  if (has(explicit.backend)) push('--backend', explicit.backend)
   else push('--backend', config.backend)
-  if (explicit.model !== undefined) push('--model', explicit.model)
+  if (has(explicit.model)) push('--model', explicit.model)
   else push('--model', config.model)
-  if (explicit.maxTasks !== undefined) push('--max-tasks', explicit.maxTasks)
+  if (has(explicit.maxTasks)) push('--max-tasks', explicit.maxTasks)
   else push('--max-tasks', config.maxTasks)
-  if (explicit.maxSessions !== undefined) push('--max-sessions', explicit.maxSessions)
+  if (has(explicit.maxSessions)) push('--max-sessions', explicit.maxSessions)
   else push('--max-sessions', config.maxSessions)
-  if (explicit.editBudget !== undefined) push('--edit-budget', explicit.editBudget)
+  if (has(explicit.editBudget)) push('--edit-budget', explicit.editBudget)
   else push('--edit-budget', config.editBudget)
-  if (explicit.preferences !== undefined) push('--preferences', explicit.preferences)
+  if (has(explicit.preferences)) push('--preferences', explicit.preferences)
   else push('--preferences', config.preferences)
   if (config.jsonOutput || explicit.json) parts.push('--json')
   parts.push(...extras)
-  return parts.join(' ')
+  return parts
+}
+
+/** Join argv with safe quoting for the platform shell. */
+function quoteArgv(argv) {
+  return argv.map(q).join(' ')
 }
 
 function renderOutput(_args, value) {
@@ -100,7 +147,7 @@ export function apply(ctx, config = {}) {
         project: { type: 'string', description: 'Project directory (defaults to config.project or cwd)' },
         json: { type: 'boolean', description: 'Emit machine-readable JSON' },
       },
-      build: (a) => buildCommand(config, 'status', a),
+      build: (a) => buildArgv(config, 'status', a),
     },
     {
       name: 'skillopt_dry_run',
@@ -114,7 +161,7 @@ export function apply(ctx, config = {}) {
         maxTasks: { type: 'number', description: 'Cap mined tasks (default 40)' },
         progress: { type: 'boolean', description: 'Print phase progress to stderr' },
       },
-      build: (a) => buildCommand(config, 'dry-run', a, a.progress ? ['--progress'] : []),
+      build: (a) => buildArgv(config, 'dry-run', a, a.progress ? ['--progress'] : []),
     },
     {
       name: 'skillopt_run',
@@ -125,14 +172,14 @@ export function apply(ctx, config = {}) {
         backend: { type: 'string', description: 'Backend for model calls' },
         source: { type: 'string', description: 'Transcript source' },
         preferences: { type: 'string', description: 'House rules for the reflection prior' },
-        autoAdopt: { type: 'boolean', description: 'Auto-adopt if the gate passes' },
         progress: { type: 'boolean', description: 'Print phase progress to stderr' },
       },
       build: (a) => {
         const extra = []
-        if (a.autoAdopt) extra.push('--auto-adopt')
+        // auto-adopt is OPERATOR-ONLY (config.autoAdopt); the model cannot set it.
+        if (config.autoAdopt) extra.push('--auto-adopt')
         if (a.progress) extra.push('--progress')
-        return buildCommand(config, 'run', a, extra)
+        return buildArgv(config, 'run', a, extra)
       },
     },
     {
@@ -142,7 +189,7 @@ export function apply(ctx, config = {}) {
       parameters: {
         project: { type: 'string', description: 'Project directory' },
       },
-      build: (a) => buildCommand(config, 'adopt', a),
+      build: (a) => buildArgv(config, 'adopt', a),
     },
     {
       name: 'skillopt_harvest',
@@ -157,7 +204,7 @@ export function apply(ctx, config = {}) {
       build: (a) => {
         const extra = []
         if (a.output) extra.push('--output', a.output)
-        return buildCommand(config, 'harvest', a, extra)
+        return buildArgv(config, 'harvest', a, extra)
       },
     },
     {
@@ -174,7 +221,7 @@ export function apply(ctx, config = {}) {
         const extra = []
         if (a.hour !== undefined) extra.push('--hour', String(a.hour))
         if (a.minute !== undefined) extra.push('--minute', String(a.minute))
-        return buildCommand(config, 'schedule', a, extra)
+        return buildArgv(config, 'schedule', a, extra)
       },
     },
     {
@@ -185,7 +232,7 @@ export function apply(ctx, config = {}) {
         project: { type: 'string', description: 'Project directory' },
         all: { type: 'boolean', description: 'Remove every managed entry' },
       },
-      build: (a) => buildCommand(config, 'unschedule', a, a.all ? ['--all'] : []),
+      build: (a) => buildArgv(config, 'unschedule', a, a.all ? ['--all'] : []),
     },
   ]
 
@@ -197,20 +244,43 @@ export function apply(ctx, config = {}) {
         parameters: t.parameters,
         output: { schema: { type: 'string' }, render: renderOutput },
         async execute(args, exec) {
-          const command = t.build(args || {})
+          const argv = t.build(args || {})
+          // `command` must be the shell-quoted form for the platform executor;
+          // resolve() applies the executor's workdir/output-cap/sandbox defaults.
+          const request = {
+            command: quoteArgv(argv),
+            timeoutMs: config.timeoutMs,
+            signal: exec?.signal,
+          }
+          const spec = typeof shell.resolve === 'function' ? shell.resolve(request) : request
           try {
-            const result = await shell.run({
-              command,
-              timeoutMs: config.timeoutMs,
-              signal: exec?.signal,
-            })
-            const status = result?.exitCode ?? 'signal'
-            const stdout = typeof result?.stdout === 'string' ? result.stdout : ''
-            const stderr = typeof result?.stderr === 'string' ? result.stderr : ''
+            const result = await shell.run(spec)
+            // Distinguish the executor's timeout (timedOut: true, exitCode null)
+            // from an abort/kill (exitCode null, no timedOut) so the marker is
+            // honest instead of lumping both under "signal".
+            const status = result?.timedOut
+              ? 'timeout'
+              : (result?.exitCode ?? 'signal')
+            // rc.8 returns stdout/stderr as CollectedOutput { text, truncated, spillPath }
+            const fmt = (co) => {
+              if (co === undefined || co === null) return ''
+              if (typeof co === 'string') return co
+              const parts = []
+              if (co.text) parts.push(co.text)
+              if (co.truncated) {
+                parts.push(`[truncated${co.spillPath ? ` — full output at ${co.spillPath}` : ''}]`)
+              }
+              return parts.join('\n')
+            }
+            const stdout = fmt(result?.stdout)
+            const stderr = fmt(result?.stderr)
             const tail = [stdout, stderr].filter(Boolean).join('\n').trim()
+            // Do NOT slice here: fmt() already carries the executor's truncation
+            // marker + spill path when output was capped. A second slice would
+            // hide data the executor already bounded and contradict the marker.
             return [
               `[skillopt ${t.name}] exit=${status}`,
-              tail ? tail.slice(0, 60_000) : '(no output)',
+              tail ? tail : '(no output)',
             ].join('\n')
           } catch (err) {
             return `[skillopt ${t.name}] engine call failed: ${err?.message || String(err)}`

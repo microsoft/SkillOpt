@@ -14,6 +14,7 @@ PLUGIN_SKILL_MDS = {
     "claude-code": os.path.join(REPO, "plugins/claude-code/skills/skillopt-sleep/SKILL.md"),
     "codex": os.path.join(REPO, "plugins/codex/skills/skillopt-sleep/SKILL.md"),
     "cursor": os.path.join(REPO, "plugins/cursor/skills/skillopt-sleep/SKILL.md"),
+    "dsh": os.path.join(REPO, "plugins/dsh/skills/skillopt-sleep/SKILL.md"),
     "openclaw": os.path.join(REPO, "plugins/openclaw/SKILL.md"),
 }
 

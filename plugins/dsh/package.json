@@ -9,6 +9,7 @@
     "skills",
     "docs",
     "scripts",
+    "cordis.patch.yml",
     "README.md",
     "README.zh.md"
   ],
@@ -28,6 +29,9 @@
     "bundle": {
       "patch": "cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "*"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
