@@ -60,7 +60,7 @@ Add `dsh-skillopt` to the profile's bundles, or in the profile `cordis.patch.yml
 ### Local patch overlay (dev)
 
 ```bash
-pnpm dsh web --patch ./plugins/dsh/cordis.patch.yml
+dsh web --patch ./plugins/dsh/cordis.patch.yml
 ```
 
 Then ask the agent: "Use skillopt_status to check the sleep cycle state."
