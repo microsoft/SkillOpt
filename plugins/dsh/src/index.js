@@ -90,7 +90,7 @@ function q(value) {
  * package. `config.module` still works as a direct `python -m <module>` escape
  * hatch for users who prefer it.
  */
-function buildArgv(config, action, explicit = {}, extras = []) {
+function buildArgv(config, action, explicit = {}, extras = [], allowed = null) {
   const parts = [config.pythonCmd || 'python']
   if (config.module) {
     // explicit escape hatch: python -m <module>
@@ -105,25 +105,28 @@ function buildArgv(config, action, explicit = {}, extras = []) {
     if (value !== undefined && value !== null && value !== '') parts.push(flag, String(value))
   }
   const has = (v) => v !== undefined && v !== null && v !== ''
-  if (has(explicit.project)) push('--project', explicit.project)
-  else push('--project', config.project)
-  if (has(explicit.scope)) push('--scope', explicit.scope)
-  else push('--scope', config.scope)
-  if (has(explicit.source)) push('--source', explicit.source)
-  else push('--source', config.source)
-  if (has(explicit.backend)) push('--backend', explicit.backend)
-  else push('--backend', config.backend)
-  if (has(explicit.model)) push('--model', explicit.model)
-  else push('--model', config.model)
-  if (has(explicit.maxTasks)) push('--max-tasks', explicit.maxTasks)
-  else push('--max-tasks', config.maxTasks)
-  if (has(explicit.maxSessions)) push('--max-sessions', explicit.maxSessions)
-  else push('--max-sessions', config.maxSessions)
-  if (has(explicit.editBudget)) push('--edit-budget', explicit.editBudget)
-  else push('--edit-budget', config.editBudget)
-  if (has(explicit.preferences)) push('--preferences', explicit.preferences)
-  else push('--preferences', config.preferences)
-  if (config.jsonOutput || explicit.json) parts.push('--json')
+  // `allowed` is the tool's declared parameter set (null = everything, the
+  // pre-whitelist behavior). Both the model-supplied value AND the operator
+  // config default are gated on it, so a tool like skillopt_adopt (declares
+  // only `project`) never receives --backend/--model/--json/… from either
+  // source — the config default must not leak into tools that do not declare
+  // the key.
+  const permits = (key) => !allowed || allowed.includes(key)
+  const withDefault = (key, flag) => {
+    if (!permits(key)) return
+    if (has(explicit[key])) push(flag, explicit[key])
+    else push(flag, config[key])
+  }
+  withDefault('project', '--project')
+  withDefault('scope', '--scope')
+  withDefault('source', '--source')
+  withDefault('backend', '--backend')
+  withDefault('model', '--model')
+  withDefault('maxTasks', '--max-tasks')
+  withDefault('maxSessions', '--max-sessions')
+  withDefault('editBudget', '--edit-budget')
+  withDefault('preferences', '--preferences')
+  if (permits('json') && (config.jsonOutput || explicit.json)) parts.push('--json')
   parts.push(...extras)
   return parts
 }
@@ -131,6 +134,20 @@ function buildArgv(config, action, explicit = {}, extras = []) {
 /** Join argv with safe quoting for the platform shell. */
 function quoteArgv(argv) {
   return argv.map(q).join(' ')
+}
+
+// Pick exactly the parameters a tool declares. dsh's parameter schema does
+// not reject undeclared properties by default (no additionalProperties:false),
+// so without this filter the model could inject fields (backend, model, json,
+// editBudget, …) that buildArgv would forward to the engine — crossing the
+// per-tool surface and, for skillopt_adopt, the live-change boundary. Each
+// tool's build() must pass through exactly its declared keys.
+function pick(obj, keys) {
+  const out = {}
+  for (const key of keys) {
+    if (obj[key] !== undefined) out[key] = obj[key]
+  }
+  return out
 }
 
 function renderOutput(_args, value) {
@@ -153,7 +170,7 @@ export function apply(ctx, config = {}) {
         project: { type: 'string', description: 'Project directory (defaults to config.project or cwd)' },
         json: { type: 'boolean', description: 'Emit machine-readable JSON' },
       },
-      build: (a) => buildArgv(config, 'status', a),
+      build: (a) => buildArgv(config, 'status', pick(a, ['project', 'json']), [], ['project', 'json']),
     },
     {
       name: 'skillopt_dry_run',
@@ -167,7 +184,7 @@ export function apply(ctx, config = {}) {
         maxTasks: { type: 'number', description: 'Cap mined tasks (default 40)' },
         progress: { type: 'boolean', description: 'Print phase progress to stderr' },
       },
-      build: (a) => buildArgv(config, 'dry-run', a, a.progress ? ['--progress'] : []),
+      build: (a) => buildArgv(config, 'dry-run', pick(a, ['project', 'source', 'backend', 'model', 'maxTasks']), a.progress ? ['--progress'] : [], ['project', 'source', 'backend', 'model', 'maxTasks']),
     },
     {
       name: 'skillopt_run',
@@ -185,7 +202,7 @@ export function apply(ctx, config = {}) {
         // auto-adopt is OPERATOR-ONLY (config.autoAdopt); the model cannot set it.
         if (config.autoAdopt) extra.push('--auto-adopt')
         if (a.progress) extra.push('--progress')
-        return buildArgv(config, 'run', a, extra)
+        return buildArgv(config, 'run', pick(a, ['project', 'backend', 'source', 'preferences']), extra, ['project', 'backend', 'source', 'preferences'])
       },
     },
     {
@@ -195,7 +212,7 @@ export function apply(ctx, config = {}) {
       parameters: {
         project: { type: 'string', description: 'Project directory' },
       },
-      build: (a) => buildArgv(config, 'adopt', a),
+      build: (a) => buildArgv(config, 'adopt', pick(a, ['project']), [], ['project']),
     },
     {
       name: 'skillopt_harvest',
@@ -210,7 +227,7 @@ export function apply(ctx, config = {}) {
       build: (a) => {
         const extra = []
         if (a.output) extra.push('--output', a.output)
-        return buildArgv(config, 'harvest', a, extra)
+        return buildArgv(config, 'harvest', pick(a, ['project', 'source', 'maxTasks']), extra, ['project', 'source', 'maxTasks'])
       },
     },
     {
@@ -227,7 +244,7 @@ export function apply(ctx, config = {}) {
         const extra = []
         if (a.hour !== undefined) extra.push('--hour', String(a.hour))
         if (a.minute !== undefined) extra.push('--minute', String(a.minute))
-        return buildArgv(config, 'schedule', a, extra)
+        return buildArgv(config, 'schedule', pick(a, ['project', 'backend']), extra, ['project', 'backend'])
       },
     },
     {
@@ -238,7 +255,7 @@ export function apply(ctx, config = {}) {
         project: { type: 'string', description: 'Project directory' },
         all: { type: 'boolean', description: 'Remove every managed entry' },
       },
-      build: (a) => buildArgv(config, 'unschedule', a, a.all ? ['--all'] : []),
+      build: (a) => buildArgv(config, 'unschedule', pick(a, ['project']), a.all ? ['--all'] : [], ['project']),
     },
   ]
 

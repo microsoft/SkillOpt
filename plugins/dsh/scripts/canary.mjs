@@ -134,8 +134,8 @@ check('shell.resolve used', called.resolve > 0, 'execute must go through resolve
 // 4. nonzero exit: stderr surfaced with exit code
 // ---------------------------------------------------------------------------
 console.log('4. nonzero exit surfaces stderr')
-// model is a REAL parameter; a bogus model value makes the engine exit 2
-const bad = await defs['skillopt_run'].execute({ model: '--bad-model' }, {})
+// preferences is a REAL parameter of run; a bogus value makes the engine exit 2
+const bad = await defs['skillopt_run'].execute({ preferences: '--bad-model' }, {})
 check('exit code surfaced', bad.includes('exit=2'), bad.slice(0, 150))
 check('stderr text surfaced', bad.includes('unknown model'), bad.slice(0, 200))
 
@@ -204,6 +204,22 @@ apply2(ctx2, { backend: 'mock', autoAdopt: true })
 await defs2['skillopt_run'].execute({ backend: 'mock' }, {})
 const runCmd2 = cmds2.find((c) => c.includes("'run'"))
 check('operator config autoAdopt adds --auto-adopt', runCmd2 ? runCmd2.includes('--auto-adopt') : false, runCmd2 || 'no run command')
+
+// ---------------------------------------------------------------------------
+// 7b. undeclared parameters are filtered: the model cannot inject fields the
+// tool does not declare (dsh's parameter schema allows extra properties by
+// default, so the plugin's per-tool whitelist is what stops this). adopt
+// declares only `project`; backend/model/maxTasks/json must not reach argv.
+// ---------------------------------------------------------------------------
+console.log('7b. undeclared tool parameters are filtered')
+const before7b = called.commands.length
+await defs['skillopt_adopt'].execute({ project: '/tmp/p', backend: 'codex', model: 'gpt-x', maxTasks: 99, json: true }, {})
+const adoptCmd7b = called.commands.slice(before7b).find((c) => c.includes("'adopt'"))
+check('adopt keeps declared project', adoptCmd7b ? adoptCmd7b.includes("'--project'") : false, adoptCmd7b || 'no adopt command')
+check('adopt drops undeclared backend', adoptCmd7b ? !adoptCmd7b.includes("'--backend'") : true, adoptCmd7b || 'no adopt command')
+check('adopt drops undeclared model', adoptCmd7b ? !adoptCmd7b.includes("'--model'") : true)
+check('adopt drops undeclared maxTasks', adoptCmd7b ? !adoptCmd7b.includes("'--max-tasks'") : true)
+check('adopt drops undeclared json', adoptCmd7b ? !adoptCmd7b.includes("'--json'") : true)
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

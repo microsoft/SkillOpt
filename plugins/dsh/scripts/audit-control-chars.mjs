@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 const m = await import('../src/index.js')
 const { quoteArgv } = m
-const BASH = 'C:/Program Files/Git/bin/bash.exe'
+const BASH = process.env.BASH_PATH || 'C:/Program Files/Git/bin/bash.exe'
 const payloads = [
   'x\n touch /tmp/nl-pwned',
   'x\r echo PWNED',
