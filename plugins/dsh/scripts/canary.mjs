@@ -1,14 +1,17 @@
 // dsh-skillopt canary — the clean-package check the SkillOpt review asked for.
 //
 // Packs the plugin with `npm pack --dry-run`, asserts the bundle manifest is
-// complete (cordis.patch.yml present), loads the packed plugin into a mock
-// Cordis context with a fake rc.8-shaped shell (CollectedOutput objects), and
-// invokes every tool, asserting real stdout/exit/error behavior.
+// complete (cordis.patch.yml present), then ACTUALLY packs it (npm pack),
+// extracts the tarball, and loads the plugin FROM THE PACKED ARTIFACT into a
+// mock Cordis context with a fake rc.8-shaped shell (CollectedOutput objects),
+// invoking every tool and asserting real stdout/exit/error behavior. Loading
+// the extracted bundle (not the source tree) is what the review's "loads the
+// packed bundle" demands — the packed files are exactly what `files` ships.
 //
-// Run: node scripts/canary.mjs
+// Run: node scripts/canary.mjs   (requires npm + the plugin's deps resolvable)
 
 import { execSync } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -41,6 +44,30 @@ check('package.json packed', packedFiles.includes('package.json'))
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 check('dsh.bundle.patch points at packed file', packedFiles.includes(pkg.dsh?.bundle?.patch))
 check('schemastery declared as direct dependency', !!pkg.dependencies?.['@deepseek-ai/schemastery'])
+
+// ---------------------------------------------------------------------------
+// 1b. ACTUAL pack + extract: the rest of the canary runs against the packed
+// artifact (what `files` ships), not the source tree — the review asked for a
+// canary that "loads the packed bundle". npm pack --json prints the tarball
+// name; extract into a scratch dir inside root so the extracted module can
+// still resolve @deepseek-ai/* deps up the tree.
+// ---------------------------------------------------------------------------
+console.log('1b. real pack + extract (canary runs against the packed artifact)')
+const tarball = JSON.parse(execSync('npm pack --json', { cwd: root, encoding: 'utf8' }))[0].filename
+check('npm pack produced a tarball', !!tarball && existsSync(join(root, tarball)), tarball || 'no tarball')
+const scratch = join(root, '.canary-pack')
+rmSync(scratch, { recursive: true, force: true })
+mkdirSync(scratch, { recursive: true })
+execSync(`tar -xzf "${tarball}" -C "${scratch}"`, { cwd: root, encoding: 'utf8' })
+const packedRoot = join(scratch, 'package')
+check('extracted package/ contains src/index.js', existsSync(join(packedRoot, 'src/index.js')))
+check('extracted package/ contains cordis.patch.yml', existsSync(join(packedRoot, 'cordis.patch.yml')))
+check('extracted package.json matches files list', JSON.parse(readFileSync(join(packedRoot, 'package.json'), 'utf8')).name === pkg.name)
+// Never leave the tarball or scratch dir behind.
+process.on('exit', () => {
+  try { rmSync(join(root, tarball), { force: true }) } catch {}
+  try { rmSync(scratch, { recursive: true, force: true }) } catch {}
+})
 
 // ---------------------------------------------------------------------------
 // 2. load the plugin against a mock rc.8-shaped shell
@@ -115,7 +142,7 @@ ctx.shell = {
 }
 ctx.logger = { info: () => {} }
 
-const { apply } = await import(pathToFileURL(join(root, 'src/index.js')).href)
+const { apply } = await import(pathToFileURL(join(packedRoot, 'src/index.js')).href)
 apply(ctx, { backend: 'mock' })
 
 check('7 tools registered', Object.keys(defs).length === 7, `got ${Object.keys(defs).length}`)
@@ -170,7 +197,7 @@ check('spill path present', trig.includes('C:/spill/stdout.log'))
 // 6. argv quoting: spaces and metacharacters cannot break out
 // ---------------------------------------------------------------------------
 console.log('6. argv quoting is shell-safe')
-const { buildArgv, quoteArgv } = await import(pathToFileURL(join(root, 'src/index.js')).href)
+const { buildArgv, quoteArgv } = await import(pathToFileURL(join(packedRoot, 'src/index.js')).href)
 // Verify quoting directly: a preference with spaces and metacharacters must stay
 // inside one argument (single-quoted, embedded quotes doubled).
 const argv = buildArgv({}, 'run', { preferences: "never ' rm -rf /" })
@@ -189,7 +216,7 @@ await defs['skillopt_run'].execute({ autoAdopt: true, backend: 'mock' }, {})
 const runCmd = called.commands.slice(before).find((c) => c.includes("'run'"))
 check('model-supplied autoAdopt ignored', runCmd ? !runCmd.includes('--auto-adopt') : true, runCmd || 'no run command')
 // operator config enables it
-const { apply: apply2 } = await import(pathToFileURL(join(root, 'src/index.js')).href)
+const { apply: apply2 } = await import(pathToFileURL(join(packedRoot, 'src/index.js')).href)
 // re-apply with a fresh capture to check config-driven --auto-adopt
 const ctx2 = new Context()
 const defs2 = {}
