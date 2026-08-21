@@ -72,7 +72,7 @@ skillopt_schedule project=<dir> hour=3 minute=17 backend=<codex>
 | `backend` | `mock` | `mock\|claude\|codex\|copilot\|cursor\|pi\|opencode\|handoff\|azure_openai` (mock = no model calls) |
 | `source` | config | transcript source: `claude\|codex\|copilot\|cursor\|pi\|opencode\|auto` |
 | `model` | backend default | replay model override |
-| `max_tasks` | 40 | mined-task cap |
+| `maxTasks` | 40 | mined-task cap |
 | `preferences` | empty | house rules for the reflection prior (e.g. "always use async/await") |
 
 ## Configuration (cordis.yml / bundle patch)
