@@ -57,6 +57,9 @@ export const Config = Schema.object({
   timeoutMs: Schema.number()
     .default(600_000)
     .description('Per-call engine timeout in milliseconds (default 10 min)'),
+  unscheduleAll: Schema.boolean()
+    .default(false)
+    .description('OPERATOR-ONLY: allow skillopt_unschedule to remove every managed entry (--all). The model cannot set this.'),
 })
 
 // ---------------------------------------------------------------------------
@@ -148,6 +151,49 @@ function pick(obj, keys) {
     if (obj[key] !== undefined) out[key] = obj[key]
   }
   return out
+}
+
+// Value-domain guard for model-supplied path-like strings.
+//
+// argv-level quoting (quoteArgv) protects the dsh `bash -c` boundary, but the
+// engine re-interpolates these values into its OWN shell/command strings:
+// scheduler.py builds `--project "{project}"` inside a crontab line and a
+// Windows run.cmd executed by schtasks, and write_tasks_file() turns an
+// arbitrary `output` into a file write (abspath + makedirs + overwrite). A
+// model-controlled value containing `"`, `&`, `;`, `|`, `$`, backticks or
+// other shell metacharacters would break out of that splice and execute as a
+// separate command under the scheduler's shell, or overwrite an arbitrary
+// file. Legitimate paths contain letters, digits, spaces, and `- _ . / \ :`
+// only — reject everything else up front.
+const UNSAFE_PATH = /["'&;|$`<>()\[\]{}*\u0000-\u001f\u007f]/
+
+/** Throws on a path-like value carrying shell metacharacters. */
+function assertSafePath(value, what) {
+  if (value === undefined || value === null || value === '') return
+  if (UNSAFE_PATH.test(String(value))) {
+    throw new Error(
+      `[skillopt] ${what} rejected: contains shell metacharacters (` +
+      `" ' & ; | $ \` < > ( ) [ ] { } * or control chars). ` +
+      `Use a plain directory/file path.`,
+    )
+  }
+}
+
+/**
+ * Reject an output path that could write outside the working area:
+ * absolute paths and `..` traversal are refused; only a bare relative
+ * file name (or a simple relative path) is accepted.
+ */
+function assertSafeOutput(value) {
+  if (value === undefined || value === null || value === '') return
+  const s = String(value)
+  assertSafePath(s, 'output path')
+  if (s.startsWith('/') || s.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(s) || s.includes('..')) {
+    throw new Error(
+      `[skillopt] output path rejected: absolute paths and ".." traversal are not allowed; ` +
+      `give a relative file name (e.g. "tasks.json").`,
+    )
+  }
 }
 
 function renderOutput(_args, value) {
@@ -253,9 +299,8 @@ export function apply(ctx, config = {}) {
         'Remove the nightly cron entry for this project.',
       parameters: {
         project: { type: 'string', description: 'Project directory' },
-        all: { type: 'boolean', description: 'Remove every managed entry' },
       },
-      build: (a) => buildArgv(config, 'unschedule', pick(a, ['project']), a.all ? ['--all'] : [], ['project']),
+      build: (a) => buildArgv(config, 'unschedule', pick(a, ['project']), config.unscheduleAll ? ['--all'] : [], ['project']),
     },
   ]
 
@@ -267,7 +312,19 @@ export function apply(ctx, config = {}) {
         parameters: t.parameters,
         output: { schema: { type: 'string' }, render: renderOutput },
         async execute(args, exec) {
-          const argv = t.build(args || {})
+          const a = args || {}
+          // Value-domain guard BEFORE building argv: project paths reach the
+          // engine's own shell/crontab/schtasks string interpolation and the
+          // filesystem; output writes a file. Model-controlled values with
+          // shell metacharacters (or output escaping the working area) are
+          // rejected here, never forwarded.
+          try {
+            assertSafePath(a.project, 'project')
+            assertSafeOutput(a.output)
+          } catch (err) {
+            return `[skillopt ${t.name}] ${err.message}`
+          }
+          const argv = t.build(a)
           // `command` must be the shell-quoted form for the platform executor;
           // resolve() applies the executor's workdir/output-cap/sandbox defaults.
           const request = {

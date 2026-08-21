@@ -221,5 +221,30 @@ check('adopt drops undeclared model', adoptCmd7b ? !adoptCmd7b.includes("'--mode
 check('adopt drops undeclared maxTasks', adoptCmd7b ? !adoptCmd7b.includes("'--max-tasks'") : true)
 check('adopt drops undeclared json', adoptCmd7b ? !adoptCmd7b.includes("'--json'") : true)
 
+// ---------------------------------------------------------------------------
+// 7c. value-domain guard: project/output with shell metacharacters are rejected
+// before they reach the engine's own shell/crontab/schtasks interpolation
+// (scheduler.py splices --project into a crontab line / Windows run.cmd, and
+// write_tasks_file() writes --output to an arbitrary path). Legitimate values
+// pass; metacharacter and traversal values are refused with an error message.
+// ---------------------------------------------------------------------------
+console.log('7c. path value-domain guard (engine re-interpolation / file write)')
+const before7c = called.commands.length
+// schedule with an injected project (would break out of the engine's own
+// `--project "..."` splice and run a separate command under the scheduler)
+const inj = await defs['skillopt_schedule'].execute({ project: 'C:/tmp/x" & echo PWNED > C:/tmp/pwned.txt & "', hour: 3 }, {})
+check('schedule rejects injected project', /rejected/.test(inj), inj.slice(0, 160))
+check('no schedule command reached the shell', called.commands.length === before7c)
+// harvest output escaping the working area (absolute path / traversal)
+const abs = await defs['skillopt_harvest'].execute({ project: '/tmp/p', output: 'C:/Windows/System32/drivers/etc/hosts' }, {})
+check('harvest rejects absolute output', /rejected/.test(abs), abs.slice(0, 160))
+const trav = await defs['skillopt_harvest'].execute({ project: '/tmp/p', output: '../../etc/hosts' }, {})
+check('harvest rejects traversal output', /rejected/.test(trav), trav.slice(0, 160))
+// legit values still pass through the guard
+const ok7c = await defs['skillopt_harvest'].execute({ project: '/tmp/my proj', output: 'tasks.json', source: 'claude' }, {})
+const okCmd7c = called.commands.slice(before7c).find((c) => c.includes("'harvest'"))
+check('legit project/output pass', !/rejected/.test(ok7c) && !!okCmd7c, ok7c.slice(0, 120))
+check('legit harvest cmd has project+output', okCmd7c ? okCmd7c.includes("'--output'") && okCmd7c.includes("'/tmp/my proj'") : false, okCmd7c || 'no harvest command')
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)
