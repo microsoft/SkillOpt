@@ -1735,7 +1735,12 @@ class CopilotCliBackend(CliBackend):
             "--stream", "off",
             "--no-color",
             "--log-level", "none",
-            "--allowed-tools", os.environ.get("COPILOT_ALLOWED_TOOLS", "Bash"),
+            # ``--allow-all-tools`` is REQUIRED for non-interactive mode (it waives
+            # the approval prompt); it is the permission axis. Tool *visibility* is
+            # a separate axis: ``--available-tools`` restricts which tools the model
+            # can see at all. Scoping happens there, so we keep both.
+            "--allow-all-tools",
+            "--available-tools", os.environ.get("COPILOT_AVAILABLE_TOOLS", "bash"),
             "-C", clean_cwd,
         ]
         if not self.full_env:
@@ -1873,7 +1878,12 @@ class CopilotCliBackend(CliBackend):
                 "--stream", "off",
                 "--no-color",
                 "--log-level", "none",
-                "--allowed-tools", os.environ.get("COPILOT_ALLOWED_TOOLS", "Bash"),
+                # ``--allow-all-tools`` is REQUIRED for non-interactive mode (it waives
+            # the approval prompt); it is the permission axis. Tool *visibility* is
+            # a separate axis: ``--available-tools`` restricts which tools the model
+            # can see at all. Scoping happens there, so we keep both.
+            "--allow-all-tools",
+            "--available-tools", os.environ.get("COPILOT_AVAILABLE_TOOLS", "bash"),
                 "-C", work,
             ]
             if not self.full_env:

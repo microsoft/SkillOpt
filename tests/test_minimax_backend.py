@@ -93,9 +93,15 @@ def test_default_deployment_is_current_model(minimax_backend: Any) -> None:
     assert default_model_for_backend("minimax_chat") == "MiniMax-M3"
 
 
-def test_always_on_model_forces_thinking(
+def test_always_on_model_sends_adaptive_not_disabled(
     monkeypatch: pytest.MonkeyPatch, minimax_backend: Any
 ) -> None:
+    """M2.x cannot turn thinking off, so never claim it is disabled.
+
+    MiniMax documents that the M2 family accepts ``{"type": "disabled"}`` but
+    keeps thinking on anyway. Sending "disabled" would record a request that
+    does not match what the model actually does.
+    """
     minimax_backend.ENABLE_THINKING = False
     minimax_backend.TARGET_DEPLOYMENT = "MiniMax-M2.7"
     recorder = _record_urlopen(monkeypatch, minimax_backend)
@@ -104,7 +110,7 @@ def test_always_on_model_forces_thinking(
 
     payload = recorder.calls[0]["payload"]
     assert payload["model"] == "MiniMax-M2.7"
-    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert payload["thinking"] == {"type": "adaptive"}
 
 
 def test_adaptive_model_respects_disabled_flag(
@@ -118,7 +124,7 @@ def test_adaptive_model_respects_disabled_flag(
 
     payload = recorder.calls[0]["payload"]
     assert payload["model"] == "MiniMax-M3"
-    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["thinking"] == {"type": "disabled"}
 
 
 def test_adaptive_model_respects_enabled_flag(
@@ -130,4 +136,36 @@ def test_adaptive_model_respects_enabled_flag(
 
     minimax_backend.chat_target("system", "user", retries=1)
 
-    assert recorder.calls[0]["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert recorder.calls[0]["payload"]["thinking"] == {"type": "adaptive"}
+
+
+def test_unsupported_chat_template_kwargs_is_never_sent(
+    monkeypatch: pytest.MonkeyPatch, minimax_backend: Any
+) -> None:
+    """Guards the original regression.
+
+    ``chat_template_kwargs.enable_thinking`` is a Qwen/HuggingFace-serving
+    convention. It appears nowhere in MiniMax's OpenAI-compatible reference, so
+    the endpoint ignores it -- meaning thinking silently stayed at the server
+    default no matter what the flag said.
+    """
+    minimax_backend.ENABLE_THINKING = False
+    minimax_backend.TARGET_DEPLOYMENT = "MiniMax-M3"
+    recorder = _record_urlopen(monkeypatch, minimax_backend)
+
+    minimax_backend.chat_target("system", "user", retries=1)
+
+    assert "chat_template_kwargs" not in recorder.calls[0]["payload"]
+
+
+def test_unknown_deployment_defaults_to_adaptive(
+    monkeypatch: pytest.MonkeyPatch, minimax_backend: Any
+) -> None:
+    """An unrecognized model follows the documented API default (thinking on)."""
+    minimax_backend.ENABLE_THINKING = True
+    minimax_backend.TARGET_DEPLOYMENT = "MiniMax-Future-9"
+    recorder = _record_urlopen(monkeypatch, minimax_backend)
+
+    minimax_backend.chat_target("system", "user", retries=1)
+
+    assert recorder.calls[0]["payload"]["thinking"] == {"type": "adaptive"}

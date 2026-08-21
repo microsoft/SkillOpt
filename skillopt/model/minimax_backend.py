@@ -70,26 +70,32 @@ TARGET_DEPLOYMENT = os.environ.get(
     default_model_for_backend("minimax_chat"),
 )
 
-# Per-model thinking capability. MiniMax-M2.7 requires always-on thinking, so it
-# must ignore the shared MINIMAX_ENABLE_THINKING flag; MiniMax-M3 supports
-# adaptive/disabled thinking, which the flag controls (disabled by default).
-_MODEL_THINKING_MODES: dict[str, tuple[str, ...]] = {
-    "MiniMax-M3": ("adaptive", "disabled"),
-    "MiniMax-M2.7": ("always_on",),
-}
+# Models whose thinking cannot actually be turned off. Per MiniMax's
+# OpenAI-compatible docs the M2.x family accepts ``{"type": "disabled"}`` but
+# keeps thinking on regardless, so sending "disabled" there is a lie we would
+# then have to reason about downstream. Send the honest value instead.
+_ALWAYS_THINKING_PREFIXES: tuple[str, ...] = ("MiniMax-M2",)
 
 
-def _resolve_enable_thinking(deployment: str) -> bool:
-    """Return the effective ``enable_thinking`` flag for ``deployment``.
+def _thinking_is_forced(deployment: str) -> bool:
+    """True when ``deployment`` cannot honor ``thinking: {"type": "disabled"}``."""
+    name = str(deployment or "").strip()
+    return any(name.startswith(prefix) for prefix in _ALWAYS_THINKING_PREFIXES)
 
-    Models that only support always-on thinking force the flag on regardless of
-    the configured default; models that allow disabled/adaptive thinking honor
-    the shared ``ENABLE_THINKING`` setting.
+
+def _resolve_thinking_type(deployment: str) -> str:
+    """Return the documented top-level ``thinking.type`` for ``deployment``.
+
+    MiniMax documents thinking control as a top-level ``thinking`` object --
+    ``{"thinking": {"type": "adaptive"}}`` or ``{"thinking": {"type":
+    "disabled"}}`` -- NOT as ``chat_template_kwargs.enable_thinking``, which is
+    a Qwen/HuggingFace-serving convention that this endpoint simply ignores.
+    Unknown deployments are treated as capable of adaptive thinking, matching
+    the API default (thinking on when the parameter is omitted).
     """
-    modes = _MODEL_THINKING_MODES.get(str(deployment or "").strip())
-    if modes and "disabled" not in modes and "always_on" in modes:
-        return True
-    return ENABLE_THINKING
+    if _thinking_is_forced(deployment):
+        return "adaptive"
+    return "adaptive" if ENABLE_THINKING else "disabled"
 
 
 _config_lock = threading.Lock()
@@ -199,8 +205,8 @@ def _chat_messages_impl(
         "messages": _json_safe(messages),
         "max_tokens": min(max_completion_tokens, MAX_TOKENS),
     }
-    payload["chat_template_kwargs"] = {
-        "enable_thinking": _resolve_enable_thinking(deployment or TARGET_DEPLOYMENT)
+    payload["thinking"] = {
+        "type": _resolve_thinking_type(deployment or TARGET_DEPLOYMENT)
     }
     if TEMPERATURE is not None:
         payload["temperature"] = TEMPERATURE
