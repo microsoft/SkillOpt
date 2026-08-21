@@ -80,8 +80,10 @@ ask the agent: "Use skillopt_status to check the sleep cycle state."
 | Key | Default | Purpose |
 |---|---|---|
 | `pythonCmd` | `python` | Python interpreter for the engine |
-| `module` | `skillopt_sleep` | engine Python module |
+| `module` | — (bootstrap) | engine Python module override (`python -m <module>`) |
+| `engineScript` | — (scripts/sleep.py) | engine bootstrap script override |
 | `project` | — | default project directory |
+| `scope` | — | harvest scope: `all` \| `invoked` |
 | `backend` | — | `mock\|claude\|codex\|copilot\|cursor\|pi\|opencode\|handoff\|azure_openai` |
 | `source` | — | `claude\|codex\|copilot\|cursor\|pi\|opencode\|auto` |
 | `model` | — | backend model override |
@@ -89,6 +91,9 @@ ask the agent: "Use skillopt_status to check the sleep cycle state."
 | `editBudget` | — | bounded edits per cycle |
 | `preferences` | — | house rules for the reflection prior |
 | `jsonOutput` | `false` | machine-readable JSON output |
+| `autoAdopt` | `false` | OPERATOR-ONLY: auto-adopt a passed proposal without asking |
+| `unscheduleAll` | `false` | OPERATOR-ONLY: allow `skillopt_unschedule` to remove every managed entry |
+| `timeoutMs` | `600000` | per-call engine timeout in milliseconds |
 
 Advanced engine keys (`gate_mode`, `gate_metric`, `gate_no_regression`,
 `dream_rollouts`, `recall_k`, `evolve_memory`/`evolve_skill`) go in
