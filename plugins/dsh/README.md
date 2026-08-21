@@ -59,11 +59,21 @@ Add `dsh-skillopt` to the profile's bundles, or in the profile `cordis.patch.yml
 
 ### Local patch overlay (dev)
 
+Run from a DeepSeek Harness **source checkout** (the official dev workflow,
+`pnpm` resolves the workspace `dsh` bin):
+
+```bash
+pnpm dsh web --patch ./plugins/dsh/cordis.patch.yml
+```
+
+If `dsh` is installed **globally** (npm install -g), use it directly:
+
 ```bash
 dsh web --patch ./plugins/dsh/cordis.patch.yml
 ```
 
-Then ask the agent: "Use skillopt_status to check the sleep cycle state."
+Either way the patch inserts the `skillopt` plugin row into the profile; then
+ask the agent: "Use skillopt_status to check the sleep cycle state."
 
 ## Config keys
 

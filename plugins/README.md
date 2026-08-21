@@ -35,7 +35,7 @@ for your workflow.
 | **Cursor** | `bash plugins/cursor/install.sh` (macOS/Linux) or `powershell -File plugins/cursor/install.ps1` (Windows) | `/skillopt-sleep status` |
 | **Copilot** | register `plugins/copilot/mcp_server.py` using its example MCP config | ask Copilot to run `sleep_status` |
 | **Devin** | register `plugins/devin/mcp_server.py` using its example MCP config | ask Devin to run `sleep_status` |
-| **DeepSeek Harness** | add `dsh-skillopt` to the profile's bundles, or `dsh web --patch ./plugins/dsh/cordis.patch.yml` | ask the agent to use `skillopt_status` |
+| **DeepSeek Harness** | add `dsh-skillopt` to the profile's bundles, or patch it in — from a DSH source checkout: `pnpm dsh web --patch ./plugins/dsh/cordis.patch.yml`; with global dsh: `dsh web --patch ./plugins/dsh/cordis.patch.yml` | ask the agent to use `skillopt_status` |
 | **OpenClaw** | follow and adapt [`openclaw/README.md`](openclaw/README.md) | validate paths, credentials, and tasks locally |
 
 Python 3.10 or newer is required. Real CLI backends also require the selected
