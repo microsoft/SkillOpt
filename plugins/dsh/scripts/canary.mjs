@@ -196,16 +196,20 @@ check('spill path present', trig.includes('C:/spill/stdout.log'))
 // ---------------------------------------------------------------------------
 // 6. argv quoting: spaces and metacharacters cannot break out
 // ---------------------------------------------------------------------------
-console.log('6. argv quoting is shell-safe')
-const { buildArgv, quoteArgv } = await import(pathToFileURL(join(packedRoot, 'src/index.js')).href)
+console.log('6. argv quoting is shell-safe (platform-aware)')
+const { buildArgv, quoteArgv, q, IS_WINDOWS } = await import(pathToFileURL(join(packedRoot, 'src/index.js')).href)
 // Verify quoting directly: a preference with spaces and metacharacters must stay
-// inside one argument (single-quoted, embedded quotes doubled).
+// inside one argument (single-quoted, embedded quotes escaped per platform).
 const argv = buildArgv({}, 'run', { preferences: "never ' rm -rf /" })
 const quoted = quoteArgv(argv)
 const prefArg = argv[argv.indexOf('--preferences') + 1]
 check('preference stays one argv element', argv.includes('--preferences') && argv[argv.indexOf('--preferences') + 1] === "never ' rm -rf /")
-check('quoted form uses bash-safe escape', quoted.includes("'never '\\'' rm -rf /'"))
+// pwsh escapes an embedded quote by doubling it (''); bash closes/reopens ('\'').
+const expected = IS_WINDOWS ? "'never '' rm -rf /'" : "'never '\\'' rm -rf /'"
+check('quoted form uses the host shell escape', quoted.includes(expected), `expected ${expected} got ...${quoted.slice(-40)}`)
+check('embedded quote escaped exactly once', (IS_WINDOWS ? quoted.split("''").length - 1 : quoted.split("'\\''").length - 1) === 1)
 check('no unquoted shell metacharacters', !/;\s*rm\s+-rf/.test(quoted))
+check('q() control chars folded to single spaces', q("a\r\nb\x00c") === "'a b c'")
 
 // ---------------------------------------------------------------------------
 // 7. auto-adopt is OPERATOR-ONLY: the model cannot set it

@@ -18,7 +18,7 @@ export const name = 'skillopt'
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url)) + '/..'
 
 // Exported for the canary test (scripts/canary.mjs).
-export { buildArgv, quoteArgv }
+export { buildArgv, quoteArgv, q, IS_WINDOWS }
 
 // Wait for the tool registry and the shell executor before applying.
 export const inject = ['tools', 'shell']
@@ -66,20 +66,31 @@ export const Config = Schema.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Quote one argv element for a POSIX shell (bash). Single quotes are literal;
-// an embedded single quote is expressed as '\'' (close quote, escaped quote,
-// reopen quote) — the only portable POSIX spelling. PowerShell is not a target
-// here: dsh's ctx.shell executes via `bash -c` (LocalBashExecutor), so the
-// quoting only needs to be bash-correct.
+// Quote one argv element for the HOST's shell. dsh's ctx.shell is the
+// platform executor: on win32 the bash stack is disabled and ctx.shell is a
+// pwsh executor (`pwsh -Command <one argv>`), on POSIX it is bash (`bash -c
+// <one argv>`). PowerShell and POSIX shell quoting differ, so the quoting
+// follows the platform:
+//
+//   - POSIX (bash): single quotes are literal; an embedded single quote is
+//     expressed as '\'' (close quote, escaped quote, reopen quote) — the only
+//     portable POSIX spelling.
+//   - Windows (pwsh): single-quoted strings are literal too, but an embedded
+//     single quote is expressed as '' (doubled quote).
 //
 // Control characters are stripped as defense in depth: \r and \r\n inside a
-// single-quoted word would otherwise split the value into multiple argv words
+// quoted word would otherwise split the value into multiple argv words
 // (broken command, not RCE — quotes never execute), and \n would corrupt the
 // engine's own arg parsing. Model-controlled values must arrive as exactly
-// one argument.
+// one argument under either shell.
+const IS_WINDOWS = process.platform === 'win32'
+
 function q(value) {
-  const s = String(value).replace(/[\r\n\u0000-\u001f\u007f]/g, ' ')
-  return `'${s.replace(/'/g, "'\\''")}'`
+  // Fold \r\n and lone \r into ONE space (not two), then strip remaining C0.
+  const s = String(value)
+    .replace(/\r\n?/g, ' ')
+    .replace(/[\n\u0000-\u001f\u007f]/g, ' ')
+  return IS_WINDOWS ? `'${s.replace(/'/g, "''")}'` : `'${s.replace(/'/g, "'\\''")}'`
 }
 
 /**
@@ -136,7 +147,12 @@ function buildArgv(config, action, explicit = {}, extras = [], allowed = null) {
 
 /** Join argv with safe quoting for the platform shell. */
 function quoteArgv(argv) {
-  return argv.map(q).join(' ')
+  const quoted = argv.map(q).join(' ')
+  // Windows PowerShell: a bare string is not a command invocation — `'python'
+  // 'args'` parses as a string-array expression and errors. Prepend the `&`
+  // call operator so the quoted argv runs as a command (same as bash, where
+  // the quote is the whole word and the first word is the command).
+  return IS_WINDOWS ? `& ${quoted}` : quoted
 }
 
 // Pick exactly the parameters a tool declares. dsh's parameter schema does
