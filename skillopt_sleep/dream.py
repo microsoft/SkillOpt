@@ -17,10 +17,12 @@ runs. Pure-stdlib, zero research/private dependency.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from skillopt_sleep.consolidate import ConsolidationResult, consolidate
 from skillopt_sleep.types import TaskRecord
+
+GenerateFn = Callable[[str], str]
 
 # ── synthetic augmentation ("dream up" variants of today's tasks) ─────────────
 
@@ -31,26 +33,137 @@ _WRAPPERS = [
 ]
 
 
-def dream_augment(real_tasks: List[TaskRecord], *, factor: int = 1) -> List[TaskRecord]:
+def _template_intent(task: TaskRecord, k: int) -> str:
+    return _WRAPPERS[k % len(_WRAPPERS)].format(q=task.intent)
+
+
+def _parse_paraphrases(raw: str, n: int) -> List[str]:
+    """Accept a JSON array of strings; drop empty / short / non-string items."""
+    from skillopt_sleep.backend import _extract_json
+    parsed = _extract_json(raw or "", "array")
+    if not isinstance(parsed, list):
+        return []
+    out: List[str] = []
+    for item in parsed:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if len(text) < 8:
+            continue
+        out.append(text)
+        if len(out) >= n:
+            break
+    return out
+
+
+def _fidelity_ok(original: str, paraphrase: str) -> bool:
+    """Paraphrase-only v1: keep the parent's constraints by construction.
+
+    We copy reference/judge unchanged, so a constraint-changing rewrite would
+    mislabel the variant. Refuse empty, identical, and prompt-echo strings.
+    Constraint perturbations are deferred to a later redesign of judge
+    propagation.
+    """
+    text = (paraphrase or "").strip()
+    src = (original or "").strip()
+    if len(text) < 8 or not src:
+        return False
+    if text == src:
+        return False
+    if "Return ONLY a JSON array" in text:
+        return False
+    return True
+
+
+def _dream_record(task: TaskRecord, k: int, intent: str, extra_tags: Optional[List[str]] = None) -> TaskRecord:
+    tags = list(task.tags) + ["dream"]
+    if extra_tags:
+        tags.extend(extra_tags)
+    return TaskRecord(
+        id=f"{task.id}_dream{k}", project=task.project,
+        intent=intent, context_excerpt=task.context_excerpt,
+        reference_kind=task.reference_kind, reference=task.reference,
+        judge=dict(task.judge), system=task.system,
+        tags=tags, split="train",
+        origin="dream", derived_from=task.id,
+        skill_hint=task.skill_hint,
+    )
+
+
+def dream_augment(
+    real_tasks: List[TaskRecord],
+    *,
+    factor: int = 1,
+    llm_dream: bool = False,
+    generate_fn: Optional[GenerateFn] = None,
+    evidence=None,
+) -> List[TaskRecord]:
     """Create synthetic TRAIN variants of real tasks (origin='dream').
 
-    A light, deterministic rephrasing. Dream tasks are training-only — they
-    carry split='train' and never enter the val/test slices the gate scores on.
+    Default path is a light, deterministic rephrasing. Dream tasks are
+    training-only: they carry split='train' and never enter the val/test
+    slices the gate scores on.
+
+    Opt-in ``llm_dream=True`` asks ``generate_fn`` for paraphrase-only
+    rewrites (parent reference/judge copied unchanged). Any parse or
+    fidelity failure falls back to the same wrappers as the default path,
+    so a night can degrade but not break. Template mode (the default) is
+    byte-identical to the pre-llm_dream implementation.
     """
     out: List[TaskRecord] = []
+    use_llm = bool(llm_dream) and generate_fn is not None
+    if llm_dream and generate_fn is None and evidence is not None:
+        evidence.log(
+            "dream", "llm_dream_fallback",
+            reason="no_generate_fn", n_requested=max(0, factor),
+        )
     for t in real_tasks:
+        parsed: List[str] = []
+        if use_llm:
+            try:
+                from skillopt_sleep import prompts as prompt_registry
+                prompt = prompt_registry.render("llm_dream", {
+                    "__INTENT__": t.intent,
+                    "__N__": str(max(0, factor)),
+                    "__CONTEXT__": (t.context_excerpt or "")[:400],
+                })
+                parsed = _parse_paraphrases(generate_fn(prompt), max(0, factor))
+            except Exception:
+                parsed = []
+        n_ok = 0
         for k in range(max(0, factor)):
-            w = _WRAPPERS[k % len(_WRAPPERS)]
-            out.append(TaskRecord(
-                id=f"{t.id}_dream{k}", project=t.project,
-                intent=w.format(q=t.intent), context_excerpt=t.context_excerpt,
-                reference_kind=t.reference_kind, reference=t.reference,
-                judge=dict(t.judge), system=t.system,
-                tags=list(t.tags) + ["dream"], split="train",
-                origin="dream", derived_from=t.id,
-                skill_hint=t.skill_hint,
-            ))
+            extra: Optional[List[str]] = None
+            if use_llm and k < len(parsed) and _fidelity_ok(t.intent, parsed[k]):
+                intent = parsed[k]
+                extra = ["llm_dream"]
+                n_ok += 1
+            else:
+                intent = _template_intent(t, k)
+            out.append(_dream_record(t, k, intent, extra))
+        if use_llm and n_ok < max(0, factor) and evidence is not None:
+            evidence.log(
+                "dream", "llm_dream_fallback",
+                task_id=t.id,
+                n_fallback=max(0, factor) - n_ok,
+                n_requested=max(0, factor),
+            )
     return out
+
+
+def backend_generate_fn(backend) -> GenerateFn:
+    """Adapter: reuse Backend.attempt so every backend can paraphrase.
+
+    The probe task is never added to the training pool.
+    """
+    def generate(prompt: str) -> str:
+        probe = TaskRecord(
+            id="__llm_dream_probe__",
+            project="",
+            intent=prompt,
+            reference_kind="none",
+        )
+        return backend.attempt(probe, skill="", memory="")
+    return generate
 
 
 # ── associative recall (experience replay of similar past tasks) ──────────────
@@ -134,6 +247,9 @@ def dream_consolidate(
     evolve_skill: bool = True,
     evolve_memory: bool = True,
     night: int = 1,
+    llm_dream: bool = False,
+    generate_fn: Optional[GenerateFn] = None,
+    evidence=None,
 ) -> ConsolidationResult:
     """Recall similar past experience + dream synthetic variants, then run one
     gated consolidation epoch over the enlarged training pool.
@@ -157,7 +273,13 @@ def dream_consolidate(
         )
     if dream_factor > 0:
         seed = [t for t in enlarged if t.split == "train" and t.origin != "dream"]
-        enlarged += dream_augment(seed, factor=dream_factor)
+        enlarged += dream_augment(
+            seed,
+            factor=dream_factor,
+            llm_dream=llm_dream,
+            generate_fn=generate_fn,
+            evidence=evidence,
+        )
     return consolidate(
         backend, enlarged, skill, memory,
         edit_budget=edit_budget, gate_metric=gate_metric,

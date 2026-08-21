@@ -338,6 +338,7 @@ correctness signal; the validation gate still governs what ships.
 | `dream_rollouts` | `1` | Run each task K times → learn from the good-vs-bad contrast (contrastive reflection). |
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
+| `llm_dream` | `false` | Opt-in paraphrase generator for those variants. Templates stay the default and are used on any parse or fidelity failure. v1 is paraphrase-only: parent `reference`/`judge` are copied unchanged. |
 
 ## Results
 

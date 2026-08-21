@@ -7,6 +7,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **SkillOpt-Sleep opt-in `llm_dream`**: paraphrase-only dream variants from
+  the optimizer model, with deterministic template fallback on parse or
+  fidelity failure. Default template dreams stay byte-identical; generated
+  variants are train-only (thanks @bogdanbaciu21).
 - **SkillOpt-Sleep multi-skill fan-out and reviewed subset adoption**: each
   hinted skill is consolidated from its own pinned live baseline, staged as an
   independent proposal with per-skill gate evidence, and promoted only through

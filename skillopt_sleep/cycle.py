@@ -22,7 +22,7 @@ from typing import List, Optional, Sequence
 from skillopt_sleep import evidence
 from skillopt_sleep.backend import Backend, CursorBackendError, build_backend
 from skillopt_sleep.config import DEFAULTS, SleepConfig, load_config
-from skillopt_sleep.dream import dream_consolidate
+from skillopt_sleep.dream import backend_generate_fn, dream_consolidate
 from skillopt_sleep.evidence import EvidenceLog
 from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.memory import ensure_skill_scaffold
@@ -695,7 +695,7 @@ def run_sleep_cycle(
             "target_backend", "target_model", "gate_mode", "gate_metric",
             "gate_mixed_weight", "gate_no_regression", "edit_budget",
             "holdout_fraction", "val_fraction", "test_fraction",
-            "dream_rollouts", "dream_factor", "recall_k",
+            "dream_rollouts", "dream_factor", "llm_dream", "recall_k",
             "max_tasks_per_night", "lookback_hours", "llm_mine",
             "evolve_skill", "evolve_memory")}
         cycle_config["opencode_tool_replay"] = (
@@ -859,6 +859,11 @@ def run_sleep_cycle(
             recall_k=recall_k,
             dream_rollouts=int(cfg.get("dream_rollouts", 1) or 1),
             dream_factor=int(cfg.get("dream_factor", 0) or 0),
+            llm_dream=bool(cfg.get("llm_dream", False)),
+            generate_fn=(
+                backend_generate_fn(backend) if cfg.get("llm_dream", False) else None
+            ),
+            evidence=ev,
             edit_budget=cfg.get("edit_budget", 4),
             gate_metric=cfg.get("gate_metric", "mixed"),
             gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
@@ -953,6 +958,11 @@ def run_sleep_cycle(
                     recall_k=recall_k,
                     dream_rollouts=int(cfg.get("dream_rollouts", 1) or 1),
                     dream_factor=int(cfg.get("dream_factor", 0) or 0),
+                    llm_dream=bool(cfg.get("llm_dream", False)),
+                    generate_fn=(
+                        backend_generate_fn(backend) if cfg.get("llm_dream", False) else None
+                    ),
+                    evidence=ev,
                     edit_budget=cfg.get("edit_budget", 4),
                     gate_metric=cfg.get("gate_metric", "mixed"),
                     gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),

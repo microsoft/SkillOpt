@@ -70,6 +70,7 @@ DEFAULTS: Dict[str, Any] = {
     # ── dream + recall (opt-in; defaults reproduce the prior single-shot loop) ─
     "dream_rollouts": 1,          # >1 => multi-rollout contrastive reflection per task
     "dream_factor": 0,            # >0 => add N synthetic variants of each task to the dream
+    "llm_dream": False,           # opt-in paraphrase generator; templates stay the default
     "recall_k": 0,                # >0 => recall the K most-similar past tasks into the dream
     "evolve_memory": True,        # consolidate CLAUDE.md
     "evolve_skill": True,         # consolidate the managed SKILL.md

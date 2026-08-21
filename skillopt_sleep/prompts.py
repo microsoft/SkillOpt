@@ -117,6 +117,21 @@ _REFLECT = (
     "# Recurring failures\n__FAILURES__"
 )
 
+_LLM_DREAM = """You rewrite one existing task as a paraphrase-only variant.
+
+Do NOT change the task's constraints, success criteria, required answer, tools,
+or output format. Do NOT invent new requirements. Keep the same meaning.
+
+Original intent:
+__INTENT__
+
+Optional context:
+__CONTEXT__
+
+Return ONLY a JSON array of exactly __N__ distinct paraphrase strings.
+Example: ["please handle this request: ...", "for the daily report: ..."]
+"""
+
 # name -> {text, stage, role, description, placeholders}
 DEFAULTS: Dict[str, Dict] = {
     "miner": {
@@ -149,6 +164,13 @@ DEFAULTS: Dict[str, Dict] = {
             "__EDIT_BUDGET__", "__TARGET__", "__CUR_DOC__", "__GUARD__",
             "__CRITERIA__", "__PREFS__", "__FAILURES__",
         ],
+    },
+    "llm_dream": {
+        "text": _LLM_DREAM,
+        "stage": "dream",
+        "role": "optimizer",
+        "description": "Paraphrase-only dream variants; parent judge/reference stay valid.",
+        "placeholders": ["__INTENT__", "__N__", "__CONTEXT__"],
     },
 }
 
