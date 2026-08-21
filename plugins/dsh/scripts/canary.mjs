@@ -246,5 +246,19 @@ const okCmd7c = called.commands.slice(before7c).find((c) => c.includes("'harvest
 check('legit project/output pass', !/rejected/.test(ok7c) && !!okCmd7c, ok7c.slice(0, 120))
 check('legit harvest cmd has project+output', okCmd7c ? okCmd7c.includes("'--output'") && okCmd7c.includes("'/tmp/my proj'") : false, okCmd7c || 'no harvest command')
 
+// ---------------------------------------------------------------------------
+// 7d. clock range guard: schedule's hour/minute are spliced by the engine into
+// a crontab line and a schtasks start time without validation; out-of-range
+// values would create broken scheduled entries. They must be rejected.
+// ---------------------------------------------------------------------------
+console.log('7d. schedule clock range guard')
+const badHour = await defs['skillopt_schedule'].execute({ project: '/tmp/p', hour: 99, minute: 17 }, {})
+check('schedule rejects hour=99', /rejected/.test(badHour), badHour.slice(0, 140))
+const badMinute = await defs['skillopt_schedule'].execute({ project: '/tmp/p', hour: 3, minute: -1 }, {})
+check('schedule rejects minute=-1', /rejected/.test(badMinute), badMinute.slice(0, 140))
+const okSched = await defs['skillopt_schedule'].execute({ project: '/tmp/p', hour: 3, minute: 17 }, {})
+const okSchedCmd = called.commands.slice(-1)[0]
+check('legit clock passes and reaches shell', !/rejected/.test(okSched) && !!okSchedCmd && okSchedCmd.includes("'--hour'") && okSchedCmd.includes("'--minute'"), okSched.slice(0, 120))
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

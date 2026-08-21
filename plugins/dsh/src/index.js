@@ -196,6 +196,22 @@ function assertSafeOutput(value) {
   }
 }
 
+/**
+ * Range guard for schedule's clock parameters. The engine does not validate
+ * hour/minute itself and splices them straight into a crontab line and a
+ * schtasks start time; an out-of-range value (99, -1, …) would create a
+ * broken scheduled-task entry. Reject anything outside the real clock.
+ */
+function assertSafeClock(value, what, min, max) {
+  if (value === undefined || value === null || value === '') return
+  const n = Number(value)
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(
+      `[skillopt] ${what} rejected: must be an integer in [${min}, ${max}], got ${JSON.stringify(value)}.`,
+    )
+  }
+}
+
 function renderOutput(_args, value) {
   return [{ type: 'text', text: value }]
 }
@@ -321,6 +337,10 @@ export function apply(ctx, config = {}) {
           try {
             assertSafePath(a.project, 'project')
             assertSafeOutput(a.output)
+            // schedule clock params: the engine splices them into crontab /
+            // schtasks verbatim, so keep them inside the real clock range.
+            assertSafeClock(a.hour, 'hour', 0, 23)
+            assertSafeClock(a.minute, 'minute', 0, 59)
           } catch (err) {
             return `[skillopt ${t.name}] ${err.message}`
           }
