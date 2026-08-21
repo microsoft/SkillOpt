@@ -68,8 +68,14 @@ export const Config = Schema.object({
 // reopen quote) — the only portable POSIX spelling. PowerShell is not a target
 // here: dsh's ctx.shell executes via `bash -c` (LocalBashExecutor), so the
 // quoting only needs to be bash-correct.
+//
+// Control characters are stripped as defense in depth: \r and \r\n inside a
+// single-quoted word would otherwise split the value into multiple argv words
+// (broken command, not RCE — quotes never execute), and \n would corrupt the
+// engine's own arg parsing. Model-controlled values must arrive as exactly
+// one argument.
 function q(value) {
-  const s = String(value)
+  const s = String(value).replace(/[\r\n\u0000-\u001f\u007f]/g, ' ')
   return `'${s.replace(/'/g, "'\\''")}'`
 }
 
