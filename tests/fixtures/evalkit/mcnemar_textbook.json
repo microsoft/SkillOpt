@@ -1,0 +1,10 @@
+{
+  "name": "textbook-2x2",
+  "both_success": 40,
+  "a_only": 2,
+  "b_only": 12,
+  "both_fail": 46,
+  "chi2": 7.142857142857143,
+  "p_chi2": 0.007526315166457887,
+  "p_exact": 0.012939453125
+}

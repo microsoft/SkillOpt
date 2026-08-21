@@ -339,6 +339,20 @@ correctness signal; the validation gate still governs what ships.
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
 
+### Paired A/B evalkit
+
+Reports and PRs that claim "B beats A" should go through the shared evalkit
+rather than quoting a single-run cell. One command pairs two conditions on one
+fixed task manifest, runs McNemar's test, and reports a bootstrap CI on the
+success-rate delta. The nightly gate is unchanged.
+
+```text
+python -m skillopt_sleep.evalkit --manifest tasks.json --a cond_a.json --b cond_b.json
+```
+
+See [`evalkit.md`](evalkit.md) for the id-set contract, multi-seed bands, the
+A/A calibration, and the published RESULTS cell replay.
+
 ## Results
 
 > 📊 **More results & analysis — the gate-safety stress test, experience-replay

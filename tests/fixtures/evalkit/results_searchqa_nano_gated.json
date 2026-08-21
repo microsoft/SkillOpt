@@ -1,0 +1,9 @@
+{
+  "cell_id": "results-searchqa-nano-gated-cumulative-nights5",
+  "source": "docs/sleep/RESULTS.md section 2",
+  "n": 1400,
+  "baseline": 0.560,
+  "after": 0.679,
+  "published_delta": 0.119,
+  "reconstruction": "maximum-concordance: first round(n*rate) tasks succeed in each condition"
+}

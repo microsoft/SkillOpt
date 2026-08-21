@@ -882,6 +882,19 @@ def main(argv=None) -> int:
     p_unsched = sub.add_parser("unschedule", help="remove the nightly cron entry")
     _add_common(p_unsched)
     p_unsched.add_argument("--all", action="store_true", help="remove all managed entries")
+    p_eval = sub.add_parser(
+        "evalkit",
+        help="paired A/B comparison (McNemar + bootstrap CI)",
+    )
+    p_eval.add_argument("--manifest", required=True)
+    p_eval.add_argument("--a", required=True)
+    p_eval.add_argument("--b", default="")
+    p_eval.add_argument("--aa", action="store_true")
+    p_eval.add_argument("--alpha", type=float, default=0.05)
+    p_eval.add_argument("--boot", type=int, default=10000)
+    p_eval.add_argument("--seed", type=int, default=42)
+    p_eval.add_argument("--allow-graded", action="store_true")
+    p_eval.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
     if args.cmd == "run":
@@ -898,6 +911,19 @@ def main(argv=None) -> int:
         return cmd_schedule(args)
     if args.cmd == "unschedule":
         return cmd_unschedule(args)
+    if args.cmd == "evalkit":
+        from skillopt_sleep.evalkit import main as evalkit_main
+        argv = ["--manifest", args.manifest, "--a", args.a]
+        if args.b:
+            argv.extend(["--b", args.b])
+        if args.aa:
+            argv.append("--aa")
+        argv.extend(["--alpha", str(args.alpha), "--boot", str(args.boot), "--seed", str(args.seed)])
+        if args.allow_graded:
+            argv.append("--allow-graded")
+        if args.json:
+            argv.append("--json")
+        return evalkit_main(argv)
     parser.print_help()
     return 2
 
