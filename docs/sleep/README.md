@@ -103,8 +103,18 @@ skillopt-sleep status       # show state + the latest staged proposal
 skillopt-sleep adopt --legacy       # apply a reviewed managed proposal
 skillopt-sleep adopt --skill NAME   # adopt one staged skill (repeatable)
 skillopt-sleep adopt --all-skills   # adopt every still-pending fan-out skill
+skillopt-sleep revert       # undo the last adoption, restoring what it replaced
 skillopt-sleep schedule     # install a nightly cron entry for this project
 ```
+
+> **Adoption is reversible.** `revert` reverses an adoption receipt: a document
+> adoption replaced is restored from its immutable backup, one adoption created
+> is removed. It matters most when `--auto-adopt` runs unattended from the
+> nightly schedule — the gate is a held-out validation gate, not an oracle, so a
+> night can accept an edit that scores better on a handful of mined tasks and
+> still be worse in daily use. It refuses rather than silently discarding work
+> if you edited the live file after adopting. See
+> [Reverting an adoption](../reference/cli.md#reverting-an-adoption).
 
 > **Version note.** This page tracks `main`. PyPI 0.2.0 provides the base
 > commands above. Cursor source/backend/plugin support, VS Code Copilot

@@ -3100,3 +3100,242 @@ def adopt(staging_dir: str) -> List[str]:
             receipt_after=receipt_after,
         )
         return updated
+
+
+# ── reverting an adoption ────────────────────────────────────────────────────
+# `adopt` publishes a receipt (adopted_legacy.json / adopted_skills.json) that
+# already pins everything an undo needs: the live path, the sha256 it held
+# before adoption ("" when no file existed), the sha256 adoption wrote, and the
+# immutable backup. `revert` reads that receipt and reverses it.
+#
+# Unlike adoption, this is not WAL-journaled. It does not need to be: every step
+# is verified against the receipt's pins and converges, so a revert interrupted
+# part-way is completed by running it again. Promoting it into the durable
+# transaction is possible but would mean teaching `_TransactionTarget` to delete
+# a path, which the adoption WAL schema has no representation for today.
+
+_LEGACY_RECEIPT_FILE = "adopted_legacy.json"
+_SKILLS_RECEIPT_FILE = "adopted_skills.json"
+
+
+@dataclass
+class RevertedTarget:
+    """Receipt for one reverted path: what it went back to."""
+
+    key: str                # "skill"/"memory" for the legacy pair, else skill name
+    live_path: str
+    sha256_restored: str    # "" when the path was removed instead of restored
+    removed: bool           # adopt had created this file, so revert deleted it
+    already_reverted: bool  # live already matched the pre-adopt pin; nothing to do
+
+
+def _receipt_rows(staging_dir: str, filename: str) -> List[Dict[str, Any]]:
+    payload, _original, _mode, _file_id = _read_receipt_file(
+        os.path.join(staging_dir, filename)
+    )
+    return payload
+
+
+def _publish_remaining_receipts(
+    receipt_path: str, remaining: List[Dict[str, Any]]
+) -> None:
+    """Drop reverted rows, removing the ledger entirely once it is empty.
+
+    An empty ledger and an absent one mean the same thing to `adopt` — nothing
+    from this night is adopted — and removing the file lets the night be adopted
+    again cleanly.
+    """
+    if remaining:
+        _write_atomic(
+            receipt_path,
+            json.dumps(remaining, ensure_ascii=False, indent=2),
+            create_parents=False,
+        )
+        return
+    if os.path.lexists(receipt_path):
+        _unlink_fsync(receipt_path)
+
+
+def _revert_one(
+    staging_dir: str, key: str, live: str, row: Dict[str, Any]
+) -> RevertedTarget:
+    """Reverse one receipt row, or refuse if the live file moved on since."""
+    before = row.get("sha256_before")
+    after = row.get("sha256_after")
+    backup_path = row.get("backup_path")
+    if not _valid_sha256_pin(after) or not isinstance(backup_path, str):
+        raise StagingError(f"adoption receipt for {key} has invalid pins")
+    if before != "" and not _valid_sha256_pin(before):
+        raise StagingError(f"adoption receipt for {key} has an invalid baseline pin")
+
+    current, _mode, _file_id = _file_snapshot(live)
+    current_sha = _bytes_sha256(current)
+    if current_sha == before:
+        # An interrupted revert already published this path; finish the ledger.
+        return RevertedTarget(key, live, before if before else "", before == "", True)
+    if current_sha != after:
+        raise StagingError(
+            f"{live} no longer matches what adoption wrote for {key}; it was "
+            "edited or replaced since, and reverting would discard that work"
+        )
+
+    if before == "":
+        # Adoption created this file. The state being returned to is "no such
+        # file", so the proposal is removed rather than left in place. Any
+        # directories adoption created are left alone: the receipt does not
+        # record which ones it made, and removing a directory whose ownership
+        # was not durably recorded is exactly the fail-closed case adoption's
+        # own recovery path refuses.
+        if os.path.lexists(live):
+            if _is_link_or_junction(live) or not os.path.isfile(live):
+                raise StagingError(f"live path for {key} is no longer a regular file: {live}")
+            _unlink_fsync(live)
+        return RevertedTarget(key, live, "", True, False)
+
+    if not backup_path:
+        raise StagingError(
+            f"adoption receipt for {key} records a replaced file but no backup"
+        )
+    if _immutable_backup_sha256(backup_path, staging_dir) != before:
+        raise StagingError(
+            f"immutable backup for {key} is missing or does not match its pin: "
+            f"{backup_path}"
+        )
+    original, _backup_mode, _backup_id = _file_snapshot(backup_path)
+    if original is None:
+        raise StagingError(f"immutable backup for {key} disappeared: {backup_path}")
+    try:
+        text = original.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StagingError(f"immutable backup for {key} is not valid UTF-8") from exc
+    _write_atomic(live, text, create_parents=False)
+    republished, _mode, _file_id = _file_snapshot(live)
+    if _bytes_sha256(republished) != before:
+        raise StagingError(f"live target for {key} changed while being restored")
+    # The backup has been consumed: its content is the live file again. Removing
+    # it returns the night to its pre-adopt shape, so it can be adopted afresh
+    # (adoption refuses to run when an immutable backup is already present).
+    if os.path.lexists(backup_path):
+        _unlink_fsync(backup_path)
+    return RevertedTarget(key, live, before, False, False)
+
+
+def _revert_receipts(
+    staging_dir: str,
+    *,
+    filename: str,
+    key_field: str,
+    path_field: str,
+    selection: Optional[Sequence[str]],
+) -> List[RevertedTarget]:
+    staging_dir = _canonical_staging_dir(staging_dir)
+    _recover_before_manifest(staging_dir)
+    receipt_path = os.path.join(staging_dir, filename)
+    rows = _receipt_rows(staging_dir, filename)
+    if not rows:
+        return []
+
+    wanted = None if selection is None else {str(name) for name in selection}
+    chosen: List[tuple[str, str, Dict[str, Any]]] = []
+    live_paths: List[str] = []
+    for row in rows:
+        key = str(row.get(key_field) or "")
+        if not key or (wanted is not None and key not in wanted):
+            continue
+        live = _safe_live_path(row.get(path_field))
+        if not live:
+            raise StagingError(f"adoption receipt for {key} has an unsafe live path")
+        chosen.append((key, live, row))
+        live_paths.append(live)
+    if wanted is not None:
+        missing = sorted(wanted - {key for key, _live, _row in chosen})
+        if missing:
+            raise StagingError(
+                "not adopted from this night: " + ", ".join(repr(m) for m in missing)
+            )
+    if not chosen:
+        return []
+
+    with _adoption_locks(staging_dir, live_paths):
+        # Re-read under the lock: another process may have reverted or adopted
+        # between our scan and the lock being taken.
+        current_rows = _receipt_rows(staging_dir, filename)
+        current_keys = {str(row.get(key_field) or "") for row in current_rows}
+        if current_keys != {str(row.get(key_field) or "") for row in rows}:
+            raise StagingError("adoption receipt changed while revert was locking")
+        results = [
+            _revert_one(staging_dir, key, live, row) for key, live, row in chosen
+        ]
+        reverted = {result.key for result in results}
+        remaining = [
+            row for row in current_rows
+            if str(row.get(key_field) or "") not in reverted
+        ]
+        _publish_remaining_receipts(receipt_path, remaining)
+    return results
+
+
+def revert(staging_dir: str) -> List[RevertedTarget]:
+    """Undo `adopt` for this night's managed skill/memory pair."""
+    return _revert_receipts(
+        staging_dir,
+        filename=_LEGACY_RECEIPT_FILE,
+        key_field="target",
+        path_field="live_path",
+        selection=None,
+    )
+
+
+def revert_skills(
+    staging_dir: str, skill_names: Optional[Sequence[str]] = None
+) -> List[RevertedTarget]:
+    """Undo `adopt_skills` for a reviewed subset, or for every adopted skill."""
+    return _revert_receipts(
+        staging_dir,
+        filename=_SKILLS_RECEIPT_FILE,
+        key_field="skill_name",
+        path_field="live_skill_path",
+        selection=skill_names,
+    )
+
+
+def adopted_skill_names(staging_dir: str) -> List[str]:
+    """Names of per-skill proposals adopted from this night and not yet reverted."""
+    return [
+        str(row.get("skill_name") or "")
+        for row in _receipt_rows(_canonical_staging_dir(staging_dir), _SKILLS_RECEIPT_FILE)
+        if row.get("skill_name")
+    ]
+
+
+def has_adopted_legacy(staging_dir: str) -> bool:
+    """Whether the managed skill/memory pair is adopted and not yet reverted."""
+    return bool(
+        _receipt_rows(_canonical_staging_dir(staging_dir), _LEGACY_RECEIPT_FILE)
+    )
+
+
+def latest_adopted_staging(project: str) -> Optional[str]:
+    """The newest staging directory holding an adoption that can still be undone.
+
+    Deliberately not `latest_staging`: the newest proposal on disk may never
+    have been adopted, and reverting that would restore a backup for a change
+    the live files never received.
+    """
+    root = staging_root(project)
+    if not os.path.isdir(root):
+        return None
+    subs = sorted(
+        (os.path.join(root, d) for d in os.listdir(root)),
+        key=lambda p: os.path.getmtime(p),
+        reverse=True,
+    )
+    for path in subs:
+        if not os.path.isdir(path):
+            continue
+        try:
+            if has_adopted_legacy(path) or adopted_skill_names(path):
+                return path
+        except (OSError, StagingError):
+            continue
+    return None

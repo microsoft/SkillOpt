@@ -123,7 +123,7 @@ skillopt-sleep <action> [options]
 python -m skillopt_sleep <action> [options]
 ```
 
-Actions are `run`, `dry-run`, `status`, `adopt`, `harvest`, `schedule`, and
+Actions are `run`, `dry-run`, `status`, `adopt`, `revert`, `harvest`, `schedule`, and
 `unschedule`. Common options include:
 
 | Argument | Description |
@@ -168,6 +168,42 @@ The `mock` and `handoff` backends make no network calls. A real backend sends
 mining, replay, judging, and reflection prompts derived from harvested
 transcripts and tasks to its selected provider. Review that provider's
 data-retention and privacy policy before processing sensitive sessions.
+
+### Reverting an adoption
+
+`revert` undoes an adoption, restoring the files it replaced:
+
+```bash
+skillopt-sleep revert                    # undo the last adoption for this project
+skillopt-sleep revert --legacy           # undo only the managed pair
+skillopt-sleep revert --skill NAME       # undo one adopted skill (repeatable)
+skillopt-sleep revert --all-skills       # undo every adopted per-skill proposal
+skillopt-sleep revert --staging <dir>    # undo a specific night
+```
+
+It is defined against the adoption receipts, so it reverses exactly what
+adoption recorded. A live document that adoption **replaced** is restored from
+its immutable backup; one that adoption **created** is removed, because that is
+the state being returned to. Reverting consumes the backup and clears the
+night's receipt rows, which returns the staging directory to its pre-adopt shape
+so it can be adopted again.
+
+Without a selection, `revert` acts on whichever kind of adoption the night
+holds; when it holds both, it lists the adopted skills and exits so the choice
+is explicit. Without `--staging`, it targets the most recent night with an
+adoption still on record — deliberately not the newest staged night, whose
+proposal may never have been adopted. `status` reports that directory as
+`revertable_staging`.
+
+`revert` refuses rather than reporting a successful no-op when the live file no
+longer matches what adoption wrote — it was edited or replaced since, and
+restoring the backup would discard that work — or when the backup is missing or
+fails its pin. Directories that adoption created are left in place: the receipt
+does not record which ones it made, and removing a directory whose ownership was
+not durably recorded is the same fail-closed case adoption's own recovery path
+refuses. Revert is not WAL-journaled the way adoption is; every step is checked
+against the receipt's pins and converges, so an interrupted revert is completed
+by running it again.
 
 ### VS Code GitHub Copilot Chat source
 

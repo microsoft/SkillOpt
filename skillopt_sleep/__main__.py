@@ -5,6 +5,7 @@
     python -m skillopt_sleep status     # show state + latest staged proposal
     python -m skillopt_sleep adopt      # apply the latest staged proposal (with backup)
     python -m skillopt_sleep adopt --skill NAME   # adopt one staged skill (repeatable)
+    python -m skillopt_sleep revert     # undo the last adoption, restoring backups
     python -m skillopt_sleep harvest    # just print what would be mined (debug)
 
 Common flags:
@@ -40,13 +41,18 @@ from skillopt_sleep.mine import mine
 from skillopt_sleep.staging import (
     StagingError,
     adopt_skills,
+    adopted_skill_names,
+    has_adopted_legacy,
     has_pending_staged_managed,
     json_safe,
+    latest_adopted_staging,
     latest_staging,
     pending_staged_skills,
+    revert_skills,
     staged_skills,
 )
 from skillopt_sleep.staging import adopt as adopt_staging
+from skillopt_sleep.staging import revert as revert_staging
 from skillopt_sleep.state import SleepState
 from skillopt_sleep.tasks_file import load_tasks_file, make_tasks_payload, write_tasks_file
 
@@ -550,6 +556,10 @@ def cmd_status(args) -> int:
     state = SleepState.load(cfg.state_path)
     project = cfg.get("invoked_project") or os.getcwd()
     latest = latest_staging(project)
+    try:
+        revertable = latest_adopted_staging(project)
+    except (OSError, StagingError):
+        revertable = None
     skills = []
     all_skills = []
     has_managed = False
@@ -578,6 +588,9 @@ def cmd_status(args) -> int:
             if row not in skills
         ],
         "has_managed_proposal": has_managed,
+        # What a bare `revert` would undo. May be an older night than
+        # `latest_staging`, whose proposal need never have been adopted.
+        "revertable_staging": revertable,
     }
     if staging_error:
         info["staging_error"] = staging_error
@@ -586,6 +599,9 @@ def cmd_status(args) -> int:
     else:
         print(f"[sleep] nights so far: {state.night}")
         print(f"[sleep] project: {project}")
+        if revertable:
+            print(f"[sleep] revertable adoption: {_display_value(revertable)}")
+            print("[sleep] undo it with: skillopt-sleep revert")
         if latest:
             print(f"[sleep] latest staged proposal: {_display_value(latest)}")
             if staging_error:
@@ -779,6 +795,110 @@ def cmd_adopt(args) -> int:
     return 0
 
 
+def cmd_revert(args) -> int:
+    cfg = _cfg_from_args(args)
+    project = cfg.get("invoked_project") or os.getcwd()
+    # Default to the last *adopted* night, not the newest staged one: reverting
+    # a proposal that was never adopted would restore a backup for a change the
+    # live files never received.
+    target = args.staging or latest_adopted_staging(project)
+
+    def fail(code: int, kind: str, message: str, **extra: Any) -> int:
+        safe_message = _display_value(message)
+        if args.json:
+            payload = {
+                "ok": False,
+                "error": kind,
+                "message": safe_message,
+                "staging_dir": _display_value(target or ""),
+            }
+            payload.update(_redact_deep(extra))
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(safe_message)
+        return code
+
+    if not target or not os.path.isdir(target):
+        return fail(
+            1, "no_adoption",
+            "[sleep] nothing to revert (no adopted proposal for this project).",
+        )
+    raw_selected = list(getattr(args, "skills", None) or [])
+    if any(not str(name).strip() for name in raw_selected):
+        return fail(2, "invalid_selection", "[sleep] --skill names must be non-empty.")
+    selected = [str(name).strip() for name in raw_selected]
+    revert_all = bool(getattr(args, "all_skills", False))
+    revert_legacy = bool(getattr(args, "legacy", False))
+    if sum((bool(selected), revert_all, revert_legacy)) > 1:
+        return fail(
+            2, "invalid_selection",
+            "[sleep] use exactly one of --skill, --all-skills, or --legacy.",
+        )
+    try:
+        adopted_skills = adopted_skill_names(target)
+        adopted_legacy = has_adopted_legacy(target)
+    except (OSError, StagingError) as exc:
+        return fail(1, "invalid_staging", f"[sleep] cannot read adoption receipts: {exc}")
+
+    if not adopted_skills and not adopted_legacy:
+        return fail(
+            2, "not_adopted",
+            f"[sleep] nothing from {_display_value(target)} is adopted; "
+            "there is nothing to revert.",
+        )
+    # With only one kind of adoption on record the intent is unambiguous, so an
+    # explicit selection is required only when both are present.
+    if not selected and not revert_all and not revert_legacy:
+        if adopted_skills and adopted_legacy:
+            message = (
+                "[sleep] this night has both managed and per-skill adoptions; "
+                "pass --skill NAME, --all-skills, or --legacy."
+            )
+            if args.json:
+                return fail(2, "selection_required", message,
+                            adopted_skills=adopted_skills)
+            print(_display_value(message))
+            for name in adopted_skills:
+                print(f"   {_display_value(name)!r}")
+            return 2
+        revert_legacy = adopted_legacy
+        revert_all = bool(adopted_skills)
+
+    try:
+        if revert_legacy:
+            results = revert_staging(target)
+            mode = "legacy"
+        else:
+            names = adopted_skills if revert_all else selected
+            results = revert_skills(target, names)
+            mode = "skills"
+    except StagingError as exc:
+        return fail(2, "revert_refused", f"[sleep] revert refused: {exc}")
+    except OSError as exc:
+        return fail(1, "revert_failed", f"[sleep] revert failed: {exc}")
+
+    if args.json:
+        print(json.dumps(json_safe({
+            "ok": True,
+            "staging_dir": target,
+            "mode": mode,
+            "reverted": [result.__dict__ for result in results],
+        }), ensure_ascii=False, indent=2))
+    else:
+        print(f"[sleep] reverted {_display_value(target)}")
+        for result in results:
+            live = _display_value(result.live_path)
+            if result.already_reverted:
+                print(f"   unchanged -> {live}  (already reverted)")
+            elif result.removed:
+                print(f"   removed   -> {live}  (adopt had created it)")
+            else:
+                print(f"   restored  -> {live}")
+        if not results:
+            print("[sleep] (nothing in the selection was adopted)")
+    return 0
+
+
 def cmd_harvest(args) -> int:
     cfg = _cfg_from_args(args)
     session_limit = cfg.get("max_sessions_per_night", 0) or cfg.get("max_tasks_per_night", 40) * 3
@@ -872,6 +992,23 @@ def main(argv=None) -> int:
         "--legacy", action="store_true",
         help="adopt only the staged managed skill/memory proposal",
     )
+    p_revert = sub.add_parser(
+        "revert", help="undo an adoption, restoring the pre-adopt files")
+    _add_common(p_revert)
+    p_revert.add_argument("--staging", default="",
+                          help="specific staging dir (default: last adopted)")
+    p_revert.add_argument(
+        "--skill", action="append", default=[], dest="skills",
+        help="revert this adopted skill (repeatable)",
+    )
+    p_revert.add_argument(
+        "--all-skills", action="store_true", dest="all_skills",
+        help="revert every adopted per-skill proposal",
+    )
+    p_revert.add_argument(
+        "--legacy", action="store_true",
+        help="revert only the adopted managed skill/memory proposal",
+    )
     p_harvest = sub.add_parser("harvest", help="debug: show mined tasks")
     _add_common(p_harvest)
     p_harvest.add_argument("--output", default="", help="write mined tasks JSON for review")
@@ -892,6 +1029,8 @@ def main(argv=None) -> int:
         return cmd_status(args)
     if args.cmd == "adopt":
         return cmd_adopt(args)
+    if args.cmd == "revert":
+        return cmd_revert(args)
     if args.cmd == "harvest":
         return cmd_harvest(args)
     if args.cmd == "schedule":
