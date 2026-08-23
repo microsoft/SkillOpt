@@ -288,7 +288,7 @@ def _persist_artifacts(
     response: str,
     prefix: str,
     summary_builder,
-) -> None:
+) -> str:
     pred_dir = os.path.dirname(work_dir.rstrip(os.sep))
     raw_path = os.path.join(pred_dir, f"{prefix}_raw.txt")
     summary_path = os.path.join(pred_dir, f"{prefix}_trace_summary.txt")
@@ -303,6 +303,7 @@ def _persist_artifacts(
         f.write(combined_raw)
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(summary_builder(combined_raw, response))
+    return combined_raw
 
 
 def _persist_codex_artifacts(work_dir: str, raw: str, response: str) -> None:
@@ -316,7 +317,7 @@ def _persist_codex_artifacts(work_dir: str, raw: str, response: str) -> None:
 
 
 def _persist_claude_artifacts(work_dir: str, raw: str, response: str) -> None:
-    _persist_artifacts(
+    combined_raw = _persist_artifacts(
         work_dir=work_dir,
         raw=raw,
         response=response,
@@ -324,13 +325,14 @@ def _persist_claude_artifacts(work_dir: str, raw: str, response: str) -> None:
         summary_builder=_build_claude_trace_summary,
     )
     # Structured trace steps for the reflector (issue #233): expose what the
-    # agent actually did, not just the collapsed final answer.
-    steps_text = format_claude_trace_steps(raw)
-    if steps_text:
-        pred_dir = os.path.dirname(work_dir.rstrip(os.sep))
-        steps_path = os.path.join(pred_dir, "claude_trace_steps.txt")
-        with open(steps_path, "w", encoding="utf-8") as f:
-            f.write(steps_text)
+    # agent actually did, not just the collapsed final answer.  Format from the
+    # *combined* raw (across turns) and write unconditionally so a turn that
+    # parses to no steps never leaves the previous turn's stale file behind.
+    steps_text = format_claude_trace_steps(combined_raw)
+    pred_dir = os.path.dirname(work_dir.rstrip(os.sep))
+    steps_path = os.path.join(pred_dir, "claude_trace_steps.txt")
+    with open(steps_path, "w", encoding="utf-8") as f:
+        f.write(steps_text)
 
 
 def _persist_cursor_artifacts(work_dir: str, raw: str, response: str) -> None:
@@ -528,7 +530,11 @@ def parse_claude_trace_steps(raw: str) -> list[dict]:
                         text_parts: list[str] = []
                         for part in body:
                             if isinstance(part, dict):
-                                part_text = part.get("content")
+                                # Anthropic content blocks carry their payload
+                                # under ``text`` (tool_result content is
+                                # ``[{"type": "text", "text": "..."}]``), not
+                                # ``content``.
+                                part_text = part.get("text")
                                 if isinstance(part_text, str):
                                     text_parts.append(part_text)
                             elif isinstance(part, str):
@@ -1061,7 +1067,7 @@ def _run_claude_code_sdk_chat_exec(
                     if schema is not None
                     else {"type": "text"}
                 ),
-                "allowed_tools": [],
+                "tools": [],
                 "cwd": tmp,
                 "permission_mode": "bypassPermissions",
             }
@@ -1113,11 +1119,13 @@ def _run_claude_code_cli_chat_exec(
         "json",
         "--permission-mode",
         "dontAsk",
+        "--tools",
+        "",
     ]
     if model:
         cmd.extend(["--model", model])
     if schema is not None:
-        cmd.extend(["--schema", json.dumps(schema, ensure_ascii=False)])
+        cmd.extend(["--json-schema", json.dumps(schema, ensure_ascii=False)])
     if config.get("profile"):
         cmd.extend(["--settings", '{"env":{"CLAUDE_CODE_USE_BEDROCK":"0"}}'])
         cmd.extend(["--append-system-prompt", f"Profile: {config['profile']}"])

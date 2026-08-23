@@ -56,11 +56,10 @@ def set_backend(name: str | None) -> str:
         set_target_backend("codex_exec")
         return normalized
     if normalized == "claude_code_exec":
-        # Both roles default to Claude Code so reflection sees the full
-        # trajectory. A role pinned to a non-default value (e.g. minimax_chat)
-        # still overrides; an explicit --optimizer_backend openai_chat does not,
-        # because openai_chat is one of the base-config defaults.
-        set_optimizer_backend("claude_code_exec")
+        # Only the target defaults to Claude Code (it produces the SDK trace the
+        # reflector consumes); the optimizer keeps its configured backend unless
+        # explicitly selected via --optimizer_backend claude_code_exec.
+        set_optimizer_backend("openai_chat")
         set_target_backend(normalized)
         return normalized
     if normalized == "cursor_exec":

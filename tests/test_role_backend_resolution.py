@@ -52,7 +52,7 @@ def test_eval_only_backend_label_preserves_explicit_cli_role_override() -> None:
         ("cursor_exec", ("openai_chat", "cursor_exec")),
         ("claude", ("claude_chat", "claude_chat")),
         ("claude_chat", ("claude_chat", "claude_chat")),
-        ("claude_code_exec", ("claude_code_exec", "claude_code_exec")),
+        ("claude_code_exec", ("openai_chat", "claude_code_exec")),
         ("codex", ("codex_exec", "codex_exec")),
         ("codex_exec", ("codex_exec", "codex_exec")),
         ("qwen", ("openai_chat", "qwen_chat")),
@@ -125,7 +125,7 @@ def test_explicit_optimizer_is_preserved_while_default_target_is_resolved(
     [
         ("claude", "claude_chat"),
         ("codex", "codex_exec"),
-        ("claude_code_exec", "claude_code_exec"),
+        ("claude_code_exec", "openai_chat"),
         ("cursor", "openai_chat"),
         ("copilot", "copilot_chat"),
         ("copilot_exec", "openai_chat"),
@@ -145,6 +145,15 @@ def test_explicit_target_is_preserved_when_optimizer_is_default() -> None:
     assert _resolve_role_backends("cursor", "openai_chat", "minimax_chat") == (
         "openai_chat",
         "minimax_chat",
+    )
+
+
+def test_claude_code_exec_optimizer_opt_in_is_preserved() -> None:
+    # Route B: the target defaults to Claude Code, but an explicit
+    # --optimizer_backend claude_code_exec still drives both roles.
+    assert _resolve_role_backends("claude_code_exec", "claude_code_exec", "openai_chat") == (
+        "claude_code_exec",
+        "claude_code_exec",
     )
 
 

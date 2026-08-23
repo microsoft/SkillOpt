@@ -500,12 +500,12 @@ def _resolve_role_backends(
         if target_backend in _ROLE_BACKEND_DEFAULTS:
             target_backend = "codex_exec"
     elif backend == "claude_code_exec":
-        # Both roles default to Claude Code so reflection sees the full
-        # trajectory. A role pinned to a non-default value (e.g. minimax_chat)
-        # still overrides; an explicit --optimizer_backend openai_chat does not,
-        # because openai_chat is one of the base-config defaults.
-        if optimizer_backend in _ROLE_BACKEND_DEFAULTS:
-            optimizer_backend = "claude_code_exec"
+        # Only the *target* defaults to Claude Code (that is what produces the
+        # SDK trace the reflector consumes).  The optimizer keeps its configured
+        # backend (openai_chat by default) so an explicit --optimizer_backend is
+        # never silently overridden and existing users' cost profile is
+        # unchanged.  Opt in with --optimizer_backend claude_code_exec.
+        optimizer_backend = optimizer_backend or "openai_chat"
         if target_backend in _ROLE_BACKEND_DEFAULTS:
             target_backend = "claude_code_exec"
     elif backend == "cursor_exec":

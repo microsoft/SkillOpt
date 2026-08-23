@@ -95,7 +95,7 @@ def _sdk_payload() -> str:
                     {
                         "type": "tool_result",
                         "tool_use_id": "tu_1",
-                        "content": [{"type": "text", "content": "X" * 300}],
+                        "content": [{"type": "text", "text": "X" * 300}],
                         "is_error": False,
                     }
                 ],
@@ -146,7 +146,7 @@ def test_parse_claude_trace_steps_marks_errors() -> None:
                     {
                         "type": "tool_result",
                         "tool_use_id": "tu_9",
-                        "content": [{"type": "text", "content": "boom"}],
+                        "content": [{"type": "text", "text": "boom"}],
                         "is_error": True,
                     }
                 ]
@@ -349,3 +349,105 @@ def test_claude_trace_steps_gated_in_fmt_minibatch(
     )
 
     assert ("#### Claude Trace Steps" in formatted) is expect_injected
+
+
+def test_parse_claude_trace_steps_preserves_tool_result_payload() -> None:
+    # Regression for the #233 review: Anthropic content blocks carry their
+    # payload under ``text``, not ``content``.  A realistic message stream must
+    # surface the tool_result observation, not collapse to an empty summary.
+    raw = _json_dumps({
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "content": [{"type": "text", "text": "THE ACTUAL RESULT PAYLOAD"}],
+                    }
+                ],
+            }
+        ]
+    })
+    steps = parse_claude_trace_steps(raw)
+    assert steps == [
+        {"type": "tool_result", "summary": "THE ACTUAL RESULT PAYLOAD", "index": 1}
+    ]
+
+
+def test_cli_chat_uses_json_schema_and_disables_tools(monkeypatch) -> None:
+    # The CLI structured-output path must emit the real --json-schema flag and
+    # an explicit --tools "" (an empty tool list), not --schema or
+    # --permission-mode alone.
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout='{"type": "result", "result": "ok"}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr(codex_harness.subprocess, "run", fake_run)
+
+    text, _usage = codex_harness._run_claude_code_cli_chat_exec(
+        system="sys",
+        prompt="hi",
+        model="claude-sonnet-4-6",
+        timeout=10,
+        schema={"type": "object"},
+    )
+
+    cmd = captured["cmd"]
+    assert "--json-schema" in cmd
+    assert "--schema" not in cmd
+    tools_idx = cmd.index("--tools")
+    assert cmd[tools_idx + 1] == ""
+    assert text == "ok"
+
+
+def test_sdk_chat_disables_tools(monkeypatch) -> None:
+    # ``tools=[]`` (not ``allowed_tools=[]``) is what actually strips the
+    # optimizer's built-in tool access in the SDK path.
+    captured: dict[str, Any] = {}
+
+    sdk = types.ModuleType("claude_agent_sdk")
+
+    class _Options:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _Client:
+        def __init__(self, options):
+            self._options = options
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def query(self, prompt):
+            return None
+
+        def receive_response(self):
+            async def gen():
+                yield types.SimpleNamespace(result="ok", content=None, usage={})
+
+            return gen()
+
+    sdk.ClaudeAgentOptions = _Options
+    sdk.ClaudeSDKClient = _Client
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+
+    text, _usage = codex_harness._run_claude_code_sdk_chat_exec(
+        system="sys",
+        prompt="hi",
+        model="claude-sonnet-4-6",
+        timeout=10,
+        schema=None,
+    )
+
+    assert captured["tools"] == []
+    assert text == "ok"

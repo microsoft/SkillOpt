@@ -384,11 +384,10 @@ def main() -> None:
             _set_role("optimizer_backend", "codex_exec")
             _set_role("target_backend", "codex_exec")
         elif backend == "claude_code_exec":
-            # Both roles default to Claude Code so reflection sees the full
-            # trajectory. A role pinned to a non-default value (e.g. minimax_chat)
-            # still overrides; an explicit --optimizer_backend openai_chat does
-            # not, because openai_chat is one of the base-config defaults.
-            _set_role("optimizer_backend", "claude_code_exec")
+            # Only the target defaults to Claude Code (it produces the SDK trace
+            # the reflector consumes); the optimizer keeps its configured
+            # backend so an explicit --optimizer_backend is never clobbered.
+            _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "claude_code_exec")
         elif backend == "cursor_exec":
             _set_role("optimizer_backend", "openai_chat")
@@ -419,6 +418,12 @@ def main() -> None:
             and not _has_model_override("model.optimizer", "optimizer_model")
         ):
             cfg["optimizer_model"] = default_model_for_backend("claude_chat")
+    if cfg.get("optimizer_backend") == "claude_code_exec":
+        if (
+            str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            and not _has_model_override("model.optimizer", "optimizer_model")
+        ):
+            cfg["optimizer_model"] = default_model_for_backend("claude_code_exec")
     if cfg.get("target_backend") == "claude_chat":
         if (
             str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
