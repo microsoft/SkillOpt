@@ -14,11 +14,14 @@ delegated to an :class:`~skillopt.envs.base.EnvAdapter` instance.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import math
 import os
 import random
 import re
+import shutil
+import tempfile
 import time
 from collections import defaultdict
 
@@ -26,21 +29,44 @@ from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.evaluation.gate import GateResult, evaluate_gate, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
-from skillopt.optimizer.meta_skill import run_meta_skill
+from skillopt.model import (
+    chat_optimizer,
+    configure_azure_openai,
+    configure_claude_code_exec,
+    configure_codex_exec_from_config,
+    configure_copilot_chat,
+    configure_copilot_exec,
+    configure_cursor_exec,
+    configure_minimax_chat,
+    configure_qwen_chat,
+    get_qwen_thinking_modes,
+    get_token_summary,
+    set_optimizer_backend,
+    set_optimizer_deployment,
+    set_reasoning_effort,
+    set_target_backend,
+    set_target_deployment,
+)
+from skillopt.model.common import normalize_backend_name
+from skillopt.optimizer.appendix import (
+    _strip_all_appendix_fields,
+    append_to_appendix_field,
+    inject_empty_appendix_field,
+)
+from skillopt.optimizer.appendix import (
+    extract_appendix_notes as extract_appendix_notes_from_skill,
+)
 from skillopt.optimizer.clip import rank_and_select
 from skillopt.optimizer.lr_autonomous import decide_autonomous_learning_rate
+from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions
 from skillopt.optimizer.scheduler import build_scheduler
 from skillopt.optimizer.skill import apply_patch_with_report
-from skillopt.optimizer.appendix import (
-    append_to_appendix_field,
-    extract_appendix_notes as extract_appendix_notes_from_skill,
-    inject_empty_appendix_field,
-    _strip_all_appendix_fields,
-)
 from skillopt.optimizer.skill_aware import (
     configure_skill_aware_reflection,
     consolidate_appendix_notes,
+)
+from skillopt.optimizer.skill_aware import (
     extract_appendix_notes as extract_appendix_notes_from_result,
 )
 from skillopt.optimizer.slow_update import (
@@ -58,28 +84,7 @@ from skillopt.optimizer.update_modes import (
     payload_label,
     short_item_summary,
 )
-from skillopt.model import (
-    chat_optimizer,
-    configure_azure_openai,
-    configure_claude_code_exec,
-    configure_codex_exec_from_config,
-    configure_copilot_chat,
-    configure_copilot_exec,
-    configure_cursor_exec,
-    configure_minimax_chat,
-    configure_qwen_chat,
-    get_qwen_thinking_modes,
-    get_token_summary,
-    reset_token_tracker,
-    set_reasoning_effort,
-    set_target_backend,
-    set_target_deployment,
-    set_optimizer_backend,
-    set_optimizer_deployment,
-)
-from skillopt.model.common import normalize_backend_name
 from skillopt.utils import compute_score, skill_hash
-
 
 # ── Skill-aware reflection: appendix flush ───────────────────────────────────
 
@@ -359,17 +364,55 @@ def _load_history(out_root: str) -> list[dict]:
     return []
 
 
+def _atomic_write_text(path: str, content: str) -> None:
+    """Atomically replace *path* with durable UTF-8 text."""
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        try:
+            dir_fd = os.open(parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _atomic_write_json(path: str, value: object) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def _json_digest(value: object) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _save_history(out_root: str, history: list[dict]) -> None:
     path = os.path.join(out_root, "history.json")
-    with open(path, "w") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, history)
 
 
 def _save_skill(out_root: str, step: int, content: str) -> None:
     skills_dir = os.path.join(out_root, "skills")
     os.makedirs(skills_dir, exist_ok=True)
-    with open(os.path.join(skills_dir, f"skill_v{step:04d}.md"), "w") as f:
-        f.write(content)
+    _atomic_write_text(
+        os.path.join(skills_dir, f"skill_v{step:04d}.md"), content,
+    )
 
 
 def _load_skill(out_root: str, step: int) -> str:
@@ -408,8 +451,219 @@ def _load_runtime_state(out_root: str) -> dict | None:
 
 def _save_runtime_state(out_root: str, state: dict) -> None:
     path = os.path.join(out_root, "runtime_state.json")
-    with open(path, "w") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(path, state)
+
+
+def _load_json_dict(path: str) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            value = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _step_number(path: str, pattern: str) -> int | None:
+    match = re.fullmatch(pattern, os.path.basename(path))
+    return int(match.group(1)) if match else None
+
+
+def _truncate_lr_history(out_root: str, last_step: int) -> None:
+    path = os.path.join(out_root, "lr_history.jsonl")
+    if not os.path.exists(path):
+        return
+    kept: list[str] = []
+    changed = False
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+                step = int(row["step"])
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                changed = True
+                continue
+            if step <= last_step:
+                kept.append(json.dumps(row, ensure_ascii=False))
+            else:
+                changed = True
+    if changed:
+        _atomic_write_text(path, "".join(f"{line}\n" for line in kept))
+
+
+def _clean_uncommitted_artifacts(
+    out_root: str,
+    last_step: int,
+    *,
+    steps_per_epoch: int | None = None,
+    phase: str = "step",
+) -> None:
+    """Remove artifacts which cannot belong to the committed prefix."""
+    for path in glob.glob(os.path.join(out_root, "steps", "step_*")):
+        step = _step_number(path, r"step_(\d+)")
+        if step is not None and step > last_step:
+            shutil.rmtree(path)
+    for path in glob.glob(os.path.join(out_root, "skills", "skill_v*.md")):
+        step = _step_number(path, r"skill_v(\d+)\.md")
+        if step is not None and step > last_step:
+            os.unlink(path)
+    _truncate_lr_history(out_root, last_step)
+
+    if steps_per_epoch:
+        if last_step == 0:
+            boundary_epoch = 0
+            at_epoch_boundary = False
+        elif last_step % steps_per_epoch:
+            boundary_epoch = last_step // steps_per_epoch + 1
+            at_epoch_boundary = False
+        else:
+            boundary_epoch = last_step // steps_per_epoch
+            at_epoch_boundary = True
+        for root_name in ("slow_update", "meta_skill"):
+            phase_commits_root = (
+                phase in {"slow_update", "meta_skill", "complete"}
+                if root_name == "slow_update"
+                else phase in {"meta_skill", "complete"}
+            )
+            first_uncommitted_epoch = boundary_epoch
+            if at_epoch_boundary and phase_commits_root:
+                first_uncommitted_epoch += 1
+            if boundary_epoch == 0:
+                first_uncommitted_epoch = 1
+            for path in glob.glob(os.path.join(out_root, root_name, "epoch_*")):
+                epoch = _step_number(path, r"epoch_(\d+)")
+                if epoch is not None and epoch >= first_uncommitted_epoch:
+                    shutil.rmtree(path)
+
+
+def _recover_committed_prefix(
+    out_root: str,
+    *,
+    steps_per_epoch: int | None = None,
+) -> tuple[list[dict], dict | None, int]:
+    """Validate and retain the longest contiguous committed step prefix.
+
+    ``runtime_state.json`` is the commit marker.  Legacy runs without it retain
+    their old history-based fallback, but every candidate step must also have a
+    readable step record and skill snapshot.
+    """
+    history_path = os.path.join(out_root, "history.json")
+    try:
+        history = _load_history(out_root)
+    except (OSError, json.JSONDecodeError, TypeError):
+        history = []
+    if not isinstance(history, list):
+        history = []
+    runtime = _load_runtime_state(out_root)
+
+    by_step: dict[int, list[dict]] = defaultdict(list)
+    for row in history:
+        if not isinstance(row, dict):
+            continue
+        try:
+            by_step[int(row["step"])].append(row)
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    runtime_limit: int | None = None
+    if runtime is not None:
+        try:
+            runtime_limit = max(0, int(runtime.get("last_completed_step", 0)))
+        except (TypeError, ValueError):
+            runtime_limit = 0
+    elif os.path.exists(os.path.join(out_root, "runtime_state.json")):
+        # A malformed marker is fail-closed. Atomic writes make this a legacy
+        # or storage-corruption case rather than a normal interrupted commit.
+        runtime_limit = 0
+
+    history_limit = max(by_step, default=0)
+    candidate_limit = history_limit if runtime_limit is None else min(history_limit, runtime_limit)
+    committed: list[dict] = []
+    try:
+        previous_skill_hash: str | None = skill_hash(_load_skill(out_root, 0))
+    except OSError:
+        previous_skill_hash = None
+
+    for step in range(1, candidate_limit + 1):
+        rows = by_step.get(step, [])
+        if len(rows) != 1:
+            break
+        row = rows[0]
+        record_path = os.path.join(out_root, "steps", f"step_{step:04d}", "step_record.json")
+        record = _load_json_dict(record_path)
+        skill_path = os.path.join(out_root, "skills", f"skill_v{step:04d}.md")
+        if record is None or record.get("step") != step or not os.path.isfile(skill_path):
+            break
+        try:
+            skill_content = _load_skill(out_root, step)
+        except OSError:
+            break
+        output_hash = skill_hash(skill_content)
+        if row.get("skill_hash") not in (None, output_hash):
+            break
+        if record.get("skill_hash") not in (None, output_hash):
+            break
+        row_commit = row.get("commit_id")
+        record_commit = record.get("commit_id")
+        if row_commit is not None or record_commit is not None:
+            if not row_commit or row_commit != record_commit or row != record:
+                break
+        input_hash = record.get("input_skill_hash")
+        if previous_skill_hash is not None and input_hash not in (None, previous_skill_hash):
+            break
+        committed.append(row)
+        previous_skill_hash = output_hash
+
+    last_step = len(committed)
+    if runtime is not None and last_step == runtime_limit and last_step > 0:
+        last_record = _load_json_dict(os.path.join(
+            out_root, "steps", f"step_{last_step:04d}", "step_record.json",
+        ))
+        runtime_consistent = (
+            runtime.get("current_skill_hash") in (None, previous_skill_hash)
+            and runtime.get("history_hash") in (None, _json_digest(committed))
+            and runtime.get("step_record_hash")
+            in (None, _json_digest(last_record) if last_record is not None else "")
+        )
+        if not runtime_consistent:
+            last_step -= 1
+            committed.pop()
+
+    changed = history != committed
+    _clean_uncommitted_artifacts(
+        out_root,
+        last_step,
+        steps_per_epoch=steps_per_epoch,
+        phase=str(runtime.get("phase", "step")) if runtime else "step",
+    )
+    if changed or (os.path.exists(history_path) and not isinstance(history, list)):
+        _save_history(out_root, committed)
+    if runtime is not None and int(runtime.get("last_completed_step", 0) or 0) != last_step:
+        try:
+            os.unlink(os.path.join(out_root, "runtime_state.json"))
+        except FileNotFoundError:
+            pass
+        runtime = None
+    return committed, runtime, last_step
+
+
+def _load_committed_step_buffer(
+    out_root: str,
+    *,
+    epoch: int,
+    steps_per_epoch: int,
+    last_step: int,
+) -> list[dict]:
+    """Rebuild the in-epoch optimizer context from committed digests."""
+    buffer: list[dict] = []
+    first_step = (epoch - 1) * steps_per_epoch + 1
+    last_epoch_step = min(last_step, epoch * steps_per_epoch)
+    for step in range(first_step, last_epoch_step + 1):
+        digest = _load_json_dict(os.path.join(
+            out_root, "steps", f"step_{step:04d}", "trajectory_digest.json",
+        ))
+        if digest is not None and digest.get("step") == step:
+            buffer.append(digest)
+    return buffer
 
 
 def _resolve_train_size(cfg: dict, dataloader) -> int:
@@ -946,10 +1200,11 @@ class ReflACTTrainer:
         print(f"  [config] base_seeds={base_seeds}")
 
         # ── Resume check ─────────────────────────────────────────────────
-        history = _load_history(out_root)
-        runtime_state = _load_runtime_state(out_root)
+        history, runtime_state, recovered_step = _recover_committed_prefix(
+            out_root, steps_per_epoch=steps_per_epoch,
+        )
         if runtime_state:
-            last_step = int(runtime_state.get("last_completed_step", 0) or 0)
+            last_step = recovered_step
             current_skill_path = runtime_state.get("current_skill_path") or os.path.join(
                 out_root, "skills", f"skill_v{last_step:04d}.md",
             )
@@ -971,15 +1226,37 @@ class ReflACTTrainer:
                 or (f"step_{last_step:04d}" if last_step > 0 else "initial_skill")
             )
             best_origin = str(runtime_state.get("best_origin") or current_origin)
+            expected_best_hash = runtime_state.get("best_skill_hash")
+            if expected_best_hash and skill_hash(best_skill) != expected_best_hash:
+                try:
+                    rebuilt_best = _load_skill(out_root, int(best_step))
+                except (OSError, TypeError, ValueError):
+                    rebuilt_best = current_skill
+                if skill_hash(rebuilt_best) != expected_best_hash:
+                    raise RuntimeError(
+                        "committed best skill hash does not match any recoverable snapshot"
+                    )
+                best_skill = rebuilt_best
+                _atomic_write_text(best_skill_path, best_skill)
             resume_from = last_step + 1
-            scheduler.load_state_dict({"current_step": last_step})
+            scheduler_state = runtime_state.get("scheduler_state")
+            if isinstance(scheduler_state, dict):
+                scheduler.load_state_dict(scheduler_state)
+            else:
+                scheduler.load_state_dict({
+                    "current_step": sum(
+                        1 for row in history
+                        if row.get("edit_budget") is not None
+                        and row.get("lr_control_mode") not in {"autonomous", "none"}
+                    ),
+                })
             print(
                 f"  [resume] from step {resume_from}  "
                 f"current={current_score:.4f} best={best_score:.4f} "
                 f"(origin={current_origin})"
             )
         elif history:
-            last_step = history[-1]["step"]
+            last_step = recovered_step
             current_skill = _load_skill(out_root, last_step)
             best_rec = max(history, key=lambda h: h.get("best_score", 0.0))
             best_score = best_rec["best_score"]
@@ -994,7 +1271,20 @@ class ReflACTTrainer:
             current_origin = f"step_{last_step:04d}"
             best_origin = f"step_{int(best_step):04d}" if isinstance(best_step, int) else str(best_step)
             resume_from = last_step + 1
-            scheduler.load_state_dict({"current_step": last_step})
+            last_record = _load_json_dict(os.path.join(
+                out_root, "steps", f"step_{last_step:04d}", "step_record.json",
+            )) or {}
+            scheduler_state = last_record.get("scheduler_state")
+            if isinstance(scheduler_state, dict):
+                scheduler.load_state_dict(scheduler_state)
+            else:
+                scheduler.load_state_dict({
+                    "current_step": sum(
+                        1 for row in history
+                        if row.get("edit_budget") is not None
+                        and row.get("lr_control_mode") not in {"autonomous", "none"}
+                    ),
+                })
             print(
                 f"  [resume] from step {resume_from}  "
                 f"current={current_score:.4f} best={best_score:.4f}"
@@ -1009,7 +1299,9 @@ class ReflACTTrainer:
             best_origin = "initial_skill"
             resume_from = 1
 
-        _save_skill(out_root, 0, skill_init)
+        skill_zero_path = os.path.join(out_root, "skills", "skill_v0000.md")
+        if not (runtime_state or history) or not os.path.exists(skill_zero_path):
+            _save_skill(out_root, 0, skill_init)
 
         use_skill_aware = cfg.get("use_skill_aware_reflection", False)
         # Publish the toggle process-wide so run_minibatch_reflect resolves it
@@ -1021,10 +1313,16 @@ class ReflACTTrainer:
         if use_skill_aware:
             current_skill = inject_empty_appendix_field(current_skill)
 
-        def _persist_runtime_state(last_completed_step: int) -> None:
+        def _persist_runtime_state(
+            last_completed_step: int,
+            *,
+            phase: str = "step",
+            step_record: dict | None = None,
+        ) -> None:
             _save_runtime_state(
                 out_root,
                 {
+                    "format_version": 2,
                     "last_completed_step": last_completed_step,
                     "current_skill_path": os.path.join(
                         out_root, "skills", f"skill_v{last_completed_step:04d}.md",
@@ -1035,8 +1333,87 @@ class ReflACTTrainer:
                     "best_score": best_score,
                     "best_step": best_step,
                     "best_origin": best_origin,
+                    "current_skill_hash": skill_hash(current_skill),
+                    "best_skill_hash": skill_hash(best_skill),
+                    "history_hash": _json_digest(history),
+                    "step_record_hash": (
+                        _json_digest(step_record) if step_record is not None else None
+                    ),
+                    "scheduler_state": scheduler.state_dict(),
+                    "phase": phase,
                 },
             )
+
+        def _commit_step(step_rec: dict, step_dir: str) -> None:
+            """Publish one complete step; runtime_state is the final marker."""
+            output_hash = skill_hash(current_skill)
+            step_rec["skill_hash"] = output_hash
+            step_rec["best_skill_hash"] = skill_hash(best_skill)
+            step_rec["scheduler_state"] = scheduler.state_dict()
+            step_rec["commit_id"] = hashlib.sha256(
+                json.dumps(
+                    {
+                        "step": step_rec["step"],
+                        "input_skill_hash": step_rec.get("input_skill_hash"),
+                        "skill_hash": output_hash,
+                        "scheduler_state": step_rec["scheduler_state"],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+
+            _save_skill(out_root, int(step_rec["step"]), current_skill)
+            _atomic_write_text(os.path.join(out_root, "best_skill.md"), best_skill)
+            _atomic_write_json(
+                os.path.join(step_dir, "step_record.json"), step_rec,
+            )
+            history.append(step_rec)
+            _save_history(out_root, history)
+            _persist_runtime_state(
+                int(step_rec["step"]), step_record=step_rec,
+            )
+
+        def _amend_current_skill_commit(step: int, phase: str) -> None:
+            """Transactionally attach an epoch-end skill mutation to *step*."""
+            if not history or history[-1].get("step") != step:
+                raise RuntimeError(f"cannot amend missing committed step {step}")
+            step_dir = os.path.join(out_root, "steps", f"step_{step:04d}")
+            record_path = os.path.join(step_dir, "step_record.json")
+            record = _load_json_dict(record_path)
+            if record is None:
+                raise RuntimeError(f"cannot amend unreadable step record {record_path}")
+            output_hash = skill_hash(current_skill)
+            record.update({
+                "skill_hash": output_hash,
+                "skill_len": len(current_skill),
+                "current_origin": current_origin,
+                "best_origin": best_origin,
+                "best_score": best_score,
+                "best_step": best_step,
+                "best_skill_hash": skill_hash(best_skill),
+                "scheduler_state": scheduler.state_dict(),
+                "post_step_phase": phase,
+            })
+            record["commit_id"] = hashlib.sha256(
+                json.dumps(
+                    {
+                        "step": step,
+                        "input_skill_hash": record.get("input_skill_hash"),
+                        "skill_hash": output_hash,
+                        "scheduler_state": record["scheduler_state"],
+                        "phase": phase,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            _save_skill(out_root, step, current_skill)
+            _atomic_write_text(os.path.join(out_root, "best_skill.md"), best_skill)
+            _atomic_write_json(record_path, record)
+            history[-1] = record
+            _save_history(out_root, history)
+            _persist_runtime_state(step, phase=phase, step_record=record)
 
         # ── Selection cache ──────────────────────────────────────────────
         sel_cache: dict[str, tuple[float, float]] = {}
@@ -1148,7 +1525,12 @@ class ReflACTTrainer:
 
             # Step buffer: accumulates per-step context (failure patterns +
             # rejected edits) within this epoch so optimizers see full history.
-            step_buffer: list[dict] = []
+            step_buffer = _load_committed_step_buffer(
+                out_root,
+                epoch=epoch,
+                steps_per_epoch=steps_per_epoch,
+                last_step=last_step,
+            )
             active_meta_skill = (
                 _load_meta_skill_content(out_root, epoch - 1)
                 if cfg.get("use_meta_skill", False)
@@ -1186,6 +1568,7 @@ class ReflACTTrainer:
                     "step": global_step,
                     "epoch": epoch,
                     "step_in_epoch": step_in_epoch,
+                    "input_skill_hash": skill_hash(current_skill),
                     "timing": {},
                     "tokens": {},
                 }
@@ -1314,12 +1697,7 @@ class ReflACTTrainer:
                     step_rec["best_step"] = best_step
                     step_rec["skill_len"] = len(current_skill)
                     step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
-                    history.append(step_rec)
-                    _save_history(out_root, history)
-                    _save_skill(out_root, global_step, current_skill)
-                    _persist_runtime_state(global_step)
-                    with open(os.path.join(step_dir, "step_record.json"), "w") as f:
-                        json.dump(step_rec, f, indent=2, ensure_ascii=False)
+                    _commit_step(step_rec, step_dir)
                     print("    [skip] no usable patches — skill unchanged")
                     continue
 
@@ -1508,12 +1886,7 @@ class ReflACTTrainer:
                     step_rec["best_step"] = best_step
                     step_rec["skill_len"] = len(current_skill)
                     step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
-                    history.append(step_rec)
-                    _save_history(out_root, history)
-                    _save_skill(out_root, global_step, current_skill)
-                    _persist_runtime_state(global_step)
-                    with open(os.path.join(step_dir, "step_record.json"), "w") as f:
-                        json.dump(step_rec, f, indent=2, ensure_ascii=False)
+                    _commit_step(step_rec, step_dir)
                     print("    [skip] no usable rewrite generated — skill unchanged")
                     continue
                 print(
@@ -1673,8 +2046,7 @@ class ReflACTTrainer:
 
                 # Persist step digest for step buffer context
                 digest_path = os.path.join(step_dir, "trajectory_digest.json")
-                with open(digest_path, "w") as f:
-                    json.dump(buf_entry, f, indent=2, ensure_ascii=False)
+                _atomic_write_json(digest_path, buf_entry)
 
                 # ── Token snapshot ───────────────────────────────────────
                 tokens_after = get_token_summary()
@@ -1702,14 +2074,7 @@ class ReflACTTrainer:
                 step_rec["skill_len"] = len(current_skill)
                 step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
 
-                _save_skill(out_root, global_step, current_skill)
-                with open(os.path.join(out_root, "best_skill.md"), "w") as f:
-                    f.write(best_skill)
-                history.append(step_rec)
-                _save_history(out_root, history)
-                _persist_runtime_state(global_step)
-                with open(os.path.join(step_dir, "step_record.json"), "w") as f:
-                    json.dump(step_rec, f, indent=2, ensure_ascii=False)
+                _commit_step(step_rec, step_dir)
 
                 timing = step_rec["timing"]
                 print(
@@ -1776,12 +2141,11 @@ class ReflACTTrainer:
                     os.makedirs(slow_dir, exist_ok=True)
                     current_skill = inject_empty_slow_update_field(current_skill)
                     current_origin = f"slow_update_placeholder_epoch_{epoch:02d}"
-                    _save_skill(out_root, global_step, current_skill)
-                    with open(os.path.join(out_root, "best_skill.md"), "w") as f:
-                        f.write(best_skill)
-                    with open(slow_done_path, "w") as f:
-                        json.dump({"action": "inject_placeholder", "epoch": epoch}, f, indent=2)
-                    _persist_runtime_state(global_step)
+                    _atomic_write_json(
+                        slow_done_path,
+                        {"action": "inject_placeholder", "epoch": epoch},
+                    )
+                    _amend_current_skill_commit(global_step, "slow_update")
                     print(
                         f"\n  [SLOW UPDATE epoch {epoch}] "
                         f"injected empty placeholder"
@@ -2035,12 +2399,8 @@ class ReflACTTrainer:
                         )
 
                     # 5. Save
-                    with open(slow_done_path, "w") as f:
-                        json.dump(slow_result, f, indent=2, ensure_ascii=False)
-                    _save_skill(out_root, global_step, current_skill)
-                    with open(os.path.join(out_root, "best_skill.md"), "w") as f:
-                        f.write(best_skill)
-                    _persist_runtime_state(global_step)
+                    _atomic_write_json(slow_done_path, slow_result)
+                    _amend_current_skill_commit(global_step, "slow_update")
 
                     print(
                         f"\n  [SLOW UPDATE epoch {epoch} done] "
@@ -2057,11 +2417,10 @@ class ReflACTTrainer:
                 if os.path.exists(meta_skill_done_path):
                     print(f"\n  [META SKILL epoch {epoch}] resumed — already done")
                 elif epoch == 1:
-                    with open(meta_skill_done_path, "w") as f:
-                        json.dump(
-                            {"action": "skip_first_epoch", "epoch": epoch},
-                            f, indent=2, ensure_ascii=False,
-                        )
+                    _atomic_write_json(
+                        meta_skill_done_path,
+                        {"action": "skip_first_epoch", "epoch": epoch},
+                    )
                     print(f"\n  [META SKILL epoch {epoch}] skipped — first epoch")
                 else:
                     print(
@@ -2157,13 +2516,13 @@ class ReflACTTrainer:
                         meta_skill_result["action"] = "no_content"
                         print(f"    [meta skill] no memory produced, {meta_skill_time}s")
 
-                    with open(meta_skill_done_path, "w") as f:
-                        json.dump(meta_skill_result, f, indent=2, ensure_ascii=False)
+                    _atomic_write_json(meta_skill_done_path, meta_skill_result)
+
+                _persist_runtime_state(global_step, phase="meta_skill")
 
         # ── Save best skill ──────────────────────────────────────────────
-        with open(os.path.join(out_root, "best_skill.md"), "w") as f:
-            f.write(best_skill)
-        _persist_runtime_state(global_step)
+        _atomic_write_text(os.path.join(out_root, "best_skill.md"), best_skill)
+        _persist_runtime_state(global_step, phase="complete")
         print(
             f"\n  [done] best skill from step {best_step}, "
             f"score={best_score:.4f}"
@@ -2234,9 +2593,10 @@ class ReflACTTrainer:
                         best_score = final_gate_score
                         best_step = global_step
                         best_origin = current_origin
-                        with open(os.path.join(out_root, "best_skill.md"), "w") as f:
-                            f.write(best_skill)
-                        _persist_runtime_state(global_step)
+                        _atomic_write_text(
+                            os.path.join(out_root, "best_skill.md"), best_skill,
+                        )
+                        _persist_runtime_state(global_step, phase="complete")
             except Exception as _e:  # noqa: BLE001
                 final_selection_hard = None
                 final_selection_soft = None
@@ -2383,7 +2743,7 @@ class ReflACTTrainer:
 
             # Comparison
             delta_hard = (test_hard or 0) - (baseline_test_hard or 0)
-            print(f"\n  === Improvement vs baseline (init S_0) ===")
+            print("\n  === Improvement vs baseline (init S_0) ===")
             print(
                 f"    [2] best-on-val hard: {baseline_test_hard:.4f} -> {test_hard:.4f}  "
                 f"(delta={delta_hard:+.4f})"
