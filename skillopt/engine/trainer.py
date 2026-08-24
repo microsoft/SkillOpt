@@ -421,6 +421,31 @@ def _load_skill(out_root: str, step: int) -> str:
         return f.read()
 
 
+def _restore_best_skill_from_snapshot(
+    out_root: str,
+    best_step: object,
+    *,
+    last_step: int,
+) -> tuple[str, int]:
+    """Restore the loose best-skill pointer from a committed snapshot."""
+    try:
+        snapshot_step = int(best_step)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"invalid recovered best step: {best_step!r}") from exc
+    if snapshot_step < 0 or snapshot_step > last_step:
+        raise RuntimeError(
+            f"recovered best step {snapshot_step} is outside committed prefix 0..{last_step}"
+        )
+    try:
+        best_skill = _load_skill(out_root, snapshot_step)
+    except OSError as exc:
+        raise RuntimeError(
+            f"missing committed best-skill snapshot for step {snapshot_step}"
+        ) from exc
+    _atomic_write_text(os.path.join(out_root, "best_skill.md"), best_skill)
+    return best_skill, snapshot_step
+
+
 def _load_meta_skill_content(out_root: str, epoch: int) -> str:
     if epoch <= 0:
         return ""
@@ -553,6 +578,8 @@ def _recover_committed_prefix(
         history = []
     if not isinstance(history, list):
         history = []
+    runtime_path = os.path.join(out_root, "runtime_state.json")
+    runtime_file_exists = os.path.exists(runtime_path)
     runtime = _load_runtime_state(out_root)
 
     by_step: dict[int, list[dict]] = defaultdict(list)
@@ -565,15 +592,18 @@ def _recover_committed_prefix(
             continue
 
     runtime_limit: int | None = None
+    runtime_marker_valid = True
     if runtime is not None:
         try:
             runtime_limit = max(0, int(runtime.get("last_completed_step", 0)))
         except (TypeError, ValueError):
             runtime_limit = 0
-    elif os.path.exists(os.path.join(out_root, "runtime_state.json")):
+            runtime_marker_valid = False
+    elif runtime_file_exists:
         # A malformed marker is fail-closed. Atomic writes make this a legacy
         # or storage-corruption case rather than a normal interrupted commit.
         runtime_limit = 0
+        runtime_marker_valid = False
 
     history_limit = max(by_step, default=0)
     candidate_limit = history_limit if runtime_limit is None else min(history_limit, runtime_limit)
@@ -614,7 +644,12 @@ def _recover_committed_prefix(
         previous_skill_hash = output_hash
 
     last_step = len(committed)
-    if runtime is not None and last_step == runtime_limit and last_step > 0:
+    if (
+        runtime is not None
+        and runtime_marker_valid
+        and last_step == runtime_limit
+        and last_step > 0
+    ):
         last_record = _load_json_dict(os.path.join(
             out_root, "steps", f"step_{last_step:04d}", "step_record.json",
         ))
@@ -633,13 +668,19 @@ def _recover_committed_prefix(
         out_root,
         last_step,
         steps_per_epoch=steps_per_epoch,
-        phase=str(runtime.get("phase", "step")) if runtime else "step",
+        phase=(
+            str(runtime.get("phase", "step"))
+            if runtime is not None and runtime_marker_valid
+            else "step"
+        ),
     )
     if changed or (os.path.exists(history_path) and not isinstance(history, list)):
         _save_history(out_root, committed)
-    if runtime is not None and int(runtime.get("last_completed_step", 0) or 0) != last_step:
+    if runtime_file_exists and (
+        not runtime_marker_valid or runtime_limit != last_step
+    ):
         try:
-            os.unlink(os.path.join(out_root, "runtime_state.json"))
+            os.unlink(runtime_path)
         except FileNotFoundError:
             pass
         runtime = None
@@ -1261,12 +1302,9 @@ class ReflACTTrainer:
             best_rec = max(history, key=lambda h: h.get("best_score", 0.0))
             best_score = best_rec["best_score"]
             best_step = best_rec["best_step"]
-            best_skill_path = os.path.join(out_root, "best_skill.md")
-            if os.path.exists(best_skill_path):
-                with open(best_skill_path) as f:
-                    best_skill = f.read()
-            else:
-                best_skill = _load_skill(out_root, best_step)
+            best_skill, best_step = _restore_best_skill_from_snapshot(
+                out_root, best_step, last_step=last_step,
+            )
             current_score = history[-1].get("current_score", best_score)
             current_origin = f"step_{last_step:04d}"
             best_origin = f"step_{int(best_step):04d}" if isinstance(best_step, int) else str(best_step)

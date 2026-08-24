@@ -6,6 +6,7 @@ from skillopt.engine.trainer import (
     _json_digest,
     _load_committed_step_buffer,
     _recover_committed_prefix,
+    _restore_best_skill_from_snapshot,
 )
 from skillopt.utils import skill_hash
 
@@ -129,6 +130,37 @@ def test_recovery_cross_checks_runtime_history_and_step_record_hashes(tmp_path: 
     assert last_step == 1
     assert runtime is None
     assert [row["step"] for row in recovered] == [1]
+
+
+def test_recovery_fail_closes_non_numeric_runtime_marker(tmp_path: Path):
+    _make_run(tmp_path, 1)
+    runtime_path = tmp_path / "runtime_state.json"
+    runtime_path.write_text(
+        json.dumps({"last_completed_step": "corrupt"}), encoding="utf-8",
+    )
+
+    recovered, runtime, last_step = _recover_committed_prefix(tmp_path.as_posix())
+
+    assert recovered == []
+    assert runtime is None
+    assert last_step == 0
+    assert not runtime_path.exists()
+    assert not (tmp_path / "steps" / "step_0001").exists()
+    assert not (tmp_path / "skills" / "skill_v0001.md").exists()
+
+
+def test_history_fallback_rebuilds_best_skill_from_committed_snapshot(tmp_path: Path):
+    _make_run(tmp_path, 2)
+    best_path = tmp_path / "best_skill.md"
+    best_path.write_text("uncommitted best\n", encoding="utf-8")
+
+    best_skill, best_step = _restore_best_skill_from_snapshot(
+        tmp_path.as_posix(), 1, last_step=2,
+    )
+
+    assert best_step == 1
+    assert best_skill == "skill 1\n"
+    assert best_path.read_text(encoding="utf-8") == "skill 1\n"
 
 
 def test_epoch_artifacts_follow_runtime_phase(tmp_path: Path):
