@@ -7,6 +7,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **`skillopt-sleep revert`**, undoing an adoption by reversing its receipt.
+  A live document adoption replaced is restored from its immutable backup; one
+  adoption created is removed, since that is the state being returned to.
+  Selection mirrors `adopt` (`--skill`, `--all-skills`, `--legacy`,
+  `--staging`), and a bare `revert` targets the most recent night with an
+  adoption still on record. Reverting consumes the backup and clears the night's
+  receipt rows, so the night can be adopted again. It refuses when the live file
+  no longer matches what adoption wrote — it was edited since, and restoring the
+  backup would discard that work — or when a backup is missing or fails its pin.
 - **SkillOpt-Sleep multi-skill fan-out and reviewed subset adoption**: each
   hinted skill is consolidated from its own pinned live baseline, staged as an
   independent proposal with per-skill gate evidence, and promoted only through
