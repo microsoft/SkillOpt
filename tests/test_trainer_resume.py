@@ -1,12 +1,17 @@
 import json
+import shutil
 from pathlib import Path
+
+import pytest
 
 from skillopt.engine.trainer import (
     _atomic_write_json,
     _json_digest,
     _load_committed_step_buffer,
+    _load_resume_skills,
     _recover_committed_prefix,
     _restore_best_skill_from_snapshot,
+    _runtime_float,
 )
 from skillopt.utils import skill_hash
 
@@ -247,3 +252,213 @@ def test_atomic_json_replaces_complete_document(tmp_path: Path):
 
     assert json.loads(path.read_text()) == {"new": [1, 2, 3]}
     assert not list(tmp_path.glob(".state.json.*"))
+
+
+def test_runtime_scores_preserve_zero():
+    state = {"current_score": 0.0, "best_score": 0}
+
+    assert _runtime_float(state, "current_score", -1.0) == 0.0
+    assert _runtime_float(state, "best_score", -1.0) == 0.0
+
+
+@pytest.mark.parametrize("remove_original", [False, True])
+def test_resume_uses_moved_checkpoint_files(tmp_path: Path, remove_original: bool):
+    original = tmp_path / "original"
+    history = _make_run(original, 1)
+    (original / "best_skill.md").write_text("initial\n", encoding="utf-8")
+    runtime = {
+        "last_completed_step": 1,
+        "current_skill_path": str(original / "skills" / "skill_v0001.md"),
+        "best_skill_path": str(original / "best_skill.md"),
+        "current_skill_hash": history[0]["skill_hash"],
+        "best_skill_hash": skill_hash("initial\n"),
+        "best_step": 0,
+    }
+    (original / "runtime_state.json").write_text(
+        json.dumps(runtime), encoding="utf-8",
+    )
+    moved = tmp_path / "moved"
+    shutil.copytree(original, moved)
+
+    if remove_original:
+        shutil.rmtree(original)
+    else:
+        (original / "skills" / "skill_v0001.md").write_text(
+            "stale current\n", encoding="utf-8",
+        )
+        (original / "best_skill.md").write_text("stale best\n", encoding="utf-8")
+
+    recovered, moved_runtime, last_step = _recover_committed_prefix(str(moved))
+    current_skill, best_skill = _load_resume_skills(
+        str(moved), moved_runtime, last_step,
+    )
+
+    assert recovered == history
+    assert current_skill == "skill 1\n"
+    assert best_skill == "initial\n"
+
+
+class _Interrupted(Exception):
+    pass
+
+
+class _ResumeAdapter:
+    def __init__(self, baseline_calls: list[str] | None = None):
+        self.baseline_calls = baseline_calls
+
+    def setup(self, cfg):
+        pass
+
+    def get_dataloader(self):
+        return None
+
+    def requires_ray(self):
+        return False
+
+    def build_eval_env(self, **kwargs):
+        return [{"id": "item", "instruction": "test"}]
+
+    def build_train_env(self, **kwargs):
+        return [{"id": "item", "instruction": "test"}]
+
+    def rollout(self, env, skill, out_dir, **kwargs):
+        if self.baseline_calls is not None and str(out_dir).endswith(
+            "selection_eval_baseline"
+        ):
+            self.baseline_calls.append(str(out_dir))
+        return [{
+            "id": item["id"],
+            "hard": 0.0,
+            "soft": 0.0,
+            "fail_reason": "expected failure",
+        } for item in env]
+
+    def reflect(self, *args, **kwargs):
+        return []
+
+
+def _resume_cfg(root: Path, skill_init: Path) -> dict:
+    return {
+        "out_root": str(root),
+        "skill_init": str(skill_init),
+        "model_backend": "openai_chat",
+        "optimizer_model": "optimizer",
+        "target_model": "target",
+        "batch_size": 1,
+        "num_epochs": 2,
+        "accumulation": 1,
+        "seed": 7,
+        "merge_batch_size": 2,
+        "train_size": 1,
+        "edit_budget": 1,
+        "min_edit_budget": 1,
+        "lr_scheduler": "constant",
+        "sel_env_num": 1,
+        "test_env_num": 1,
+        "analyst_workers": 1,
+        "eval_test": False,
+        "use_slow_update": True,
+        "slow_update_samples": 1,
+        "slow_update_gate_with_selection": False,
+        "use_meta_skill": True,
+    }
+
+
+@pytest.mark.parametrize("phase", ["step", "slow_update", "meta_skill", "complete"])
+def test_interrupted_epoch_phases_match_uninterrupted(
+    tmp_path: Path, monkeypatch, phase: str,
+):
+    import skillopt.engine.trainer as trainer_module
+
+    skill_init = tmp_path / "initial.md"
+    skill_init.write_text("initial\n", encoding="utf-8")
+    meta_inputs: dict[str, list[tuple[str, list[dict]]]] = {
+        "full": [], "resumed": [],
+    }
+    active_run = "full"
+
+    for name in (
+        "configure_azure_openai",
+        "configure_claude_code_exec",
+        "configure_codex_exec_from_config",
+        "configure_copilot_chat",
+        "configure_copilot_exec",
+        "configure_cursor_exec",
+        "configure_minimax_chat",
+        "configure_qwen_chat",
+        "set_optimizer_backend",
+        "set_optimizer_deployment",
+        "set_reasoning_effort",
+        "set_target_backend",
+        "set_target_deployment",
+    ):
+        monkeypatch.setattr(trainer_module, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(trainer_module, "get_token_summary", lambda: {})
+    monkeypatch.setattr(
+        trainer_module,
+        "run_slow_update",
+        lambda *args, **kwargs: {
+            "reasoning": "fixed",
+            "slow_update_content": "fixed guidance",
+        },
+    )
+
+    def run_meta_skill(*, curr_skill, comparison_pairs, **kwargs):
+        meta_inputs[active_run].append((curr_skill, comparison_pairs))
+        return {"meta_skill_content": "fixed meta"}
+
+    monkeypatch.setattr(trainer_module, "run_meta_skill", run_meta_skill)
+    real_save = trainer_module._save_runtime_state
+
+    full_root = tmp_path / "full"
+    full_baselines: list[str] = []
+    trainer_module.ReflACTTrainer(
+        _resume_cfg(full_root, skill_init), _ResumeAdapter(full_baselines),
+    ).train()
+
+    interrupted_root = tmp_path / "interrupted"
+    resumed_baselines: list[str] = []
+    active_run = "resumed"
+    stopped = False
+
+    def interrupt_save(root, state):
+        nonlocal stopped
+        real_save(root, state)
+        if (
+            not stopped
+            and state.get("last_completed_step") == 2
+            and state.get("phase") == phase
+        ):
+            stopped = True
+            raise _Interrupted
+
+    monkeypatch.setattr(trainer_module, "_save_runtime_state", interrupt_save)
+    with pytest.raises(_Interrupted):
+        trainer_module.ReflACTTrainer(
+            _resume_cfg(interrupted_root, skill_init),
+            _ResumeAdapter(resumed_baselines),
+        ).train()
+    monkeypatch.setattr(trainer_module, "_save_runtime_state", real_save)
+    trainer_module.ReflACTTrainer(
+        _resume_cfg(interrupted_root, skill_init), _ResumeAdapter(resumed_baselines),
+    ).train()
+
+    full_state = json.loads((full_root / "runtime_state.json").read_text())
+    resumed_state = json.loads((interrupted_root / "runtime_state.json").read_text())
+    assert full_state["current_score"] == resumed_state["current_score"] == 0.0
+    assert full_state["best_score"] == resumed_state["best_score"] == 0.0
+    assert len(full_baselines) == len(resumed_baselines) == 1
+    assert (full_root / "skills" / "skill_v0002.md").read_text() == (
+        interrupted_root / "skills" / "skill_v0002.md"
+    ).read_text()
+    assert (full_root / "best_skill.md").read_text() == (
+        interrupted_root / "best_skill.md"
+    ).read_text()
+    assert json.loads(
+        (full_root / "meta_skill" / "epoch_02" / "meta_skill_result.json").read_text()
+    ) == json.loads(
+        (interrupted_root / "meta_skill" / "epoch_02" / "meta_skill_result.json").read_text()
+    )
+    assert meta_inputs["full"] == meta_inputs["resumed"]
+    assert len(meta_inputs["full"]) == 1
+    assert "fixed guidance" not in meta_inputs["full"][0][0]

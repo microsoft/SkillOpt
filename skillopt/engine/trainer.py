@@ -446,6 +446,41 @@ def _restore_best_skill_from_snapshot(
     return best_skill, snapshot_step
 
 
+def _load_resume_skills(
+    out_root: str, runtime_state: dict, last_step: int,
+) -> tuple[str, str]:
+    current_skill = _load_skill(out_root, last_step)
+    expected_current_hash = runtime_state.get("current_skill_hash")
+    if expected_current_hash and skill_hash(current_skill) != expected_current_hash:
+        raise RuntimeError("committed current skill hash does not match its snapshot")
+
+    best_path = os.path.join(out_root, "best_skill.md")
+    try:
+        with open(best_path) as f:
+            best_skill = f.read()
+    except OSError:
+        best_skill = current_skill
+    expected_best_hash = runtime_state.get("best_skill_hash")
+    if expected_best_hash and skill_hash(best_skill) != expected_best_hash:
+        try:
+            best_skill = _load_skill(out_root, int(runtime_state["best_step"]))
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "committed best skill hash does not match any recoverable snapshot"
+            ) from exc
+        if skill_hash(best_skill) != expected_best_hash:
+            raise RuntimeError(
+                "committed best skill hash does not match any recoverable snapshot"
+            )
+        _atomic_write_text(best_path, best_skill)
+    return current_skill, best_skill
+
+
+def _runtime_float(state: dict, key: str, default: float) -> float:
+    value = state.get(key)
+    return default if value is None else float(value)
+
+
 def _load_meta_skill_content(out_root: str, epoch: int) -> str:
     if epoch <= 0:
         return ""
@@ -1246,39 +1281,17 @@ class ReflACTTrainer:
         )
         if runtime_state:
             last_step = recovered_step
-            current_skill_path = runtime_state.get("current_skill_path") or os.path.join(
-                out_root, "skills", f"skill_v{last_step:04d}.md",
+            current_skill, best_skill = _load_resume_skills(
+                out_root, runtime_state, last_step,
             )
-            with open(current_skill_path) as f:
-                current_skill = f.read()
-            best_skill_path = runtime_state.get("best_skill_path") or os.path.join(
-                out_root, "best_skill.md",
-            )
-            if os.path.exists(best_skill_path):
-                with open(best_skill_path) as f:
-                    best_skill = f.read()
-            else:
-                best_skill = current_skill
-            current_score = float(runtime_state.get("current_score", -1.0) or -1.0)
-            best_score = float(runtime_state.get("best_score", current_score) or current_score)
+            current_score = _runtime_float(runtime_state, "current_score", -1.0)
+            best_score = _runtime_float(runtime_state, "best_score", current_score)
             best_step = runtime_state.get("best_step", last_step)
             current_origin = str(
                 runtime_state.get("current_origin")
                 or (f"step_{last_step:04d}" if last_step > 0 else "initial_skill")
             )
             best_origin = str(runtime_state.get("best_origin") or current_origin)
-            expected_best_hash = runtime_state.get("best_skill_hash")
-            if expected_best_hash and skill_hash(best_skill) != expected_best_hash:
-                try:
-                    rebuilt_best = _load_skill(out_root, int(best_step))
-                except (OSError, TypeError, ValueError):
-                    rebuilt_best = current_skill
-                if skill_hash(rebuilt_best) != expected_best_hash:
-                    raise RuntimeError(
-                        "committed best skill hash does not match any recoverable snapshot"
-                    )
-                best_skill = rebuilt_best
-                _atomic_write_text(best_skill_path, best_skill)
             resume_from = last_step + 1
             scheduler_state = runtime_state.get("scheduler_state")
             if isinstance(scheduler_state, dict):
@@ -1328,6 +1341,7 @@ class ReflACTTrainer:
                 f"current={current_score:.4f} best={best_score:.4f}"
             )
         else:
+            last_step = 0
             current_skill = skill_init
             best_skill = skill_init
             best_score = -1.0
@@ -1356,18 +1370,15 @@ class ReflACTTrainer:
             *,
             phase: str = "step",
             step_record: dict | None = None,
+            epoch_last_step_skill: str | None = None,
         ) -> None:
             _save_runtime_state(
                 out_root,
                 {
                     "format_version": 2,
                     "last_completed_step": last_completed_step,
-                    "current_skill_path": os.path.join(
-                        out_root, "skills", f"skill_v{last_completed_step:04d}.md",
-                    ),
                     "current_score": current_score,
                     "current_origin": current_origin,
-                    "best_skill_path": os.path.join(out_root, "best_skill.md"),
                     "best_score": best_score,
                     "best_step": best_step,
                     "best_origin": best_origin,
@@ -1376,6 +1387,10 @@ class ReflACTTrainer:
                     "history_hash": _json_digest(history),
                     "step_record_hash": (
                         _json_digest(step_record) if step_record is not None else None
+                    ),
+                    "epoch_last_step_skill_hash": (
+                        skill_hash(epoch_last_step_skill)
+                        if epoch_last_step_skill is not None else None
                     ),
                     "scheduler_state": scheduler.state_dict(),
                     "phase": phase,
@@ -1412,7 +1427,9 @@ class ReflACTTrainer:
                 int(step_rec["step"]), step_record=step_rec,
             )
 
-        def _amend_current_skill_commit(step: int, phase: str) -> None:
+        def _amend_current_skill_commit(
+            step: int, phase: str, epoch_last_step_skill: str,
+        ) -> None:
             """Transactionally attach an epoch-end skill mutation to *step*."""
             if not history or history[-1].get("step") != step:
                 raise RuntimeError(f"cannot amend missing committed step {step}")
@@ -1451,7 +1468,12 @@ class ReflACTTrainer:
             _atomic_write_json(record_path, record)
             history[-1] = record
             _save_history(out_root, history)
-            _persist_runtime_state(step, phase=phase, step_record=record)
+            _persist_runtime_state(
+                step,
+                phase=phase,
+                step_record=record,
+                epoch_last_step_skill=epoch_last_step_skill,
+            )
 
         # ── Selection cache ──────────────────────────────────────────────
         sel_cache: dict[str, tuple[float, float]] = {}
@@ -1544,6 +1566,7 @@ class ReflACTTrainer:
             print(f"\n  [skip] all {total_steps} steps complete — jumping to evaluation")
 
         global_step = 0
+        resume_phase = str(runtime_state.get("phase", "step")) if runtime_state else "step"
         for epoch in range(1, num_epochs + 1):
             if dataloader is not None:
                 epoch_batches = dataloader.plan_train_epoch(
@@ -2127,12 +2150,30 @@ class ReflACTTrainer:
                     f"evaluate={timing.get('evaluate_s',0)}s"
                 )
 
-            epoch_last_step_skill = current_skill
+            epoch_end_step = epoch * steps_per_epoch
+            completed_phase = (
+                "complete" if epoch_end_step < last_step
+                else resume_phase if epoch_end_step == last_step else ""
+            )
+            epoch_skill_path = os.path.join(
+                out_root, "steps", f"step_{epoch_end_step:04d}",
+                "epoch_last_step_skill.md",
+            )
+            if completed_phase == "slow_update":
+                with open(epoch_skill_path) as f:
+                    epoch_last_step_skill = f.read()
+                expected_epoch_hash = runtime_state.get("epoch_last_step_skill_hash")
+                if expected_epoch_hash and skill_hash(epoch_last_step_skill) != expected_epoch_hash:
+                    raise RuntimeError("committed epoch skill hash does not match its snapshot")
+            else:
+                epoch_last_step_skill = current_skill
+                if completed_phase != "complete":
+                    _atomic_write_text(epoch_skill_path, epoch_last_step_skill)
             epoch_comparison_pairs: list[dict] | None = None
 
             # ── SLOW UPDATE (end of epoch) ──────────────────────────────
             use_slow = cfg.get("use_slow_update", False)
-            if use_slow:
+            if use_slow and completed_phase not in {"slow_update", "meta_skill", "complete"}:
                 slow_dir = os.path.join(out_root, "slow_update", f"epoch_{epoch:02d}")
                 slow_done_path = os.path.join(slow_dir, "slow_result.json")
 
@@ -2183,7 +2224,9 @@ class ReflACTTrainer:
                         slow_done_path,
                         {"action": "inject_placeholder", "epoch": epoch},
                     )
-                    _amend_current_skill_commit(global_step, "slow_update")
+                    _amend_current_skill_commit(
+                        global_step, "slow_update", epoch_last_step_skill,
+                    )
                     print(
                         f"\n  [SLOW UPDATE epoch {epoch}] "
                         f"injected empty placeholder"
@@ -2265,6 +2308,10 @@ class ReflACTTrainer:
                     save_comparison_pairs(
                         comparison_pairs,
                         os.path.join(slow_dir, "comparison_pairs.json"),
+                    )
+                    _atomic_write_json(
+                        os.path.join(slow_dir, "meta_comparison_pairs.json"),
+                        comparison_pairs,
                     )
                     n_regressed = sum(1 for p in comparison_pairs if p["category"] == "regressed")
                     n_improved = sum(1 for p in comparison_pairs if p["category"] == "improved")
@@ -2438,16 +2485,32 @@ class ReflACTTrainer:
 
                     # 5. Save
                     _atomic_write_json(slow_done_path, slow_result)
-                    _amend_current_skill_commit(global_step, "slow_update")
+                    _amend_current_skill_commit(
+                        global_step, "slow_update", epoch_last_step_skill,
+                    )
 
                     print(
                         f"\n  [SLOW UPDATE epoch {epoch} done] "
                         f"current={current_score:.4f} best={best_score:.4f}"
                     )
 
+            elif use_slow and completed_phase == "slow_update":
+                comparison_path = os.path.join(
+                    out_root, "slow_update", f"epoch_{epoch:02d}",
+                    "meta_comparison_pairs.json",
+                )
+                if not os.path.exists(comparison_path):
+                    comparison_path = os.path.join(
+                        out_root, "slow_update", f"epoch_{epoch:02d}",
+                        "comparison_pairs.json",
+                    )
+                if os.path.exists(comparison_path):
+                    with open(comparison_path) as f:
+                        epoch_comparison_pairs = json.load(f)
+
             # ── META SKILL (end of epoch, optimizer-side memory) ─────────
             use_meta_skill = cfg.get("use_meta_skill", False)
-            if use_meta_skill:
+            if use_meta_skill and completed_phase not in {"meta_skill", "complete"}:
                 meta_skill_dir = os.path.join(out_root, "meta_skill", f"epoch_{epoch:02d}")
                 meta_skill_done_path = os.path.join(meta_skill_dir, "meta_skill_result.json")
                 os.makedirs(meta_skill_dir, exist_ok=True)
@@ -2556,7 +2619,11 @@ class ReflACTTrainer:
 
                     _atomic_write_json(meta_skill_done_path, meta_skill_result)
 
-                _persist_runtime_state(global_step, phase="meta_skill")
+                _persist_runtime_state(
+                    global_step,
+                    phase="meta_skill",
+                    epoch_last_step_skill=epoch_last_step_skill,
+                )
 
         # ── Save best skill ──────────────────────────────────────────────
         _atomic_write_text(os.path.join(out_root, "best_skill.md"), best_skill)
