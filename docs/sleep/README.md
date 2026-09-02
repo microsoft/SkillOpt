@@ -103,8 +103,15 @@ skillopt-sleep status       # show state + the latest staged proposal
 skillopt-sleep adopt --legacy       # apply a reviewed managed proposal
 skillopt-sleep adopt --skill NAME   # adopt one staged skill (repeatable)
 skillopt-sleep adopt --all-skills   # adopt every still-pending fan-out skill
+skillopt-sleep export-rules ...     # export accepted rules without transcripts
+skillopt-sleep import-rules ...     # review + locally gate community rules
 skillopt-sleep schedule     # install a nightly cron entry for this project
 ```
+
+Community manifests contain distilled rules and aggregate effect metadata, not
+session transcripts. Imports require an explicit review acknowledgement and put
+every rule through a strict local no-regression gate before staging. See
+[community rule exchange](community-rules.md).
 
 > **Version note.** This page tracks `main`. PyPI 0.2.0 provides the base
 > commands above. Cursor source/backend/plugin support, VS Code Copilot

@@ -6,6 +6,8 @@
     python -m skillopt_sleep adopt      # apply the latest staged proposal (with backup)
     python -m skillopt_sleep adopt --skill NAME   # adopt one staged skill (repeatable)
     python -m skillopt_sleep harvest    # just print what would be mined (debug)
+    python -m skillopt_sleep export-rules  # export accepted, distilled rules
+    python -m skillopt_sleep import-rules  # review + locally gate community rules
 
 Common flags:
     --project PATH      project to evolve (default: cwd)
@@ -30,12 +32,26 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any, Dict
 
-from skillopt_sleep.backend import CursorBackendError
+from skillopt_sleep.backend import CursorBackendError, build_backend
+from skillopt_sleep.community import (
+    CommunityRuleError,
+    export_rules_from_staging,
+    gate_community_rules,
+    load_rule_manifest,
+)
 from skillopt_sleep.config import load_config
-from skillopt_sleep.cycle import _one_line_display_text, run_sleep_cycle
+from skillopt_sleep.cycle import (
+    _one_line_display_text,
+    _read_live_baseline,
+    _render_report_md,
+    run_sleep_cycle,
+)
 from skillopt_sleep.harvest_sources import harvest_for_config
+from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import mine
 from skillopt_sleep.staging import (
     StagingError,
@@ -45,10 +61,25 @@ from skillopt_sleep.staging import (
     latest_staging,
     pending_staged_skills,
     staged_skills,
+    write_staging,
 )
 from skillopt_sleep.staging import adopt as adopt_staging
 from skillopt_sleep.state import SleepState
 from skillopt_sleep.tasks_file import load_tasks_file, make_tasks_payload, write_tasks_file
+from skillopt_sleep.types import SleepReport
+
+_BACKEND_CHOICES = [
+    "",
+    "mock",
+    "claude",
+    "codex",
+    "copilot",
+    "cursor",
+    "pi",
+    "opencode",
+    "handoff",
+    "azure_openai",
+]
 
 
 def _read_text(path: str) -> str:
@@ -97,9 +128,7 @@ def _report_payload(rep, outcome) -> Dict[str, Any]:
 def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
-    p.add_argument("--backend", default="",
-                   choices=["", "mock", "claude", "codex", "copilot", "cursor", "pi",
-                            "opencode", "handoff", "azure_openai"])
+    p.add_argument("--backend", default="", choices=_BACKEND_CHOICES)
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--cursor-path", default="", help="path to the Cursor Agent CLI")
@@ -847,6 +876,218 @@ def cmd_unschedule(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_export_rules(args) -> int:
+    try:
+        output, manifest = export_rules_from_staging(
+            args.staging,
+            args.output,
+            category=args.category,
+            license_id=args.license,
+        )
+    except (CommunityRuleError, OSError, json.JSONDecodeError) as exc:
+        _print_run_failure(args, "rule_export_refused", exc)
+        return 2
+    payload = {
+        "ok": True,
+        "output": output,
+        "schema": manifest.schema,
+        "schema_version": manifest.schema_version,
+        "rules": len(manifest.rules),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"[sleep] exported {len(manifest.rules)} community rule(s): {_display_value(output)}")
+        print("[sleep] review the manifest before publishing it; no transcript data is included by the exporter")
+    return 0
+
+
+def _print_rule_review(args, manifest) -> int:
+    payload = {
+        "ok": False,
+        "review_required": True,
+        "license": manifest.license,
+        "rules": [
+            {
+                "id": rule.id,
+                "category": rule.category,
+                "rule": rule.rule,
+                "rationale": rule.rationale,
+                "observed_effect": asdict(rule.observed_effect),
+            }
+            for rule in manifest.rules
+        ],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"[sleep] review required for {len(manifest.rules)} imported rule(s); "
+            f"license={_display_value(manifest.license)}"
+        )
+        for rule in manifest.rules:
+            print(f"   [{_display_value(rule.id)}] {_display_value(rule.category)}: {_display_value(rule.rule)}")
+            print(f"      rationale: {_display_value(rule.rationale)}")
+            effect = rule.observed_effect
+            print(
+                f"      publisher effect ({_display_value(effect.scope)}): "
+                f"{_display_value(effect.metric)} {effect.baseline:.3f} -> "
+                f"{effect.candidate:.3f} (delta={effect.delta:+.3f}, n={effect.sample_size})"
+            )
+        print("[sleep] rerun with --reviewed after inspecting every rule and its license")
+    return 2
+
+
+def cmd_import_rules(args) -> int:
+    try:
+        manifest = load_rule_manifest(args.manifest)
+    except (CommunityRuleError, OSError, json.JSONDecodeError) as exc:
+        _print_run_failure(args, "rule_import_refused", exc)
+        return 2
+    if not args.reviewed:
+        return _print_rule_review(args, manifest)
+    if not args.tasks_file:
+        _print_run_failure(args, "rule_import_refused", "--tasks-file is required for the local gate")
+        return 2
+
+    try:
+        tasks, task_meta = load_tasks_file(args.tasks_file)
+        cfg = _cfg_from_args(args, task_meta=task_meta)
+        tasks, task_meta = load_tasks_file(
+            args.tasks_file,
+            holdout_fraction=cfg.get("holdout_fraction", 0.34),
+            seed=cfg.get("seed", 42),
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _print_run_failure(args, "rule_import_refused", exc)
+        return 2
+    if cfg.get("backend", "mock") != "mock" and task_meta.get("reviewed") is not True:
+        _print_run_failure(
+            args,
+            "rule_import_refused",
+            'real-backend gating requires a tasks file with "reviewed": true',
+        )
+        return 2
+    if cfg.get("backend", "mock") == "handoff":
+        _print_run_failure(args, "rule_import_refused", "handoff backend is not supported for rule import")
+        return 2
+    gate_tasks = [task for task in tasks if task.split == "val"]
+    if not gate_tasks:
+        _print_run_failure(
+            args,
+            "rule_import_refused",
+            "tasks file must contain at least one val task for the held-out gate",
+        )
+        return 2
+
+    project = cfg.get("invoked_project") or os.getcwd()
+    live_skill_path = cfg.managed_skill_path()
+    live_memory_path = os.path.join(project, "CLAUDE.md")
+    try:
+        raw_skill, live_skill_sha256, live_skill_realpath = _read_live_baseline(
+            live_skill_path, "skill"
+        )
+        memory, live_memory_sha256, live_memory_realpath = _read_live_baseline(
+            live_memory_path, "memory"
+        )
+        skill = raw_skill or ensure_skill_scaffold(
+            "",
+            name=cfg.get("managed_skill_name", "skillopt-sleep-learned"),
+            description="Preferences and procedures learned from past local agent sessions.",
+        )
+        backend = build_backend(
+            backend=cfg.get("backend", "mock"),
+            model=cfg.get("model", ""),
+            optimizer_backend=cfg.get("optimizer_backend", ""),
+            optimizer_model=cfg.get("optimizer_model", ""),
+            target_backend=cfg.get("target_backend", ""),
+            target_model=cfg.get("target_model", ""),
+            codex_path=cfg.get("codex_path", ""),
+            pi_path=cfg.get("pi_path", ""),
+            cursor_path=cfg.get("cursor_path", ""),
+            opencode_path=cfg.get("opencode_path", ""),
+            opencode_tool_replay=cfg.get("opencode_tool_replay", False),
+            azure_endpoint=cfg.get("azure_endpoint", ""),
+            preferences=cfg.get("preferences", ""),
+            project_dir=project,
+        )
+        result = gate_community_rules(
+            backend,
+            gate_tasks,
+            skill,
+            memory,
+            manifest,
+            gate_metric=cfg.get("gate_metric", "mixed"),
+            gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        report = SleepReport(
+            night=0,
+            project=project,
+            started_at=now,
+            ended_at=now,
+            n_tasks=len(gate_tasks),
+            n_replayed=len(gate_tasks),
+            baseline_score=result.baseline_score,
+            candidate_score=result.candidate_score,
+            accepted=result.accepted,
+            gate_action=("community_rules_accepted" if result.accepted else "community_rules_rejected"),
+            edits=result.accepted_edits,
+            rejected_edits=result.rejected_edits,
+            unmatched_edits=result.unmatched_edits,
+            tokens_used=backend.tokens_used(),
+            notes=[
+                f"community import: {len(manifest.rules)} reviewed rules; "
+                f"{len(result.accepted_edits)} passed the local no-regression gate"
+            ],
+            gate_no_regression=True,
+            gate_trials=result.trials,
+        )
+        staging_dir = write_staging(
+            project,
+            report=report,
+            proposed_skill=result.new_skill if result.accepted else None,
+            proposed_memory=None,
+            live_skill_path=live_skill_path,
+            live_memory_path=live_memory_path,
+            live_skill_sha256=live_skill_sha256,
+            live_memory_sha256=live_memory_sha256,
+            live_skill_realpath=live_skill_realpath,
+            live_memory_realpath=live_memory_realpath,
+            report_md=_render_report_md(report, cfg),
+        )
+    except CursorBackendError as exc:
+        _print_run_failure(args, "backend_failed", exc)
+        return 1
+    except (CommunityRuleError, StagingError, OSError) as exc:
+        _print_run_failure(args, "rule_import_refused", exc)
+        return 2
+
+    payload = {
+        "ok": True,
+        "accepted": result.accepted,
+        "baseline": result.baseline_score,
+        "candidate": result.candidate_score,
+        "accepted_rules": len(result.accepted_edits),
+        "rejected_rules": len(result.rejected_edits),
+        "duplicate_rules": len(result.unmatched_edits),
+        "staging_dir": staging_dir,
+        "trials": result.trials,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"[sleep] local rule gate {result.baseline_score:.3f} -> "
+            f"{result.candidate_score:.3f}; accepted {len(result.accepted_edits)}/"
+            f"{len(manifest.rules)}"
+        )
+        print(f"[sleep] staged: {_display_value(staging_dir)}")
+        if result.accepted:
+            print("[sleep] review it, then: python -m skillopt_sleep adopt --legacy")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="skillopt_sleep", description="SkillOpt-Sleep nightly self-evolution")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -895,6 +1136,37 @@ def main(argv=None) -> int:
     p_eval.add_argument("--seed", type=int, default=42)
     p_eval.add_argument("--allow-graded", action="store_true")
     p_eval.add_argument("--json", action="store_true")
+    p_export_rules = sub.add_parser(
+        "export-rules",
+        help="export accepted skill additions as a transcript-free rule manifest",
+    )
+    p_export_rules.add_argument("--staging", required=True)
+    p_export_rules.add_argument("--output", required=True)
+    p_export_rules.add_argument("--category", required=True)
+    p_export_rules.add_argument("--license", required=True)
+    p_export_rules.add_argument("--json", action="store_true")
+    p_import_rules = sub.add_parser(
+        "import-rules",
+        help="review and locally gate a community rule manifest",
+    )
+    p_import_rules.add_argument("--project", default="")
+    p_import_rules.add_argument("--backend", default="", choices=_BACKEND_CHOICES)
+    p_import_rules.add_argument("--model", default="")
+    p_import_rules.add_argument("--codex-path", default="")
+    p_import_rules.add_argument("--cursor-path", default="")
+    p_import_rules.add_argument("--pi-path", default="")
+    p_import_rules.add_argument("--opencode-path", default="")
+    p_import_rules.add_argument("--opencode-tool-replay", action="store_true")
+    p_import_rules.add_argument("--target-skill-path", default="")
+    p_import_rules.add_argument("--tasks-file", default="")
+    p_import_rules.add_argument("--json", action="store_true")
+    p_import_rules.set_defaults(scope="")
+    p_import_rules.add_argument("--manifest", required=True)
+    p_import_rules.add_argument(
+        "--reviewed",
+        action="store_true",
+        help="confirm that every imported rule and the manifest license were reviewed",
+    )
 
     args = parser.parse_args(argv)
     if args.cmd == "run":
@@ -924,6 +1196,10 @@ def main(argv=None) -> int:
         if args.json:
             argv.append("--json")
         return evalkit_main(argv)
+    if args.cmd == "export-rules":
+        return cmd_export_rules(args)
+    if args.cmd == "import-rules":
+        return cmd_import_rules(args)
     parser.print_help()
     return 2
 
