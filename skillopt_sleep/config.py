@@ -32,7 +32,8 @@ DEFAULTS: Dict[str, Any] = {
     "vscode_workspace_storage": "",  # "" => auto-detect platform defaults
     "copilot_cli_session_store": "",  # "" => ~/.copilot/session-store.db
     "opencode_db": "",  # "" => OPENCODE_DB or the OpenCode XDG data path
-    # Explicit sources also include copilot, copilot_cli, cursor, pi, and opencode.
+    "dsh_session_root": "",  # "" => $DSH_HOME/sessions, or ~/.dsh/sessions
+    # Explicit sources also include copilot, copilot_cli, cursor, pi, opencode, and dsh.
     # ``auto`` keeps the established Codex-then-Claude precedence.
     "transcript_source": "claude",
     "projects": "invoked",        # "invoked" | "all" | [list of abs paths]
@@ -163,6 +164,18 @@ class SleepConfig:
         if str(value) == ":memory:":
             return ":memory:"
         return os.path.abspath(os.path.expanduser(str(value)))
+
+    @property
+    def dsh_session_root(self) -> str:
+        value = self.data.get("dsh_session_root", "") or ""
+        if value:
+            return os.path.abspath(os.path.expanduser(str(value)))
+        # Match the DSH base bundle: its JSONL persistence root is
+        # dshHomePath("sessions"), where DSH_HOME defaults to ~/.dsh.
+        dsh_home = str(os.environ.get("DSH_HOME", ""))
+        if not dsh_home.strip():
+            dsh_home = os.path.join(os.path.expanduser("~"), ".dsh")
+        return os.path.abspath(os.path.expanduser(os.path.join(dsh_home, "sessions")))
 
     @property
     def vscode_workspace_storage(self) -> str:

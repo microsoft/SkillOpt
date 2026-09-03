@@ -190,6 +190,48 @@ The managed scheduler records the backend but does not preserve `--source`,
 `~/.skillopt-sleep/config.json`. Use an absolute `pi_path` and verify the
 scheduled account's Pi authentication.
 
+### DeepSeek Harness (DSH)
+
+Use `--source dsh` to read local DSH JSONL sessions. By default, SkillOpt uses
+DSH's standard `$DSH_HOME/sessions` directory, or `~/.dsh/sessions` when
+`DSH_HOME` is unset. Install the optional Zstandard reader first:
+
+```bash
+python -m pip install -e ".[dsh]"
+skillopt-sleep harvest --project "$(pwd)" --source dsh --progress
+```
+
+`--dsh-session-root PATH` remains available only to override that default.
+
+The source reads `session.jsonl` and the default compressed
+`session.jsonl.zstd` files below DSH's project/session directory layout. It
+does not start DSH, require DSH login, connect to a model provider, or modify
+the stored logs. `--source auto` retains Codex-then-Claude precedence and does
+not select DSH.
+
+DSH harvesting keeps human user text, visible assistant text, short tool names,
+timestamps, and positive/negative feedback signals derived from the immutable
+`feedback/record` event. It excludes reasoning, tool arguments and results,
+request/provider metadata, attachments, feedback remarks themselves, and
+injected user-role context. Malformed sessions are silently skipped as a whole;
+other sessions continue. Ordinary fork sessions are retained, while sessions
+explicitly marked as subagents and SkillOpt replay sessions are excluded.
+
+The source follows the current observed DSH session format rather than a fixed
+application-version matrix. A session whose format or event structure cannot be
+safely understood is skipped. Plugin integration and DSH execution are outside
+this source's scope.
+
+The managed scheduler does not preserve `--source` or `--dsh-session-root`.
+Before scheduling, set the source in `~/.skillopt-sleep/config.json`; add
+`dsh_session_root` only when overriding DSH's normal session directory:
+
+```json
+{
+  "transcript_source": "dsh"
+}
+```
+
 ### OpenCode
 
 Use `--source opencode` to read local OpenCode SQLite history without launching

@@ -8,6 +8,7 @@ from skillopt_sleep.harvest_codex import harvest_codex
 from skillopt_sleep.harvest_copilot import harvest_copilot
 from skillopt_sleep.harvest_copilot_cli import harvest_copilot_cli
 from skillopt_sleep.harvest_cursor import harvest_cursor
+from skillopt_sleep.harvest_dsh import harvest_dsh
 from skillopt_sleep.harvest_opencode import harvest_opencode
 from skillopt_sleep.harvest_pi import harvest_pi
 from skillopt_sleep.types import SessionDigest
@@ -61,6 +62,14 @@ def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) 
     if source == "opencode":
         return harvest_opencode(
             cfg.opencode_db_path,
+            scope=scope,
+            invoked_project=invoked_project,
+            since_iso=since_iso,
+            limit=limit,
+        )
+    if source == "dsh":
+        return harvest_dsh(
+            cfg.dsh_session_root,
             scope=scope,
             invoked_project=invoked_project,
             since_iso=since_iso,
