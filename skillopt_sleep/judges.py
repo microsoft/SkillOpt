@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Tuple
 def _section_present(response: str, name: str) -> bool:
     # a markdown heading line (#, ##, ...) or bold line that contains `name`
     pat = re.compile(
-        r"(?im)^\s{0,3}(#{1,6}\s*.*%s|\*\*.*%s.*\*\*\s*:?)\s*$" % (re.escape(name), re.escape(name))
+        r"(?im)^\s{0,3}(#{1,6}\s*.*%s|\*\*.*%s.*\*\*\s*:?)" % (re.escape(name), re.escape(name))
     )
     if pat.search(response or ""):
         return True
