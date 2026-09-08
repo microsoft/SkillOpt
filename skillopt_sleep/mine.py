@@ -341,9 +341,19 @@ def assign_splits(
     # Only promote from train so hash-assigned test tasks stay untouched.
     if len(real) >= 2 and not any(t.split == "val" for t in real):
         _promote_one(to="val", from_splits={"train"})
+        if not any(t.split == "val" for t in real):
+            import logging
+            logging.warning("holdout_leaked: test task promoted to val to satisfy non-empty guarantee")
+            _promote_one(to="val", from_splits={"test"})
     # Guarantee a train pool exists when possible; never borrow from test.
     if not any(t.split == "train" for t in tasks) and len(real) >= 2:
-        _promote_one(to="train", from_splits={"val"})
+        val_count = sum(1 for t in real if t.split == "val")
+        if val_count > 1:
+            _promote_one(to="train", from_splits={"val"})
+        else:
+            import logging
+            logging.warning("holdout_leaked: test task promoted to train to satisfy non-empty guarantee")
+            _promote_one(to="train", from_splits={"test"})
     return tasks
 
 
