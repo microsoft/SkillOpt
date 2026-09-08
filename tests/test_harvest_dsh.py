@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import weakref
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -21,16 +24,21 @@ from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.types import SessionDigest
 
 _BASE_TIME = 1_800_000_000_000
+_MASTER_V2_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "dsh"
 
 
-def _header(session_id: str, cwd: str | None, **extra):
+def _header(session_id: str, cwd: str | None, *, version=0, **extra):
     value = {
         "type": "session",
-        "version": 0,
+        "version": version,
         "id": session_id,
         "createdAt": _BASE_TIME,
         "delegationDepth": 0,
     }
+    if version >= 2:
+        # V2 makes the fork-lineage bit explicit.  Keep it out of legacy
+        # headers, where the historical codec used seedLength instead.
+        value["isSeeded"] = False
     if cwd is not None:
         value["cwd"] = cwd
     value.update(extra)
@@ -80,6 +88,13 @@ def _assistant(seq: int, text: str, *, tool_name="", replace=False):
     return event
 
 
+def _replace_surface(event: dict, start: int, end: int, *source_event_seqs: int) -> dict:
+    event["surfaceOp"] = {"op": "replace", "start": start, "end": end}
+    if source_event_seqs:
+        event["sourceEventSeqs"] = list(source_event_seqs)
+    return event
+
+
 def _tool_call(seq: int, name: str):
     return {
         "type": "tool/call",
@@ -107,11 +122,29 @@ def _metadata(seq: int, event_type: str):
     }
 
 
-def _write_raw(root: Path, session_id: str, cwd: str | None, records: list[dict], **header_extra) -> Path:
+def _end_seed(seq: int, *, inherited=True):
+    return {
+        "type": "session/end-seed",
+        "seq": seq,
+        "time": _BASE_TIME + 1000 * (seq + 1),
+        "data": {"inherited": inherited} if inherited else {},
+    }
+
+
+def _write_raw(
+    root: Path,
+    session_id: str,
+    cwd: str | None,
+    records: list[dict],
+    *,
+    version=0,
+    **header_extra,
+) -> Path:
     project_dir = "_no-cwd" if cwd is None else _project_key(cwd)
-    path = root / project_dir / _encode_segment(session_id) / "session.jsonl"
+    filename = "session.jsonl" if version == 0 else f"session.v{version}.jsonl"
+    path = root / project_dir / _encode_segment(session_id) / filename
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [_header(session_id, cwd, **header_extra), *records]
+    rows = [_header(session_id, cwd, version=version, **header_extra), *records]
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     return path
 
@@ -196,9 +229,10 @@ def test_fork_is_retained_but_subagent_and_replay_are_excluded(tmp_path: Path):
         tmp_path,
         "fork",
         project,
-        [_user(0, "inherited request"), _assistant(1, "superseded", replace=True), _assistant(2, "active final")],
+        [_user(0, "inherited request"), _end_seed(1), _assistant(2, "active final")],
+        version=2,
         parentSession="parent",
-        seedLength=1,
+        isSeeded=True,
     )
     _write_raw(
         tmp_path,
@@ -221,6 +255,65 @@ def test_fork_is_retained_but_subagent_and_replay_are_excluded(tmp_path: Path):
     assert digests[0].assistant_finals == ["active final"]
 
 
+def test_surface_replacement_removes_shadowed_assistant_text(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    compacted = _replace_surface(
+        _user(2, "compacted context", source="system", append=False),
+        0,
+        1,
+        0,
+        1,
+    )
+    _write_raw(
+        tmp_path,
+        "compacted",
+        project,
+        [
+            _user(0, "request"),
+            _assistant(1, "obsolete assistant text"),
+            compacted,
+            _assistant(3, "current assistant text"),
+        ],
+    )
+
+    digest = harvest_dsh(str(tmp_path), scope="all")[0]
+
+    assert digest.assistant_finals == ["current assistant text"]
+    assert "obsolete assistant text" not in json.dumps(digest.to_dict())
+
+
+def test_v2_range_encoded_replacement_provenance_is_replayed(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    tool_result = {**_metadata(2, "tool/result"), "surfaceOp": "append"}
+    tool_result["data"] = {"output": "private tool output"}
+    replacement = _replace_surface(
+        _user(4, "compacted context", source="system", append=False), 1, 3, 1, 2, 3,
+    )
+    # This is the physical v2 representation written by the upstream codec:
+    # a run of three adjacent source sequence numbers becomes [start, end].
+    replacement["sourceEventSeqs"] = [[1, 3]]
+    _write_raw(
+        tmp_path,
+        "range-provenance",
+        project,
+        [
+            _user(0, "request"),
+            _assistant(1, "obsolete assistant text"),
+            tool_result,
+            _user(3, "injected context", source="plugin"),
+            replacement,
+            _assistant(5, "current assistant text"),
+        ],
+        version=2,
+    )
+
+    digest = harvest_dsh(str(tmp_path), scope="all")[0]
+
+    assert digest.user_prompts == ["request"]
+    assert digest.assistant_finals == ["current assistant text"]
+    assert "obsolete assistant text" not in json.dumps(digest.to_dict())
+
+
 def test_bad_session_is_silent_and_does_not_block_other_sessions(tmp_path: Path):
     project = str((tmp_path / "repo").resolve())
     _write_raw(tmp_path, "good", project, [_user(0, "good request"), _assistant(1, "good final")])
@@ -231,6 +324,191 @@ def test_bad_session_is_silent_and_does_not_block_other_sessions(tmp_path: Path)
     digests = harvest_dsh(str(tmp_path), scope="all")
 
     assert [digest.session_id for digest in digests] == ["good"]
+
+
+def test_v2_only_session_is_harvested(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    path = _write_raw(
+        tmp_path,
+        "v2-only",
+        project,
+        [_user(0, "current request"), _assistant(1, "current final")],
+        version=2,
+    )
+
+    digests = harvest_dsh(str(tmp_path), scope="all")
+
+    assert [digest.session_id for digest in digests] == ["v2-only"]
+    assert digests[0].raw_path == str(path)
+
+
+def test_v2_header_uses_the_published_required_and_allowed_keys(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    missing = _write_raw(
+        tmp_path,
+        "missing-seeded",
+        project,
+        [_user(0, "request"), _assistant(1, "final")],
+        version=2,
+    )
+    rows = [json.loads(line) for line in missing.read_text(encoding="utf-8").splitlines()]
+    del rows[0]["isSeeded"]
+    missing.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    _write_raw(
+        tmp_path,
+        "retired-seed-length",
+        project,
+        [_user(0, "request"), _assistant(1, "final")],
+        version=2,
+        seedLength=0,
+    )
+    _write_raw(
+        tmp_path,
+        "relative-cwd",
+        "relative/project",
+        [_user(0, "request"), _assistant(1, "final")],
+        version=2,
+    )
+
+    assert harvest_dsh(str(tmp_path), scope="all") == []
+
+
+def test_v2_seeded_header_must_match_end_seed_marker(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    _write_raw(
+        tmp_path,
+        "seeded-without-marker",
+        project,
+        [_user(0, "request"), _assistant(1, "final")],
+        version=2,
+        isSeeded=True,
+    )
+    _write_raw(
+        tmp_path,
+        "unseeded-with-marker",
+        project,
+        [_user(0, "request"), _end_seed(1), _assistant(2, "final")],
+        version=2,
+    )
+    invalid_marker = _end_seed(1)
+    invalid_marker["data"]["inherited"] = False
+    _write_raw(
+        tmp_path,
+        "invalid-marker",
+        project,
+        [_user(0, "request"), invalid_marker, _assistant(2, "final")],
+        version=2,
+    )
+
+    assert harvest_dsh(str(tmp_path), scope="all") == []
+
+
+def test_master_v2_fixture_is_harvested():
+    pytest.importorskip("zstandard")
+
+    digests = harvest_dsh(str(_MASTER_V2_FIXTURE_ROOT), scope="all")
+
+    assert [digest.session_id for digest in digests] == ["master-v2-fixture"]
+    assert digests[0].project == "/fixture/project"
+    assert digests[0].user_prompts == ["fixture user request"]
+    assert digests[0].assistant_finals == ["fixture assistant response"]
+    assert digests[0].raw_path.endswith("session.v2.jsonl.zstd")
+
+
+def test_v2_packed_rows_are_rejected(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    packed = {
+        "type": "text-chunks",
+        "seq0": 1,
+        "time0": _BASE_TIME + 2000,
+        "data": {
+            "turn": 1,
+            "step": 1,
+            "index": 0,
+            "dt": [0, 7, 9],
+            "texts": ["a", "b", "c"],
+        },
+    }
+    _write_raw(
+        tmp_path,
+        "v2-packed",
+        project,
+        [_user(0, "request"), packed, _assistant(4, "final")],
+        version=2,
+    )
+
+    assert harvest_dsh(str(tmp_path), scope="all") == []
+
+
+def test_highest_generation_wins_over_retained_predecessors(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    _write_raw(
+        tmp_path,
+        "migrated",
+        project,
+        [_user(0, "old request"), _assistant(1, "old final")],
+        version=0,
+    )
+    _write_raw(
+        tmp_path,
+        "migrated",
+        project,
+        [_user(0, "v1 request"), _assistant(1, "v1 final")],
+        version=1,
+    )
+    current = _write_raw(
+        tmp_path,
+        "migrated",
+        project,
+        [_user(0, "current request"), _assistant(1, "current final")],
+        version=2,
+    )
+
+    digests = harvest_dsh(str(tmp_path), scope="all")
+
+    assert [digest.session_id for digest in digests] == ["migrated"]
+    assert digests[0].user_prompts == ["current request"]
+    assert digests[0].raw_path == str(current)
+
+
+def test_unsupported_highest_generation_does_not_fall_back(tmp_path: Path):
+    project = str((tmp_path / "repo").resolve())
+    _write_raw(
+        tmp_path,
+        "future",
+        project,
+        [_user(0, "old request"), _assistant(1, "old final")],
+        version=0,
+    )
+    _write_raw(
+        tmp_path,
+        "future",
+        project,
+        [_user(0, "future request"), _assistant(1, "future final")],
+        version=10,
+    )
+
+    assert harvest_dsh(str(tmp_path), scope="all") == []
+
+
+def test_unsupported_highest_generation_is_diagnosed(tmp_path: Path, caplog, capsys):
+    project = str((tmp_path / "repo").resolve())
+    _write_raw(
+        tmp_path,
+        "future",
+        project,
+        [_user(0, "future request"), _assistant(1, "future final")],
+        version=10,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="skillopt_sleep.harvest_dsh"):
+        assert harvest_dsh(str(tmp_path), scope="all", progress=True) == []
+
+    diagnostic = " ".join(record.getMessage() for record in caplog.records)
+    assert "session.v10.jsonl" in diagnostic
+    assert "highest generation v10" in diagnostic
+    assert "Upgrade SkillOpt" in diagnostic
+    assert "session.v10.jsonl" in capsys.readouterr().err
 
 
 def test_unknown_required_event_rejects_but_ignorable_event_is_skipped(tmp_path: Path):
@@ -300,10 +578,10 @@ def test_scope_since_limit_and_identity_checks(tmp_path: Path):
 def test_zstd_concatenated_frames_are_read(tmp_path: Path):
     zstd = pytest.importorskip("zstandard")
     project = str((tmp_path / "repo").resolve())
-    path = tmp_path / _project_key(project) / _encode_segment("compressed") / "session.jsonl.zstd"
+    path = tmp_path / _project_key(project) / _encode_segment("compressed") / "session.v2.jsonl.zstd"
     path.parent.mkdir(parents=True)
     compressor = zstd.ZstdCompressor(write_checksum=True)
-    header = json.dumps(_header("compressed", project)).encode() + b"\n"
+    header = json.dumps(_header("compressed", project, version=2)).encode() + b"\n"
     events = b"".join(
         json.dumps(row).encode() + b"\n"
         for row in [_user(0, "compressed request"), _assistant(1, "compressed final")]
@@ -343,6 +621,7 @@ def test_cli_config_and_source_dispatch_for_dsh(monkeypatch, tmp_path: Path):
         invoked_project=project,
         since_iso="2026-01-01T00:00:00Z",
         limit=2,
+        progress=False,
     )
     claude.assert_not_called()
     codex.assert_not_called()
@@ -369,3 +648,148 @@ def test_auto_source_does_not_add_dsh_precedence(tmp_path: Path):
     ):
         assert harvest_for_config(cfg) == expected
     dsh.assert_not_called()
+
+
+@pytest.mark.parametrize("offset_hours", [-7, 0, 8])
+@pytest.mark.parametrize("cutoff_delta_ms,keep", [(-1, True), (0, True), (1, False)])
+def test_since_compares_instants_with_millisecond_precision(tmp_path, offset_hours, cutoff_delta_ms, keep):
+    end_ms = _BASE_TIME + 2123
+    answer = _assistant(1, "final")
+    answer["time"] = end_ms
+    _write_raw(tmp_path, "timestamp", str(tmp_path), [_user(0, "request"), answer], version=2)
+    cutoff = datetime.fromtimestamp((end_ms + cutoff_delta_ms) / 1000, timezone.utc)
+    since = cutoff.astimezone(timezone(timedelta(hours=offset_hours))).isoformat()
+
+    assert bool(harvest_dsh(str(tmp_path), since_iso=since)) is keep
+
+
+def test_since_accepts_local_sleep_checkpoint(tmp_path):
+    _write_raw(tmp_path, "local-time", str(tmp_path), [_user(0, "request"), _assistant(1, "final")])
+    # Match state._now_iso's host-local, offset-free timestamps on any platform.
+    before = datetime.fromtimestamp((_BASE_TIME + 1000) / 1000).isoformat()
+    after = datetime.fromtimestamp((_BASE_TIME + 3000) / 1000).isoformat()
+
+    assert len(harvest_dsh(str(tmp_path), since_iso=before)) == 1
+    assert harvest_dsh(str(tmp_path), since_iso=after) == []
+
+
+def test_master_fixture_since_accepts_equivalent_offsets():
+    pytest.importorskip("zstandard")
+    utc = harvest_dsh(str(_MASTER_V2_FIXTURE_ROOT), since_iso="2027-01-15T08:00:16Z")
+    offset = harvest_dsh(str(_MASTER_V2_FIXTURE_ROOT), since_iso="2027-01-15T16:00:16+08:00")
+
+    assert len(utc) == 1
+    assert offset == utc
+
+
+@pytest.mark.parametrize("kind", ["turn/start", "plugin/info"])
+@pytest.mark.parametrize("bad_fields", [
+    {"seq": True}, {"seq": 1.0}, {"seq": -1}, {"seq": 2},
+    {"time": True}, {"time": -1}, {"data": []}, {"data": None},
+    {"type": []}, {"type": ""}, {"type": None},
+])
+def test_known_and_ignorable_events_share_envelope_validation(tmp_path, kind, bad_fields):
+    invalid = {**_metadata(1, kind), "ignorable": True, **bad_fields}
+    _write_raw(tmp_path, "invalid", str(tmp_path), [_user(0, "request"), invalid, _assistant(2, "final")])
+    _write_raw(tmp_path, "valid", str(tmp_path), [_user(0, "request"), _assistant(1, "final")])
+
+    assert [digest.session_id for digest in harvest_dsh(str(tmp_path))] == ["valid"]
+
+
+@pytest.mark.parametrize("version", [0, 1, 2])
+def test_incremental_replacements_keep_result_and_injected_context_positions(tmp_path, version):
+    result = {**_metadata(2, "tool/result"), "surfaceOp": "append"}
+    result["data"] = {"output": "private tool output"}
+    records = [
+        _user(0, "request"),
+        _assistant(1, "obsolete", tool_name="obsolete-tool"),
+        result,
+        _user(3, "injected context", source="plugin"),
+        _replace_surface(_user(4, "summary", source="system"), 1, 3, 1, 2, 3),
+        _assistant(5, "intermediate", tool_name="intermediate-tool"),
+        _replace_surface(_user(6, "new summary", source="system"), 4, 5, 4, 5),
+        _assistant(7, "current", tool_name="current-tool"),
+    ]
+    path = _write_raw(tmp_path, "replaced", str(tmp_path), records, version=version)
+
+    digest = digest_dsh_session(str(path), root=str(tmp_path))
+
+    assert digest is not None
+    assert digest.user_prompts == ["request"]
+    assert digest.assistant_finals == ["current"]
+    assert digest.tools_used == ["current-tool"]
+    assert digest.n_assistant_turns == 1
+
+
+@pytest.mark.parametrize("replacement_fields", [
+    {"sourceEventSeqs": [0]},
+    {"sourceEventSeqs": [0, 1, 1]},
+    {"sourceEventSeqs": [0, True]},
+    {"sourceEventSeqs": [[1]]},
+    {"sourceEventSeqs": [[1, 0]]},
+    {"sourceEventSeqs": [[0, 2]]},
+    {"sourceEventSeqs": [[0, 1], [1, 2]]},
+    {"sourceEventSeqs": None},
+    {"surfaceOp": {"op": "replace", "start": 1, "end": 0}},
+    {"surfaceOp": {"op": "replace", "start": 0, "end": 99}},
+])
+def test_invalid_v2_replacement_discards_complete_session(tmp_path, replacement_fields):
+    replacement = _replace_surface(_user(2, "summary", source="system"), 0, 1, 0, 1)
+    replacement.update(replacement_fields)
+    path = _write_raw(tmp_path, "bad-replace", str(tmp_path), [
+        _user(0, "request"), _assistant(1, "old"), replacement, _assistant(3, "new"),
+    ], version=2)
+
+    assert digest_dsh_session(str(path), root=str(tmp_path)) is None
+
+
+def test_digest_releases_raw_payloads_while_reading(tmp_path):
+    class Payload(str):
+        pass
+
+    refs = []
+    path = _write_raw(tmp_path, "streamed", str(tmp_path), [], version=2)
+
+    def records():
+        yield _header("streamed", str(tmp_path), version=2)
+        yield _user(0, "request")
+        for seq in range(1, 21):
+            # Allow the reader's current row; earlier payloads must be freed
+            # before EOF, even if their surface positions remain visible.
+            assert all(ref() is None for ref in refs[:-1])
+            payload = Payload("private data " * 10000)
+            refs.append(weakref.ref(payload))
+            if seq % 2:
+                row = _assistant(seq, "visible reply", tool_name="shell")
+                row["data"]["message"]["content"][0]["text"] = payload
+                row["data"]["message"]["content"][-1]["arguments"] = payload
+            else:
+                row = {**_metadata(seq, "tool/result"), "surfaceOp": "append", "data": {"output": payload}}
+            yield row
+            del row, payload
+
+    with mock.patch("skillopt_sleep.harvest_dsh._iter_records", side_effect=lambda _path: records()):
+        digest = digest_dsh_session(str(path), root=str(tmp_path))
+
+    assert digest is not None
+    assert digest.assistant_finals == ["visible reply"] * 5
+    assert digest.n_assistant_turns == 10
+    assert digest.tools_used == ["shell"]
+    assert all(ref() is None for ref in refs)
+
+
+def test_unrelated_project_is_skipped_before_events_are_read(tmp_path):
+    _write_raw(tmp_path, "other", str(tmp_path / "other"), [], version=2)
+    closed = []
+
+    def records(_path):
+        try:
+            yield _header("other", str(tmp_path / "other"), version=2)
+            raise AssertionError("unrelated session body should not be read")
+        finally:
+            closed.append(True)
+
+    with mock.patch("skillopt_sleep.harvest_dsh._iter_records", side_effect=records):
+        assert harvest_dsh(str(tmp_path), scope="invoked", invoked_project=str(tmp_path / "wanted")) == []
+
+    assert closed == [True]

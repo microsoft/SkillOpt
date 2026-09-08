@@ -74,6 +74,7 @@ def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) 
             invoked_project=invoked_project,
             since_iso=since_iso,
             limit=limit,
+            progress=bool(cfg.get("progress", False)),
         )
     if source == "auto":
         codex_digests = harvest_codex(

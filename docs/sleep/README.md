@@ -203,11 +203,18 @@ skillopt-sleep harvest --project "$(pwd)" --source dsh --progress
 
 `--dsh-session-root PATH` remains available only to override that default.
 
-The source reads `session.jsonl` and the default compressed
-`session.jsonl.zstd` files below DSH's project/session directory layout. It
-does not start DSH, require DSH login, connect to a model provider, or modify
-the stored logs. `--source auto` retains Codex-then-Claude precedence and does
-not select DSH.
+The source discovers canonical DSH generations below the project/session
+directory layout: `session.jsonl` for v0 and `session.vN.jsonl` for numbered
+generations, with the corresponding `.zstd` forms. It selects the numerically
+highest generation for each session. The current v2 generation and retained
+historical v0/v1 generations are supported; an unsupported highest generation
+is skipped instead of falling back to an older file. It does not start DSH,
+require DSH login, connect to a model provider, or modify the stored logs.
+Normal harvesting remains silent for skipped sessions; use `--progress` or
+enable debug logging to see the selected file, highest generation, and skip
+reason. V2 headers, inherited-session markers, and replacement provenance are
+validated before visible text is exported.
+`--source auto` retains Codex-then-Claude precedence and does not select DSH.
 
 DSH harvesting keeps human user text, visible assistant text, short tool names,
 timestamps, and positive/negative feedback signals derived from the immutable
