@@ -320,13 +320,18 @@ def assign_splits(
         bucket = int(hashlib.sha256((str(seed) + task.id).encode()).hexdigest(), 16)
         return bucket, task.id
 
-    def _promote_one(*, to: str, from_splits: set[str]) -> None:
-        """Promote one real task using hash order; never demote hash-assigned test."""
+    def _promote_one(*, to: str, from_splits: set[str]) -> bool:
+        """Promote one real task using hash order; never demote hash-assigned test.
+
+        Returns True when a task was promoted, so degenerate splits that had to
+        borrow from ``test`` can be reported rather than failing silently.
+        """
         candidates = [t for t in real if t.split in from_splits]
         if not candidates:
-            return
+            return False
         candidates.sort(key=_stable_key)
         candidates[0].split = to
+        return True
 
     for t in real:
         bucket = _stable_key(t)[0] % 100
@@ -338,12 +343,42 @@ def assign_splits(
             t.split = "train"
 
     # Guarantee val (the gate) is non-empty when we have >=2 real tasks.
-    # Only promote from train so hash-assigned test tasks stay untouched.
+    # Prefer train so hash-assigned test tasks stay untouched. When every real
+    # task hashed into test there is nothing in train to promote, and the old
+    # code silently no-opped: the cycle then rejected with edits=0, no error,
+    # and holdout_leaked did not flag it either. Fall back to test in that
+    # degenerate case only, and log it since it spends a held-out task.
+    borrowed_from_test = False
     if len(real) >= 2 and not any(t.split == "val" for t in real):
-        _promote_one(to="val", from_splits={"train"})
-    # Guarantee a train pool exists when possible; never borrow from test.
+        if not _promote_one(to="val", from_splits={"train"}):
+            borrowed_from_test = _promote_one(to="val", from_splits={"test"})
+
+    # Guarantee a train pool exists when possible. Prefer val, but never empty
+    # the gate to do it: if val holds a single task, take from test first and
+    # only fall back to val when test is exhausted (the pre-existing behavior
+    # for splits that have no test slice at all).
     if not any(t.split == "train" for t in tasks) and len(real) >= 2:
-        _promote_one(to="train", from_splits={"val"})
+        spare_val = sum(1 for t in real if t.split == "val") > 1
+        if spare_val:
+            _promote_one(to="train", from_splits={"val"})
+        elif _promote_one(to="train", from_splits={"test"}):
+            borrowed_from_test = True
+        else:
+            _promote_one(to="train", from_splits={"val"})
+
+    if borrowed_from_test:
+        import logging
+
+        logging.getLogger("skillopt_sleep").warning(
+            "assign_splits: all %d real tasks hashed into test "
+            "(val_fraction=%.2f, test_fraction=%.2f, seed=%d); "
+            "borrowed from test so the gate has a val slice. "
+            "Lower test_fraction to stop spending held-out tasks.",
+            len(real),
+            val_fraction,
+            test_fraction,
+            seed,
+        )
     return tasks
 
 

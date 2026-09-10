@@ -117,6 +117,83 @@ class Pass1ApproachBAssignSplitsInvariants(unittest.TestCase):
             if t.id in test_ids:
                 self.assertEqual(t.split, "test")
 
+    def test_val_guaranteed_when_every_real_task_hashes_into_test(self):
+        """Degenerate split: nothing in train/val to promote from.
+
+        With a high test_fraction a small nightly batch can hash entirely into
+        test. Both guarantees then had nothing to promote and silently no-opped,
+        so the cycle rejected with edits=0 and no error. The gate must still get
+        a val slice, borrowed from test as a last resort.
+        """
+        for n in range(2, 11):
+            with self.subTest(real_tasks=n):
+                tasks = assign_splits(
+                    [_task(f"t{i}", f"task {i}") for i in range(n)],
+                    val_fraction=0.10,
+                    test_fraction=0.80,
+                    seed=42,
+                )
+                splits = [t.split for t in tasks]
+                self.assertIn("val", splits, "gate must not be left empty")
+                self.assertIn("train", splits, "train pool must not be empty")
+
+    def test_degenerate_split_warns_that_test_was_spent(self):
+        """Borrowing from test is reported, not silent."""
+        with self.assertLogs("skillopt_sleep", level="WARNING") as captured:
+            assign_splits(
+                [_task(f"t{i}", f"task {i}") for i in range(5)],
+                val_fraction=0.10,
+                test_fraction=0.80,
+                seed=42,
+            )
+        self.assertTrue(
+            any("hashed into test" in line for line in captured.output),
+            f"expected a degenerate-split warning, got {captured.output}",
+        )
+
+    def test_dream_train_does_not_mask_an_empty_gate(self):
+        """Dream tasks fill train, but they may never stand in for val."""
+        real = [_task(f"t{i}", f"task {i}") for i in range(4)]
+        dream = [_task("d0", "dream variant", origin="dream")]
+        tasks = assign_splits(
+            real + dream,
+            val_fraction=0.10,
+            test_fraction=0.80,
+            seed=42,
+        )
+        val_rows = [t for t in tasks if t.split == "val"]
+        self.assertTrue(val_rows, "gate must be filled from real tasks")
+        for t in val_rows:
+            self.assertNotEqual(t.origin, "dream", "val must stay real-only")
+        for t in tasks:
+            if t.origin == "dream":
+                self.assertEqual(t.split, "train")
+
+    def test_normal_split_does_not_borrow_from_test(self):
+        """The healthy path keeps its hash-assigned test slice intact."""
+        with mock.patch("logging.getLogger") as get_logger:
+            tasks = assign_splits(
+                [_task(f"t{i}", f"task {i}") for i in range(12)],
+                val_fraction=0.34,
+                test_fraction=0.10,
+                seed=7,
+            )
+            get_logger.assert_not_called()
+        splits = [t.split for t in tasks]
+        self.assertIn("val", splits)
+        self.assertIn("train", splits)
+
+    def test_single_real_task_is_left_alone(self):
+        """The >=2 guard still applies; one task cannot fill val and train."""
+        tasks = assign_splits(
+            [_task("only", "task")],
+            val_fraction=0.10,
+            test_fraction=0.80,
+            seed=42,
+        )
+        self.assertEqual(len(tasks), 1)
+        self.assertIn(tasks[0].split, {"train", "val", "test"})
+
 
 class Pass1ApproachCFractionBoundaries(unittest.TestCase):
     """Pass 1 / approach C: reject invalid fraction knobs early."""
