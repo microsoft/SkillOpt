@@ -341,6 +341,12 @@ def assign_splits(
     # Only promote from train so hash-assigned test tasks stay untouched.
     if len(real) >= 2 and not any(t.split == "val" for t in real):
         _promote_one(to="val", from_splits={"train"})
+        if not any(t.split == "val" for t in real):
+            import logging
+            logging.getLogger("skillopt_sleep").warning(
+                "holdout_leaked: all real tasks hashed to test, pulling one for val"
+            )
+            _promote_one(to="val", from_splits={"test"})
     # Guarantee a train pool exists when possible; never borrow from test.
     if not any(t.split == "train" for t in tasks) and len(real) >= 2:
         _promote_one(to="train", from_splits={"val"})
