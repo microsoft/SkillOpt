@@ -337,13 +337,36 @@ def assign_splits(
         else:
             t.split = "train"
 
+    import logging
+
     # Guarantee val (the gate) is non-empty when we have >=2 real tasks.
-    # Only promote from train so hash-assigned test tasks stay untouched.
+    # Only promote from train so hash-assigned test tasks stay untouched,
+    # UNLESS train is also empty, in which case we must borrow from test.
     if len(real) >= 2 and not any(t.split == "val" for t in real):
-        _promote_one(to="val", from_splits={"train"})
-    # Guarantee a train pool exists when possible; never borrow from test.
+        if not any(t.split == "train" for t in real):
+            logging.getLogger("skillopt_sleep").warning(
+                f"assign_splits: all {len(real)} real tasks hashed into test "
+                f"(val_fraction={val_fraction}, test_fraction={test_fraction}, seed={seed}). "
+                "Borrowing from test to satisfy non-empty val."
+            )
+            _promote_one(to="val", from_splits={"test"})
+        else:
+            _promote_one(to="val", from_splits={"train"})
+
+    # Guarantee a train pool exists when possible; never borrow from test
+    # UNLESS val has only 1 task (so taking from val would re-empty the gate)
+    # and test tasks are available.
     if not any(t.split == "train" for t in tasks) and len(real) >= 2:
-        _promote_one(to="train", from_splits={"val"})
+        val_count = sum(1 for t in real if t.split == "val")
+        if val_count <= 1 and any(t.split == "test" for t in real):
+            logging.getLogger("skillopt_sleep").warning(
+                f"assign_splits: pulling from test to satisfy non-empty train "
+                f"because val has only {val_count} real task "
+                f"(val_fraction={val_fraction}, test_fraction={test_fraction}, seed={seed})."
+            )
+            _promote_one(to="train", from_splits={"test"})
+        else:
+            _promote_one(to="train", from_splits={"val"})
     return tasks
 
 

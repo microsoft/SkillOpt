@@ -117,6 +117,20 @@ class Pass1ApproachBAssignSplitsInvariants(unittest.TestCase):
             if t.id in test_ids:
                 self.assertEqual(t.split, "test")
 
+    def test_val_and_train_pull_from_test_when_empty(self):
+        """When all real tasks hash to test, val and train borrow from test to satisfy non-empty guarantees."""
+        # Seed 42 with this configuration was observed to put all tasks into test
+        tasks = assign_splits(
+            [_task(f"t{i}", f"task {i}") for i in range(5)],
+            val_fraction=0.10,
+            test_fraction=0.80,
+            seed=42,
+        )
+        splits = {t.split for t in tasks}
+        self.assertIn("val", splits, "val must not be empty even if it needs to borrow from test")
+        self.assertIn("train", splits, "train must not be empty even if it needs to borrow from test")
+        self.assertIn("test", splits, "test must still contain remaining tasks")
+
 
 class Pass1ApproachCFractionBoundaries(unittest.TestCase):
     """Pass 1 / approach C: reject invalid fraction knobs early."""
