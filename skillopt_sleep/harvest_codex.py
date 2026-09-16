@@ -1,8 +1,13 @@
-"""SkillOpt-Sleep Codex Desktop session harvesting.
+"""SkillOpt-Sleep Codex session harvesting.
 
-Reads Codex Desktop archived session JSONL files and normalizes them into
-``SessionDigest`` records without copying developer/system instructions, tool
-arguments, or raw tool outputs.
+Reads Codex session JSONL files and normalizes them into ``SessionDigest``
+records without copying developer/system instructions, tool arguments, or raw
+tool outputs. Two layouts are supported and harvested together:
+
+- Codex Desktop: flat ``~/.codex/archived_sessions/*.jsonl`` files.
+- Codex CLI: ``~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`` rollout files
+  (each turn appears twice, as a ``response_item/message`` and an
+  ``event_msg/*_message`` record; the digest deduplicates adjacent pairs).
 """
 from __future__ import annotations
 
@@ -132,6 +137,9 @@ def digest_codex_archived_session(path: str, project: str = "") -> Optional[Sess
     feedback: List[str] = []
     n_user = 0
     n_asst = 0
+    # Codex CLI rollout files record every turn twice (response_item/message
+    # and event_msg/*_message, adjacent in either order); skip the repeat.
+    last_recorded = ("", "")
 
     for rec in _iter_jsonl(path):
         payload = _payload(rec)
@@ -169,6 +177,9 @@ def digest_codex_archived_session(path: str, project: str = "") -> Optional[Sess
         sanitized = _sanitize_text(text)
         if not sanitized:
             continue
+        if (output_role, sanitized) == last_recorded:
+            continue
+        last_recorded = (output_role, sanitized)
         if output_role == "user":
             n_user += 1
             user_prompts.append(sanitized)
@@ -198,6 +209,31 @@ def digest_codex_archived_session(path: str, project: str = "") -> Optional[Sess
     )
 
 
+def _candidate_paths(archived_sessions_dir: str) -> List[str]:
+    """List Codex session JSONL files across both on-disk layouts.
+
+    ``archived_sessions_dir`` is the flat Codex Desktop store; the sibling
+    ``sessions/`` tree (``<codex_home>/sessions/YYYY/MM/DD/rollout-*.jsonl``)
+    is what the Codex CLI writes and is walked recursively.
+    """
+    paths: List[str] = []
+    if os.path.isdir(archived_sessions_dir):
+        paths.extend(
+            os.path.join(archived_sessions_dir, fn)
+            for fn in os.listdir(archived_sessions_dir)
+            if fn.endswith(".jsonl")
+        )
+    sessions_dir = os.path.join(
+        os.path.dirname(os.path.abspath(archived_sessions_dir)), "sessions"
+    )
+    if os.path.isdir(sessions_dir):
+        for root, _dirs, files in os.walk(sessions_dir):
+            paths.extend(
+                os.path.join(root, fn) for fn in files if fn.endswith(".jsonl")
+            )
+    return paths
+
+
 def harvest_codex(
     archived_sessions_dir: str,
     *,
@@ -206,16 +242,12 @@ def harvest_codex(
     since_iso: Optional[str] = None,
     limit: int = 0,
 ) -> List[SessionDigest]:
-    """Walk ``~/.codex/archived_sessions`` and return matching digests."""
+    """Walk ``~/.codex/archived_sessions`` + ``~/.codex/sessions`` and return
+    matching digests."""
     digests: List[SessionDigest] = []
-    if not os.path.isdir(archived_sessions_dir):
+    paths = _candidate_paths(archived_sessions_dir)
+    if not paths:
         return digests
-
-    paths = [
-        os.path.join(archived_sessions_dir, fn)
-        for fn in os.listdir(archived_sessions_dir)
-        if fn.endswith(".jsonl")
-    ]
     paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
     project_hint = invoked_project if scope == "invoked" else ""
