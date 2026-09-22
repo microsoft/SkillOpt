@@ -1108,6 +1108,24 @@ def write_staging(
         manifest["skill_roots"] = list(dict.fromkeys(recorded_roots))
     if legacy:
         manifest["legacy"] = legacy
+        # Legacy adoption also writes a managed SKILL.md. Record the roots that
+        # were trusted when the night was staged so a later manifest edit cannot
+        # redirect that write to an arbitrary absolute path.
+        if "skill" in legacy:
+            recorded_roots = [
+                os.path.abspath(os.path.expanduser(str(root)))
+                for root in skill_roots
+                if isinstance(root, str) and str(root).strip()
+            ]
+            if not recorded_roots:
+                skill_path = str(legacy["skill"].get("live_path") or "")
+                recorded_roots = [
+                    os.path.dirname(os.path.dirname(skill_path))
+                    if skill_path else ""
+                ]
+            manifest["skill_roots"] = list(dict.fromkeys(
+                root for root in recorded_roots if root
+            ))
     artifacts: List[tuple[str, str]] = [
         (
             os.path.join(out, row["proposed_file"]),
@@ -3026,6 +3044,7 @@ def adopt(staging_dir: str) -> List[str]:
     initial_rows = _legacy_rows(initial_manifest)
     if not initial_rows:
         return []
+    skill_roots = staged_skill_roots(staging_dir) if "skill" in initial_rows else []
     initial_paths: List[str] = []
     for row in initial_rows.values():
         live = _safe_live_path(row.get("live_path"))
@@ -3087,6 +3106,16 @@ def adopt(staging_dir: str) -> List[str]:
                     live,
                     expected_realpath,
                     expected_basename=expected_basename,
+                )
+                if label == "skill" and not _live_target_within_roots(live, skill_roots):
+                    raise StagingError(
+                        "legacy skill path is outside the skills roots recorded "
+                        f"when this night was staged: {live}"
+                    )
+            elif label == "skill" and not _live_target_within_roots(live, skill_roots):
+                raise StagingError(
+                    "legacy skill path is outside the skills roots recorded "
+                    f"when this night was staged: {live}"
                 )
             staged = os.path.join(staging_dir, expected_file)
             if _is_link_or_junction(staged) or not os.path.isfile(staged):
