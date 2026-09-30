@@ -79,6 +79,20 @@ configured gate score (`hard`, `soft`, or `mixed`) is strictly higher than the
 current skill's score. With `evaluation.use_gate: false`, validation is still
 recorded but candidates are force-accepted.
 
+#### Why current and best are separate
+
+On the strictly gated path, the current and best skills are initialized to the
+same document and score. Every accepted candidate must beat the current score,
+which is also the best score, so both states advance together. Thus
+`current_skill == best_skill` remains an invariant for the procedure described
+by the paper; the nested "new best" check is redundant on that path.
+
+The implementation keeps separate current and best snapshots for optional
+extensions where they can diverge. Disabling the gate can force-accept a new
+current skill without replacing the validation-best snapshot, and an ungated
+slow update can likewise modify only the current skill. The final evaluation
+reports the validation-best snapshot separately from the last current skill.
+
 ## Epoch Boundary Mechanisms
 
 ### Slow Update
