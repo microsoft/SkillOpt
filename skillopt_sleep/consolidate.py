@@ -12,6 +12,11 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
+from skillopt_sleep.adversarial import (
+    MAX_PROBE_ROLLOUTS,
+    MIN_BLOCKING_ROLLOUTS,
+    evaluate_adversarial_probes,
+)
 from skillopt_sleep.backend import Backend
 
 # Self-contained validation gate (vendored from SkillOpt; zero dependency on the
@@ -187,6 +192,10 @@ def consolidate(
     gate_metric: str = "mixed",
     gate_mixed_weight: float = 0.5,
     gate_no_regression: bool = False,
+    dream_adversarial: int = 0,
+    dream_adversarial_blocking: bool = False,
+    dream_adversarial_margin: float = 0.0,
+    dream_adversarial_rollouts: int = 1,
     gate_mode: str = "on",       # "on" (hard/soft per gate_metric) | "off" (greedy)
     rollouts_k: int = 1,         # >1 => multi-rollout contrastive reflection
     evolve_skill: bool = True,
@@ -202,6 +211,46 @@ def consolidate(
 
     Skill and memory are evolved in sequence (skill first if both enabled).
     """
+    if isinstance(dream_adversarial, bool) or not isinstance(
+        dream_adversarial, int
+    ):
+        raise ValueError("dream_adversarial must be an integer")
+    if dream_adversarial > 0:
+        if not isinstance(dream_adversarial_blocking, bool):
+            raise ValueError("dream_adversarial_blocking must be a boolean")
+        if isinstance(dream_adversarial_margin, bool) or not isinstance(
+            dream_adversarial_margin, (int, float)
+        ):
+            raise ValueError(
+                "dream_adversarial_margin must be a finite number in [0, 1]"
+            )
+        margin = float(dream_adversarial_margin)
+        if not math.isfinite(margin) or not 0.0 <= margin <= 1.0:
+            raise ValueError(
+                "dream_adversarial_margin must be a finite number in [0, 1]"
+            )
+        if isinstance(dream_adversarial_rollouts, bool) or not isinstance(
+            dream_adversarial_rollouts, int
+        ):
+            raise ValueError(
+                "dream_adversarial_rollouts must be an integer in "
+                f"[1, {MAX_PROBE_ROLLOUTS}]"
+            )
+        if not 1 <= dream_adversarial_rollouts <= MAX_PROBE_ROLLOUTS:
+            raise ValueError(
+                "dream_adversarial_rollouts must be an integer in "
+                f"[1, {MAX_PROBE_ROLLOUTS}]"
+            )
+        if (
+            dream_adversarial_blocking
+            and dream_adversarial_rollouts < MIN_BLOCKING_ROLLOUTS
+        ):
+            raise ValueError(
+                "dream_adversarial_blocking requires "
+                f"dream_adversarial_rollouts >= {MIN_BLOCKING_ROLLOUTS} so a "
+                "single stochastic sample can never reject a candidate; keep "
+                "the probes advisory for single-rollout runs"
+            )
     from skillopt_sleep import evidence as evlog
     ev = evlog.get(backend)
     train_tasks, val_tasks, holdout_leaked = _split(tasks)
@@ -261,16 +310,72 @@ def consolidate(
                        n_edits=len(unmatched), edits=_edits_payload(unmatched))
         if not applied:
             return doc
-        # gate OFF: accept greedily with NO val scoring (the daily-use path)
-        if gate_off:
-            all_applied.extend(applied)
-            if ev is not None:
-                ev.log("gate", "trial", target=which, mode="greedy",
-                       accepted=True, n_edits=len(applied))
-            return new_doc
-        # gate ON: score the candidate on the VAL slice, keep only if it improves
         trial_skill = new_doc if which == "skill" else cand_skill
         trial_memory = new_doc if which == "memory" else cand_memory
+
+        def _probe_candidate() -> tuple[dict | None, bool]:
+            if dream_adversarial <= 0:
+                return None, False
+            evlog.set_phase(backend, f"adversarial_probe:{which}")
+            probe = evaluate_adversarial_probes(
+                backend,
+                train_tasks,
+                trial_skill,
+                trial_memory,
+                baseline_skill=cand_skill,
+                baseline_memory=cand_memory,
+                factor=dream_adversarial,
+                metric=gate_metric,
+                mixed_weight=gate_mixed_weight,
+                margin=dream_adversarial_margin,
+                rollouts=dream_adversarial_rollouts,
+            )
+            blocked = bool(
+                dream_adversarial_blocking
+                and (probe["flagged"] or not probe["conclusive"])
+            )
+            probe["blocking"] = bool(dream_adversarial_blocking)
+            probe["blocked"] = blocked
+            probe["block_reason"] = (
+                "inconclusive_no_probes"
+                if blocked and not probe["conclusive"]
+                else ("brittle_score_drop" if blocked else "")
+            )
+            if ev is not None:
+                ev.log(
+                    "adversarial",
+                    "candidate_probe",
+                    target=which,
+                    **probe,
+                )
+            return probe, blocked
+
+        # gate OFF: accept greedily with NO val scoring (the daily-use path)
+        if gate_off:
+            probe, blocked_by_adversarial = _probe_candidate()
+            accepted = not blocked_by_adversarial
+            if accepted:
+                all_applied.extend(applied)
+            else:
+                all_rejected.extend(applied)
+            if probe is not None:
+                gate_trials.append({
+                    "target": which,
+                    "baseline_score": None,
+                    "candidate_score": None,
+                    "accepted": accepted,
+                    "blocked_by_regression": False,
+                    "blocked_by_adversarial": blocked_by_adversarial,
+                    "task_deltas": [],
+                    "adversarial_probe": probe,
+                })
+            if ev is not None:
+                ev.log("gate", "trial", target=which, mode="greedy",
+                       accepted=accepted,
+                       blocked_by_adversarial=blocked_by_adversarial,
+                       n_edits=len(applied))
+            return new_doc if accepted else doc
+        # gate ON: score the candidate on the VAL slice, keep only if it improves
         evlog.set_phase(backend, f"gate_trial:{which}")
         pairs = replay_batch(backend, val_tasks, trial_skill, trial_memory)
         h, s = aggregate_scores(pairs)
@@ -283,22 +388,40 @@ def consolidate(
             and any(row["status"] == "regressed" for row in task_deltas)
         )
         trial_base_score = base_score
-        improved = cand_score > base_score and not blocked_by_regression
-        gate_trials.append({
+        gate_improved = cand_score > base_score and not blocked_by_regression
+        probe = None
+        blocked_by_adversarial = False
+        if gate_improved:
+            probe, blocked_by_adversarial = _probe_candidate()
+        improved = gate_improved and not blocked_by_adversarial
+        trial_record = {
             "target": which,
             "baseline_score": _finite_score(trial_base_score),
             "candidate_score": _finite_score(cand_score),
             "accepted": improved,
             "blocked_by_regression": blocked_by_regression,
             "task_deltas": task_deltas,
-        })
+        }
+        if dream_adversarial > 0:
+            trial_record["blocked_by_adversarial"] = blocked_by_adversarial
+            trial_record["adversarial_probe"] = probe
+        gate_trials.append(trial_record)
         if ev is not None:
-            ev.log("gate", "trial", target=which, mode="gated",
-                   baseline_score=trial_base_score, cand_hard=h, cand_soft=s,
-                   cand_score=cand_score, accepted=improved,
-                   blocked_by_regression=blocked_by_regression,
-                   task_deltas=task_deltas,
-                   n_edits=len(applied))
+            trial_evidence = {
+                "target": which,
+                "mode": "gated",
+                "baseline_score": trial_base_score,
+                "cand_hard": h,
+                "cand_soft": s,
+                "cand_score": cand_score,
+                "accepted": improved,
+                "blocked_by_regression": blocked_by_regression,
+                "task_deltas": task_deltas,
+                "n_edits": len(applied),
+            }
+            if dream_adversarial > 0:
+                trial_evidence["blocked_by_adversarial"] = blocked_by_adversarial
+            ev.log("gate", "trial", **trial_evidence)
         if improved:
             base_score = cand_score
             current_pairs = pairs
