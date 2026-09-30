@@ -314,12 +314,19 @@ def _project_matches(project: str, scope: Any, invoked: str) -> bool:
         return True
     if isinstance(scope, (list, tuple)):
         return any(os.path.abspath(project) == os.path.abspath(p) for p in scope)
-    # "invoked": match the invoked project (or a subdir of it)
+    # "invoked": match the invoked project (or a subdir of it). Invoking from a
+    # subdirectory of a recorded project (repo root recorded, invoked in
+    # repo/subdir) is the same project and still matches, but the filesystem
+    # roots are not projects: sessions run from $HOME or / must not leak into
+    # every project below them (#294).
     if not invoked:
         return True
     a = os.path.abspath(project)
     b = os.path.abspath(invoked)
-    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+    if a == b or a.startswith(b + os.sep):
+        return True
+    home = os.path.abspath(os.path.expanduser("~"))
+    return b.startswith(a + os.sep) and a not in ("/", home)
 
 
 def harvest(
