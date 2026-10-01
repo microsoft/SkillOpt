@@ -3152,3 +3152,363 @@ def adopt(staging_dir: str) -> List[str]:
             receipt_after=receipt_after,
         )
         return updated
+
+
+def adopted_skill_names(staging_dir: str) -> List[str]:
+    """Names of per-skill proposals adopted from this night and not yet reverted."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_skills.json")
+    if not os.path.exists(receipt_path) or _is_link_or_junction(receipt_path):
+        return []
+    try:
+        rows, _, _, _ = _read_existing_receipts(receipt_path, staging_dir)
+        return [str(r["skill_name"]) for r in rows if r.get("skill_name")]
+    except Exception:
+        return []
+
+
+def has_adopted_legacy(staging_dir: str) -> bool:
+    """Whether the managed skill/memory pair is adopted and not yet reverted."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_legacy.json")
+    if not os.path.exists(receipt_path) or _is_link_or_junction(receipt_path):
+        return False
+    try:
+        rows, _, _, _ = _read_legacy_receipts(receipt_path, staging_dir)
+        return bool(rows)
+    except Exception:
+        return False
+
+
+def latest_adopted_staging(project: str) -> Optional[str]:
+    """The newest staging directory holding an adoption that can still be undone.
+
+    Deliberately not `latest_staging`: the newest proposal on disk may never
+    have been adopted, and reverting that would restore a backup for a change
+    the live files never received.
+    """
+    root = staging_root(project)
+    if _is_link_or_junction(root) or not os.path.isdir(root):
+        return None
+    subs = []
+    for entry in os.listdir(root):
+        if not _STAGING_DIR_RE.fullmatch(entry):
+            continue
+        path = os.path.join(root, entry)
+        if _is_link_or_junction(path) or not os.path.isdir(path):
+            continue
+        manifest_path = os.path.join(path, "manifest.json")
+        if _is_link_or_junction(manifest_path) or not os.path.isfile(manifest_path):
+            continue
+        subs.append(path)
+    subs.sort(key=_staging_order, reverse=True)
+    for p in subs:
+        if has_adopted_legacy(p) or adopted_skill_names(p):
+            return p
+    return None
+
+
+def _clean_empty_backup_dir(path: str, staging_dir: str) -> None:
+    """Prune empty parent directories inside staging_dir/backup after backup removal."""
+    try:
+        backup_root = os.path.realpath(os.path.join(staging_dir, "backup"))
+        curr = os.path.realpath(path)
+        while curr != backup_root and curr.startswith(backup_root + os.sep):
+            if os.path.isdir(curr) and not os.listdir(curr):
+                os.rmdir(curr)
+                curr = os.path.dirname(curr)
+            else:
+                break
+    except Exception:
+        pass
+
+
+def _assert_current_adopted_head(
+    staging_dir: str, *, kind: str, skill_name: Optional[str] = None
+) -> None:
+    """Enforce a safe LIFO stack model: only the most recent adopted staging night
+    for a given target (skill or legacy) can be reverted.
+    """
+    try:
+        manifest = _load_manifest(staging_dir)
+        project = manifest.get("project") or ""
+    except Exception:
+        project = ""
+    if not project:
+        parent = os.path.dirname(staging_dir)
+        if os.path.basename(parent) == "staging":
+            grandparent = os.path.dirname(parent)
+            if os.path.basename(grandparent) == ".skillopt-sleep":
+                project = os.path.dirname(grandparent)
+    if not project or not os.path.isdir(project):
+        return
+    root = staging_root(project)
+    if not os.path.isdir(root):
+        return
+
+    target_order = _staging_order(staging_dir)
+    for entry in os.listdir(root):
+        candidate = os.path.join(root, entry)
+        if _path_identity_key(candidate) == _path_identity_key(staging_dir):
+            continue
+        if not os.path.isdir(candidate):
+            continue
+        cand_order = _staging_order(candidate)
+        if cand_order <= target_order:
+            continue
+        if kind == "skills" and skill_name:
+            cand_skills = adopted_skill_names(candidate)
+            if skill_name in cand_skills:
+                raise StagingError(
+                    f"cannot revert skill {skill_name!r} from older night {os.path.basename(staging_dir)!r}: "
+                    f"newer adoption in {os.path.basename(candidate)!r} must be reverted first"
+                )
+        elif kind == "legacy":
+            if has_adopted_legacy(candidate):
+                raise StagingError(
+                    f"cannot revert legacy proposal from older night {os.path.basename(staging_dir)!r}: "
+                    f"newer adoption in {os.path.basename(candidate)!r} must be reverted first"
+                )
+
+
+def revert_skills(
+    staging_dir: str, skill_names: Optional[Sequence[str]] = None
+) -> List[AdoptedSkill]:
+    """Revert adopted skills back to their pre-adoption state using backups."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    _recover_before_manifest(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_skills.json")
+    if not os.path.exists(receipt_path):
+        return []
+
+    initial_receipts, receipt_original, receipt_mode, receipt_file_id = (
+        _read_existing_receipts(receipt_path, staging_dir)
+    )
+    if not initial_receipts:
+        return []
+
+    if skill_names is not None:
+        wanted_names = {str(name).strip() for name in skill_names if str(name).strip()}
+        rows = [r for r in initial_receipts if r["skill_name"] in wanted_names]
+        missing = wanted_names - {r["skill_name"] for r in rows}
+        if missing:
+            raise StagingError(
+                "not adopted from this night: " + ", ".join(repr(m) for m in sorted(missing))
+            )
+    else:
+        rows = list(initial_receipts)
+
+    if not rows:
+        return []
+
+    all_staged = staged_skills(staging_dir)
+    manifest_by_name = {row.get("skill_name"): row for row in all_staged}
+    skill_roots = staged_skill_roots(staging_dir)
+
+    initial_live_paths: List[str] = []
+    for row in rows:
+        name = row["skill_name"]
+        manifest_row = manifest_by_name.get(name)
+        if not manifest_row:
+            raise StagingError(f"receipt for {name!r} not found in staging manifest")
+        manifest_live = _safe_live_path(manifest_row.get("live_skill_path"))
+        receipt_live = _safe_live_path(row.get("live_skill_path"))
+        if (
+            not manifest_live
+            or not receipt_live
+            or _path_identity_key(manifest_live) != _path_identity_key(receipt_live)
+        ):
+            raise StagingError(f"receipt for {name!r} has untrusted live path")
+        expected_realpath = _safe_live_path(manifest_row.get("live_realpath"))
+        _adopt_live_target_ok(name, receipt_live, expected_realpath, skill_roots)
+        initial_live_paths.append(receipt_live)
+
+    with _adoption_locks(staging_dir, initial_live_paths):
+        current_receipts, current_original, current_mode, current_file_id = (
+            _read_existing_receipts(receipt_path, staging_dir)
+        )
+        if (
+            current_file_id != receipt_file_id
+            or current_original != receipt_original
+            or not _modes_match(current_mode, receipt_mode)
+        ):
+            raise StagingError("adoption receipt changed while revert was locking")
+
+        if skill_names is not None:
+            active_rows = [r for r in current_receipts if r["skill_name"] in wanted_names]
+        else:
+            active_rows = list(current_receipts)
+
+        receipts_to_return: List[AdoptedSkill] = []
+        reverted_names: set[str] = set()
+
+        for row in active_rows:
+            name = row["skill_name"]
+            live = row["live_skill_path"]
+            before_sha = row["sha256_before"]
+            after_sha = row["sha256_after"]
+            backup = row["backup_path"]
+
+            _assert_current_adopted_head(staging_dir, kind="skills", skill_name=name)
+
+            current, current_mode, _ = _file_snapshot(live)
+            current_sha = _bytes_sha256(current)
+
+            if current_sha == before_sha:
+                if backup and os.path.lexists(backup):
+                    _unlink_fsync(backup)
+                    _clean_empty_backup_dir(os.path.dirname(backup), staging_dir)
+                receipts_to_return.append(AdoptedSkill(
+                    skill_name=name,
+                    live_skill_path=live,
+                    sha256_before=after_sha,
+                    sha256_after=before_sha,
+                    backup_path="",
+                ))
+                reverted_names.add(name)
+                continue
+
+            if current_sha != after_sha:
+                raise StagingError(
+                    f"live skill for {name!r} changed since adoption; cannot safely revert"
+                )
+
+            if before_sha != "":
+                if not backup or not os.path.lexists(backup):
+                    raise StagingError(f"backup for {name!r} is missing; cannot revert")
+                if _immutable_backup_sha256(backup, staging_dir) != before_sha:
+                    raise StagingError(f"backup for {name!r} changed; cannot safely revert")
+                with open(backup, "rb") as f:
+                    original_bytes = f.read()
+                _write_atomic_bytes(live, original_bytes, mode=current_mode)
+                final, _, _ = _file_snapshot(live)
+                if _bytes_sha256(final) != before_sha:
+                    raise StagingError(f"restoring {name!r} failed sha256 verification")
+                _unlink_fsync(backup)
+                _clean_empty_backup_dir(os.path.dirname(backup), staging_dir)
+            else:
+                if current is not None:
+                    _unlink_fsync(live)
+
+            receipts_to_return.append(AdoptedSkill(
+                skill_name=name,
+                live_skill_path=live,
+                sha256_before=after_sha,
+                sha256_after=before_sha,
+                backup_path="",
+            ))
+            reverted_names.add(name)
+
+        remaining_receipts = [
+            r for r in current_receipts if r["skill_name"] not in reverted_names
+        ]
+        _write_atomic(
+            receipt_path,
+            json.dumps(remaining_receipts, ensure_ascii=False, indent=2),
+            create_parents=False,
+        )
+        return receipts_to_return
+
+
+def revert(staging_dir: str) -> List[str]:
+    """Revert adopted legacy managed skills back to their pre-adoption state."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    _recover_before_manifest(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_legacy.json")
+    if not os.path.exists(receipt_path):
+        return []
+
+    initial_receipts, receipt_original, receipt_mode, receipt_file_id = (
+        _read_legacy_receipts(receipt_path, staging_dir)
+    )
+    if not initial_receipts:
+        return []
+
+    manifest = _load_manifest(staging_dir)
+    legacy_rows = _legacy_rows(manifest)
+
+    initial_live_paths: List[str] = []
+    for row in initial_receipts:
+        label = row.get("target")
+        manifest_row = legacy_rows.get(label)
+        if not manifest_row:
+            raise StagingError(f"legacy {label} not found in staging manifest")
+        manifest_live = _safe_live_path(manifest_row.get("live_path"))
+        receipt_live = _safe_live_path(row.get("live_path"))
+        if (
+            not manifest_live
+            or not receipt_live
+            or _path_identity_key(manifest_live) != _path_identity_key(receipt_live)
+        ):
+            raise StagingError(f"legacy {label} receipt has untrusted live path")
+        expected_realpath = _safe_live_path(manifest_row.get("live_realpath"))
+        expected_basename = "SKILL.md" if label == "skill" else "CLAUDE.md"
+        _adopt_target_ok(
+            f"legacy {label}",
+            receipt_live,
+            expected_realpath,
+            expected_basename=expected_basename,
+        )
+        initial_live_paths.append(receipt_live)
+
+    with _adoption_locks(staging_dir, initial_live_paths):
+        current_receipts, current_original, current_mode, current_file_id = (
+            _read_legacy_receipts(receipt_path, staging_dir)
+        )
+        if (
+            current_file_id != receipt_file_id
+            or current_original != receipt_original
+            or not _modes_match(current_mode, receipt_mode)
+        ):
+            raise StagingError("legacy adoption receipt changed while revert was locking")
+
+        _assert_current_adopted_head(staging_dir, kind="legacy")
+
+        updated: List[str] = []
+        for row in current_receipts:
+            label = row["target"]
+            live = row["live_path"]
+            before_sha = row["sha256_before"]
+            after_sha = row["sha256_after"]
+            backup = row["backup_path"]
+
+            current, current_mode, _ = _file_snapshot(live)
+            current_sha = _bytes_sha256(current)
+
+            if current_sha == before_sha:
+                if backup and os.path.lexists(backup):
+                    _unlink_fsync(backup)
+                    _clean_empty_backup_dir(os.path.dirname(backup), staging_dir)
+                updated.append(live)
+                continue
+
+            if current_sha != after_sha:
+                raise StagingError(
+                    f"legacy {label} changed since adoption; cannot safely revert"
+                )
+
+            if before_sha != "":
+                if not backup or not os.path.lexists(backup):
+                    raise StagingError(f"legacy backup for {label} is missing; cannot revert")
+                if _immutable_backup_sha256(backup, staging_dir) != before_sha:
+                    raise StagingError(f"legacy backup for {label} changed; cannot safely revert")
+                with open(backup, "rb") as f:
+                    original_bytes = f.read()
+                _write_atomic_bytes(live, original_bytes, mode=current_mode)
+                final, _, _ = _file_snapshot(live)
+                if _bytes_sha256(final) != before_sha:
+                    raise StagingError(f"restoring legacy {label} failed sha256 verification")
+                _unlink_fsync(backup)
+                _clean_empty_backup_dir(os.path.dirname(backup), staging_dir)
+            else:
+                if current is not None:
+                    _unlink_fsync(live)
+
+            updated.append(live)
+
+        _write_atomic(
+            receipt_path,
+            json.dumps([], ensure_ascii=False, indent=2),
+            create_parents=False,
+        )
+        return updated
