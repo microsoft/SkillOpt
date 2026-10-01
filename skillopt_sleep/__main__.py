@@ -44,6 +44,7 @@ from skillopt_sleep.staging import (
     json_safe,
     latest_staging,
     pending_staged_skills,
+    redact_secrets,
     staged_skills,
 )
 from skillopt_sleep.staging import adopt as adopt_staging
@@ -333,15 +334,16 @@ def _handoff_dir_for(cfg) -> str:
 
 
 def _redact_deep(obj):
-    """Redact secret-looking substrings in every string of a JSON-like tree."""
+    """Redact secrets key-aware across the whole structure (see redact_secrets).
+
+    This used to recurse values and only scrub string leaves, losing the
+    mapping-key context — so ``{"api_key": "x"}`` leaked. Delegating to the
+    key-aware ``redact_secrets`` walker fixes every output boundary that routes
+    through this helper (--json, digests/snapshot files, gate_trials, extra,
+    display) at once, keeping them all consistent.
+    """
     from skillopt_sleep.staging import redact_secrets
-    if isinstance(obj, str):
-        return redact_secrets(obj)
-    if isinstance(obj, list):
-        return [_redact_deep(x) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _redact_deep(v) for k, v in obj.items()}
-    return obj
+    return redact_secrets(obj)
 
 
 def _display_error(exc: object) -> str:
@@ -483,7 +485,7 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
     # NOT marked reviewed: feeding this snapshot back through --tasks-file
     # with a real backend must still hit the human-review gate above. The
     # driver itself loads it directly, with the same trust as in-cycle mining.
-    write_tasks_file(snapshot, _redact_deep(payload))
+    write_tasks_file(snapshot, redact_secrets(payload))
     print(
         f"[sleep] handoff: pinned {len(tasks)} tasks -> {snapshot}",
         file=sys.stderr if args.json else sys.stdout,
@@ -807,9 +809,9 @@ def cmd_harvest(args) -> int:
     )
     output_path = ""
     if getattr(args, "output", ""):
-        output_path = write_tasks_file(args.output, payload)
+        output_path = write_tasks_file(args.output, redact_secrets(payload))
     if args.json:
-        json_payload = dict(payload)
+        json_payload = redact_secrets(payload)
         if output_path:
             json_payload["output"] = output_path
         print(json.dumps(json_payload, ensure_ascii=False, indent=2))

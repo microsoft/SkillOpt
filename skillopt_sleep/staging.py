@@ -1123,13 +1123,13 @@ def write_staging(
         (
             os.path.join(out, "report.json"),
             json.dumps(
-                json_safe(report.to_dict()),
+                json_safe(redact_secrets(report.to_dict())),
                 ensure_ascii=False,
                 indent=2,
                 allow_nan=False,
             ),
         ),
-        (os.path.join(out, "report.md"), report_md),
+        (os.path.join(out, "report.md"), redact_secrets(report_md)),
         # The manifest is the publication marker and must always be last.
         (
             os.path.join(out, "manifest.json"),

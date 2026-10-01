@@ -27,6 +27,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -357,24 +358,89 @@ class CliBackend(Backend):
         self._cache: Dict[str, str] = {}
         self.last_call_error = ""
         self.last_reflect_raw = ""
+        # Guards _cache/_tokens against concurrent mutation on the opt-in
+        # parallel replay path (SKILLOPT_SLEEP_WORKERS>1). The model call
+        # itself stays outside the lock so parallel workers can overlap.
+        self._lock = threading.Lock()
+        # Per-thread token delta for call-local accounting under parallel replay.
+        self._thread_local = threading.local()
+        # Per-thread marker: set by a backend that self-reports provider usage so
+        # _cached_call/_reflect skip their length-estimate (no double charge).
+        # Thread-local so parallel workers can never read another worker's marker.
+        self._thread_local.charged_in_call = False
 
     # subclasses override --------------------------------------------------
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
         raise NotImplementedError
 
+    def _record_delta(self, delta: int) -> int:
+        """Add a computed delta to the aggregate ``_tokens`` AND record it
+        call-local. The one place both totals are updated, so they always agree.
+        """
+        with self._lock:
+            self._tokens += delta
+        self._thread_local.delta = delta
+        return delta
+
+    def _record_cost(self, prompt: str, response: str) -> int:
+        """THE single path to record an inference's token cost (``len//4``).
+
+        Computes the ``len//4`` delta and delegates to ``_record_delta``. Every
+        inference path (``_cached_call``, ``attempt_with_tools``, ``reflect``)
+        must route cost here so the aggregate and call-local totals always agree
+        and no path under- or over-counts.
+        """
+        delta = len(prompt or "") // 4 + len(response or "") // 4
+        return self._record_delta(delta)
+
+    def _reset_call_delta(self) -> None:
+        """Zero the call-local delta for a NO-CALL path.
+
+        Called at the start of every tool-aware path (and used by cache hits) so
+        a reused worker never reports a previous call's token count — every
+        no-call / early-return path leaves the delta at 0.
+        """
+        self._thread_local.delta = 0
+
     def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
         kind = key.split(":", 1)[0]
         ev = getattr(self, "evidence", None)
-        if key in self._cache:
+        with self._lock:
+            cached = self._cache.get(key)
+        if cached is not None:
+            # cover: later cache hit must not report the previous call's delta.
+            self._reset_call_delta()
             # cache hits log key-only (the full text is on the original miss event)
             if ev is not None:
                 ev.log("replay", "model_call", kind=kind, cache_hit=True, key=key,
                        phase=getattr(self, "evidence_phase", ""), backend=self.name,
                        model=self.model)
-            return self._cache[key]
+            return cached
+        # The model call is intentionally outside the lock so parallel workers
+        # over the same backend overlap; a concurrent miss may duplicate a call,
+        # but _cache/_tokens reads+writes below are atomic.
+        self._thread_local.charged_in_call = False
         out = self._call(prompt, max_tokens=max_tokens)
-        self._tokens += len(prompt) // 4 + len(out) // 4
-        self._cache[key] = out
+        # Charge every real call's tokens once, in one place. A backend that can
+        # report provider usage records it itself (accumulated, exact) and flips
+        # _thread_local.charged_in_call so this path is a no-op — avoiding a
+        # double charge. Every other backend falls back to the len//4 estimate here.
+        # Using a marker keeps _call's str return (which llm_miner/rollout/
+        # slow_update rely on) and preserves those paths' accounting.
+        if not self._thread_local.charged_in_call:
+            self._record_cost(prompt, out)
+        with self._lock:
+            # The cache dedup below may reuse another worker's success, but the
+            # model call above still consumed tokens (already charged).
+            existing = self._cache.get(key)
+            if existing:
+                # A success was cached by another worker; prefer it (dedup) so an
+                # empty/duplicate never overwrites a concurrent success.
+                out = existing
+            elif out:
+                # This worker succeeded and nothing is cached: cache it.
+                self._cache[key] = out
+            # else: empty result + nothing cached -> don't cache (transient failure)
         if ev is not None:
             ev.log("replay", "model_call", kind=kind, cache_hit=False, key=key,
                    phase=getattr(self, "evidence_phase", ""), backend=self.name,
@@ -524,8 +590,10 @@ class CliBackend(Backend):
                 prompt + "\n\nIMPORTANT: your previous reply was not valid JSON. "
                 "Reply with ONLY the JSON array, no prose, no markdown fences."
             )
+            self._thread_local.charged_in_call = False
             raw = self._call(p, max_tokens=1024)
-            self._tokens += len(p) // 4 + len(raw) // 4
+            if not self._thread_local.charged_in_call:
+                self._record_cost(p, raw)
             if ev is not None:
                 ev.log("reflect", "exchange", target=target, attempt=attempt + 1,
                        backend=self.name, model=self.model,
@@ -555,8 +623,28 @@ class CliBackend(Backend):
                 ))
         return edits
 
+    def _cache_get(self, key: str) -> str | None:
+        """Thread-safe cache read (route subclass cache access through this)."""
+        with self._lock:
+            return self._cache.get(key)
+
+    def _cache_pop_if(self, key: str, expected: str | None) -> None:
+        """Drop a cache entry only if it still holds ``expected``.
+
+        A failed caller must not delete a successful result another worker just
+        stored for the same key, so we only pop our own (empty) value.
+        """
+        with self._lock:
+            if self._cache.get(key) == expected:
+                self._cache.pop(key, None)
+
     def tokens_used(self) -> int:
-        return self._tokens
+        with self._lock:
+            return self._tokens
+
+    def token_delta(self) -> int:
+        """Token cost of the most recent call on THIS thread (call-local)."""
+        return getattr(self._thread_local, "delta", 0)
 
 
 # ── Pi CLI backend ────────────────────────────────────────────────
@@ -605,13 +693,13 @@ class PiCliBackend(CliBackend):
 
     def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
         """Do not make a transient Pi failure sticky in the response cache."""
-        if key in self._cache:
+        if self._cache_get(key) is not None:
             # A cached success must not expose an unrelated previous failure
             # through diagnostics/evidence attached to this call.
             self.last_call_error = ""
         out = super()._cached_call(key, prompt, max_tokens=max_tokens)
         if not out:
-            self._cache.pop(key, None)
+            self._cache_pop_if(key, out)
         return out
 
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
@@ -799,6 +887,7 @@ class ClaudeCliBackend(CliBackend):
         return out
 
     def attempt_with_tools(self, task, skill, memory, tools):
+        self._reset_call_delta()
         # Expose a REAL, callable `search` tool (a shell shim that logs each
         # call) so the gbrain quick-answerer judge (tool_called=search) is
         # validated honestly: we detect the call from the shim's log, not from
@@ -857,7 +946,7 @@ class ClaudeCliBackend(CliBackend):
                     "Claude CLI could not be executed: %s", exc,
                 )
                 resp = ""
-            self._tokens += len(prompt) // 4 + len(resp) // 4
+            self._record_cost(prompt, resp)
             called: List[str] = []
             if os.path.exists(calllog):
                 with open(calllog) as f:
@@ -1240,11 +1329,11 @@ class OpenCodeCliBackend(CliBackend):
 
     def _cached_call(self, key: str, prompt: str, *, max_tokens: int = 1024) -> str:
         """Keep failed OpenCode calls out of the cache."""
-        if key in self._cache:
+        if self._cache_get(key) is not None:
             self.last_call_error = ""
         out = super()._cached_call(key, prompt, max_tokens=max_tokens)
         if not out:
-            self._cache.pop(key, None)
+            self._cache_pop_if(key, out)
         return out
 
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
@@ -1290,6 +1379,7 @@ class OpenCodeCliBackend(CliBackend):
         tools: List[str],
     ) -> Tuple[str, List[str]]:
         self.last_call_error = ""
+        self._reset_call_delta()
         if not self.tool_replay:
             self.last_call_error = (
                 "OpenCode CLI tool replay is not supported without explicit "
@@ -1357,10 +1447,11 @@ class OpenCodeCliBackend(CliBackend):
                     name for name, tool_id in project.tool_mapping.items() if tool_id in called
                 ]
         except OpenCodeError as exc:
-            self._tokens += exc.prompt_chars // 4
+            # Prompt-only cost on the error path (no response text).
+            delta = self._record_delta(exc.prompt_chars // 4)
             self.last_call_error = str(exc)
             return "", []
-        self._tokens += len(prompt) // 4 + len(text) // 4
+        self._record_cost(prompt, text)
         return text, called_tools
 
 
@@ -1546,6 +1637,7 @@ class CodexCliBackend(CliBackend):
         return out
 
     def attempt_with_tools(self, task, skill, memory, tools):
+        self._reset_call_delta()
         # Codex exec runs in a sandbox with shell access; expose the same real
         # `search` shim and let it run (workspace-write so the shim can log).
         import tempfile, shutil, stat
@@ -1638,7 +1730,7 @@ class CodexCliBackend(CliBackend):
                 self.last_call_error = (
                     f"codex exec (tools) exited {proc.returncode}: {(proc.stderr or '')[:500]}"
                 )
-            self._tokens += len(prompt) // 4 + len(resp) // 4
+            self._record_cost(prompt, resp)
             called: List[str] = []
             if os.path.exists(calllog):
                 with open(calllog) as f:
@@ -1810,6 +1902,7 @@ class CopilotCliBackend(CliBackend):
         return "\n".join(parts).strip()
 
     def attempt_with_tools(self, task, skill, memory, tools):
+        self._reset_call_delta()
         # Expose REAL, callable tool shims in the working directory so the
         # gbrain quick-answerer judge (tool_called=search) is validated
         # honestly: we detect each call from the shim's log, not from a
@@ -1904,7 +1997,7 @@ class CopilotCliBackend(CliBackend):
                 resp = self._parse_jsonl_response(proc.stdout or "")
             except Exception:
                 resp = ""
-            self._tokens += len(prompt) // 4 + len(resp) // 4
+            self._record_cost(prompt, resp)
             called: List[str] = []
             if os.path.exists(calllog):
                 with open(calllog) as f:
@@ -2170,11 +2263,28 @@ class DualBackend(Backend):
         self.target = target
         self.optimizer = optimizer
         self.name = f"target={target.name}/optimizer={optimizer.name}"
+        # NOTE: `_target_tokens_before` (snapshotted in attempt/attempt_with_tools
+        # below) is a SHARED instance attribute, not thread-local, and only the
+        # cumulative-only fallback in token_delta() reads it.
+        #
+        # Concurrency contract (replay_batch()'s docstring has the full table):
+        # * a target with token_delta() -> token_delta() returns that target's
+        #   thread-local, call-local delta, so one DualBackend is safe to share
+        #   across parallel replay workers;
+        # * a target with only tokens_used() -> token_delta() falls back to the
+        #   shared snapshot above, which races when workers overlap. Give each
+        #   worker its own DualBackend, or keep SKILLOPT_SLEEP_WORKERS=1.
+        # The cumulative-only fallback is supported sequentially. Do not read the
+        # sequential compatibility tests as a thread-safety guarantee for it.
 
     def attempt(self, task, skill, memory, sample_id: int = 0):
+        # Snapshot the target total before the attempt so token_delta() can report
+        # a before/after diff when the target lacks the per-call delta method.
+        self._target_tokens_before = self.target.tokens_used()
         return self.target.attempt(task, skill, memory, sample_id=sample_id)
 
     def attempt_with_tools(self, task, skill, memory, tools):
+        self._target_tokens_before = self.target.tokens_used()
         return self.target.attempt_with_tools(task, skill, memory, tools)
 
     def judge(self, task, response):
@@ -2193,6 +2303,23 @@ class DualBackend(Backend):
 
     def tokens_used(self):
         return self.target.tokens_used() + self.optimizer.tokens_used()
+
+    def token_delta(self) -> int:
+        # Call-local cost for a replay attempt: replay_one() drives
+        # attempt/attempt_with_tools -> the TARGET backend, so the per-attempt
+        # delta is the target's. The optimizer only appears in replay via
+        # judge() on the rare model-judge fallback (rule/exact/answer tasks are
+        # scored locally, 0 tokens); that cost is still counted in the aggregate
+        # tokens_used() (target + optimizer), so the total is not undercounted.
+        delta_fn = getattr(self.target, "token_delta", None)
+        if delta_fn is not None:
+            return delta_fn()
+        # Compatibility: a target that only implements the older tokens_used()
+        # contract has no per-call delta. Report its same-thread before/after
+        # difference (snapshotted in attempt/attempt_with_tools) so the per-attempt
+        # cost is not silently replaced by a text-length estimate. The snapshot is
+        # shared instance state, so this branch is sequential-only - see __init__.
+        return max(0, self.target.tokens_used() - getattr(self, "_target_tokens_before", 0))
 
 
 # ── Azure OpenAI backend (gpt-5.x via managed identity) ───────────────────────
@@ -2359,6 +2486,7 @@ class AzureOpenAIBackend(CliBackend):
         client = self._get_client()
         last_exc = None
         n_attempts = max(1, retries)
+        usage_total = 0
         for attempt in range(n_attempts):
             try:
                 kwargs: Dict[str, Any] = {
@@ -2381,13 +2509,15 @@ class AzureOpenAIBackend(CliBackend):
                 text = (resp.choices[0].message.content or "").strip()
                 try:
                     u = resp.usage
-                    self._tokens += (getattr(u, "prompt_tokens", 0) or 0) + (getattr(u, "completion_tokens", 0) or 0)
+                    usage_total += (getattr(u, "prompt_tokens", 0) or 0) + (getattr(u, "completion_tokens", 0) or 0)
                 except Exception:
                     pass
                 if text:
                     # A recovered retry must not leave a stale error behind:
                     # last_call_error always reflects the LATEST outcome.
                     self.last_call_error = ""
+                    self._record_delta(usage_total)
+                    self._thread_local.charged_in_call = True
                     return text
                 # empty but no exception: model genuinely returned nothing — one
                 # quick retry can help (reasoning models occasionally yield empty)
@@ -2407,6 +2537,12 @@ class AzureOpenAIBackend(CliBackend):
             self.last_call_error = (
                 f"{self.deployment}: empty response on all {n_attempts} attempts"
             )
+        # Finalize the accumulated provider usage on EVERY exhausted-retry exit,
+        # even when the last attempt raised (the paid empty attempts still count).
+        # usage_total of 0 = genuinely no paid usage; the marker still set keeps
+        # _cached_call from substituting its length estimate on top.
+        self._record_delta(usage_total)
+        self._thread_local.charged_in_call = True
         return ""
 
 
@@ -2478,6 +2614,7 @@ class AzureResponsesBackend(AzureOpenAIBackend):
         last = None
         base_ep = self._next_endpoint()           # this call's primary endpoint
         base_idx = self.endpoints.index(base_ep)
+        usage_total = 0
         for attempt in range(max(1, retries)):
             # on retry, fail over to the other endpoint(s)
             ep = self.endpoints[(base_idx + attempt) % len(self.endpoints)]
@@ -2490,16 +2627,20 @@ class AzureResponsesBackend(AzureOpenAIBackend):
                 text = (getattr(resp, "output_text", "") or "").strip()
                 try:
                     u = resp.usage
-                    self._tokens += (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0)
+                    usage_total += (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0)
                 except Exception:
                     pass
                 if text:
+                    self._record_delta(usage_total)
+                    self._thread_local.charged_in_call = True
                     return text
                 last = "empty-response"
             except Exception as e:  # noqa: BLE001
                 last = e
             if attempt < retries - 1:
                 _t.sleep(min(8.0, (2 ** attempt) * 0.5) + _r.random() * 0.4)
+        self._record_delta(usage_total)
+        self._thread_local.charged_in_call = True
         return ""
 
 
