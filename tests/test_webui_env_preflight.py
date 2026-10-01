@@ -7,7 +7,9 @@ from skillopt_webui import app as webui_app
 
 
 def _write_config(tmp_path, model):
-    config_path = tmp_path / "config.yaml"
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir(exist_ok=True)
+    config_path = config_dir / "demo.yaml"
     config_path.write_text(
         yaml.safe_dump({
             "model": model,
@@ -15,7 +17,7 @@ def _write_config(tmp_path, model):
         }),
         encoding="utf-8",
     )
-    return str(config_path)
+    return "configs/demo.yaml"
 
 
 def test_build_training_env_loads_project_dotenv(tmp_path, monkeypatch):
@@ -37,6 +39,7 @@ def test_build_training_env_loads_project_dotenv(tmp_path, monkeypatch):
 
 
 def test_preflight_reports_missing_openai_chat_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(webui_app, "PROJECT_ROOT", tmp_path)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("OPTIMIZER_AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("TARGET_AZURE_OPENAI_ENDPOINT", raising=False)
@@ -56,6 +59,7 @@ def test_preflight_reports_missing_openai_chat_endpoint(tmp_path, monkeypatch):
 
 
 def test_preflight_reports_unreachable_qwen_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(webui_app, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(webui_app, "_can_connect_to_url", lambda _url: False)
     config_path = _write_config(
         tmp_path,
@@ -74,6 +78,7 @@ def test_preflight_reports_unreachable_qwen_endpoint(tmp_path, monkeypatch):
 
 
 def test_preflight_accepts_reachable_qwen_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(webui_app, "PROJECT_ROOT", tmp_path)
     seen_urls = []
     monkeypatch.setattr(webui_app, "_can_connect_to_url", lambda url: seen_urls.append(url) or True)
     config_path = _write_config(

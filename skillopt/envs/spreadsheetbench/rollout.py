@@ -314,7 +314,8 @@ def process_one(
         # ── Stage 1: run ReAct agent on test case 1 ─────────────────────
         result["phase"] = "agent"
 
-        work_dir = tempfile.mkdtemp(prefix=f"react_{task_id}_")
+        safe_task_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(task_id))
+        work_dir = tempfile.mkdtemp(prefix=f"react_{safe_task_id}_")
         try:
             # Copy input so agent works in an isolated directory
             work_input = os.path.join(work_dir, os.path.basename(ip1))

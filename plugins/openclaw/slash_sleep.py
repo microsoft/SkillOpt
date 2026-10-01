@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -104,8 +105,8 @@ def run_category(category: str, *, dry_run: bool = False) -> int:
 
     print(f"=== /sleep run {category}{' (dry-run)' if dry_run else ''} ===")
     print(f"  cmd: {' '.join(cmd)}")
-    rc = os.system(" ".join(f'"{c}"' for c in cmd))
-    return rc
+    result = subprocess.run(cmd)
+    return result.returncode
 
 
 def run_all(*, dry_run: bool = False) -> int:
