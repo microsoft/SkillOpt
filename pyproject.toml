@@ -55,6 +55,8 @@ docs = ["mkdocs-material>=9.5.0", "mkdocstrings[python]>=0.24.0"]
 webui = ["gradio>=5.50.0,<7"]
 # Development tools
 dev = ["ruff>=0.4.0", "pytest>=8.0.0"]
+# DeepSeek Harness JSONL transcript source
+dsh = ["zstandard>=0.22.0"]
 # All optional dependencies (except docs/dev/webui)
 all = [
     "alfworld>=0.4.0",
