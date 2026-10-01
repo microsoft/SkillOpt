@@ -765,9 +765,15 @@ def configure_openai_compatible(
     optimizer_base_url: str | None = None,
     optimizer_api_key: str | None = None,
     optimizer_model: str | None = None,
+    optimizer_temperature: float | str | None = None,
+    optimizer_timeout_seconds: float | str | None = None,
+    optimizer_max_tokens: int | str | None = None,
     target_base_url: str | None = None,
     target_api_key: str | None = None,
     target_model: str | None = None,
+    target_temperature: float | str | None = None,
+    target_timeout_seconds: float | str | None = None,
+    target_max_tokens: int | str | None = None,
 ) -> None:
     _openai_compat.configure_openai_compatible(
         base_url=base_url,
@@ -779,9 +785,15 @@ def configure_openai_compatible(
         optimizer_base_url=optimizer_base_url,
         optimizer_api_key=optimizer_api_key,
         optimizer_model=optimizer_model,
+        optimizer_temperature=optimizer_temperature,
+        optimizer_timeout_seconds=optimizer_timeout_seconds,
+        optimizer_max_tokens=optimizer_max_tokens,
         target_base_url=target_base_url,
         target_api_key=target_api_key,
         target_model=target_model,
+        target_temperature=target_temperature,
+        target_timeout_seconds=target_timeout_seconds,
+        target_max_tokens=target_max_tokens,
     )
 
 

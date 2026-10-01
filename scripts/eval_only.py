@@ -38,6 +38,7 @@ from skillopt.model import (
     configure_copilot_exec,
     configure_cursor_exec,
     configure_minimax_chat,
+    configure_openai_compatible,
     configure_qwen_chat,
     set_optimizer_backend,
     set_optimizer_deployment,
@@ -161,7 +162,24 @@ def parse_args() -> argparse.Namespace:
     # Legacy flat overrides
     p.add_argument("--env", type=str)
     p.add_argument("--backend", type=str,
-                   choices=["azure_openai", "codex", "codex_exec", "claude", "claude_chat", "claude_code_exec", "cursor", "cursor_exec", "copilot", "copilot_chat", "copilot_exec", "minimax", "minimax_chat"])
+                   choices=[
+                       "azure_openai",
+                       "codex",
+                       "codex_exec",
+                       "claude",
+                       "claude_chat",
+                       "claude_code_exec",
+                       "cursor",
+                       "cursor_exec",
+                       "copilot",
+                       "copilot_chat",
+                       "copilot_exec",
+                       "qwen",
+                       "qwen_chat",
+                       "minimax",
+                       "minimax_chat",
+                       "openai_compatible",
+                   ])
     p.add_argument("--optimizer_model", type=str)
     p.add_argument("--target_model", type=str)
     p.add_argument("--optimizer_backend", type=str)
@@ -189,6 +207,45 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target_azure_openai_auth_mode", type=str)
     p.add_argument("--target_azure_openai_ad_scope", type=str)
     p.add_argument("--target_azure_openai_managed_identity_client_id", type=str)
+    p.add_argument("--qwen_chat_base_url", type=str)
+    p.add_argument("--qwen_chat_api_key", type=str)
+    p.add_argument("--qwen_chat_temperature", type=float)
+    p.add_argument("--qwen_chat_timeout_seconds", type=float)
+    p.add_argument("--qwen_chat_max_tokens", type=int)
+    p.add_argument("--qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--qwen_chat_thinking_mode", type=str)
+    p.add_argument("--optimizer_qwen_chat_base_url", type=str)
+    p.add_argument("--optimizer_qwen_chat_api_key", type=str)
+    p.add_argument("--optimizer_qwen_chat_temperature", type=float)
+    p.add_argument("--optimizer_qwen_chat_timeout_seconds", type=float)
+    p.add_argument("--optimizer_qwen_chat_max_tokens", type=int)
+    p.add_argument("--optimizer_qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--optimizer_qwen_chat_thinking_mode", type=str)
+    p.add_argument("--target_qwen_chat_base_url", type=str)
+    p.add_argument("--target_qwen_chat_api_key", type=str)
+    p.add_argument("--target_qwen_chat_temperature", type=float)
+    p.add_argument("--target_qwen_chat_timeout_seconds", type=float)
+    p.add_argument("--target_qwen_chat_max_tokens", type=int)
+    p.add_argument("--target_qwen_chat_enable_thinking", type=_BOOL)
+    p.add_argument("--target_qwen_chat_thinking_mode", type=str)
+    p.add_argument("--openai_compatible_base_url", type=str)
+    p.add_argument("--openai_compatible_api_key", type=str)
+    p.add_argument("--openai_compatible_model", type=str)
+    p.add_argument("--openai_compatible_temperature", type=float)
+    p.add_argument("--openai_compatible_timeout_seconds", type=float)
+    p.add_argument("--openai_compatible_max_tokens", type=int)
+    p.add_argument("--optimizer_openai_compatible_base_url", type=str)
+    p.add_argument("--optimizer_openai_compatible_api_key", type=str)
+    p.add_argument("--optimizer_openai_compatible_model", type=str)
+    p.add_argument("--optimizer_openai_compatible_temperature", type=float)
+    p.add_argument("--optimizer_openai_compatible_timeout_seconds", type=float)
+    p.add_argument("--optimizer_openai_compatible_max_tokens", type=int)
+    p.add_argument("--target_openai_compatible_base_url", type=str)
+    p.add_argument("--target_openai_compatible_api_key", type=str)
+    p.add_argument("--target_openai_compatible_model", type=str)
+    p.add_argument("--target_openai_compatible_temperature", type=float)
+    p.add_argument("--target_openai_compatible_timeout_seconds", type=float)
+    p.add_argument("--target_openai_compatible_max_tokens", type=int)
     p.add_argument("--codex_exec_path", type=str)
     p.add_argument("--codex_exec_sandbox", type=str)
     p.add_argument("--codex_exec_profile", type=str)
@@ -244,10 +301,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
-    from skillopt.config import load_config as _load, flatten_config, is_structured
+def load_config(args: argparse.Namespace) -> dict:
+    from skillopt.config import flatten_config, is_structured
+    from skillopt.config import load_config as _load
 
     cfg = _load(args.config, overrides=args.cfg_options)
     structured = is_structured(cfg)
@@ -286,6 +342,45 @@ def main() -> None:
                 "target_azure_openai_auth_mode": "model.target_azure_openai_auth_mode",
                 "target_azure_openai_ad_scope": "model.target_azure_openai_ad_scope",
                 "target_azure_openai_managed_identity_client_id": "model.target_azure_openai_managed_identity_client_id",
+                "qwen_chat_base_url": "model.qwen_chat_base_url",
+                "qwen_chat_api_key": "model.qwen_chat_api_key",
+                "qwen_chat_temperature": "model.qwen_chat_temperature",
+                "qwen_chat_timeout_seconds": "model.qwen_chat_timeout_seconds",
+                "qwen_chat_max_tokens": "model.qwen_chat_max_tokens",
+                "qwen_chat_enable_thinking": "model.qwen_chat_enable_thinking",
+                "qwen_chat_thinking_mode": "model.qwen_chat_thinking_mode",
+                "optimizer_qwen_chat_base_url": "model.optimizer_qwen_chat_base_url",
+                "optimizer_qwen_chat_api_key": "model.optimizer_qwen_chat_api_key",
+                "optimizer_qwen_chat_temperature": "model.optimizer_qwen_chat_temperature",
+                "optimizer_qwen_chat_timeout_seconds": "model.optimizer_qwen_chat_timeout_seconds",
+                "optimizer_qwen_chat_max_tokens": "model.optimizer_qwen_chat_max_tokens",
+                "optimizer_qwen_chat_enable_thinking": "model.optimizer_qwen_chat_enable_thinking",
+                "optimizer_qwen_chat_thinking_mode": "model.optimizer_qwen_chat_thinking_mode",
+                "target_qwen_chat_base_url": "model.target_qwen_chat_base_url",
+                "target_qwen_chat_api_key": "model.target_qwen_chat_api_key",
+                "target_qwen_chat_temperature": "model.target_qwen_chat_temperature",
+                "target_qwen_chat_timeout_seconds": "model.target_qwen_chat_timeout_seconds",
+                "target_qwen_chat_max_tokens": "model.target_qwen_chat_max_tokens",
+                "target_qwen_chat_enable_thinking": "model.target_qwen_chat_enable_thinking",
+                "target_qwen_chat_thinking_mode": "model.target_qwen_chat_thinking_mode",
+                "openai_compatible_base_url": "model.openai_compatible_base_url",
+                "openai_compatible_api_key": "model.openai_compatible_api_key",
+                "openai_compatible_model": "model.openai_compatible_model",
+                "openai_compatible_temperature": "model.openai_compatible_temperature",
+                "openai_compatible_timeout_seconds": "model.openai_compatible_timeout_seconds",
+                "openai_compatible_max_tokens": "model.openai_compatible_max_tokens",
+                "optimizer_openai_compatible_base_url": "model.optimizer_openai_compatible_base_url",
+                "optimizer_openai_compatible_api_key": "model.optimizer_openai_compatible_api_key",
+                "optimizer_openai_compatible_model": "model.optimizer_openai_compatible_model",
+                "optimizer_openai_compatible_temperature": "model.optimizer_openai_compatible_temperature",
+                "optimizer_openai_compatible_timeout_seconds": "model.optimizer_openai_compatible_timeout_seconds",
+                "optimizer_openai_compatible_max_tokens": "model.optimizer_openai_compatible_max_tokens",
+                "target_openai_compatible_base_url": "model.target_openai_compatible_base_url",
+                "target_openai_compatible_api_key": "model.target_openai_compatible_api_key",
+                "target_openai_compatible_model": "model.target_openai_compatible_model",
+                "target_openai_compatible_temperature": "model.target_openai_compatible_temperature",
+                "target_openai_compatible_timeout_seconds": "model.target_openai_compatible_timeout_seconds",
+                "target_openai_compatible_max_tokens": "model.target_openai_compatible_max_tokens",
                 "codex_exec_path": "model.codex_exec_path",
                 "codex_exec_sandbox": "model.codex_exec_sandbox",
                 "codex_exec_profile": "model.codex_exec_profile",
@@ -399,6 +494,9 @@ def main() -> None:
         elif backend == "copilot_exec":
             _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "copilot_exec")
+        elif backend == "qwen_chat":
+            _set_role("optimizer_backend", "openai_chat")
+            _set_role("target_backend", "qwen_chat")
         elif backend == "minimax_chat":
             _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "minimax_chat")
@@ -414,49 +512,81 @@ def main() -> None:
 
     if cfg.get("optimizer_backend") == "claude_chat":
         if (
-            str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("optimizer_model") or str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.optimizer", "optimizer_model")
         ):
             cfg["optimizer_model"] = default_model_for_backend("claude_chat")
     if cfg.get("optimizer_backend") == "claude_code_exec":
         if (
-            str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("optimizer_model") or str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.optimizer", "optimizer_model")
         ):
             cfg["optimizer_model"] = default_model_for_backend("claude_code_exec")
+    if cfg.get("optimizer_backend") == "qwen_chat":
+        if (
+            (not cfg.get("optimizer_model") or str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.optimizer", "optimizer_model")
+        ):
+            cfg["optimizer_model"] = default_model_for_backend("qwen_chat")
+    if cfg.get("optimizer_backend") == "openai_compatible":
+        if (
+            (not cfg.get("optimizer_model") or str(cfg.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.optimizer", "optimizer_model")
+        ):
+            cfg["optimizer_model"] = (
+                cfg.get("optimizer_openai_compatible_model")
+                or cfg.get("openai_compatible_model")
+                or default_model_for_backend("openai_compatible")
+            )
     if cfg.get("target_backend") == "claude_chat":
         if (
-            str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.target", "target_model")
         ):
             cfg["target_model"] = default_model_for_backend("claude_chat")
     if cfg.get("target_backend") == "claude_code_exec":
         if (
-            str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.target", "target_model")
         ):
             cfg["target_model"] = default_model_for_backend("claude_chat")
     if cfg.get("target_backend") == "cursor_exec":
         if (
-            str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.target", "target_model")
         ):
             cfg["target_model"] = default_model_for_backend("cursor_exec")
     if cfg.get("target_backend") == "copilot_exec":
         if (
-            str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.target", "target_model")
         ):
             # Copilot CLI model IDs are independent of Azure deployment names.
             cfg["target_model"] = ""
+    if cfg.get("target_backend") == "qwen_chat":
+        if (
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.target", "target_model")
+        ):
+            cfg["target_model"] = default_model_for_backend("qwen_chat")
     if cfg.get("target_backend") == "minimax_chat":
         if (
-            str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
             and not _has_model_override("model.target", "target_model")
         ):
             cfg["target_model"] = (
                 cfg.get("minimax_model")
                 or default_model_for_backend("minimax_chat")
+            )
+    if cfg.get("target_backend") == "openai_compatible":
+        if (
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.target", "target_model")
+        ):
+            cfg["target_model"] = (
+                cfg.get("target_openai_compatible_model")
+                or cfg.get("openai_compatible_model")
+                or default_model_for_backend("openai_compatible")
             )
 
     if not cfg.get("out_root"):
@@ -466,6 +596,12 @@ def main() -> None:
         cfg["out_root"] = os.path.join("outputs", f"eval_{env}_{model}_{ts}")
 
     cfg["out_root"] = os.path.abspath(cfg["out_root"])
+    return cfg
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_config(args)
 
     out_root = cfg["out_root"]
     os.makedirs(out_root, exist_ok=True)
@@ -501,6 +637,7 @@ def main() -> None:
             cfg.get("target_azure_openai_managed_identity_client_id") or None
         ),
     )
+    backend = cfg.get("model_backend") or cfg.get("target_backend") or "azure_openai"
     set_optimizer_backend(cfg.get("optimizer_backend", "openai_chat"))
     set_target_backend(cfg.get("target_backend", "openai_chat"))
     set_optimizer_deployment(cfg.get("optimizer_model", default_model_for_backend(backend)))
@@ -535,6 +672,13 @@ def main() -> None:
         max_tokens=cfg.get("qwen_chat_max_tokens"),
         enable_thinking=cfg.get("qwen_chat_enable_thinking"),
         thinking_mode=cfg.get("qwen_chat_thinking_mode"),
+        optimizer_base_url=cfg.get("optimizer_qwen_chat_base_url") or None,
+        optimizer_api_key=cfg.get("optimizer_qwen_chat_api_key") or None,
+        optimizer_temperature=cfg.get("optimizer_qwen_chat_temperature"),
+        optimizer_timeout_seconds=cfg.get("optimizer_qwen_chat_timeout_seconds"),
+        optimizer_max_tokens=cfg.get("optimizer_qwen_chat_max_tokens"),
+        optimizer_enable_thinking=cfg.get("optimizer_qwen_chat_enable_thinking"),
+        optimizer_thinking_mode=cfg.get("optimizer_qwen_chat_thinking_mode"),
         target_base_url=cfg.get("target_qwen_chat_base_url") or None,
         target_api_key=cfg.get("target_qwen_chat_api_key") or None,
         target_temperature=cfg.get("target_qwen_chat_temperature"),
@@ -554,6 +698,34 @@ def main() -> None:
     minimax_model_cfg = cfg.get("minimax_model")
     if minimax_model_cfg and cfg.get("target_backend") == "minimax_chat":
         set_target_deployment(str(minimax_model_cfg))
+    configure_openai_compatible(
+        base_url=cfg.get("openai_compatible_base_url") or None,
+        api_key=cfg.get("openai_compatible_api_key") or None,
+        model=cfg.get("openai_compatible_model") or None,
+        temperature=cfg.get("openai_compatible_temperature"),
+        timeout_seconds=cfg.get("openai_compatible_timeout_seconds"),
+        max_tokens=cfg.get("openai_compatible_max_tokens"),
+        optimizer_base_url=cfg.get("optimizer_openai_compatible_base_url") or None,
+        optimizer_api_key=cfg.get("optimizer_openai_compatible_api_key") or None,
+        optimizer_model=(
+            cfg.get("optimizer_model")
+            if cfg.get("optimizer_backend") == "openai_compatible"
+            else (cfg.get("optimizer_openai_compatible_model") or None)
+        ),
+        optimizer_temperature=cfg.get("optimizer_openai_compatible_temperature"),
+        optimizer_timeout_seconds=cfg.get("optimizer_openai_compatible_timeout_seconds"),
+        optimizer_max_tokens=cfg.get("optimizer_openai_compatible_max_tokens"),
+        target_base_url=cfg.get("target_openai_compatible_base_url") or None,
+        target_api_key=cfg.get("target_openai_compatible_api_key") or None,
+        target_model=(
+            cfg.get("target_model")
+            if cfg.get("target_backend") == "openai_compatible"
+            else (cfg.get("target_openai_compatible_model") or None)
+        ),
+        target_temperature=cfg.get("target_openai_compatible_temperature"),
+        target_timeout_seconds=cfg.get("target_openai_compatible_timeout_seconds"),
+        target_max_tokens=cfg.get("target_openai_compatible_max_tokens"),
+    )
     set_reasoning_effort(cfg.get("reasoning_effort", "") or None)
 
     # Build adapter

@@ -26,21 +26,45 @@ from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.evaluation.gate import GateResult, evaluate_gate, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
-from skillopt.optimizer.meta_skill import run_meta_skill
+from skillopt.model import (
+    chat_optimizer,
+    configure_azure_openai,
+    configure_claude_code_exec,
+    configure_codex_exec_from_config,
+    configure_copilot_chat,
+    configure_copilot_exec,
+    configure_cursor_exec,
+    configure_minimax_chat,
+    configure_openai_compatible,
+    configure_qwen_chat,
+    get_qwen_thinking_modes,
+    get_token_summary,
+    set_optimizer_backend,
+    set_optimizer_deployment,
+    set_reasoning_effort,
+    set_target_backend,
+    set_target_deployment,
+)
+from skillopt.model.common import default_model_for_backend, normalize_backend_name
+from skillopt.optimizer.appendix import (
+    _strip_all_appendix_fields,
+    append_to_appendix_field,
+    inject_empty_appendix_field,
+)
+from skillopt.optimizer.appendix import (
+    extract_appendix_notes as extract_appendix_notes_from_skill,
+)
 from skillopt.optimizer.clip import rank_and_select
 from skillopt.optimizer.lr_autonomous import decide_autonomous_learning_rate
+from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions
 from skillopt.optimizer.scheduler import build_scheduler
 from skillopt.optimizer.skill import apply_patch_with_report
-from skillopt.optimizer.appendix import (
-    append_to_appendix_field,
-    extract_appendix_notes as extract_appendix_notes_from_skill,
-    inject_empty_appendix_field,
-    _strip_all_appendix_fields,
-)
 from skillopt.optimizer.skill_aware import (
     configure_skill_aware_reflection,
     consolidate_appendix_notes,
+)
+from skillopt.optimizer.skill_aware import (
     extract_appendix_notes as extract_appendix_notes_from_result,
 )
 from skillopt.optimizer.slow_update import (
@@ -58,28 +82,7 @@ from skillopt.optimizer.update_modes import (
     payload_label,
     short_item_summary,
 )
-from skillopt.model import (
-    chat_optimizer,
-    configure_azure_openai,
-    configure_claude_code_exec,
-    configure_codex_exec_from_config,
-    configure_copilot_chat,
-    configure_copilot_exec,
-    configure_cursor_exec,
-    configure_minimax_chat,
-    configure_qwen_chat,
-    get_qwen_thinking_modes,
-    get_token_summary,
-    reset_token_tracker,
-    set_reasoning_effort,
-    set_target_backend,
-    set_target_deployment,
-    set_optimizer_backend,
-    set_optimizer_deployment,
-)
-from skillopt.model.common import normalize_backend_name
 from skillopt.utils import compute_score, skill_hash
-
 
 # ── Skill-aware reflection: appendix flush ───────────────────────────────────
 
@@ -775,8 +778,12 @@ class ReflACTTrainer:
                 cfg.get("target_azure_openai_managed_identity_client_id") or None
             ),
         )
-        set_optimizer_deployment(cfg["optimizer_model"])
-        set_target_deployment(cfg["target_model"])
+        set_optimizer_deployment(
+            cfg.get("optimizer_model") or default_model_for_backend(optimizer_backend)
+        )
+        set_target_deployment(
+            cfg.get("target_model") or default_model_for_backend(target_backend)
+        )
         configure_claude_code_exec(
             path=cfg.get("claude_code_exec_path", "claude"),
             profile=cfg.get("claude_code_exec_profile", ""),
@@ -832,13 +839,42 @@ class ReflACTTrainer:
         minimax_model_cfg = cfg.get("minimax_model")
         if minimax_model_cfg and cfg.get("target_backend") == "minimax_chat":
             set_target_deployment(str(minimax_model_cfg))
+        configure_openai_compatible(
+            base_url=cfg.get("openai_compatible_base_url") or None,
+            api_key=cfg.get("openai_compatible_api_key") or None,
+            model=cfg.get("openai_compatible_model") or None,
+            temperature=cfg.get("openai_compatible_temperature"),
+            timeout_seconds=cfg.get("openai_compatible_timeout_seconds"),
+            max_tokens=cfg.get("openai_compatible_max_tokens"),
+            optimizer_base_url=cfg.get("optimizer_openai_compatible_base_url") or None,
+            optimizer_api_key=cfg.get("optimizer_openai_compatible_api_key") or None,
+            optimizer_model=(
+                cfg.get("optimizer_model")
+                if cfg.get("optimizer_backend") == "openai_compatible"
+                else (cfg.get("optimizer_openai_compatible_model") or None)
+            ),
+            optimizer_temperature=cfg.get("optimizer_openai_compatible_temperature"),
+            optimizer_timeout_seconds=cfg.get("optimizer_openai_compatible_timeout_seconds"),
+            optimizer_max_tokens=cfg.get("optimizer_openai_compatible_max_tokens"),
+            target_base_url=cfg.get("target_openai_compatible_base_url") or None,
+            target_api_key=cfg.get("target_openai_compatible_api_key") or None,
+            target_model=(
+                cfg.get("target_model")
+                if cfg.get("target_backend") == "openai_compatible"
+                else (cfg.get("target_openai_compatible_model") or None)
+            ),
+
+            target_temperature=cfg.get("target_openai_compatible_temperature"),
+            target_timeout_seconds=cfg.get("target_openai_compatible_timeout_seconds"),
+            target_max_tokens=cfg.get("target_openai_compatible_max_tokens"),
+        )
         _configure_trace_to_optimizer_gates(target_backend, cfg)
         reasoning = cfg.get("reasoning_effort", "") or None
         set_reasoning_effort(reasoning)
         print(
             f"  [model config] backend={backend}  "
-            f"optimizer={cfg['optimizer_model']} ({optimizer_backend})  "
-            f"target={cfg['target_model']} ({target_backend})  "
+            f"optimizer={cfg.get('optimizer_model')} ({optimizer_backend})  "
+            f"target={cfg.get('target_model')} ({target_backend})  "
             f"reasoning={reasoning or 'off'}"
         )
 
@@ -2383,7 +2419,7 @@ class ReflACTTrainer:
 
             # Comparison
             delta_hard = (test_hard or 0) - (baseline_test_hard or 0)
-            print(f"\n  === Improvement vs baseline (init S_0) ===")
+            print("\n  === Improvement vs baseline (init S_0) ===")
             print(
                 f"    [2] best-on-val hard: {baseline_test_hard:.4f} -> {test_hard:.4f}  "
                 f"(delta={delta_hard:+.4f})"

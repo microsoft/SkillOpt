@@ -90,11 +90,11 @@ def _record_urlopen(monkeypatch: pytest.MonkeyPatch, backend: Any) -> _UrlopenRe
 
 def test_default_deployment_is_current_model(monkeypatch: pytest.MonkeyPatch) -> None:
     from skillopt.model.common import default_model_for_backend
-    
+
     _install_openai_stub()
     monkeypatch.delenv("TARGET_DEPLOYMENT", raising=False)
     monkeypatch.delenv("OPTIMIZER_DEPLOYMENT", raising=False)
-    
+
     from skillopt.model import minimax_backend as backend
     module = importlib.reload(backend)
 

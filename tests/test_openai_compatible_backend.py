@@ -49,20 +49,36 @@ def test_configure_preserves_role_specific_values() -> None:
         base_url="https://shared.example/v1",
         api_key="shared-key",
         model="shared-model",
+        temperature=0.5,
+        timeout_seconds=60,
+        max_tokens=2048,
         optimizer_base_url="https://optimizer.example/v1",
         optimizer_api_key="optimizer-key",
         optimizer_model="optimizer-model",
+        optimizer_temperature=0.2,
+        optimizer_timeout_seconds=120,
+        optimizer_max_tokens=4096,
         target_base_url="https://target.example/v1",
         target_api_key="target-key",
         target_model="target-model",
+        target_temperature=0.7,
+        target_timeout_seconds=90,
+        target_max_tokens=8192,
     )
 
     assert backend.OPTIMIZER_CONFIG.base_url == "https://optimizer.example/v1"
     assert backend.OPTIMIZER_CONFIG.api_key == "optimizer-key"
     assert backend.OPTIMIZER_CONFIG.deployment == "optimizer-model"
+    assert backend.OPTIMIZER_CONFIG.temperature == 0.2
+    assert backend.OPTIMIZER_CONFIG.timeout_seconds == 120.0
+    assert backend.OPTIMIZER_CONFIG.max_tokens == 4096
+
     assert backend.TARGET_CONFIG.base_url == "https://target.example/v1"
     assert backend.TARGET_CONFIG.api_key == "target-key"
     assert backend.TARGET_CONFIG.deployment == "target-model"
+    assert backend.TARGET_CONFIG.temperature == 0.7
+    assert backend.TARGET_CONFIG.timeout_seconds == 90.0
+    assert backend.TARGET_CONFIG.max_tokens == 8192
 
 
 def test_optimizer_and_target_route_to_their_own_clients(monkeypatch: pytest.MonkeyPatch) -> None:
