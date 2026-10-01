@@ -148,7 +148,7 @@ python -m skillopt_sleep <action> [options]
 ```
 
 Actions are `run`, `dry-run`, `status`, `adopt`, `harvest`, `schedule`,
-`unschedule`, and `evalkit`. `evalkit` is also available as
+`unschedule`, `export-rules`, `import-rules`, and `evalkit`. `evalkit` is also available as
 `python -m skillopt_sleep.evalkit` and compares two conditions on one fixed
 task manifest (McNemar + bootstrap CI). Exactly one of its `--b` comparison
 input or `--aa` identity-check flag is required. See `docs/sleep/evalkit.md`.
@@ -191,6 +191,13 @@ Fan-out resolves existing project-native `.agents/skills`, `.claude/skills`,
 roots. Use `--skill-root` for another integration-specific location. Configure
 the canonical `multi_skill_fanout` key to enable proposal fan-out;
 `multi_skill_report` remains a compatibility alias.
+
+`export-rules` converts accepted skill additions from one staging report into a
+versioned, transcript-free manifest. `import-rules` first displays the complete
+manifest for review; after `--reviewed` is supplied, it evaluates every rule on
+the importer's task file `val` split and stages only strict, no-regression improvements.
+Publisher-reported effects do not affect the gate. See
+[community rule exchange](../sleep/community-rules.md).
 
 The `mock` and `handoff` backends make no network calls. A real backend sends
 mining, replay, judging, and reflection prompts derived from harvested
