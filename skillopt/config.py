@@ -213,17 +213,32 @@ def _remove_nested_key(cfg: dict, dotted: str) -> None:
 
 
 def _resolve_layer_format_duplicates(cfg: dict) -> None:
-    """Prefer canonical structured keys over equivalent flat keys in a layer."""
+    """Prefer canonical structured keys over equivalent flat keys in a layer.
+
+    A flat key is always a scalar, so a mapping under ``flat_key`` is the
+    structured section itself rather than a duplicate.  ``env.name`` maps to the
+    flat key ``env``, which collides with the ``env:`` section name -- popping it
+    blindly deleted the whole section.
+    """
     for dotted, flat_key in _FLATTEN_MAP.items():
-        if _nested_key_present(cfg, dotted):
+        if _nested_key_present(cfg, dotted) and not isinstance(cfg.get(flat_key), dict):
             cfg.pop(flat_key, None)
 
 
 def _drop_base_keys_overridden_by_layer(base: dict, override: dict) -> None:
-    """Honor child precedence when inheritance mixes flat and structured YAML."""
+    """Honor child precedence when inheritance mixes flat and structured YAML.
+
+    Only a cross-format clash needs pruning; same-format keys are resolved by
+    ``_deep_merge``.  A child section that merely omits one of its base's keys
+    (for example an ``env:`` block without ``name``) must not delete it.
+    """
     for dotted, flat_key in _FLATTEN_MAP.items():
-        if flat_key in override or _nested_key_present(override, dotted):
-            base.pop(flat_key, None)
+        if _nested_key_present(override, dotted):
+            # Child uses the structured form -> drop the base's flat form.
+            if not isinstance(base.get(flat_key), dict):
+                base.pop(flat_key, None)
+        elif flat_key in override and not isinstance(override[flat_key], dict):
+            # Child uses the flat form -> drop the base's structured form.
             _remove_nested_key(base, dotted)
 
 
