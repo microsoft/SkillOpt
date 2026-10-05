@@ -1,0 +1,26 @@
+# SearchQA smoke run with the Claude Code exec harness as the TARGET.
+#
+# Same 4 steps / same data / same gate as configs/searchqa/smoke.yaml, so the
+# only variable is the target harness. Compare against outputs/searchqa_smoke.
+#
+# claude_code_exec is target-only: the optimizer stays on openai_chat/gpt-5.5,
+# so ~18 of the ~130 calls still bill to the OpenAI key. The other ~112
+# (the rollouts) go through `claude -p` on whatever auth your CLI holds.
+#
+# Caveats, both inherent to the harness rather than this config:
+#   * codex_harness passes no --setting-sources, so your ~/.claude user skills
+#     load into every rollout. A confound for benchmark purity; harmless for a
+#     throughput measurement.
+#   * the CLI path defaults to --permission-mode bypassPermissions inside the
+#     temp workspace prepare_workspace() creates.
+_base_: smoke.yaml
+
+model:
+  target_backend: claude_code_exec
+  target: claude-sonnet-4-6
+  claude_code_exec_use_sdk: auto     # SDK installed; falls back to CLI on ImportError
+  claude_code_exec_effort: medium    # matches the API run's reasoning_effort
+
+env:
+  workers: 4        # 4 concurrent `claude -p` processes, not 8 — each is a Node runtime
+  exec_timeout: 300 # process spawn + session init blew past the 120s default in the probe

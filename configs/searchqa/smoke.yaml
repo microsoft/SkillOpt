@@ -1,0 +1,35 @@
+# SearchQA smoke config — exercises every code path in the loop at minimum cost.
+#
+# Two epochs on purpose: epoch 1 only injects the empty SLOW_UPDATE placeholder
+# and skips the meta skill, so a 1-epoch run would never touch the longitudinal
+# comparison, run_slow_update, or run_meta_skill. Two epochs covers them.
+#
+# Expect ~110 target calls + ~26 optimizer calls total.
+# NOT paper-faithful — use configs/searchqa/default.yaml for that.
+_base_: default.yaml
+
+train:
+  num_epochs: 2
+  train_size: 16
+  batch_size: 8          # -> steps_per_epoch = 2, total_steps = 4
+  accumulation: 1
+
+gradient:
+  minibatch_size: 4      # -> 2 minibatches per step
+  merge_batch_size: 2    # must be >= 2
+  analyst_workers: 4
+
+optimizer:
+  slow_update_samples: 4
+
+evaluation:
+  sel_env_num: 8         # gate on 8 val items instead of all 200
+  test_env_num: 8        # test on 8 items instead of all 1400
+
+env:
+  workers: 8
+  # The trainer asserts train.train_size == the loaded train split size
+  # (trainer.py:_resolve_train_size), so shrinking train_size alone fails.
+  # `limit` truncates EVERY split to its first N items, making them agree.
+  # Smoke-only: the paper config uses limit: 0 with the natural 400/200/1400.
+  limit: 16
