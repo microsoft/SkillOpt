@@ -1030,7 +1030,7 @@ def run_sleep_cycle(
             report_md=report_md,
             out_dir=staging_dir_pre,
             skill_proposals=skill_proposals,
-            skill_roots=skill_search_roots(cfg) if skill_proposals else (),
+            skill_roots=skill_search_roots(cfg),
         )
         if ev is not None:
             ev.log("stage", "staged", staging_dir=staging_dir,
