@@ -15,10 +15,11 @@ Common flags:
     --target-skill-path PATH explicit live SKILL.md to stage/adopt
     --tasks-file PATH   reviewed TaskRecord JSON file to replay instead of harvesting
     --backend mock|claude|codex|copilot|cursor|pi|opencode|handoff|azure_openai
-    --source claude|codex|copilot|copilot_cli|cursor|pi|opencode|auto
+    --source claude|codex|copilot|copilot_cli|cursor|pi|opencode|dsh|auto
     --vscode-workspace-storage PATH
     --copilot-cli-session-store PATH
     --opencode-db PATH
+    --dsh-session-root PATH
     --model NAME
     --lookback-hours N
     --auto-adopt
@@ -115,7 +116,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cursor-home", default="", help="override ~/.cursor for Cursor session harvest")
     p.add_argument("--pi-home", default="", help="override ~/.pi for Pi session harvest")
     p.add_argument("--source", default="",
-                   choices=["", "claude", "codex", "copilot", "copilot_cli", "cursor", "pi", "opencode", "auto"],
+                   choices=["", "claude", "codex", "copilot", "copilot_cli", "cursor", "pi", "opencode", "dsh", "auto"],
                    help="session transcript source")
     p.add_argument("--vscode-workspace-storage", default="",
                    help="override VS Code User/workspaceStorage root for copilot source")
@@ -123,6 +124,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="override ~/.copilot/session-store.db for copilot_cli source")
     p.add_argument("--opencode-db", default="",
                    help="override the local OpenCode transcript database")
+    p.add_argument("--dsh-session-root", default="",
+                   help="override DSH session root (default: $DSH_HOME/sessions or ~/.dsh/sessions)")
     p.add_argument("--lookback-hours", type=int, default=None,
                    help="harvest window in hours; 0 = scan full history")
     p.add_argument("--edit-budget", type=int, default=0)
@@ -194,6 +197,8 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
             if args.opencode_db == ":memory:"
             else os.path.abspath(os.path.expanduser(args.opencode_db))
         )
+    if getattr(args, "dsh_session_root", ""):
+        overrides["dsh_session_root"] = os.path.abspath(os.path.expanduser(args.dsh_session_root))
     lh = getattr(args, "lookback_hours", None)
     if lh is not None:  # --lookback-hours was explicitly passed (0 = full history)
         overrides["lookback_hours"] = lh
