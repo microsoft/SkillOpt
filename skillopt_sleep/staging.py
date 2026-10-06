@@ -935,13 +935,20 @@ def _publish_latest(root: str, out: str) -> None:
         raise StagingError(f"cannot publish a staging night without a manifest: {out}")
     pointer = _latest_pointer_path(root_abs)
     if os.path.lexists(pointer):
-        info = os.lstat(pointer)
-        if (
-            _is_link_or_junction(pointer)
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-        ):
-            raise StagingError(f"latest-staging pointer is unsafe: {pointer}")
+        for attempt in range(21):
+            info = os.lstat(pointer)
+            if _is_link_or_junction(pointer) or not stat.S_ISREG(info.st_mode):
+                raise StagingError(f"latest-staging pointer is unsafe: {pointer}")
+            if info.st_nlink == 1:
+                break
+            if info.st_nlink != 0 or attempt == 20:
+                raise StagingError(f"latest-staging pointer is unsafe: {pointer}")
+            # A concurrent atomic replacement can leave lstat observing the
+            # superseded regular inode after unlink. Revalidate the path with
+            # bounded backoff; never accept zero links or retry a hard link.
+            # This tolerance is only for the derived last-writer-wins pointer,
+            # not live documents, receipts, backups, or transaction records.
+            time.sleep(0.005 * (attempt + 1))
     # Concurrent staging publishers may briefly retain the replace destination
     # on Windows. Retrying is safe only for this derived, last-writer-wins pointer.
     _write_atomic_bytes(
