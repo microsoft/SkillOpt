@@ -53,6 +53,13 @@ docs = ["mkdocs-material>=9.5.0", "mkdocstrings[python]>=0.24.0"]
 # is 5.50.0: earlier gradio 5.x (5.0-5.49) still import HfFolder or don't apply
 # the Blocks theme the same way, so they are not valid supported versions.
 webui = ["gradio>=5.50.0,<7"]
+# Optional mem0-backed persistent memory. Deliberately excluded from `all`:
+# installing it is harmless (uploads still require mem0_enabled: true), but
+# a data-export integration should be an explicit choice at install time too.
+# Pinned to 2.x: the retrieval path targets the Mem0 2.x search contract
+# (filters={"user_id": ...}, top_k=...), which 0.1.x does not accept, and the
+# injected httpx client used to enforce timeouts predates 0.1.98.
+mem0 = ["mem0ai>=2.0.0,<3"]
 # Development tools
 dev = ["ruff>=0.4.0", "pytest>=8.0.0"]
 # All optional dependencies (except docs/dev/webui)

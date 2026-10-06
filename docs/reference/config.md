@@ -210,6 +210,86 @@ forwarded consistently to both SDK and CLI execution paths.
 
 Benchmark-specific `env` keys are passed through to the adapter.
 
+## Persistent Memory (mem0) — optional, off by default
+
+Stores skill iterations and reflection summaries in [mem0](https://mem0.ai) and reads a
+small amount of relevant history back into the Reflect stage.
+
+**Disabled unless `mem0_enabled` is explicitly true.** A `MEM0_API_KEY` present in the
+environment for another application does *not* enable it. Install with
+`pip install 'skillopt[mem0]'`.
+
+Set these under `train:` in a structured config (every shipped config is structured), at
+the top level of a flat config, or via `--cfg-options mem0_enabled=true`. A ready-made
+example ships at `configs/features/mem0_memory.yaml`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `train.mem0_enabled` | bool | `false` | Master switch. Nothing is sent unless this is true |
+| `train.mem0_api_key` | str | empty | Falls back to `MEM0_API_KEY`, read only when enabled. Redacted from `config.json` and the run summary; prefer the env var |
+| `train.mem0_namespace` | str | derived | Override the namespace; default is derived per project |
+| `train.mem0_retrieval_enabled` | bool | `true` | Read memory back into reflection; writes continue if false |
+| `train.mem0_retrieval_limit` | int | `5` | Max records fetched per retrieval (sent as `top_k`) |
+| `train.mem0_timeout_seconds` | float | `5.0` | Hard per-call bound, enforced on the HTTP client. After 3 consecutive failures memory disables itself for the run |
+| `train.mem0_max_chars` | int | `4000` | Cap on any single stored payload, applied after redaction |
+
+### Supported Mem0 versions
+
+The extra pins `mem0ai>=2.0.0,<3`, and the integration is written against the Mem0 2.x
+client contract, verified against 2.0.14:
+
+- `add(messages, user_id=<namespace>, metadata=...)` — top-level `user_id`.
+- `search(query, filters={"user_id": <namespace>}, top_k=<n>)` — entity scoping goes in
+  `filters`, and the count is `top_k`.
+
+The two calls differ on purpose. Mem0 2.x raises `ValueError` for a top-level `user_id`
+in `search()` *before* issuing a request, and because failures degrade to an empty
+result, an incorrect call shape is silent — writes keep succeeding while retrieval
+returns nothing. `tests/test_mem0_memory.py` therefore exercises retrieval against a
+signature-strict client double, not a permissive mock.
+
+0.1.x is not supported: it rejects the injected `httpx` client used to enforce timeouts
+(added in 0.1.98) and uses the older `user_id`/`limit` search shape.
+
+### What leaves the machine
+
+When enabled, exactly two record types are sent, both redacted first:
+
+1. **Skill iteration** — epoch, step, score, skill hash and length, the `env` and model
+   names, and the skill text (capped at `mem0_max_chars`).
+2. **Reflection summary** — epoch, step, patch count, rollout scores, and a JSON summary
+   of up to 10 patches with any `skill_text` field removed.
+
+Retrieval sends the first 600 characters of the current skill as a similarity query.
+
+Before transmission every payload passes through
+`skillopt.memory.redaction.redact_for_upload`, which strips vendor API keys,
+bearer/basic tokens, JWTs, private keys, `key = value` secret assignments, the project
+root, and `/home/<user>`-style prefixes. Relative paths and filenames are deliberately
+preserved so stored memories stay useful. Text *retrieved* from mem0 is redacted again
+before it enters the reflection prompt, since the store is external and its contents are
+forwarded to the optimizer's model provider.
+
+### Namespacing
+
+Memories are scoped to `skillopt:<env>:<digest>`, where the digest is a SHA-256 prefix of
+a **stable project identity** — the enclosing git repository root, or the working
+directory when there is no repository. Stable across runs of one project, distinct across
+projects, and the raw path is never transmitted.
+
+Identity is deliberately *not* derived from `out_root`. The train/eval CLIs default that
+to `outputs/skillopt_<env>_<model>_<timestamp>`, so deriving from it would mint a new
+namespace on every run and cross-run retrieval would never return anything. `out_root`
+still anchors path redaction, which is what it is right for.
+
+### Failure behaviour
+
+A call exceeding `mem0_timeout_seconds` releases the training step on time. The timeout is
+enforced on the injected `httpx.Client`, so the request aborts rather than merely being
+abandoned, and calls run on daemon threads so a stuck request can never delay interpreter
+exit. After three consecutive failures the backend stops calling out for the remainder of
+the run and logs once.
+
 ## Credential Environment Variables
 
 ### Azure-family backend
