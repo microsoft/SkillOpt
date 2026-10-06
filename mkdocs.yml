@@ -50,6 +50,7 @@ nav:
     - Deep Learning Analogy: guide/dl-analogy.md
   - SkillOpt-Sleep:
     - Overview: sleep/README.md
+    - Community Rule Exchange: sleep/community-rules.md
     - Paired A/B Evalkit: sleep/evalkit.md
     - Multi-skill Staging: sleep/multi-skill-staging.md
     - OpenAI-compatible Endpoints: sleep/openai-compatible-endpoints.md
