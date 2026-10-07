@@ -33,7 +33,7 @@ import sys
 from typing import Any, Dict
 
 from skillopt_sleep.backend import CursorBackendError
-from skillopt_sleep.config import load_config
+from skillopt_sleep.config import ConfigError, load_config
 from skillopt_sleep.cycle import _one_line_display_text, run_sleep_cycle
 from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.mine import mine
@@ -227,7 +227,11 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["progress"] = True
     if getattr(args, "auto_adopt", False):
         overrides["auto_adopt"] = True
-    return load_config(**overrides)
+    try:
+        return load_config(**overrides)
+    except ConfigError as exc:
+        print(f"[sleep] configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def cmd_run(args, dry: bool = False) -> int:

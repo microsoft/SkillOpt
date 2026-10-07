@@ -179,6 +179,20 @@ One engine, thin per-agent shells (see [`plugins/`](https://github.com/microsoft
 | **Devin** | [`plugins/devin`](https://github.com/microsoft/SkillOpt/tree/main/plugins/devin) | register `plugins/devin/mcp_server.py` as an MCP server |
 | **OpenClaw** | [`plugins/openclaw`](https://github.com/microsoft/SkillOpt/tree/main/plugins/openclaw) | adapt the reference wrapper and paths for your installation |
 
+### Configuration files
+
+Sleep reads `~/.skillopt-sleep/config.json`, falling back to `config.yaml` or
+`config.yml` when the earlier names are absent. YAML requires PyYAML.
+Save new files as UTF-8. Existing files written with the system's legacy
+encoding (for example, GBK or cp1252) are still readable under that locale:
+Sleep tries UTF-8 first, then the system encoding, and warns when the latter is
+used. Open the file with its original encoding and save it as UTF-8 before
+moving it to a machine with a different locale. Sleep does not rewrite it.
+
+An existing file that cannot be decoded, parsed, or read stops the command
+with a configuration error and exit code 2; it does not discard your settings
+and run with default budgets. Explicit CLI flags still override loaded values.
+
 ### VS Code GitHub Copilot Chat
 
 Use `--source copilot` to harvest local VS Code GitHub Copilot Chat sessions.
