@@ -17,6 +17,7 @@ from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from skillopt.envs.searchqa.evaluator import evaluate
+from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
@@ -180,6 +181,7 @@ def process_one(
         Result with ``hard`` (EM as int), ``soft`` (F1), etc.
     """
     item_id = str(item["id"])
+    pred_dir = confined_task_output_dir(out_root, item_id)
     question = item["question"]
     context = item.get("context", "")
     gold_answers = item.get("answers", [])
@@ -201,7 +203,6 @@ def process_one(
     }
 
     try:
-        pred_dir = os.path.join(out_root, "predictions", item_id)
         os.makedirs(pred_dir, exist_ok=True)
 
         if is_target_exec_backend():

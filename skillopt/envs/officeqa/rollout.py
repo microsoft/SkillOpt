@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from skillopt.envs.officeqa.evaluator import evaluate
 from skillopt.envs.officeqa.tool_runtime import (
     build_oracle_parsed_pages_context,
@@ -11,9 +13,11 @@ from skillopt.envs.officeqa.tool_runtime import (
     resolve_docs_roots,
     run_tool,
 )
+from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target_messages, get_target_backend, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
+
 _TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -527,7 +531,7 @@ def process_one(
     diagnostic_instruction: str = "",
 ) -> dict:
     item_id = str(item["id"])
-    pred_dir = os.path.join(out_root, "predictions", item_id)
+    pred_dir = confined_task_output_dir(out_root, item_id)
     os.makedirs(pred_dir, exist_ok=True)
     normalized_search_mode = _normalize_search_mode(search_mode)
     docs_roots: list[str] = []

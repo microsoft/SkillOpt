@@ -23,6 +23,10 @@ import os
 import traceback
 from typing import Any
 
+from skillopt.envs.task_output import (
+    confined_legacy_task_output_dir,
+    task_output_segment,
+)
 from skillopt.model import chat_optimizer
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
@@ -111,7 +115,17 @@ def _clip_text(value, limit: int | None = None) -> str:
 
 def _read_trajectory(rollout_dir: str, task_id: str) -> str:
     """Read and format a single trajectory from a rollout directory."""
-    conv_path = os.path.join(rollout_dir, "predictions", task_id, "conversation.json")
+    segment = task_output_segment(task_id, map_unsafe=True)
+    conv_path = os.path.join(rollout_dir, "predictions", segment, "conversation.json")
+    if not os.path.exists(conv_path) and segment != task_id:
+        try:
+            legacy_dir = confined_legacy_task_output_dir(rollout_dir, task_id)
+        except ValueError:
+            pass
+        else:
+            legacy_path = os.path.join(legacy_dir, "conversation.json")
+            if os.path.exists(legacy_path):
+                conv_path = legacy_path
     if not os.path.exists(conv_path):
         return "(trajectory not available)"
     try:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import glob as _glob
 import json
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -31,6 +30,10 @@ from skillopt.envs.spreadsheetbench.evaluator import (
     evaluate, _generate_cell_names, _compare_cell_value,
 )
 from skillopt.envs.spreadsheetbench.executor import run_generated_code
+from skillopt.envs.task_output import (
+    confined_task_output_dir as _confined_task_out_dir,
+    is_safe_task_id as _is_safe_task_id,
+)
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -206,54 +209,6 @@ def _auto_verify_output(
             + report[-half:]
         )
     return report
-
-
-# ── Task identifier → confined output directory ──────────────────────────────
-
-# A task id becomes ONE path segment under ``<out_root>/predictions``. Keep the
-# accepted alphabet deliberately narrow: released dataset ids are alphanumeric
-# with ``-``/``_`` (e.g. "1-1", "80-42"), and anything that is not a plausible
-# single segment must not be trusted with a path.
-_SAFE_TASK_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-
-
-def _is_safe_task_id(task_id: str) -> bool:
-    """True when ``task_id`` is safe to use as one path segment.
-
-    The alphabet excludes path separators and a leading dot, so ``..`` cannot
-    match the pattern at all. The substring check on top is belt-and-braces:
-    it also rejects traversal-shaped values such as ``a..b``, which no released
-    dataset id uses.
-    """
-    tid = str(task_id)
-    return bool(_SAFE_TASK_ID.match(tid)) and ".." not in tid
-
-
-def _confined_task_out_dir(out_root: str, task_id: str) -> str:
-    """Return ``<out_root>/predictions/<task_id>``, confined to that root.
-
-    Raises ``ValueError`` for an identifier that cannot be a single safe path
-    segment, and for a destination that resolves outside ``predictions`` (a
-    pre-existing symlink, say). Callers validate before any filesystem access
-    so a hostile id never reaches the destination write, the agent, or the
-    code-execution path.
-    """
-    tid = str(task_id)
-    if not _is_safe_task_id(tid):
-        raise ValueError(f"unsafe spreadsheet task id: {tid!r}")
-    predictions = os.path.join(os.path.abspath(out_root), "predictions")
-    dest = os.path.join(predictions, tid)
-    try:
-        contained = (
-            os.path.commonpath([os.path.realpath(predictions), os.path.realpath(dest)])
-            == os.path.realpath(predictions)
-        )
-    except ValueError:
-        # Different drives / mixed absolute-relative shapes cannot be compared.
-        contained = False
-    if not contained:
-        raise ValueError(f"spreadsheet destination escapes out_root: {dest!r}")
-    return dest
 
 
 # ── Per-task worker ──────────────────────────────────────────────────────────
