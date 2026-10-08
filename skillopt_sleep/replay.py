@@ -36,16 +36,35 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     tools = _required_tools(task)
     tools_called: List[str] = []
     t0 = time.time()
-    tok_before = backend.tokens_used()
+    # Backends that only expose the older tokens_used() contract (no per-call
+    # token_delta) need a before/after difference on the same thread to report
+    # the call-local cost; snapshot the total before the attempt for them.
+    token_delta_fn = getattr(backend, "token_delta", None)
+    tokens_before = None if token_delta_fn is not None else backend.tokens_used()
     if tools:
         response, tools_called = backend.attempt_with_tools(task, skill, memory, tools)
     else:
         response = backend.attempt(task, skill, memory, sample_id=sample_id)
     latency_ms = (time.time() - t0) * 1000.0
-    tokens = max(0, backend.tokens_used() - tok_before)
-    # if the backend doesn't track tokens (e.g. mock), approximate from text length
-    if tokens == 0:
-        tokens = (len(skill) + len(memory) + len(task.intent) + len(response)) // 4
+    # Call-local token accounting: prefer the backend's per-call delta. For
+    # CliBackend - and for a DualBackend whose target has one - that delta lives
+    # in thread-local storage and is exact, including a known zero for a cache
+    # hit, so no text-length estimate is substituted. A backend that only
+    # implements the older tokens_used() contract has no per-call delta, so use
+    # its before/after difference. That difference is only call-local while the
+    # backend is used sequentially: the counter is shared, so an overlapping
+    # worker's spend lands in it too. Fall back to a length estimate only when
+    # the backend reports no tracking (zero) at all. See replay_batch() for which
+    # combinations are safe to share across workers.
+    if token_delta_fn is not None:
+        tokens = token_delta_fn()
+    else:
+        tokens = max(0, backend.tokens_used() - (tokens_before or 0))
+        # A backend without token_delta() that still changed tokens_used()
+        # reports that real difference above. Only an unchanged total means the
+        # backend does not track tokens (e.g. a mock), so approximate then.
+        if tokens == 0:
+            tokens = (len(skill) + len(memory) + len(task.intent) + len(response)) // 4
 
     # rule judges may need the detected tool calls; score locally when possible
     if task.reference_kind == "rule" and task.judge:
@@ -109,6 +128,29 @@ def replay_batch(
     big test sets (like the research harness's --workers). ``workers`` defaults
     to env SKILLOPT_SLEEP_WORKERS or 1 (sequential). Mock stays sequential
     (deterministic) unless asked otherwise.
+
+    Every worker shares the one ``backend`` passed in, so per-call token
+    accounting has to be call-local. Which combinations support that:
+
+    * ``CliBackend`` and subclasses - per-call delta in thread-local storage,
+      safe to share across workers.
+    * ``DualBackend`` whose target defines ``token_delta()`` - reports that
+      target's thread-local delta, safe to share across workers.
+    * a bare backend with only the older ``tokens_used()`` contract - sequential
+      only: ``replay_one`` differences a counter the other workers are also
+      spending, so an overlapping worker's tokens are counted into this task.
+    * ``DualBackend`` whose target only has ``tokens_used()`` - sequential only,
+      for that reason plus a baseline that lives on the shared DualBackend.
+
+    Only a thread-local per-call delta is safe to share. Everything built on a
+    cumulative total - the bare legacy backend as much as the DualBackend
+    fallback - over-counts when workers overlap: a 37-token attempt reported 74
+    with two workers, because one worker's spend landed in the other's
+    difference. Over-counting is the failure direction, so token and cost
+    budgets see more spend than actually happened. Both shapes are supported
+    sequentially and covered by tests there; neither is claimed here. Use
+    ``workers=1``, or a backend that reports a per-call delta, when the
+    accounting has to be exact.
     """
     if workers <= 0:
         workers = int(os.environ.get("SKILLOPT_SLEEP_WORKERS", "1") or "1")
