@@ -3,13 +3,23 @@
 Give your **DeepSeek Harness** agent a nightly **sleep cycle**: it reviews past
 sessions offline, replays your recurring tasks on your own API budget, and
 consolidates what it learns into validated skills behind a held-out gate. Same
-engine as the Claude Code / Codex / Cursor integrations (`skillopt_sleep`),
-wired into dsh's plugin system as native tools plus a bundled skill.
+engine as the Claude Code / Codex / Cursor integrations
+([skillopt_sleep](https://github.com/microsoft/SkillOpt)), wired into dsh's
+plugin system as native tools plus a bundled skill.
 
 DeepSeek Harness is the "everything is a plugin" agent framework
 ([deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)).
 Plugins are TypeScript modules exporting an `apply(ctx)` function that register
 capabilities (tools, services, events, settings) on the Cordis context.
+
+## Why a sleep cycle?
+
+Skills improve when an agent re-examines its own sessions — not just when you
+hand-tune a prompt. The sleep cycle turns your everyday usage into a nightly,
+validation-gated skill-improvement loop: harvest what you actually did, replay
+the recurring tasks on your own API budget, and keep only the changes that pass
+a held-out gate. It's the same engine as the Claude Code / Codex / Cursor
+integrations, wired into dsh as native tools plus a bundled skill.
 
 ## What this integration adds
 
@@ -34,7 +44,8 @@ capabilities (tools, services, events, settings) on the Cordis context.
 
 ## Prerequisites
 
-- DeepSeek Harness (dsh) installed
+- DeepSeek Harness (dsh) installed — dsh 0.1.x and 0.2.x are supported
+  (`@deepseek-ai/dsh-tools` 0.1.1-rc.2, 0.2.0-rc.2)
 - Python 3.10+ with the SkillOpt-Sleep engine:
 
 ```bash
