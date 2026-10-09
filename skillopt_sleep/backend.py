@@ -139,6 +139,8 @@ def _optimizer_feedback(task: TaskRecord, result: ReplayResult) -> str:
             task.judge,
             getattr(result, "response", ""),
             getattr(result, "tools_called", []),
+            # Replay measured tool calls for every tool task.
+            verified_tools=True,
         )
         return feedback
     feedback = getattr(result, "optimizer_feedback", "")
