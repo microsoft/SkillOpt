@@ -61,6 +61,19 @@ class ConsolidationResult:
     gate_trials: List[dict] = field(default_factory=list)
 
 
+def task_content_key(task: TaskRecord) -> Tuple[str, str]:
+    """What a task asks, independent of its id.
+
+    Task ids hash the project with the intent and differ between miners, so
+    two records of the same request can carry different ids. The key is the
+    case- and whitespace-normalized intent plus context excerpt.
+    """
+    def _norm(text: str) -> str:
+        return " ".join(str(text or "").lower().split())
+
+    return _norm(task.intent), _norm(task.context_excerpt)
+
+
 def _split(tasks: List[TaskRecord]) -> Tuple[List[TaskRecord], List[TaskRecord], bool]:
     """Return ``(train_tasks, val_tasks, holdout_leaked)``.
 
@@ -69,7 +82,10 @@ def _split(tasks: List[TaskRecord]) -> Tuple[List[TaskRecord], List[TaskRecord],
     (replay->train, holdout->val) for robustness.
 
     ``holdout_leaked`` is True when val is not disjoint from train — i.e. the
-    gate would score the very tasks the edits were derived from. A single mined
+    gate would score the very tasks the edits were derived from. Disjointness
+    is checked by id AND by :func:`task_content_key`, so a val task's twin
+    under another id (for example one recalled from another project's archive)
+    also counts as a leak. A single mined
     task that carries a train/val (or legacy) split always lands here; a lone
     ``test`` task instead yields empty train/val and no gate, so it is not
     flagged as leaked. Such a non-disjoint comparison cannot detect overfitting,
@@ -94,7 +110,8 @@ def _split(tasks: List[TaskRecord]) -> Tuple[List[TaskRecord], List[TaskRecord],
         leaked = leaked or bool(train)
     if not leaked and train and val:
         train_ids = {t.id for t in train}
-        if any(t.id in train_ids for t in val):
+        train_keys = {task_content_key(t) for t in train}
+        if any(t.id in train_ids or task_content_key(t) in train_keys for t in val):
             leaked = True
     return train, val, leaked
 

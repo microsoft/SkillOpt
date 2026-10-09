@@ -19,7 +19,11 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-from skillopt_sleep.consolidate import ConsolidationResult, consolidate
+from skillopt_sleep.consolidate import (
+    ConsolidationResult,
+    consolidate,
+    task_content_key,
+)
 from skillopt_sleep.types import TaskRecord
 
 # ── synthetic augmentation ("dream up" variants of today's tasks) ─────────────
@@ -69,6 +73,7 @@ def recall_similar(
     k: int,
     *,
     exclude_ids: Optional[set[str]] = None,
+    exclude_tasks: Optional[List[TaskRecord]] = None,
 ) -> List[TaskRecord]:
     """Return the ``k`` historical tasks most lexically similar to any of
     tonight's ``new_tasks`` (max Jaccard token overlap). Recalled tasks are
@@ -76,11 +81,15 @@ def recall_similar(
 
     Archived val/test tasks are never recalled, and ``exclude_ids`` blocks
     tonight's held-out ids (and their ``derived_from`` sources) from re-entering
-    the training pool.
+    the training pool. Ids alone are not enough: the archive is shared across
+    projects and ids hash the project with the intent, so ``exclude_tasks``
+    also blocks any archived task whose :func:`task_content_key` matches one of
+    the given (held-out) tasks.
     """
     if not history or k <= 0 or not new_tasks:
         return []
     blocked = set(exclude_ids or ())
+    blocked_keys = {task_content_key(t) for t in (exclude_tasks or ())}
     for t in new_tasks:
         blocked.add(t.id)
         if t.derived_from:
@@ -88,7 +97,7 @@ def recall_similar(
     new_tok = [_tokens(t.intent) for t in new_tasks]
     scored = []
     for h in history:
-        if h.id in blocked:
+        if h.id in blocked or task_content_key(h) in blocked_keys:
             continue
         if _normalize_split(h.split) in ("val", "test"):
             continue
@@ -146,14 +155,19 @@ def dream_consolidate(
     train = [t for t in tasks if t.split == "train"]
     enlarged = list(tasks)
     if recall_k > 0 and history_tasks:
-        held_out_ids = {
-            t.id for t in tasks if _normalize_split(t.split) in ("val", "test")
-        }
+        # Block held-out tasks by id AND by content: the archive is shared
+        # across projects, so tonight's val task can be archived under another
+        # project's id.
+        held_out = [
+            t for t in tasks if _normalize_split(t.split) in ("val", "test")
+        ]
+        held_out_ids = {t.id for t in held_out}
         for t in tasks:
             if t.derived_from:
                 held_out_ids.add(t.derived_from)
         enlarged += recall_similar(
-            train, history_tasks, recall_k, exclude_ids=held_out_ids,
+            train, history_tasks, recall_k,
+            exclude_ids=held_out_ids, exclude_tasks=held_out,
         )
     if dream_factor > 0:
         seed = [t for t in enlarged if t.split == "train" and t.origin != "dream"]

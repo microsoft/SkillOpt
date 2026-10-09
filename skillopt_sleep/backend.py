@@ -21,6 +21,7 @@ consolidation stage gates and stages.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import secrets
@@ -138,6 +139,8 @@ def _optimizer_feedback(task: TaskRecord, result: ReplayResult) -> str:
             task.judge,
             getattr(result, "response", ""),
             getattr(result, "tools_called", []),
+            # Replay measured tool calls for every tool task.
+            verified_tools=True,
         )
         return feedback
     feedback = getattr(result, "optimizer_feedback", "")
@@ -448,11 +451,19 @@ class CliBackend(Backend):
         raw = self._cached_call(key, prompt, max_tokens=200)
         obj = _extract_json(raw, "object")
         if isinstance(obj, dict):
+            raw_score = obj.get("score", 0.0)
             try:
-                soft = float(obj.get("score", 0.0))
-                return (1.0 if soft >= 0.8 else 0.0), soft, str(obj.get("reason", ""))[:200]
+                soft = float(raw_score)
             except (ValueError, TypeError):
-                pass
+                soft = None
+            # The judge prompt asks for a 0..1 score. json.loads accepts NaN and
+            # Infinity, and a model may answer on another scale (0-10, percent).
+            # Clamping would turn "8/10" into a perfect 1.0, so fail closed and
+            # name the problem instead of letting it move the gate.
+            if soft is not None and not isinstance(raw_score, bool):
+                if math.isfinite(soft) and 0.0 <= soft <= 1.0:
+                    return (1.0 if soft >= 0.8 else 0.0), soft, str(obj.get("reason", ""))[:200]
+                return 0.0, 0.0, f"judge-score-out-of-range: {str(raw_score)[:40]}"
         return 0.0, 0.0, "judge-parse-failed"
 
     def reflect(

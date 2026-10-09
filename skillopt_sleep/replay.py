@@ -50,8 +50,11 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     # rule judges may need the detected tool calls; score locally when possible
     if task.reference_kind == "rule" and task.judge:
         from skillopt_sleep.judges import score_rule_judge_with_feedback
+        # Tool tasks went through attempt_with_tools, which measured the calls
+        # (the default marker fallback converts markers there), so the
+        # response's own TOOL_CALL text is not evidence of a call.
         hard, soft, rationale, optimizer_feedback = score_rule_judge_with_feedback(
-            task.judge, response, tools_called
+            task.judge, response, tools_called, verified_tools=bool(tools)
         )
     else:
         hard, soft, rationale = backend.judge(task, response)
