@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from skillopt_sleep.backend import Backend
+from skillopt_sleep.backend import (
+    Backend,
+    call_attempt_with_tools,
+    repeated_samples_distinct_for,
+)
 from skillopt_sleep.types import ReplayResult, TaskRecord
 
 
@@ -27,6 +31,12 @@ def _required_tools(task: TaskRecord) -> List[str]:
     return tools
 
 
+def repeated_samples_distinct(backend: Backend, task: TaskRecord) -> bool:
+    """Whether ``replay_one`` obtains distinct samples for different
+    ``sample_id`` values on the route this task takes (tool or text)."""
+    return repeated_samples_distinct_for(backend, tools=bool(_required_tools(task)))
+
+
 def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
                sample_id: int = 0) -> ReplayResult:
     """``sample_id`` distinguishes repeated dream rollouts of the same
@@ -38,7 +48,9 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     t0 = time.time()
     tok_before = backend.tokens_used()
     if tools:
-        response, tools_called = backend.attempt_with_tools(task, skill, memory, tools)
+        response, tools_called = call_attempt_with_tools(
+            backend, task, skill, memory, tools, sample_id=sample_id
+        )
     else:
         response = backend.attempt(task, skill, memory, sample_id=sample_id)
     latency_ms = (time.time() - t0) * 1000.0

@@ -358,7 +358,9 @@ This runs one additional consolidation per group (including a catch-all group wh
 hinted and unhinted evidence are mixed), so it multiplies backend calls and token
 use; configured dream rollouts and synthetic variants multiply the per-group work
 too. Each group inherits the configured edit budget, gate mode/metric,
-`gate_no_regression`, `dream_rollouts`, `dream_factor`, `recall_k`, and
+`gate_no_regression`, `dream_rollouts`, `dream_factor`, `dream_adversarial`,
+`dream_adversarial_blocking`, `dream_adversarial_margin`,
+`dream_adversarial_rollouts`, `recall_k`, and
 `evolve_skill`. Recalled archive tasks are restricted to that same skill hint;
 shared memory is read-only in fan-out runs. Setting `evolve_skill` to `false`
 therefore disables per-skill proposals as well as the managed skill proposal.
@@ -377,17 +379,66 @@ Resolution searches existing project-native `.agents/skills`, `.claude/skills`,
 home and plugin-cache roots. Add repeatable `--skill-root PATH` values when an
 integration stores skills elsewhere. Relative roots resolve below `--project`.
 
-### Opt-in: experience replay & dream rollouts
+### Opt-in: experience replay, dream rollouts, and robustness probes
 
-Two consolidation mechanisms, both default **off** (behavior is unchanged unless you
-enable them). They strengthen the nightly update when your tasks have a clean
-correctness signal; the validation gate still governs what ships.
+These controls are default **off** (behavior is unchanged unless you enable
+them). Replay and rollouts strengthen the training signal; adversarial probes
+measure candidate robustness. The validation gate still governs what ships
+unless explicit adversarial blocking adds a second rejection condition.
 
 | Config knob | Default | Effect |
 |---|---|---|
 | `dream_rollouts` | `1` | Run each task K times → learn from the good-vs-bad contrast (contrastive reflection). |
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
+| `dream_adversarial` | `0` | Score up to N harmless request-frame variants per real training task against each gate-eligible candidate. The factor is capped at 3 per task and 256 probes per candidate. |
+| `dream_adversarial_blocking` | `false` | When `true`, reject a candidate whose brittleness is candidate-introduced under the baseline-relative rule below. When `false`, surface the same evidence without changing the gate decision. Requires `dream_adversarial_rollouts >= 2`. |
+| `dream_adversarial_margin` | `0.0` | Tolerated worsening of the candidate gap relative to the baseline gap, in `[0, 1]`, before a row is marked brittle. Calibrate it on your own task mix before enabling blocking. |
+| `dream_adversarial_rollouts` | `1` | Repeated samples per task and arm (capped at 8). Blocking requires at least 2 so one stochastic sample can never reject a candidate. |
+
+Adversarial probes preserve the source reference and judge but change only the
+request frame (for example, removing explicitly politeness-marked boilerplate
+or adding request delimiters). They are generated from real, underived
+training tasks only. Recalled, already-synthetic, validation, and test tasks
+are excluded.
+
+The decision is **baseline-relative** so pre-existing frame sensitivity never
+flags a candidate: every source/probe pair is scored under both the current
+(baseline) documents and the candidate documents, each score is the mean of
+`dream_adversarial_rollouts` repeated samples, and a row is brittle only when
+the candidate's probe-minus-source gap worsens beyond the margin relative to
+the baseline gap AND the worsening holds in a strict majority of rollout
+indices. All four aggregated scores and the per-rollout samples are retained
+in the evidence so the decision is auditable. Any non-finite score fails
+closed.
+
+Repeated rollouts are only evidence when they are distinct samples. Every
+replay route forwards the rollout's `sample_id`: the text route and the
+inherited `TOOL_CALL:` marker fallback salt the attempt cache key with it, and
+the real tool-loop backends start a fresh, uncached agent process per call.
+A custom backend whose `attempt` or `attempt_with_tools` does not accept
+`sample_id` cannot provide that guarantee, so with more than one rollout its
+rows are reported as `inconclusive` and not replayed. Inconclusive rows never
+flag a candidate; if no conclusive row remains, blocking mode fails closed and
+names the unsupported route in `block_reason`.
+
+Probes are advisory first because any fixed robustness suite is an incomplete
+proxy; enable blocking only after reviewing the advisory evidence and
+calibrating the margin on your task mix. Blocking mode fails closed if no
+eligible probe can be generated. The replay cost per gate-eligible candidate
+is `rollouts * 2 * (sources + probes)` over the conclusive rows, so token and
+latency cost grow with
+the number of real training tasks, the factor, and the rollout count.
+
+Example `~/.skillopt-sleep/config.json`:
+
+```json
+{
+  "dream_adversarial": 2,
+  "dream_adversarial_blocking": false,
+  "dream_adversarial_margin": 0.015
+}
+```
 
 ### Paired A/B evalkit
 

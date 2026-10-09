@@ -3432,6 +3432,10 @@ class TestMultiSkillReportWiring(unittest.TestCase):
                 recall_k=7,
                 dream_rollouts=3,
                 dream_factor=2,
+                dream_adversarial=2,
+                dream_adversarial_blocking=True,
+                dream_adversarial_margin=0.015,
+                dream_adversarial_rollouts=2,
                 edit_budget=6,
                 gate_metric="mixed",
                 gate_mixed_weight=0.37,
@@ -3472,7 +3476,12 @@ class TestMultiSkillReportWiring(unittest.TestCase):
                 # Keep this regression fast while preserving the exact
                 # arguments observed at the public orchestration boundary.
                 safe = dict(kwargs)
-                safe.update(recall_k=0, dream_rollouts=1, dream_factor=0)
+                safe.update(
+                    recall_k=0,
+                    dream_rollouts=1,
+                    dream_factor=0,
+                    dream_adversarial=0,
+                )
                 return real_dream_consolidate(
                     backend,
                     tasks,
@@ -3507,6 +3516,10 @@ class TestMultiSkillReportWiring(unittest.TestCase):
                 "recall_k": 7,
                 "dream_rollouts": 3,
                 "dream_factor": 2,
+                "dream_adversarial": 2,
+                "dream_adversarial_blocking": True,
+                "dream_adversarial_margin": 0.015,
+                "dream_adversarial_rollouts": 2,
                 "edit_budget": 6,
                 "gate_metric": "mixed",
                 "gate_mixed_weight": 0.37,

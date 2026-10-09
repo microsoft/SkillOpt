@@ -1,6 +1,6 @@
 """SkillOpt-Sleep — dream + associative recall for nightly consolidation.
 
-Two opt-in mechanisms (both default OFF, so the cycle is unchanged unless the
+Three opt-in mechanisms (all default OFF, so the cycle is unchanged unless the
 user enables them) that the deployment experiments validated:
 
   * dream rollouts  — run each task K times and learn from the good-vs-bad
@@ -8,6 +8,9 @@ user enables them) that the deployment experiments validated:
   * associative recall — each night, pull the K past tasks most similar to
     tonight's new ones into the dream (set ``recall_k > 0``). Replays relevant
     experience without re-running the whole history.
+  * adversarial probes — replay harmless surface variants against a candidate
+    before adoption (set ``dream_adversarial > 0``). Advisory by default;
+    blocking requires an explicit second switch.
 
 ``dream_consolidate`` wires recall + synthetic augmentation + multi-rollout
 consolidation and is called by BOTH the shipped plugin cycle and the benchmark
@@ -130,6 +133,10 @@ def dream_consolidate(
     gate_metric: str = "mixed",
     gate_mixed_weight: float = 0.5,
     gate_no_regression: bool = False,
+    dream_adversarial: int = 0,
+    dream_adversarial_blocking: bool = False,
+    dream_adversarial_margin: float = 0.0,
+    dream_adversarial_rollouts: int = 1,
     gate_mode: str = "on",
     evolve_skill: bool = True,
     evolve_memory: bool = True,
@@ -140,8 +147,9 @@ def dream_consolidate(
 
     ``tasks`` is the split-tagged pool for tonight (train + val); recall and
     augmentation only enlarge the TRAIN split, so the val slice the gate scores
-    on is never polluted. With ``recall_k=0`` and ``dream_rollouts=1`` (the
-    defaults) this is exactly the previous single-shot ``consolidate``.
+    on is never polluted. Adversarial probes are scored separately and never
+    enter reflection or a held-out split. With every dream option disabled this
+    is exactly the previous single-shot ``consolidate``.
     """
     train = [t for t in tasks if t.split == "train"]
     enlarged = list(tasks)
@@ -162,7 +170,12 @@ def dream_consolidate(
         backend, enlarged, skill, memory,
         edit_budget=edit_budget, gate_metric=gate_metric,
         gate_mixed_weight=gate_mixed_weight,
-        gate_no_regression=gate_no_regression, gate_mode=gate_mode,
+        gate_no_regression=gate_no_regression,
+        dream_adversarial=dream_adversarial,
+        dream_adversarial_blocking=dream_adversarial_blocking,
+        dream_adversarial_margin=dream_adversarial_margin,
+        dream_adversarial_rollouts=dream_adversarial_rollouts,
+        gate_mode=gate_mode,
         rollouts_k=dream_rollouts, evolve_skill=evolve_skill,
         evolve_memory=evolve_memory, night=night,
     )

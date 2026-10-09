@@ -27,7 +27,6 @@ from skillopt_sleep.evidence import EvidenceLog
 from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
-from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.multi_skill import (
     SKIPPED,
     GroupConsolidation,
@@ -36,6 +35,7 @@ from skillopt_sleep.multi_skill import (
     consolidate_groups,
     skill_group_reports,
 )
+from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.skill_resolver import resolve_skill, skill_search_roots
 from skillopt_sleep.staging import (
     SkillProposal,
@@ -317,6 +317,19 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         f"- tokens used: {report.tokens_used}",
         "",
     ]
+    if int(cfg.get("dream_adversarial", 0) or 0) > 0:
+        mode = (
+            "blocking"
+            if cfg.get("dream_adversarial_blocking", False)
+            else "advisory"
+        )
+        lines.insert(
+            -1,
+            f"- adversarial dream probes: {mode} "
+            f"(factor={int(cfg.get('dream_adversarial', 0) or 0)}, "
+            f"margin={_report_score(cfg.get('dream_adversarial_margin', 0.0))}, "
+            f"rollouts={int(cfg.get('dream_adversarial_rollouts', 1) or 1)})",
+        )
     gate_on = str(cfg.get("gate_mode", "on")).strip().lower() not in {
         "off", "none", "false", "greedy",
     }
@@ -341,9 +354,14 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
             target = _markdown_table_text(trial.get("target", "candidate"))
             accepted = bool(trial.get("accepted", False))
             blocked = bool(trial.get("blocked_by_regression", False))
+            adversarial_blocked = bool(
+                trial.get("blocked_by_adversarial", False)
+            )
             decision = "accepted" if accepted else "rejected"
             if blocked:
                 decision += " (task regression)"
+            if adversarial_blocked:
+                decision += " (brittle under adversarial probes)"
             baseline = _report_score(trial.get("baseline_score"))
             candidate = _report_score(trial.get("candidate_score"))
             lines.append(
@@ -366,6 +384,53 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
                     f"| {candidate_score} | {status} |"
                 )
             lines.append("")
+            probe = trial.get("adversarial_probe")
+            if isinstance(probe, dict):
+                mode = "blocking" if probe.get("blocking") else "advisory"
+                lines.append(
+                    f"Adversarial probes ({mode}, baseline-relative, "
+                    f"rollouts={int(probe.get('rollouts', 1) or 1)}): "
+                    f"{int(probe.get('n_flagged', 0) or 0)} flagged / "
+                    f"{int(probe.get('n_probes', 0) or 0)} total; "
+                    f"worst gap change {_report_score(probe.get('worst_gap_change'))}."
+                )
+                n_inconclusive = int(probe.get("n_inconclusive", 0) or 0)
+                if n_inconclusive:
+                    lines.append(
+                        f"{n_inconclusive} probe(s) inconclusive: their replay route "
+                        "cannot produce distinct repeated samples, so they were not "
+                        "scored and cannot flag the candidate."
+                    )
+                if not probe.get("conclusive", False):
+                    lines.append(
+                        "No conclusive probe was scored; blocking mode fails "
+                        "closed for this candidate."
+                        if int(probe.get("n_probes", 0) or 0)
+                        else "No eligible probe was generated; blocking mode fails "
+                        "closed for this candidate."
+                    )
+                lines.append("")
+                lines.append(
+                    "| Source | Probe | Variant | Baseline source | Baseline probe | "
+                    "Candidate source | Candidate probe | Gap change | Status |"
+                )
+                lines.append("|---|---|---|---:|---:|---:|---:|---:|---|")
+                for row in probe.get("rows", []):
+                    source_id = _markdown_table_text(row.get("source_task_id", ""))
+                    probe_id = _markdown_table_text(row.get("probe_task_id", ""))
+                    kind = _markdown_table_text(row.get("probe_kind", ""))
+                    baseline_source = _report_score(row.get("baseline_source_score"))
+                    baseline_probe = _report_score(row.get("baseline_probe_score"))
+                    candidate_source = _report_score(row.get("candidate_source_score"))
+                    candidate_probe = _report_score(row.get("candidate_probe_score"))
+                    gap_change = _report_score(row.get("gap_change"))
+                    status = _markdown_table_text(row.get("status", ""))
+                    lines.append(
+                        f"| `{source_id}` | `{probe_id}` | {kind} | "
+                        f"{baseline_source} | {baseline_probe} | "
+                        f"{candidate_source} | {candidate_probe} | {gap_change} | {status} |"
+                    )
+                lines.append("")
     if report.edits:
         lines.append("## Accepted edits")
         for e in report.edits:
@@ -698,6 +763,19 @@ def run_sleep_cycle(
             "dream_rollouts", "dream_factor", "recall_k",
             "max_tasks_per_night", "lookback_hours", "llm_mine",
             "evolve_skill", "evolve_memory")}
+        if int(cfg.get("dream_adversarial", 0) or 0) > 0:
+            cycle_config.update({
+                "dream_adversarial": cfg.get("dream_adversarial", 0),
+                "dream_adversarial_blocking": cfg.get(
+                    "dream_adversarial_blocking", False
+                ),
+                "dream_adversarial_margin": cfg.get(
+                    "dream_adversarial_margin", 0.0
+                ),
+                "dream_adversarial_rollouts": cfg.get(
+                    "dream_adversarial_rollouts", 1
+                ),
+            })
         cycle_config["opencode_tool_replay"] = (
             cfg.get("opencode_tool_replay", False) is True
         )
@@ -844,8 +922,9 @@ def run_sleep_cycle(
 
     # ── 3+4. replay + consolidate (gate), with opt-in dream + recall ──────
     # recall pulls similar past tasks from the persisted archive; dream_rollouts
-    # / dream_factor enrich the training signal. With the defaults (recall_k=0,
-    # dream_rollouts=1, dream_factor=0) this is exactly the prior single-shot
+    # / dream_factor enrich the training signal. dream_adversarial instead
+    # scores candidate robustness without entering reflection or held-out data.
+    # With every option disabled this is exactly the prior single-shot
     # consolidate — behavior is unchanged unless the user opts in.
     _progress(cfg, "consolidate start")
     recall_k = int(cfg.get("recall_k", 0) or 0)
@@ -859,6 +938,12 @@ def run_sleep_cycle(
             recall_k=recall_k,
             dream_rollouts=int(cfg.get("dream_rollouts", 1) or 1),
             dream_factor=int(cfg.get("dream_factor", 0) or 0),
+            dream_adversarial=cfg.get("dream_adversarial", 0),
+            dream_adversarial_blocking=cfg.get(
+                "dream_adversarial_blocking", False
+            ),
+            dream_adversarial_margin=cfg.get("dream_adversarial_margin", 0.0),
+            dream_adversarial_rollouts=cfg.get("dream_adversarial_rollouts", 1),
             edit_budget=cfg.get("edit_budget", 4),
             gate_metric=cfg.get("gate_metric", "mixed"),
             gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
@@ -953,6 +1038,16 @@ def run_sleep_cycle(
                     recall_k=recall_k,
                     dream_rollouts=int(cfg.get("dream_rollouts", 1) or 1),
                     dream_factor=int(cfg.get("dream_factor", 0) or 0),
+                    dream_adversarial=cfg.get("dream_adversarial", 0),
+                    dream_adversarial_blocking=cfg.get(
+                        "dream_adversarial_blocking", False
+                    ),
+                    dream_adversarial_margin=cfg.get(
+                        "dream_adversarial_margin", 0.0
+                    ),
+                    dream_adversarial_rollouts=cfg.get(
+                        "dream_adversarial_rollouts", 1
+                    ),
                     edit_budget=cfg.get("edit_budget", 4),
                     gate_metric=cfg.get("gate_metric", "mixed"),
                     gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
@@ -1055,6 +1150,18 @@ def run_sleep_cycle(
                         ),
                         "gate_mode": cfg.get("gate_mode"),
                         "gate_no_regression": cfg.get("gate_no_regression", False),
+                        **({
+                            "dream_adversarial": cfg.get("dream_adversarial", 0),
+                            "dream_adversarial_blocking": cfg.get(
+                                "dream_adversarial_blocking", False
+                            ),
+                            "dream_adversarial_margin": cfg.get(
+                                "dream_adversarial_margin", 0.0
+                            ),
+                            "dream_adversarial_rollouts": cfg.get(
+                                "dream_adversarial_rollouts", 1
+                            ),
+                        } if int(cfg.get("dream_adversarial", 0) or 0) > 0 else {}),
                         "n_tasks": len(tasks),
                         "baseline_score": result.baseline_score,
                         "candidate_score": result.candidate_score,

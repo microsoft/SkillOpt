@@ -70,6 +70,10 @@ DEFAULTS: Dict[str, Any] = {
     # ── dream + recall (opt-in; defaults reproduce the prior single-shot loop) ─
     "dream_rollouts": 1,          # >1 => multi-rollout contrastive reflection per task
     "dream_factor": 0,            # >0 => add N synthetic variants of each task to the dream
+    "dream_adversarial": 0,       # >0 => score N robustness probes per real train task
+    "dream_adversarial_blocking": False,  # reject flagged candidates instead of advisory-only
+    "dream_adversarial_margin": 0.0,      # tolerated worsening of the candidate-vs-baseline gap in [0, 1]
+    "dream_adversarial_rollouts": 1,      # samples per task/arm; blocking requires >= 2
     "recall_k": 0,                # >0 => recall the K most-similar past tasks into the dream
     "evolve_memory": True,        # consolidate CLAUDE.md
     "evolve_skill": True,         # consolidate the managed SKILL.md

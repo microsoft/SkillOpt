@@ -44,6 +44,61 @@ def skill_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
+def accepts_sample_id(method: Any) -> bool:
+    """True when ``method`` can be called with a ``sample_id`` keyword.
+
+    Backends written before repeated rollouts existed may override
+    ``attempt`` or ``attempt_with_tools`` without that parameter. Callers use
+    this to keep calling such overrides safely and to report that their route
+    cannot produce distinct repeated samples.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        param.kind is param.VAR_KEYWORD
+        or (
+            param.name == "sample_id"
+            and param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY)
+        )
+        for param in params
+    )
+
+
+def call_attempt_with_tools(
+    backend: "Backend",
+    task: TaskRecord,
+    skill: str,
+    memory: str,
+    tools: List[str],
+    *,
+    sample_id: int = 0,
+) -> Tuple[str, List[str]]:
+    """Run the tool route, forwarding ``sample_id`` when the backend accepts it.
+
+    Sample zero keeps the historical call shape, so existing overrides and
+    cached gate re-scoring are unchanged.
+    """
+    if sample_id and accepts_sample_id(backend.attempt_with_tools):
+        return backend.attempt_with_tools(
+            task, skill, memory, tools, sample_id=sample_id
+        )
+    return backend.attempt_with_tools(task, skill, memory, tools)
+
+
+def repeated_samples_distinct_for(backend: Any, *, tools: bool) -> bool:
+    """``backend.distinct_samples`` with a fallback for duck-typed backends
+    that predate it: only the ``sample_id`` signature can be inspected."""
+    probe = getattr(backend, "distinct_samples", None)
+    if callable(probe):
+        return bool(probe(tools=tools))
+    method = backend.attempt_with_tools if tools else backend.attempt
+    return accepts_sample_id(method)
+
+
 # ── Backend protocol ──────────────────────────────────────────────────────────
 
 class Backend:
@@ -61,20 +116,54 @@ class Backend:
         raise NotImplementedError
 
     def attempt_with_tools(
-        self, task: TaskRecord, skill: str, memory: str, tools: List[str]
+        self,
+        task: TaskRecord,
+        skill: str,
+        memory: str,
+        tools: List[str],
+        sample_id: int = 0,
     ) -> Tuple[str, List[str]]:
         """Run the task while exposing real tools; return (response, tools_called).
 
         Default: no real tool loop — fall back to plain attempt and let the
         single-shot 'TOOL_CALL: <name>' marker convention surface intent. CLI
         backends override this to expose a genuinely callable tool.
+        ``sample_id`` is forwarded to ``attempt`` so repeated rollouts of a
+        tool task reach distinct cache entries instead of sample zero.
         """
-        resp = self.attempt(task, skill, memory)
+        resp = self._attempt_sample(task, skill, memory, sample_id)
         called: List[str] = []
         for t in tools:
             if re.search(r"(?i)\btool_call\s*:\s*%s\b" % re.escape(t), resp):
                 called.append(t)
         return resp, called
+
+    def _attempt_sample(
+        self, task: TaskRecord, skill: str, memory: str, sample_id: int
+    ) -> str:
+        if sample_id and accepts_sample_id(self.attempt):
+            return self.attempt(task, skill, memory, sample_id=sample_id)
+        return self.attempt(task, skill, memory)
+
+    def distinct_samples(self, *, tools: bool) -> bool:
+        """Whether repeated ``sample_id`` rollouts reach the model as distinct
+        samples on this route, rather than collapsing to one cached response.
+
+        * Text route: distinct when ``attempt`` accepts ``sample_id``; the
+          shipped attempt caches salt their keys with it.
+        * Tool route: ``attempt_with_tools`` must accept ``sample_id``. The
+          inherited marker fallback (and the mock tool model) answer through
+          ``attempt``, so they are distinct only when ``attempt`` is. The
+          shipped tool-loop overrides start a fresh, uncached agent process
+          on every call, so each call is already an independent sample.
+        """
+        if not tools:
+            return accepts_sample_id(self.attempt)
+        if not accepts_sample_id(self.attempt_with_tools):
+            return False
+        if type(self).attempt_with_tools in _ATTEMPT_DELEGATING_TOOL_ROUTES:
+            return accepts_sample_id(self.attempt)
+        return True
 
     def judge(self, task: TaskRecord, response: str) -> Tuple[float, float, str]:
         raise NotImplementedError
@@ -217,13 +306,13 @@ class MockBackend(Backend):
             return f"approximately {mangled} (format not applied)"
         return "(attempted, no checkable reference)"
 
-    def attempt_with_tools(self, task, skill, memory, tools):
+    def attempt_with_tools(self, task, skill, memory, tools, sample_id: int = 0):
         # Deterministic tool model: the mock "calls" a tool iff the skill+memory
         # contains an explicit instruction to use it (a learned rule mentioning
         # the tool name or "search"). The deficient skill says NOT to, so
         # baseline calls nothing; a learned "use ./search" rule flips it.
         ctx = ((skill or "") + "\n" + (memory or "")).lower()
-        resp = self.attempt(task, skill, memory)
+        resp = self._attempt_sample(task, skill, memory, sample_id)
         called = []
         for t in (tools or []):
             tl = t.lower()
@@ -337,6 +426,14 @@ def _task_guardrail(pairs) -> str:
         "\n# Task output contract (rules MUST obey this — violating it scores 0)\n"
         f"{contract}\n{invariants}\n"
     )
+
+
+# Tool routes that answer through ``attempt`` rather than a real tool loop;
+# their sample independence is exactly that of ``attempt``.
+_ATTEMPT_DELEGATING_TOOL_ROUTES = frozenset({
+    Backend.attempt_with_tools,
+    MockBackend.attempt_with_tools,
+})
 
 
 class CliBackend(Backend):
@@ -798,7 +895,10 @@ class ClaudeCliBackend(CliBackend):
         self._detect_cli_error(out, proc.stderr or "")
         return out
 
-    def attempt_with_tools(self, task, skill, memory, tools):
+    def attempt_with_tools(self, task, skill, memory, tools, sample_id: int = 0):
+        # Each call starts a fresh, uncached agent process, so every call is
+        # already an independent sample; ``sample_id`` needs no salt here.
+        del sample_id
         # Expose a REAL, callable `search` tool (a shell shim that logs each
         # call) so the gbrain quick-answerer judge (tool_called=search) is
         # validated honestly: we detect the call from the shim's log, not from
@@ -1288,7 +1388,11 @@ class OpenCodeCliBackend(CliBackend):
         skill: str,
         memory: str,
         tools: List[str],
+        sample_id: int = 0,
     ) -> Tuple[str, List[str]]:
+        # Each call starts a fresh, uncached agent process, so every call is
+        # already an independent sample; ``sample_id`` needs no salt here.
+        del sample_id
         self.last_call_error = ""
         if not self.tool_replay:
             self.last_call_error = (
@@ -1545,7 +1649,10 @@ class CodexCliBackend(CliBackend):
                 _t.sleep(min(6.0, (2 ** attempt) * 0.5) + _r.random() * 0.3)
         return out
 
-    def attempt_with_tools(self, task, skill, memory, tools):
+    def attempt_with_tools(self, task, skill, memory, tools, sample_id: int = 0):
+        # Each call starts a fresh, uncached agent process, so every call is
+        # already an independent sample; ``sample_id`` needs no salt here.
+        del sample_id
         # Codex exec runs in a sandbox with shell access; expose the same real
         # `search` shim and let it run (workspace-write so the shim can log).
         import tempfile, shutil, stat
@@ -1809,7 +1916,10 @@ class CopilotCliBackend(CliBackend):
                     parts.append(content)
         return "\n".join(parts).strip()
 
-    def attempt_with_tools(self, task, skill, memory, tools):
+    def attempt_with_tools(self, task, skill, memory, tools, sample_id: int = 0):
+        # Each call starts a fresh, uncached agent process, so every call is
+        # already an independent sample; ``sample_id`` needs no salt here.
+        del sample_id
         # Expose REAL, callable tool shims in the working directory so the
         # gbrain quick-answerer judge (tool_called=search) is validated
         # honestly: we detect each call from the shim's log, not from a
@@ -2144,8 +2254,9 @@ class CursorCliBackend(CliBackend):
         skill: str,
         memory: str,
         tools: List[str],
+        sample_id: int = 0,
     ) -> Tuple[str, List[str]]:
-        del task, skill, memory, tools
+        del task, skill, memory, tools, sample_id
         raise self._error(
             "Cursor tool-aware replay is temporarily disabled pending live "
             "Cursor permission-boundary validation"
@@ -2174,8 +2285,14 @@ class DualBackend(Backend):
     def attempt(self, task, skill, memory, sample_id: int = 0):
         return self.target.attempt(task, skill, memory, sample_id=sample_id)
 
-    def attempt_with_tools(self, task, skill, memory, tools):
-        return self.target.attempt_with_tools(task, skill, memory, tools)
+    def attempt_with_tools(self, task, skill, memory, tools, sample_id: int = 0):
+        return call_attempt_with_tools(
+            self.target, task, skill, memory, tools, sample_id=sample_id
+        )
+
+    def distinct_samples(self, *, tools: bool) -> bool:
+        # Attempts run on the target, so its routes decide sample independence.
+        return repeated_samples_distinct_for(self.target, tools=tools)
 
     def judge(self, task, response):
         # local rule/exact judging needs no model; delegate to target which
