@@ -20,8 +20,8 @@ from unittest import mock
 
 from skillopt_sleep.backend import build_backend
 from skillopt_sleep.config import load_config
-from skillopt_sleep.cycle import _resolve_split_fractions, run_sleep_cycle
 from skillopt_sleep.consolidate import consolidate
+from skillopt_sleep.cycle import _resolve_split_fractions, run_sleep_cycle
 from skillopt_sleep.dream import dream_consolidate, recall_similar
 from skillopt_sleep.mine import assign_splits
 from skillopt_sleep.state import SleepState
@@ -116,6 +116,41 @@ class Pass1ApproachBAssignSplitsInvariants(unittest.TestCase):
         for t in again:
             if t.id in test_ids:
                 self.assertEqual(t.split, "test")
+
+    def test_all_test_hash_assignment_keeps_train_and_val_nonempty(self):
+        tasks = [_task(f"all-test-{i}", f"all-test task {i}") for i in range(1, 6)]
+
+        with self.assertLogs("skillopt_sleep", level="WARNING") as logs:
+            out = assign_splits(
+                tasks,
+                val_fraction=0.10,
+                test_fraction=0.80,
+                seed=42,
+            )
+
+        self.assertEqual(sum(t.split == "train" for t in out), 1)
+        self.assertEqual(sum(t.split == "val" for t in out), 1)
+        self.assertEqual(sum(t.split == "test" for t in out), 3)
+        self.assertIn("reassigned 2 test task(s)", "\n".join(logs.output))
+
+    def test_val_only_hash_assignment_keeps_val_when_topping_up_train(self):
+        tasks = [
+            _task("val-only-26", "hashes to val"),
+            _task("all-test-1", "hashes to test"),
+            _task("all-test-2", "also hashes to test"),
+        ]
+
+        with self.assertLogs("skillopt_sleep", level="WARNING"):
+            out = assign_splits(
+                tasks,
+                val_fraction=0.10,
+                test_fraction=0.80,
+                seed=42,
+            )
+
+        self.assertEqual(sum(t.split == "train" for t in out), 1)
+        self.assertEqual(sum(t.split == "val" for t in out), 1)
+        self.assertEqual(sum(t.split == "test" for t in out), 1)
 
 
 class Pass1ApproachCFractionBoundaries(unittest.TestCase):
