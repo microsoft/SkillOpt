@@ -1446,6 +1446,9 @@ class CodexCliBackend(CliBackend):
         timeout/exception/empty-output (with last_call_error set). ``_call``
         wraps this with retries so a transient failure is NOT silently scored 0."""
         import tempfile
+        from skillopt_sleep.harvest_codex import CODEX_REPLAY_SENTINEL
+
+        prompt = CODEX_REPLAY_SENTINEL + "\n\n" + prompt
         out_path = tempfile.NamedTemporaryFile(
             prefix="codex_last_", suffix=".txt", delete=False
         ).name
@@ -1550,6 +1553,7 @@ class CodexCliBackend(CliBackend):
         # `search` shim and let it run (workspace-write so the shim can log).
         import tempfile, shutil, stat
         work = tempfile.mkdtemp(prefix="skillopt_sleep_codextools_")
+        from skillopt_sleep.harvest_codex import CODEX_REPLAY_SENTINEL
         calllog = os.path.join(work, "_tool_calls.log")
         out_path = os.path.join(work, "_last.txt")
         tool_names = tools or ["search"]
@@ -1605,6 +1609,7 @@ class CodexCliBackend(CliBackend):
             ]
             if self.model:
                 cmd += ["-m", self.model]
+            prompt = CODEX_REPLAY_SENTINEL + "\n\n" + prompt
             # Prompt via stdin (`codex exec -`): the Windows .CMD shim truncates argv at the first CR/LF.
             cmd += ["-"]
             self.last_call_error = ""

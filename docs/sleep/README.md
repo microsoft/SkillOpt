@@ -179,6 +179,14 @@ One engine, thin per-agent shells (see [`plugins/`](https://github.com/microsoft
 | **Devin** | [`plugins/devin`](https://github.com/microsoft/SkillOpt/tree/main/plugins/devin) | register `plugins/devin/mcp_server.py` as an MCP server |
 | **OpenClaw** | [`plugins/openclaw`](https://github.com/microsoft/SkillOpt/tree/main/plugins/openclaw) | adapt the reference wrapper and paths for your installation |
 
+### Codex replay provenance
+
+Codex backend calls carry a `[skillopt-sleep:codex-engine:v1]` prefix so the
+harvester can exclude engine-generated attempt, judge, reflection, and tool
+sessions, including custom prompt templates. Ordinary user sessions that quote
+headings such as `## TASK` or `## CURRENT SKILL` remain eligible for harvesting.
+Legacy tool-replay sessions are recognized by their complete prompt structure.
+
 ### VS Code GitHub Copilot Chat
 
 Use `--source copilot` to harvest local VS Code GitHub Copilot Chat sessions.
