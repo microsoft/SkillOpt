@@ -59,7 +59,9 @@ class TestCodexPromptOverStdin(unittest.TestCase):
         self.assertEqual(out, "ok")
         self.assertEqual(len(calls), 1)
         cmd, kwargs = calls[0]
-        _assert_prompt_over_stdin(self, cmd, kwargs, prompt)
+        from skillopt_sleep.harvest_codex import CODEX_REPLAY_SENTINEL
+
+        _assert_prompt_over_stdin(self, cmd, kwargs, CODEX_REPLAY_SENTINEL + "\n\n" + prompt)
 
     def test_attempt_with_tools_sends_multiline_prompt_via_stdin(self):
         from skillopt_sleep.backend import CodexCliBackend

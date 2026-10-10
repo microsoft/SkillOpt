@@ -20,19 +20,11 @@ from skillopt_sleep.harvest import (
 from skillopt_sleep.staging import _SECRET_PATTERNS
 from skillopt_sleep.types import SessionDigest
 
+CODEX_REPLAY_SENTINEL = "[skillopt-sleep:codex-engine:v1]"
 
 _CODEX_REPLAY_PREFIXES = (
     "Complete the task. Apply the skill and memory rules exactly,",
     "Complete the task. Apply the skill and memory rules EXACTLY,",
-)
-_CODEX_REPLAY_MARKERS = (
-    "## CURRENT SKILL",
-    "## FAILED TASKS",
-    "## SUCCESSFUL TASKS",
-    "You are a strict grader",
-    "## TASK\n",
-    "## SKILL\n",
-    "## Skill\n",
 )
 
 
@@ -42,7 +34,7 @@ def _is_codex_replay(digest: SessionDigest) -> bool:
         return False
     prompt = digest.user_prompts[0]
     return (
-        any(marker in prompt for marker in _CODEX_REPLAY_MARKERS)
+        prompt.startswith(CODEX_REPLAY_SENTINEL + "\n\n")
         or (
             any(prompt.startswith(prefix) for prefix in _CODEX_REPLAY_PREFIXES)
             and "\n# Skill\n" in prompt
