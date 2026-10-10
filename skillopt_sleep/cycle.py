@@ -812,6 +812,8 @@ def run_sleep_cycle(
             raise
         _progress(cfg, f"mine done: tasks={len(tasks)}")
 
+    state.protect_splits(tasks)
+
     if ev is not None:
         # Final task pool with split assignment: which tasks train the edits
         # vs. which held-out tasks gate them (works for seeded tasks too).
@@ -937,6 +939,8 @@ def run_sleep_cycle(
                 cfg, grouped, managed_name, skill
             )
             report.notes.extend(skip_notes)
+            for group in live_groups:
+                state.protect_splits(group.tasks)
             try:
                 consolidated_groups = consolidate_groups(
                     backend,

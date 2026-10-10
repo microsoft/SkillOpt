@@ -339,6 +339,14 @@ correctness signal; the validation gate still governs what ships.
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
 
+The nightly cycle persists task split exposure separately from the capped recall
+archive. Once a task has entered training, re-mining it or a recorded derivative
+cannot move it into validation or test; validation exposure likewise prevents
+later claims of pristine test coverage. This also applies to small-pool fallback
+assignments across growing or shrinking nightly pools. Restored assignments emit
+a warning when they reduce holdout coverage. If no disjoint validation pool
+remains, the existing gate reports leakage and does not certify the edits.
+
 ### Paired A/B evalkit
 
 Reports and PRs that claim "B beats A" should go through the shared evalkit
