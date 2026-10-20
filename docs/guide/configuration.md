@@ -59,9 +59,16 @@ reports no token counts, so usage totals are zero.
 It does not support caller-supplied tools or structured tool calls; environments
 that require those features must use another chat backend.
 
-The current MiniMax adapter has one shared deployment. Set
-`model.minimax_model` when MiniMax is the target; a mixed-backend run cannot
-independently select a MiniMax optimizer model and a different target model.
+MiniMax defaults to `MiniMax-M3.1-Flash`; `MiniMax-M3` is also supported.
+Set `model.minimax_model` for the target default, or explicitly select
+`model.target` and `model.optimizer` for each role. Explicit legacy and custom
+model IDs are preserved.
+
+Flash always uses adaptive thinking, even when `model.minimax_enable_thinking`
+is false. Its `model.reasoning_effort` accepts `low`, `medium`, `high`, `xhigh`,
+or `max`; an empty setting leaves the API default (`max`). The shared YAML
+configuration sets `medium`. MiniMax-M3 continues to honor
+`model.minimax_enable_thinking` and ignores reasoning effort.
 
 MiniMax is served from region-specific hosts. Select one with
 `model.minimax_region` (or `MINIMAX_REGION`) instead of hardcoding a host:

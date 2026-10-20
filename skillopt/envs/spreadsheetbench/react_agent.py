@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-from skillopt.model import chat_target_messages
+from skillopt.model import chat_target_messages, get_target_backend
 from skillopt.prompts import load_prompt
 from skillopt.envs.spreadsheetbench.executor import generated_code_env
 
@@ -344,6 +344,8 @@ def _react_loop(
         assistant_text = str(getattr(message, "content", "") or "")
         tool_calls = _assistant_tool_calls(message)
         assistant_payload: dict = {"role": "assistant", "content": assistant_text}
+        if get_target_backend() == "minimax_chat" and getattr(message, "reasoning_content", None) is not None:
+            assistant_payload["reasoning_content"] = message.reasoning_content
         if tool_calls:
             assistant_payload["tool_calls"] = tool_calls
         messages.append(assistant_payload)
