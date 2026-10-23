@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature: optional mem0-backed persistent memory (community-contributed)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This is NOT a default SkillOpt setting and was NOT used to produce the
+# numbers reported in the paper. It is off unless you turn it on here.
+#
+# IMPORTANT — this feature sends data to a third-party hosted service.
+# Enabling it means skill text and reflection summaries leave your machine.
+# Setting MEM0_API_KEY alone does *nothing*; `mem0_enabled: true` below is the
+# only thing that turns uploading on, and a key set for some other application
+# will never enable it by accident.
+#
+# What it does:
+#   - After each evaluation gate, stores the current skill and its score.
+#   - After each Reflect stage, stores a summary of the patches produced.
+#   - Before each Reflect stage, makes ONE bounded retrieval call and appends
+#     the relevant history to that stage's reflection input, so previous runs
+#     can inform the patches produced now.
+#
+# When to consider this:
+#   - You run the same project repeatedly and want later runs to benefit from
+#     what earlier ones discovered.
+#   - You are comfortable with the data-handling note above.
+#
+# When NOT to use this:
+#   - When reproducing the paper.
+#   - When the skill text or trajectories are sensitive. Payloads are redacted
+#     (see docs/reference/config.md → "What leaves the machine"), but redaction
+#     is a mitigation, not a guarantee about content you know to be private.
+#
+# Install the optional dependency first:
+#   pip install 'skillopt[mem0]'
+#
+# Then export your key and use this file:
+#   export MEM0_API_KEY=m0-...
+#   _base_: ../features/mem0_memory.yaml
+# or copy the `train:` block below into your config.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_base_: ../_base_/default.yaml
+
+train:
+  # The master switch. Nothing is uploaded while this is false.
+  mem0_enabled: true
+
+  # Optional: set the key in config instead of the MEM0_API_KEY env var.
+  # Leave empty to use the environment (recommended — keeps keys out of YAML).
+  mem0_api_key: ""
+
+  # Optional: override the namespace. Default is derived per project as
+  # `skillopt:<env>:<sha256-prefix-of-project-root>`, which is stable across
+  # runs and distinct across projects. Set this only if you deliberately want
+  # several checkouts to share one memory pool.
+  mem0_namespace: ""
+
+  # Read memory back into reflection. Setting this false keeps the writes but
+  # removes the retrieval call — useful for measuring whether retrieval is what
+  # actually helps, rather than assuming it does.
+  mem0_retrieval_enabled: true
+
+  # Records fetched per retrieval.
+  mem0_retrieval_limit: 5
+
+  # Hard per-call wall-clock bound. On timeout the step continues unchanged, so
+  # an unreachable service costs one bounded pause rather than a stalled run.
+  mem0_timeout_seconds: 5.0
+
+  # Cap on any single stored payload, applied AFTER redaction so the limit is
+  # measured on exactly the text that would be transmitted.
+  mem0_max_chars: 4000
