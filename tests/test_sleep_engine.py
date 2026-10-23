@@ -2569,7 +2569,10 @@ class TestCursorBackend(unittest.TestCase):
             self.assertIn("Cursor tool-aware replay is temporarily disabled", stderr.getvalue())
             run.assert_not_called()
             self.assertEqual(backend._cache, {})
-            self.assertFalse(os.path.exists(os.path.join(tmp, ".skillopt-sleep")))
+            self.assertEqual(
+                os.listdir(os.path.join(tmp, ".skillopt-sleep")),
+                ["state.json.lock"],
+            )
             self.assertFalse(os.path.exists(os.path.join(project, ".skillopt-sleep")))
             self.assertFalse(os.path.exists(target))
 

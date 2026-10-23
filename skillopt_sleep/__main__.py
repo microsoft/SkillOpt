@@ -390,6 +390,11 @@ def _flush_handoff(backend, args) -> int:
 
 
 def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
+    with SleepState.lock(cfg.state_path):
+        return _handoff_mine_and_pin_locked(cfg, args, backend, snapshot, dry)
+
+
+def _handoff_mine_and_pin_locked(cfg, args, backend, snapshot: str, dry: bool):
     """Harvest + mine with the same knobs as run_sleep_cycle (harvest window,
     target-skill filter, candidate-limit bump, LLM mining — routed through the
     handoff files like every other model call), then pin the result to
