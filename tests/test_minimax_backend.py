@@ -98,9 +98,9 @@ def test_default_deployment_is_current_model(monkeypatch: pytest.MonkeyPatch) ->
     from skillopt.model import minimax_backend as backend
     module = importlib.reload(backend)
 
-    assert default_model_for_backend("minimax_chat") == "MiniMax-M3"
-    assert module.TARGET_DEPLOYMENT == "MiniMax-M3"
-    assert module.OPTIMIZER_DEPLOYMENT == "MiniMax-M3"
+    assert default_model_for_backend("minimax_chat") == "MiniMax-M3.1-Flash"
+    assert module.TARGET_DEPLOYMENT == "MiniMax-M3.1-Flash"
+    assert module.OPTIMIZER_DEPLOYMENT == "MiniMax-M3.1-Flash"
 
 
 def test_always_on_model_sends_adaptive_not_disabled(monkeypatch: pytest.MonkeyPatch, minimax_backend: Any) -> None:
@@ -232,11 +232,11 @@ def test_fresh_import_optimizer_calls_without_setter(
 
     text, usage = module.chat_optimizer("system prompt", "user query", retries=1)
     assert text == "answer"
-    assert recorder.calls[0]["payload"]["model"] == "MiniMax-M3"
+    assert recorder.calls[0]["payload"]["model"] == "MiniMax-M3.1-Flash"
 
     msg, usage_msg = module.chat_optimizer_messages([{"role": "user", "content": "user query"}], retries=1)
     assert msg == "answer"
-    assert recorder.calls[1]["payload"]["model"] == "MiniMax-M3"
+    assert recorder.calls[1]["payload"]["model"] == "MiniMax-M3.1-Flash"
 
 
 def test_fresh_import_respects_optimizer_deployment_env(

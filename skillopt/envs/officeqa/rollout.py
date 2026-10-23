@@ -396,7 +396,10 @@ def _run_custom_search_process(
         response = message.content or ""
         final_response = response
         last_response_metadata = _message_debug_metadata(message)
-        messages.append({"role": "assistant", "content": response})
+        assistant_message = {"role": "assistant", "content": response}
+        if get_target_backend() == "minimax_chat" and getattr(message, "reasoning_content", None) is not None:
+            assistant_message["reasoning_content"] = message.reasoning_content
+        messages.append(assistant_message)
         message_event = {"type": "message", "turn": turn, "content": response}
         if last_response_metadata:
             message_event["response_metadata"] = last_response_metadata
@@ -663,6 +666,8 @@ def process_one(
                 response = message.content or ""
                 final_response = response
                 assistant_message = {"role": "assistant", "content": response}
+                if get_target_backend() == "minimax_chat" and getattr(message, "reasoning_content", None) is not None:
+                    assistant_message["reasoning_content"] = message.reasoning_content
                 if getattr(message, "tool_calls", None):
                     assistant_message["tool_calls"] = [tool_call.model_dump(mode="json") for tool_call in message.tool_calls]
                 messages.append(assistant_message)
