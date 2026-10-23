@@ -1,12 +1,13 @@
 """Only one cycle may read/update/save a shared state at a time."""
 import multiprocessing
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from skillopt_sleep import state as state_module
-from skillopt_sleep.state import SleepState
+from skillopt_sleep.state import SleepState, harvest_cursor_key
 
 
 def update_project(path, project, ready, release):
@@ -15,7 +16,7 @@ def update_project(path, project, ready, release):
             state = SleepState.load(path)
             ready.set()
             assert release.wait(10)
-            state.set_last_harvest(project, "2026-01-01T00:00:00")
+            state.set_last_harvest(project, "2026-01-01T00:00:00", "codex")
             state.record_night({"project": project})
             state.save()
     except RuntimeError:
@@ -71,7 +72,9 @@ def test_two_projects_refuse_overlap_then_preserve_both_updates(tmp_path):
         retry.join(10)
         assert retry.exitcode == 0
         saved = SleepState.load(path)
-        assert set(saved.data["last_harvest"]) == {"first", "second"}
+        assert set(saved.data["last_harvest"]) == {
+            harvest_cursor_key("first", "codex"), harvest_cursor_key("second", "codex"),
+        }
         assert [row["project"] for row in saved.data["history"]] == ["first", "second"]
     finally:
         release.set()
@@ -128,3 +131,52 @@ def test_cycle_and_handoff_share_the_transaction_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_handoff_mine_and_pin_locked", locked)
     assert cycle.run_sleep_cycle(cfg) is marker
     assert cli._handoff_mine_and_pin(cfg, None, None, "synthetic", False) is marker
+
+
+def test_both_writer_routes_keep_source_checkpoints_and_prior_nights(tmp_path):
+    """Each locked writer route advances its own (project, source) cursor and
+    keeps the legacy bare cursor and earlier nights, including a budget-capped
+    night that recorded no scores (#317, #322)."""
+    from skillopt_sleep.__main__ import main
+    from skillopt_sleep.config import load_config
+    from skillopt_sleep.cycle import run_sleep_cycle
+
+    proj = str(tmp_path / "proj")
+    os.makedirs(proj)
+    claude_home = str(tmp_path / ".claude")
+    os.makedirs(os.path.join(claude_home, "projects"))
+    source = "claude"
+    cfg = load_config(
+        invoked_project=proj, claude_home=claude_home, backend="mock",
+        transcript_source=source,
+    )
+    legacy = "2026-01-01T00:00:00"
+    budget_night = {"night": 1, "accepted": False, "n_tasks": 3, "staging": "s1"}
+    seeded = SleepState(cfg.state_path)
+    seeded.set_last_harvest(proj, legacy)
+    seeded.begin_night()
+    seeded.record_night(budget_night)
+    seeded.save()
+
+    def assert_kept():
+        saved = SleepState.load(cfg.state_path)
+        assert saved.data["last_harvest"][proj] == legacy
+        assert saved.data["last_harvest"][harvest_cursor_key(proj, source)] > legacy
+        assert saved.data["history"][0] == budget_night
+        assert not list(Path(cfg.state_path).parent.glob(".sleep-state-*"))
+        return saved
+
+    run_sleep_cycle(cfg, dry_run=False)
+    saved = assert_kept()
+    assert saved.night == 2
+    assert [row["night"] for row in saved.data["history"]] == [1, 2]
+
+    # Clear the cycle's cursor so the handoff route must write its own.
+    saved.data["last_harvest"].pop(harvest_cursor_key(proj, source))
+    with SleepState.lock(cfg.state_path):
+        saved.save()
+    assert main([
+        "run", "--backend", "handoff", "--project", proj,
+        "--claude-home", claude_home, "--source", source,
+    ]) == 0
+    assert assert_kept().data["history"] == saved.data["history"]
