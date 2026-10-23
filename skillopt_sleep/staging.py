@@ -5,6 +5,7 @@ live CLAUDE.md / SKILL.md. It writes proposals + a human-readable report into
 a staging directory; a separate, explicit `adopt` step copies them over the
 live files after taking a backup.
 """
+
 from __future__ import annotations
 
 import base64
@@ -28,17 +29,15 @@ from skillopt_sleep.types import SleepReport
 # Accept EOF as the terminator for quoted/braced values because diagnostics are
 # often truncated precisely where a failing client was printing a credential.
 # Doubled quote/brace characters are the escape convention used by SQL/ODBC.
-_UNQUOTED_SECRET_VALUE = (
-    r'''(?:[^\s"';&,)\]}]|[)\]}]+(?=[^\s"';&,)\]}]))+'''
-)
+_UNQUOTED_SECRET_VALUE = r"""(?:[^\s"';&,)\]}]|[)\]}]+(?=[^\s"';&,)\]}]))+"""
 _SECRET_VALUE = (
-    r'''(?:"(?:\\(?:[^\r\n]|(?=\r?\n|$))|""|[^"\\\r\n])*'''
-    r'''(?:"|(?=\r?\n|$))'''
-    r'''|'(?:\\(?:[^\r\n]|(?=\r?\n|$))|''|[^'\\\r\n])*'''
-    r'''(?:'|(?=\r?\n|$))'''
-    r'''|\{(?:\\(?:[^\r\n]|(?=\r?\n|$))|}}|[^}\\\r\n])*'''
-    r'''(?:}|(?=\r?\n|$))'''
-    r'''|''' + _UNQUOTED_SECRET_VALUE + r''')'''
+    r"""(?:"(?:\\(?:[^\r\n]|(?=\r?\n|$))|""|[^"\\\r\n])*"""
+    r"""(?:"|(?=\r?\n|$))"""
+    r"""|'(?:\\(?:[^\r\n]|(?=\r?\n|$))|''|[^'\\\r\n])*"""
+    r"""(?:'|(?=\r?\n|$))"""
+    r"""|\{(?:\\(?:[^\r\n]|(?=\r?\n|$))|}}|[^}\\\r\n])*"""
+    r"""(?:}|(?=\r?\n|$))"""
+    r"""|""" + _UNQUOTED_SECRET_VALUE + r""")"""
 )
 
 # Match both short labels (``token=``) and environment/connection-string names
@@ -61,9 +60,13 @@ _SECRET_ASSIGNMENT_NAME = (
 
 _JSON_SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?P<prefix>(?<![A-Za-z0-9])(?P<key_quote>[\"'])"
-    + r"(?:" + _SECRET_NAME_BODY + r"|pwd|accountkey)"
+    + r"(?:"
+    + _SECRET_NAME_BODY
+    + r"|pwd|accountkey)"
     + r"(?P=key_quote)\s*:\s*)"
-    + r"(?P<value>" + _SECRET_VALUE + r")"
+    + r"(?P<value>"
+    + _SECRET_VALUE
+    + r")"
 )
 
 _REDACTED_MARKER = re.compile(r"^\[REDACTED(?:_[A-Z_]+)?\]$")
@@ -87,9 +90,7 @@ _SECRET_MAPPING_KEY_SUFFIXES = (
 def _redact_json_assignment(match: re.Match[str]) -> str:
     """Keep JSON-like value quotes while replacing their complete contents."""
     value = match.group("value")
-    quote = (
-        value[:1] if value[:1] in {'"', "'"} else match.group("key_quote")
-    )
+    quote = value[:1] if value[:1] in {'"', "'"} else match.group("key_quote")
     return f"{match.group('prefix')}{quote}[REDACTED]{quote}"
 
 
@@ -103,9 +104,8 @@ def _is_secret_mapping_key(key: Any) -> bool:
     if stripped == "PWD":
         return False
     compact = re.sub(r"[^a-z0-9]", "", stripped.casefold())
-    return compact in {"pwd", "sig", "authorization"} or compact.endswith(
-        _SECRET_MAPPING_KEY_SUFFIXES
-    )
+    return compact in {"pwd", "sig", "authorization"} or compact.endswith(_SECRET_MAPPING_KEY_SUFFIXES)
+
 
 # Secret patterns scrubbed from any free-text we persist to the staging dir
 # (diagnostics, reports). Kept here so every on-disk artifact shares one
@@ -120,21 +120,18 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_GOOGLE_KEY]"),
     # Bare JWT (three base64url segments) — e.g. a leaked bearer body without
     # the "Authorization:" prefix.
-    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
-     "[REDACTED_JWT]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "[REDACTED_JWT]"),
     (
         re.compile(
-            r'''(?i)(Authorization:\s*Bearer\s+)'''
-            r'''(?!\[REDACTED(?:_[A-Z_]+)?\])'''
-            + _SECRET_VALUE
+            r"""(?i)(Authorization:\s*Bearer\s+)"""
+            r"""(?!\[REDACTED(?:_[A-Z_]+)?\])""" + _SECRET_VALUE
         ),
         r"\1[REDACTED]",
     ),
     (
         re.compile(
-            r'''(?i)(Authorization:\s*Basic\s+)'''
-            r'''(?!\[REDACTED(?:_[A-Z_]+)?\])'''
-            + _SECRET_VALUE
+            r"""(?i)(Authorization:\s*Basic\s+)"""
+            r"""(?!\[REDACTED(?:_[A-Z_]+)?\])""" + _SECRET_VALUE
         ),
         r"\1[REDACTED]",
     ),
@@ -143,9 +140,8 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # plus all non-secret connection-string fields for useful diagnostics.
     (
         re.compile(
-            r'''(?i)(\bPassword\s*=\s*)'''
-            r'''(?!\[REDACTED(?:_[A-Z_]+)?\])'''
-            + _SECRET_VALUE
+            r"""(?i)(\bPassword\s*=\s*)"""
+            r"""(?!\[REDACTED(?:_[A-Z_]+)?\])""" + _SECRET_VALUE
         ),
         r"\1[REDACTED_DB_PASS]",
     ),
@@ -154,8 +150,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"((?<![A-Za-z0-9])(?:Pwd|pwd)\s*=\s*)"
-            r"(?!\[REDACTED(?:_[A-Z_]+)?\])"
-            + _SECRET_VALUE
+            r"(?!\[REDACTED(?:_[A-Z_]+)?\])" + _SECRET_VALUE
         ),
         r"\1[REDACTED_DB_PASS]",
     ),
@@ -164,17 +159,12 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"((?<=;)\s*PWD\s*=\s*)"
-            r"(?!\[REDACTED(?:_[A-Z_]+)?\])"
-            + _SECRET_VALUE
+            r"(?!\[REDACTED(?:_[A-Z_]+)?\])" + _SECRET_VALUE
         ),
         r"\1[REDACTED_DB_PASS]",
     ),
     (
-        re.compile(
-            r"(?i)" + _SECRET_ASSIGNMENT_NAME
-            + r"(\s*[:=]\s*)(?!\[REDACTED(?:_[A-Z_]+)?\])"
-            + _SECRET_VALUE
-        ),
+        re.compile(r"(?i)" + _SECRET_ASSIGNMENT_NAME + r"(\s*[:=]\s*)(?!\[REDACTED(?:_[A-Z_]+)?\])" + _SECRET_VALUE),
         r"\1\2[REDACTED]",
     ),
     (
@@ -203,9 +193,8 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Azure Storage account keys (base64, typically 88 chars)
     (
         re.compile(
-            r'''(?i)(\bAccountKey\s*=\s*)'''
-            r'''(?!\[REDACTED(?:_[A-Z_]+)?\])'''
-            + _SECRET_VALUE
+            r"""(?i)(\bAccountKey\s*=\s*)"""
+            r"""(?!\[REDACTED(?:_[A-Z_]+)?\])""" + _SECRET_VALUE
         ),
         r"\1[REDACTED_STORAGE_KEY]",
     ),
@@ -551,10 +540,7 @@ def _remove_private_temp_aliases(path: str) -> None:
             # Windows GitHub runner.  A path-based lstat returns the actual
             # NTFS identity and keeps the hard-link comparison meaningful.
             candidate = os.lstat(entry.path)
-            if (
-                stat.S_ISREG(candidate.st_mode)
-                and (candidate.st_dev, candidate.st_ino) == file_id
-            ):
+            if stat.S_ISREG(candidate.st_mode) and (candidate.st_dev, candidate.st_ino) == file_id:
                 os.unlink(entry.path)
                 removed = True
         except FileNotFoundError:
@@ -613,10 +599,7 @@ def _write_artifact_batch(artifacts: Sequence[tuple[str, str]]) -> None:
                     data, mode = snapshot
                     _write_atomic_bytes(path, data, mode=mode)
             except BaseException as exc:
-                recovery_errors.append(
-                    f"could not restore staging artifact {path}: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+                recovery_errors.append(f"could not restore staging artifact {path}: {type(exc).__name__}: {exc}")
         if recovery_errors:
             raise StagingRecoveryError(
                 "staging artifact write failed and rollback was incomplete",
@@ -651,24 +634,17 @@ def skill_proposal_rows(proposals: Iterable[SkillProposal]) -> List[Dict[str, An
             raise StagingError(f"unsafe skill name for staging: {proposal.skill_name!r}")
         if not isinstance(proposal.proposed_skill, str):
             raise StagingError(
-                f"proposed skill content for {name!r} must be text, "
-                f"got {type(proposal.proposed_skill).__name__}"
+                f"proposed skill content for {name!r} must be text, got {type(proposal.proposed_skill).__name__}"
             )
         requested_live = _safe_live_path(proposal.live_skill_path)
         live = _canonical_live_path(requested_live) if requested_live else ""
         if not live:
-            raise StagingError(
-                f"unsafe live skill path for {name!r}: {proposal.live_skill_path!r}"
-            )
+            raise StagingError(f"unsafe live skill path for {name!r}: {proposal.live_skill_path!r}")
         parent = os.path.dirname(live)
         if os.path.basename(live) != "SKILL.md":
-            raise StagingError(
-                f"live skill path for {name!r} must be a SKILL.md file: {live}"
-            )
+            raise StagingError(f"live skill path for {name!r} must be a SKILL.md file: {live}")
         if _filesystem_key(os.path.basename(parent)) != _filesystem_key(name):
-            raise StagingError(
-                f"live skill path for {name!r} is not {name}/SKILL.md: {live}"
-            )
+            raise StagingError(f"live skill path for {name!r} is not {name}/SKILL.md: {live}")
         if any(row["skill_name"] == name for row in rows):
             raise StagingError(f"duplicate skill name in staging fan-out: {name!r}")
         proposed_file = proposal_filename(name)
@@ -687,17 +663,17 @@ def skill_proposal_rows(proposals: Iterable[SkillProposal]) -> List[Dict[str, An
         # no-op on the macOS box where the collision is just as real.
         live_key = _filesystem_key(live)
         if live_key in seen_paths:
-            raise StagingError(
-                f"skills {seen_paths[live_key]!r} and {name!r} target the same file: {live}"
-            )
+            raise StagingError(f"skills {seen_paths[live_key]!r} and {name!r} target the same file: {live}")
         seen_paths[live_key] = name
         seen_files[file_key] = name
-        rows.append({
-            "skill_name": name,
-            "proposed_file": proposed_file,
-            "live_skill_path": live,
-            "sha256": _sha256_text(proposal.proposed_skill),
-        })
+        rows.append(
+            {
+                "skill_name": name,
+                "proposed_file": proposed_file,
+                "live_skill_path": live,
+                "sha256": _sha256_text(proposal.proposed_skill),
+            }
+        )
     return rows
 
 
@@ -721,14 +697,8 @@ def _prepare_skill_proposals(
             # it again would follow a symlink created later and make an
             # ancestor swap look unchanged.
             expected_realpath = _safe_live_path(proposal.live_realpath)
-            if (
-                not expected_realpath
-                or _path_identity_key(expected_realpath)
-                != _path_identity_key(actual_realpath)
-            ):
-                raise StagingError(
-                    f"live skill canonical target for {name!r} changed during consolidation"
-                )
+            if not expected_realpath or _path_identity_key(expected_realpath) != _path_identity_key(actual_realpath):
+                raise StagingError(f"live skill canonical target for {name!r} changed during consolidation")
 
         actual_sha256 = _sha256_file_bytes(live)
         expected_sha256 = proposal.live_sha256
@@ -737,10 +707,7 @@ def _prepare_skill_proposals(
         elif expected_sha256 != "" and not _valid_sha256_pin(expected_sha256):
             raise StagingError(f"invalid live baseline sha256 for {name!r}")
         if actual_sha256 != expected_sha256:
-            raise StagingError(
-                f"live skill for {name!r} changed during consolidation; "
-                "discard and rerun this night"
-            )
+            raise StagingError(f"live skill for {name!r} changed during consolidation; discard and rerun this night")
 
         row["live_sha256"] = expected_sha256
         row["live_realpath"] = actual_realpath
@@ -757,9 +724,7 @@ def _prepare_legacy_proposal(
     live_realpath: str,
 ) -> Dict[str, Any]:
     """Validate and pin one legacy SKILL.md/CLAUDE.md proposal."""
-    if not isinstance(proposed_text, str) or (
-        label == "skill" and not proposed_text.strip()
-    ):
+    if not isinstance(proposed_text, str) or (label == "skill" and not proposed_text.strip()):
         raise StagingError(f"legacy {label} proposal must be valid text")
     requested = _safe_live_path(live_path)
     canonical = _canonical_live_path(requested) if requested else ""
@@ -767,30 +732,21 @@ def _prepare_legacy_proposal(
         raise StagingError(f"unsafe legacy {label} live path: {live_path!r}")
     expected_basename = "SKILL.md" if label == "skill" else "CLAUDE.md"
     if os.path.basename(canonical) != expected_basename:
-        raise StagingError(
-            f"legacy {label} target must be {expected_basename}: {canonical}"
-        )
+        raise StagingError(f"legacy {label} target must be {expected_basename}: {canonical}")
     actual_realpath = _canonical_live_path(canonical)
     if live_realpath:
         # Compare the identity captured by the original baseline read without
         # resolving it again: doing so would bless a symlink/junction swap
         # that happened after the caller captured the path.
         expected_realpath = _safe_live_path(live_realpath)
-        if not expected_realpath or (
-            _path_identity_key(expected_realpath)
-            != _path_identity_key(actual_realpath)
-        ):
-            raise StagingError(
-                f"legacy {label} canonical target changed during consolidation"
-            )
+        if not expected_realpath or (_path_identity_key(expected_realpath) != _path_identity_key(actual_realpath)):
+            raise StagingError(f"legacy {label} canonical target changed during consolidation")
     actual_sha256 = _sha256_file_bytes(canonical)
     expected_sha256 = actual_sha256 if live_sha256 is None else live_sha256
     if expected_sha256 != "" and not _valid_sha256_pin(expected_sha256):
         raise StagingError(f"invalid legacy {label} live baseline sha256")
     if actual_sha256 != expected_sha256:
-        raise StagingError(
-            f"legacy {label} changed during consolidation; discard and rerun this night"
-        )
+        raise StagingError(f"legacy {label} changed during consolidation; discard and rerun this night")
     return {
         "proposed_file": proposed_file,
         "live_path": canonical,
@@ -800,9 +756,7 @@ def _prepare_legacy_proposal(
     }
 
 
-def write_skill_proposals(
-    out_dir: str, proposals: Iterable[SkillProposal]
-) -> List[Dict[str, Any]]:
+def write_skill_proposals(out_dir: str, proposals: Iterable[SkillProposal]) -> List[Dict[str, Any]]:
     """Stage one uniquely named proposal file per skill; return manifest rows.
 
     Every proposal is validated before anything is written, so a rejected
@@ -814,10 +768,12 @@ def write_skill_proposals(
     if not rows:
         return rows
     os.makedirs(out_dir, exist_ok=True)
-    _write_artifact_batch([
-        (os.path.join(out_dir, row["proposed_file"]), proposal.proposed_skill)
-        for row, proposal in zip(rows, proposals)
-    ])
+    _write_artifact_batch(
+        [
+            (os.path.join(out_dir, row["proposed_file"]), proposal.proposed_skill)
+            for row, proposal in zip(rows, proposals)
+        ]
+    )
     return rows
 
 
@@ -834,9 +790,7 @@ def _ensure_staging_root(project: str) -> str:
     root = staging_root(project)
     project_real = _canonical_live_path(project)
     expected_real = os.path.join(project_real, ".skillopt-sleep", "staging")
-    if os.path.lexists(root) and (
-        _is_link_or_junction(root) or not os.path.isdir(root)
-    ):
+    if os.path.lexists(root) and (_is_link_or_junction(root) or not os.path.isdir(root)):
         raise StagingError(f"staging root is unsafe: {root}")
     os.makedirs(root, exist_ok=True)
     if _path_identity_key(_canonical_live_path(root)) != _path_identity_key(expected_real):
@@ -871,18 +825,13 @@ def _latest_pointer_path(root: str) -> str:
 
 
 def _published_night_from_pointer(root: str) -> Optional[str]:
-    """Return the atomically published night, or ``None`` for an old/invalid root.
-    """
+    """Return the atomically published night, or ``None`` for an old/invalid root."""
     pointer = _latest_pointer_path(root)
     if not os.path.lexists(pointer):
         return None
     try:
         info = os.lstat(pointer)
-        if (
-            _is_link_or_junction(pointer)
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-        ):
+        if _is_link_or_junction(pointer) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             return None
         raw, _mode, file_id = _file_snapshot(pointer)
         current = os.lstat(pointer)
@@ -906,9 +855,7 @@ def _published_night_from_pointer(root: str) -> Optional[str]:
         return None
     try:
         expected = os.path.join(os.path.realpath(root), name)
-        if _path_identity_key(os.path.realpath(night)) != _path_identity_key(
-            expected
-        ):
+        if _path_identity_key(os.path.realpath(night)) != _path_identity_key(expected):
             return None
     except (OSError, ValueError):
         return None
@@ -922,8 +869,7 @@ def _publish_latest(root: str, out: str) -> None:
     name = os.path.basename(out_abs)
     if (
         not _STAGING_DIR_RE.fullmatch(name)
-        or _path_identity_key(os.path.dirname(out_abs))
-        != _path_identity_key(root_abs)
+        or _path_identity_key(os.path.dirname(out_abs)) != _path_identity_key(root_abs)
         or _is_link_or_junction(out_abs)
         or not os.path.isdir(out_abs)
         or _path_identity_key(os.path.realpath(out_abs))
@@ -1030,15 +976,11 @@ def write_staging(
     if out_dir:
         out_abs = os.path.abspath(out)
         root_abs = os.path.abspath(root)
-        if (
-            not _STAGING_DIR_RE.fullmatch(os.path.basename(out_abs))
-            or _path_identity_key(os.path.dirname(out_abs))
-            != _path_identity_key(root_abs)
-        ):
+        if not _STAGING_DIR_RE.fullmatch(os.path.basename(out_abs)) or _path_identity_key(
+            os.path.dirname(out_abs)
+        ) != _path_identity_key(root_abs):
             raise StagingError(f"staging directory is unsafe: {out}")
-        if os.path.lexists(out) and (
-            _is_link_or_junction(out) or not os.path.isdir(out)
-        ):
+        if os.path.lexists(out) and (_is_link_or_junction(out) or not os.path.isdir(out)):
             raise StagingError(f"staging directory is unsafe: {out}")
         os.makedirs(out, exist_ok=True)
 
@@ -1047,16 +989,11 @@ def write_staging(
         legacy_live = _safe_live_path(live_skill_path)
         legacy_real = _canonical_live_path(legacy_live) if legacy_live else ""
         if not legacy_real:
-            raise StagingError(
-                f"unsafe managed live skill path in mixed staging: {live_skill_path!r}"
-            )
+            raise StagingError(f"unsafe managed live skill path in mixed staging: {live_skill_path!r}")
         legacy_key = _filesystem_key(legacy_real)
         for row in skill_rows:
             if _filesystem_key(row["live_realpath"]) == legacy_key:
-                raise StagingError(
-                    f"managed and per-skill proposals target the same live file: "
-                    f"{legacy_real}"
-                )
+                raise StagingError(f"managed and per-skill proposals target the same live file: {legacy_real}")
 
     legacy: Dict[str, Dict[str, Any]] = {}
     if proposed_skill is not None:
@@ -1126,23 +1063,25 @@ def write_staging(
         artifacts.append((os.path.join(out, "proposed_SKILL.md"), proposed_skill))
     if proposed_memory is not None:
         artifacts.append((os.path.join(out, "proposed_CLAUDE.md"), proposed_memory))
-    artifacts.extend([
-        (
-            os.path.join(out, "report.json"),
-            json.dumps(
-                json_safe(redact_secrets(report.to_dict())),
-                ensure_ascii=False,
-                indent=2,
-                allow_nan=False,
+    artifacts.extend(
+        [
+            (
+                os.path.join(out, "report.json"),
+                json.dumps(
+                    json_safe(redact_secrets(report.to_dict())),
+                    ensure_ascii=False,
+                    indent=2,
+                    allow_nan=False,
+                ),
             ),
-        ),
-        (os.path.join(out, "report.md"), redact_secrets(report_md)),
-        # The manifest is the publication marker and must always be last.
-        (
-            os.path.join(out, "manifest.json"),
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-        ),
-    ])
+            (os.path.join(out, "report.md"), redact_secrets(report_md)),
+            # The manifest is the publication marker and must always be last.
+            (
+                os.path.join(out, "manifest.json"),
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            ),
+        ]
+    )
     _write_artifact_batch(artifacts)
     _publish_latest(root, out)
     return out
@@ -1154,9 +1093,9 @@ class AdoptedSkill:
 
     skill_name: str
     live_skill_path: str
-    sha256_before: str          # "" when no live file existed yet
+    sha256_before: str  # "" when no live file existed yet
     sha256_after: str
-    backup_path: str = ""       # "" when there was nothing to back up
+    backup_path: str = ""  # "" when there was nothing to back up
 
 
 @dataclass
@@ -1183,6 +1122,17 @@ class _TransactionTarget:
 
 _WAL_FILENAME = ".adopt-transaction.json"
 _WAL_VERSION = 2
+
+_REVERT_WAL_FILENAME = ".revert-transaction.json"
+_REVERT_WAL_VERSION = 1
+
+
+def _wal_path(staging_dir: str) -> str:
+    return os.path.join(staging_dir, _WAL_FILENAME)
+
+
+def _revert_wal_path(staging_dir: str) -> str:
+    return os.path.join(staging_dir, _REVERT_WAL_FILENAME)
 
 
 def _bytes_sha256(data: Optional[bytes]) -> str:
@@ -1221,11 +1171,7 @@ def _file_snapshot(
         return None, None, None
     if _is_link_or_junction(path) or not os.path.isfile(path):
         raise StagingError(f"target is not a regular file: {path}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
         try:
@@ -1345,9 +1291,7 @@ def staged_skill_roots(staging_dir: str) -> List[str]:
     return out
 
 
-def _selected_rows(
-    rows: Sequence[Dict[str, Any]], skill_names: Optional[Sequence[str]]
-) -> List[Dict[str, Any]]:
+def _selected_rows(rows: Sequence[Dict[str, Any]], skill_names: Optional[Sequence[str]]) -> List[Dict[str, Any]]:
     """Rows for the reviewed subset, in manifest order, or every row."""
     if skill_names is None:
         return list(rows)
@@ -1382,14 +1326,16 @@ def _revalidate_selected_skill_rows(
     refused rather than overwritten.
     """
     universe = list(all_rows) if all_rows is not None else list(rows)
-    skill_proposal_rows([
-        SkillProposal(
-            str(row.get("skill_name") or ""),
-            "",
-            str(row.get("live_skill_path") or ""),
-        )
-        for row in universe
-    ])
+    skill_proposal_rows(
+        [
+            SkillProposal(
+                str(row.get("skill_name") or ""),
+                "",
+                str(row.get("live_skill_path") or ""),
+            )
+            for row in universe
+        ]
+    )
     seen_real: Dict[str, str] = {}
     seen_files: Dict[tuple[int, int], str] = {}
     for row in universe:
@@ -1399,46 +1345,30 @@ def _revalidate_selected_skill_rows(
             continue
         expected_real = _safe_live_path(row.get("live_realpath"))
         live_pin = row.get("live_sha256")
-        if not expected_real or (
-            live_pin != "" and not _valid_sha256_pin(live_pin)
-        ):
-            raise StagingError(
-                f"staged skill {name!r} is missing live baseline pins; "
-                "discard and restage this night"
-            )
+        if not expected_real or (live_pin != "" and not _valid_sha256_pin(live_pin)):
+            raise StagingError(f"staged skill {name!r} is missing live baseline pins; discard and restage this night")
         if _is_link_or_junction(live):
             raise StagingError(f"live skill path for {name!r} is a symlink: {live}")
         parent = os.path.dirname(live)
         if _is_link_or_junction(parent):
-            raise StagingError(
-                f"live skill parent directory for {name!r} is a symlink: {parent}"
-            )
+            raise StagingError(f"live skill parent directory for {name!r} is a symlink: {parent}")
         if os.path.basename(live) != "SKILL.md":
-            raise StagingError(
-                f"live skill path for {name!r} must be a SKILL.md file: {live}"
-            )
+            raise StagingError(f"live skill path for {name!r} must be a SKILL.md file: {live}")
         real = _canonical_live_path(live)
         if not real or _path_identity_key(real) != _path_identity_key(expected_real):
-            raise StagingError(
-                f"live skill canonical target for {name!r} changed since staging"
-            )
+            raise StagingError(f"live skill canonical target for {name!r} changed since staging")
         key = _filesystem_key(real)
         if key in seen_real:
-            raise StagingError(
-                f"skills {seen_real[key]!r} and {name!r} target the same file: {live}"
-            )
+            raise StagingError(f"skills {seen_real[key]!r} and {name!r} target the same file: {live}")
         seen_real[key] = name
         if os.path.lexists(live) and not os.path.isfile(live):
-            raise StagingError(
-                f"live skill path for {name!r} exists and is not a file: {live}"
-            )
+            raise StagingError(f"live skill path for {name!r} exists and is not a file: {live}")
         if os.path.isfile(live) and not _is_link_or_junction(live):
             info = os.stat(live, follow_symlinks=False)
             file_id = (info.st_dev, info.st_ino)
             if file_id in seen_files:
                 raise StagingError(
-                    f"skills {seen_files[file_id]!r} and {name!r} target the "
-                    f"same file through a hard link: {live}"
+                    f"skills {seen_files[file_id]!r} and {name!r} target the same file through a hard link: {live}"
                 )
             seen_files[file_id] = name
 
@@ -1465,32 +1395,18 @@ def _adopt_target_ok(
             raise StagingError(f"live target for {label} has multiple hard links")
     parent = os.path.dirname(live)
     if _is_link_or_junction(parent):
-        raise StagingError(
-            f"live parent directory for {label} is a symlink: {parent}"
-        )
+        raise StagingError(f"live parent directory for {label} is a symlink: {parent}")
     if not os.path.isdir(parent):
-        raise StagingError(
-            f"live parent directory for {label} does not exist: {parent}"
-        )
+        raise StagingError(f"live parent directory for {label} does not exist: {parent}")
     current_realpath = _canonical_live_path(live)
-    if (
-        not current_realpath
-        or _path_identity_key(current_realpath)
-        != _path_identity_key(expected_realpath)
-    ):
-        raise StagingError(
-            f"live canonical target for {label} changed since staging"
-        )
+    if not current_realpath or _path_identity_key(current_realpath) != _path_identity_key(expected_realpath):
+        raise StagingError(f"live canonical target for {label} changed since staging")
     # Genuine staged rows store the canonical path itself. Any difference now
     # means an ancestor was replaced by a symlink/junction after review.
     if _path_identity_key(current_realpath) != _path_identity_key(live):
-        raise StagingError(
-            f"live path for {label} passes through a symlink or junction: {live}"
-        )
+        raise StagingError(f"live path for {label} passes through a symlink or junction: {live}")
     if os.path.basename(live) != expected_basename:
-        raise StagingError(
-            f"live target for {label} must be {expected_basename}: {live}"
-        )
+        raise StagingError(f"live target for {label} must be {expected_basename}: {live}")
 
 
 def _adopt_live_target_ok(
@@ -1507,15 +1423,12 @@ def _adopt_live_target_ok(
     )
     parent = os.path.dirname(live)
     if _filesystem_key(os.path.basename(parent)) != _filesystem_key(name):
-        raise StagingError(
-            f"live skill path for {name!r} is not {name}/SKILL.md: {live}"
-        )
+        raise StagingError(f"live skill path for {name!r} is not {name}/SKILL.md: {live}")
     # Shape is not location. Run this only after ``_adopt_target_ok`` has proved
     # ``realpath(live) == live``, so a symlinked ancestor cannot fake containment.
     if roots and not _live_target_within_roots(live, roots):
         raise StagingError(
-            f"live skill path for {name!r} is outside the skills roots recorded "
-            f"when this night was staged: {live}"
+            f"live skill path for {name!r} is outside the skills roots recorded when this night was staged: {live}"
         )
 
 
@@ -1535,9 +1448,7 @@ def _planned_live_directories(
         or _path_identity_key(current_realpath) != _path_identity_key(expected_realpath)
         or _path_identity_key(current_realpath) != _path_identity_key(live)
     ):
-        raise StagingError(
-            f"live path for {label} changed or passes through a symlink/junction"
-        )
+        raise StagingError(f"live path for {label} changed or passes through a symlink/junction")
     missing: List[str] = []
     current = os.path.dirname(live)
     while not os.path.lexists(current):
@@ -1566,21 +1477,14 @@ def _read_receipt_file(
         info = os.lstat(path)
     except OSError as exc:
         raise StagingError(f"cannot inspect adoption receipt path: {exc}") from exc
-    if (
-        _is_link_or_junction(path)
-        or not stat.S_ISREG(info.st_mode)
-        or info.st_nlink != 1
-    ):
+    if _is_link_or_junction(path) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise StagingError("adoption receipt path is not a private regular file")
     try:
         original, mode, file_id = _file_snapshot(path)
         if original is None:
             raise StagingError("adoption receipt disappeared while being read")
         current = os.lstat(path)
-        if (
-            file_id != (current.st_dev, current.st_ino)
-            or current.st_nlink != 1
-        ):
+        if file_id != (current.st_dev, current.st_ino) or current.st_nlink != 1:
             raise StagingError("adoption receipt identity changed while being read")
         payload = json.loads(original.decode("utf-8"))
     except (
@@ -1591,9 +1495,7 @@ def _read_receipt_file(
         RecursionError,
     ) as exc:
         raise StagingError(f"cannot read existing adoption receipt: {exc}") from exc
-    if not isinstance(payload, list) or any(
-        not isinstance(row, dict) for row in payload
-    ):
+    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
         raise StagingError("existing adoption receipt must be a list of objects")
     return payload, original, mode, file_id
 
@@ -1631,8 +1533,7 @@ def _read_existing_receipts(
         if (
             not live
             or os.path.basename(live) != "SKILL.md"
-            or _filesystem_key(os.path.basename(os.path.dirname(live)))
-            != _filesystem_key(name)
+            or _filesystem_key(os.path.basename(os.path.dirname(live))) != _filesystem_key(name)
             or (before != "" and not _valid_sha256_pin(before))
         ):
             raise StagingError(f"existing adoption receipt for {name!r} is invalid")
@@ -1640,41 +1541,27 @@ def _read_existing_receipts(
             raise StagingError(f"existing adoption receipt for {name!r} is invalid")
         if before == "":
             if backup:
-                raise StagingError(
-                    f"existing adoption receipt for {name!r} has an unexpected backup"
-                )
+                raise StagingError(f"existing adoption receipt for {name!r} has an unexpected backup")
             continue
-        expected = os.path.join(
-            staging_dir, "backup", "skills", name, "SKILL.md"
-        )
+        expected = os.path.join(staging_dir, "backup", "skills", name, "SKILL.md")
         if _path_identity_key(backup) != _path_identity_key(expected):
-            raise StagingError(
-                f"existing adoption receipt for {name!r} has an invalid backup path"
-            )
+            raise StagingError(f"existing adoption receipt for {name!r} has an invalid backup path")
         backup_sha256 = _immutable_backup_sha256(expected, staging_dir)
         if backup_sha256 is None:
-            raise StagingError(
-                f"immutable backup for previously adopted skill {name!r} is missing"
-            )
+            raise StagingError(f"immutable backup for previously adopted skill {name!r} is missing")
         if backup_sha256 != before:
-            raise StagingError(
-                f"immutable backup for previously adopted skill {name!r} changed"
-            )
+            raise StagingError(f"immutable backup for previously adopted skill {name!r} changed")
     return payload, original, mode, file_id
 
 
 def pending_staged_skills(staging_dir: str) -> List[Dict[str, Any]]:
     """Return fan-out rows not already recorded in the validated adoption ledger."""
     staging_dir = _canonical_staging_dir(staging_dir)
-    if os.path.lexists(_wal_path(staging_dir)):
-        raise StagingError(
-            "an interrupted adoption must be recovered before listing pending skills"
-        )
+    if os.path.lexists(_wal_path(staging_dir)) or os.path.lexists(_revert_wal_path(staging_dir)):
+        raise StagingError("an interrupted adoption or rollback must be recovered before listing pending skills")
     rows = staged_skills(staging_dir)
     receipt_path = os.path.join(staging_dir, "adopted_skills.json")
-    receipts, _raw, _mode, _file_id = _read_existing_receipts(
-        receipt_path, staging_dir
-    )
+    receipts, _raw, _mode, _file_id = _read_existing_receipts(receipt_path, staging_dir)
     adopted = {str(row["skill_name"]) for row in receipts}
     return [row for row in rows if str(row.get("skill_name")) not in adopted]
 
@@ -1682,20 +1569,16 @@ def pending_staged_skills(staging_dir: str) -> List[Dict[str, Any]]:
 def has_staged_managed(staging_dir: str) -> bool:
     """Return whether a validated managed skill or memory proposal is present."""
     staging_dir = _canonical_staging_dir(staging_dir)
-    if os.path.lexists(_wal_path(staging_dir)):
-        raise StagingError(
-            "an interrupted adoption must be recovered before listing managed proposals"
-        )
+    if os.path.lexists(_wal_path(staging_dir)) or os.path.lexists(_revert_wal_path(staging_dir)):
+        raise StagingError("an interrupted adoption or rollback must be recovered before listing managed proposals")
     return bool(_legacy_rows(_load_manifest(staging_dir)))
 
 
 def has_pending_staged_managed(staging_dir: str) -> bool:
     """Return whether a validated managed proposal target remains unadopted."""
     staging_dir = _canonical_staging_dir(staging_dir)
-    if os.path.lexists(_wal_path(staging_dir)):
-        raise StagingError(
-            "an interrupted adoption must be recovered before listing managed proposals"
-        )
+    if os.path.lexists(_wal_path(staging_dir)) or os.path.lexists(_revert_wal_path(staging_dir)):
+        raise StagingError("an interrupted adoption or rollback must be recovered before listing managed proposals")
     rows = _legacy_rows(_load_manifest(staging_dir))
     if not rows:
         return False
@@ -1726,9 +1609,7 @@ def _target_lock_paths(live_paths: Sequence[str]) -> List[str]:
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise StagingError(f"adoption lock root has the wrong owner: {root}")
     if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o700:
-        raise StagingError(
-            f"adoption lock root permissions are unsafe; expected 0700: {root}"
-        )
+        raise StagingError(f"adoption lock root permissions are unsafe; expected 0700: {root}")
     return [
         os.path.join(
             root,
@@ -1747,10 +1628,7 @@ def _exclusive_create_locks(paths: Sequence[str]):
             try:
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError as exc:
-                raise StagingError(
-                    "skill adoption is already in progress or a stale lock exists: "
-                    f"{path}"
-                ) from exc
+                raise StagingError(f"skill adoption is already in progress or a stale lock exists: {path}") from exc
             info = os.fstat(fd)
             identity = (info.st_dev, info.st_ino)
             acquired.append((path, fd, identity))
@@ -1774,14 +1652,8 @@ def _exclusive_create_locks(paths: Sequence[str]):
                 pass
 
 
-def _wal_path(staging_dir: str) -> str:
-    return os.path.join(staging_dir, _WAL_FILENAME)
-
-
 def _target_wal_row(target: _TransactionTarget) -> Dict[str, Any]:
-    created_dir_ids = target.created_dir_ids or tuple(
-        None for _path in target.created_dirs
-    )
+    created_dir_ids = target.created_dir_ids or tuple(None for _path in target.created_dirs)
     return {
         "key": target.key,
         "live_path": target.live_path,
@@ -1790,18 +1662,11 @@ def _target_wal_row(target: _TransactionTarget) -> Dict[str, Any]:
         "proposed_sha256": target.proposed_sha256,
         "original_b64": _b64(target.original_bytes),
         "original_mode": target.original_mode,
-        "original_file_id": (
-            list(target.original_file_id)
-            if target.original_file_id is not None
-            else None
-        ),
+        "original_file_id": (list(target.original_file_id) if target.original_file_id is not None else None),
         "baseline_sha256": target.baseline_sha256,
         "backup_path": target.backup_path,
         "created_dirs": list(target.created_dirs),
-        "created_dir_ids": [
-            list(file_id) if file_id is not None else None
-            for file_id in created_dir_ids
-        ],
+        "created_dir_ids": [list(file_id) if file_id is not None else None for file_id in created_dir_ids],
     }
 
 
@@ -1823,9 +1688,7 @@ def _transaction_wal(
             "path": receipt_path,
             "original_b64": _b64(receipt_original),
             "original_mode": receipt_mode,
-            "original_file_id": (
-                list(receipt_file_id) if receipt_file_id is not None else None
-            ),
+            "original_file_id": (list(receipt_file_id) if receipt_file_id is not None else None),
             "baseline_sha256": _bytes_sha256(receipt_original),
             "proposed_sha256": hashlib.sha256(receipt_after).hexdigest(),
         },
@@ -1835,9 +1698,7 @@ def _transaction_wal(
 def _write_transaction_wal(staging_dir: str, wal: Dict[str, Any]) -> None:
     path = _wal_path(staging_dir)
     if os.path.lexists(path):
-        raise StagingError(
-            f"an adoption recovery journal already exists; recover it first: {path}"
-        )
+        raise StagingError(f"an adoption recovery journal already exists; recover it first: {path}")
     payload = json.dumps(wal, ensure_ascii=False, indent=2).encode("utf-8")
     _write_new_bytes(path, payload, mode=0o600)
 
@@ -1851,15 +1712,9 @@ def _rewrite_transaction_wal(
     """Durably add post-creation identities without accepting another journal."""
     current = _read_transaction_wal(staging_dir)
     if current != expected_wal:
-        raise StagingError(
-            "adoption recovery journal changed during directory creation"
-        )
-    payload = json.dumps(
-        replacement_wal, ensure_ascii=False, indent=2
-    ).encode("utf-8")
-    _write_atomic_bytes(
-        _wal_path(staging_dir), payload, create_parents=False, mode=0o600
-    )
+        raise StagingError("adoption recovery journal changed during directory creation")
+    payload = json.dumps(replacement_wal, ensure_ascii=False, indent=2).encode("utf-8")
+    _write_atomic_bytes(_wal_path(staging_dir), payload, create_parents=False, mode=0o600)
 
 
 def _read_transaction_wal(staging_dir: str) -> Optional[Dict[str, Any]]:
@@ -1871,21 +1726,14 @@ def _read_transaction_wal(staging_dir: str) -> Optional[Dict[str, Any]]:
         info = os.lstat(path)
     except OSError as exc:
         raise StagingError(f"cannot inspect adoption recovery journal: {exc}") from exc
-    if (
-        _is_link_or_junction(path)
-        or not stat.S_ISREG(info.st_mode)
-        or info.st_nlink != 1
-    ):
+    if _is_link_or_junction(path) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise StagingError(f"adoption recovery journal is unsafe: {path}")
     try:
         raw, _mode, _file_id = _file_snapshot(path)
         if raw is None:
             raise StagingError("adoption recovery journal disappeared")
         current = os.lstat(path)
-        if (
-            _file_id != (current.st_dev, current.st_ino)
-            or current.st_nlink != 1
-        ):
+        if _file_id != (current.st_dev, current.st_ino) or current.st_nlink != 1:
             raise StagingError("adoption recovery journal identity changed")
         payload = json.loads(raw.decode("utf-8"))
     except (
@@ -1906,9 +1754,7 @@ def _read_transaction_wal(staging_dir: str) -> Optional[Dict[str, Any]]:
     return payload
 
 
-def _remove_transaction_wal(
-    staging_dir: str, *, expected_wal: Optional[Dict[str, Any]] = None
-) -> None:
+def _remove_transaction_wal(staging_dir: str, *, expected_wal: Optional[Dict[str, Any]] = None) -> None:
     path = _wal_path(staging_dir)
     if expected_wal is not None:
         current = _read_transaction_wal(staging_dir)
@@ -1917,27 +1763,19 @@ def _remove_transaction_wal(
     if os.path.lexists(path):
         _remove_private_temp_aliases(path)
         info = os.lstat(path)
-        if (
-            _is_link_or_junction(path)
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-        ):
+        if _is_link_or_junction(path) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise StagingError(f"adoption recovery journal is unsafe: {path}")
         _unlink_fsync(path)
 
 
 def _path_is_within(path: str, root: str) -> bool:
     try:
-        return os.path.commonpath(
-            [os.path.abspath(path), os.path.abspath(root)]
-        ) == os.path.abspath(root)
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
     except ValueError:
         return False
 
 
-def _existing_path_is_canonical_staging_descendant(
-    path: str, staging_dir: str
-) -> bool:
+def _existing_path_is_canonical_staging_descendant(path: str, staging_dir: str) -> bool:
     """Reject a staging descendant reached through a symlink or junction.
 
     The staging root itself may be supplied through a symlink, so compare the
@@ -2000,9 +1838,7 @@ def _immutable_backup_sha256(path: str, staging_dir: str) -> Optional[str]:
     return snapshot[0] if snapshot is not None else None
 
 
-def _decode_wal_targets(
-    staging_dir: str, wal: Dict[str, Any]
-) -> List[_TransactionTarget]:
+def _decode_wal_targets(staging_dir: str, wal: Dict[str, Any]) -> List[_TransactionTarget]:
     kind = wal.get("kind")
     if kind not in {"skills", "legacy"}:
         raise StagingError("adoption recovery journal has an invalid transaction kind")
@@ -2066,9 +1902,7 @@ def _decode_wal_targets(
             raise StagingError("adoption recovery journal baseline bytes do not match")
         original_mode = row.get("original_mode")
         if original_mode is not None and (
-            type(original_mode) is not int
-            or original_mode < 0
-            or original_mode > 0o7777
+            type(original_mode) is not int or original_mode < 0 or original_mode > 0o7777
         ):
             raise StagingError("adoption recovery journal has an invalid file mode")
         raw_file_id = row.get("original_file_id")
@@ -2082,19 +1916,10 @@ def _decode_wal_targets(
                 raise StagingError("adoption recovery journal has an invalid file id")
             file_id = (raw_file_id[0], raw_file_id[1])
         if original is None:
-            if (
-                original_mode is not None
-                or file_id is not None
-                or baseline_sha256 != ""
-                or backup_path != ""
-            ):
-                raise StagingError(
-                    "adoption recovery journal absent target has metadata"
-                )
+            if original_mode is not None or file_id is not None or baseline_sha256 != "" or backup_path != "":
+                raise StagingError("adoption recovery journal absent target has metadata")
         elif original_mode is None or file_id is None or not backup_path:
-            raise StagingError(
-                "adoption recovery journal existing target is missing metadata"
-            )
+            raise StagingError("adoption recovery journal existing target is missing metadata")
         if not isinstance(backup_path, str):
             raise StagingError("adoption recovery journal has an invalid backup path")
         if backup_path and not _path_is_within(backup_path, staging_dir):
@@ -2102,14 +1927,8 @@ def _decode_wal_targets(
         if kind == "skills":
             name = _safe_skill_name(os.path.basename(os.path.dirname(live)))
             expected_key = f"skill {name!r}" if name else ""
-            expected_backup = os.path.join(
-                staging_dir, "backup", "skills", name, "SKILL.md"
-            ) if name else ""
-            if (
-                expected_basename != "SKILL.md"
-                or key != expected_key
-                or raw_created_dirs
-            ):
+            expected_backup = os.path.join(staging_dir, "backup", "skills", name, "SKILL.md") if name else ""
+            if expected_basename != "SKILL.md" or key != expected_key or raw_created_dirs:
                 raise StagingError("adoption recovery journal skill target is invalid")
         else:
             label = "skill" if expected_basename == "SKILL.md" else "memory"
@@ -2121,29 +1940,18 @@ def _decode_wal_targets(
         if _path_identity_key(backup_path) != _path_identity_key(derived_backup):
             raise StagingError("adoption recovery journal backup is not derived")
         if not isinstance(raw_created_dirs, list) or any(
-            not isinstance(path, str) or not os.path.isabs(path)
-            for path in raw_created_dirs
+            not isinstance(path, str) or not os.path.isabs(path) for path in raw_created_dirs
         ):
             raise StagingError("adoption recovery journal has invalid created directories")
         if raw_created_dirs:
-            if _path_identity_key(raw_created_dirs[-1]) != _path_identity_key(
-                os.path.dirname(live)
-            ) or any(
-                _path_identity_key(os.path.dirname(child))
-                != _path_identity_key(parent)
+            if _path_identity_key(raw_created_dirs[-1]) != _path_identity_key(os.path.dirname(live)) or any(
+                _path_identity_key(os.path.dirname(child)) != _path_identity_key(parent)
                 for parent, child in zip(raw_created_dirs, raw_created_dirs[1:])
             ):
-                raise StagingError(
-                    "adoption recovery journal created directories are not derived"
-                )
+                raise StagingError("adoption recovery journal created directories are not derived")
         if wal.get("version") == _WAL_VERSION:
-            if (
-                not isinstance(raw_created_dir_ids, list)
-                or len(raw_created_dir_ids) != len(raw_created_dirs)
-            ):
-                raise StagingError(
-                    "adoption recovery journal created directory identities are invalid"
-                )
+            if not isinstance(raw_created_dir_ids, list) or len(raw_created_dir_ids) != len(raw_created_dirs):
+                raise StagingError("adoption recovery journal created directory identities are invalid")
             created_dir_ids: List[Optional[tuple[int, int]]] = []
             for raw_id in raw_created_dir_ids:
                 if raw_id is None:
@@ -2155,26 +1963,26 @@ def _decode_wal_targets(
                 ):
                     created_dir_ids.append((raw_id[0], raw_id[1]))
                 else:
-                    raise StagingError(
-                        "adoption recovery journal created directory identity is invalid"
-                    )
+                    raise StagingError("adoption recovery journal created directory identity is invalid")
         else:
             created_dir_ids = [None] * len(raw_created_dirs)
-        targets.append(_TransactionTarget(
-            key=key,
-            live_path=live,
-            expected_realpath=expected_realpath,
-            expected_basename=expected_basename,
-            proposed_bytes=b"",
-            proposed_sha256=proposed_sha256,
-            original_bytes=original,
-            original_mode=original_mode,
-            original_file_id=file_id,
-            baseline_sha256=baseline_sha256,
-            backup_path=backup_path,
-            created_dirs=tuple(raw_created_dirs),
-            created_dir_ids=tuple(created_dir_ids),
-        ))
+        targets.append(
+            _TransactionTarget(
+                key=key,
+                live_path=live,
+                expected_realpath=expected_realpath,
+                expected_basename=expected_basename,
+                proposed_bytes=b"",
+                proposed_sha256=proposed_sha256,
+                original_bytes=original,
+                original_mode=original_mode,
+                original_file_id=file_id,
+                baseline_sha256=baseline_sha256,
+                backup_path=backup_path,
+                created_dirs=tuple(raw_created_dirs),
+                created_dir_ids=tuple(created_dir_ids),
+            )
+        )
     return targets
 
 
@@ -2205,17 +2013,13 @@ def _decode_wal_receipt(
     kind = wal.get("kind")
     if kind not in {"skills", "legacy"}:
         raise StagingError("adoption recovery journal has an invalid transaction kind")
-    expected_name = (
-        "adopted_skills.json" if kind == "skills" else "adopted_legacy.json"
-    )
+    expected_name = "adopted_skills.json" if kind == "skills" else "adopted_legacy.json"
     expected_path = os.path.join(staging_dir, expected_name)
     if not isinstance(path, str) or _path_identity_key(path) != _path_identity_key(expected_path):
         raise StagingError("adoption recovery journal has an invalid receipt path")
     original = _from_b64(row.get("original_b64"), field="receipt")
     mode = row.get("original_mode")
-    if mode is not None and (
-        type(mode) is not int or mode < 0 or mode > 0o7777
-    ):
+    if mode is not None and (type(mode) is not int or mode < 0 or mode > 0o7777):
         raise StagingError("adoption recovery journal has an invalid receipt mode")
     raw_file_id = row.get("original_file_id")
     file_id = None
@@ -2225,16 +2029,12 @@ def _decode_wal_receipt(
             and len(raw_file_id) == 2
             and all(type(value) is int and value >= 0 for value in raw_file_id)
         ):
-            raise StagingError(
-                "adoption recovery journal has an invalid receipt file id"
-            )
+            raise StagingError("adoption recovery journal has an invalid receipt file id")
         file_id = (raw_file_id[0], raw_file_id[1])
     if original is None and (mode is not None or file_id is not None):
         raise StagingError("adoption recovery journal absent receipt has metadata")
     if original is not None and (mode is None or file_id is None):
-        raise StagingError(
-            "adoption recovery journal existing receipt is missing metadata"
-        )
+        raise StagingError("adoption recovery journal existing receipt is missing metadata")
     baseline = row.get("baseline_sha256")
     proposed = row.get("proposed_sha256")
     if _bytes_sha256(original) != baseline or not _valid_sha256_pin(proposed):
@@ -2285,14 +2085,10 @@ def _recover_target(
         current_realpath = _canonical_live_path(target.live_path)
         if (
             not current_realpath
-            or _path_identity_key(current_realpath)
-            != _path_identity_key(target.expected_realpath)
-            or _path_identity_key(current_realpath)
-            != _path_identity_key(target.live_path)
+            or _path_identity_key(current_realpath) != _path_identity_key(target.expected_realpath)
+            or _path_identity_key(current_realpath) != _path_identity_key(target.live_path)
         ):
-            raise StagingError(
-                f"recovery conflict for {target.key}: target path identity changed"
-            )
+            raise StagingError(f"recovery conflict for {target.key}: target path identity changed")
         return
     _adopt_target_ok(
         target.key,
@@ -2303,29 +2099,16 @@ def _recover_target(
     current, current_mode, current_file_id = _file_snapshot(target.live_path)
     current_sha256 = _bytes_sha256(current)
     if current_sha256 == target.baseline_sha256:
-        if current is not None and not _modes_match(
-            current_mode, target.original_mode
-        ):
-            raise StagingError(
-                f"recovery conflict for {target.key}: baseline mode changed"
-            )
+        if current is not None and not _modes_match(current_mode, target.original_mode):
+            raise StagingError(f"recovery conflict for {target.key}: baseline mode changed")
         return
     if current_sha256 != target.proposed_sha256:
-        raise StagingError(
-            f"recovery conflict for {target.key}: live content is neither baseline nor proposal"
-        )
-    if (
-        expected_proposal_file_id is not None
-        and current_file_id != expected_proposal_file_id
-    ):
-        raise StagingError(
-            f"recovery conflict for {target.key}: proposal identity changed"
-        )
+        raise StagingError(f"recovery conflict for {target.key}: live content is neither baseline nor proposal")
+    if expected_proposal_file_id is not None and current_file_id != expected_proposal_file_id:
+        raise StagingError(f"recovery conflict for {target.key}: proposal identity changed")
     proposal_mode = target.original_mode if target.original_mode is not None else 0o600
     if not _modes_match(current_mode, proposal_mode):
-        raise StagingError(
-            f"recovery conflict for {target.key}: proposal mode changed"
-        )
+        raise StagingError(f"recovery conflict for {target.key}: proposal mode changed")
     # Narrow the rollback check/use window. Cooperative adopters also hold the
     # target lock; an uncooperative editor is detected whenever it wins before
     # this final read.
@@ -2362,9 +2145,7 @@ def _recover_receipt(
             raise StagingError("recovery conflict: adoption receipt mode changed")
         return
     if current_sha256 != proposed_sha256:
-        raise StagingError(
-            "recovery conflict: adoption receipt is neither baseline nor transaction receipt"
-        )
+        raise StagingError("recovery conflict: adoption receipt is neither baseline nor transaction receipt")
     proposal_mode = original_mode if original_mode is not None else 0o600
     if not _modes_match(current_mode, proposal_mode):
         raise StagingError("recovery conflict: adoption receipt mode changed")
@@ -2381,18 +2162,14 @@ def _recover_receipt(
         _write_atomic_bytes(path, original, mode=original_mode)
 
 
-def _cleanup_transaction_backups(
-    targets: Sequence[_TransactionTarget], staging_dir: str
-) -> List[str]:
+def _cleanup_transaction_backups(targets: Sequence[_TransactionTarget], staging_dir: str) -> List[str]:
     errors: List[str] = []
     for target in reversed(targets):
         path = target.backup_path
         if not path or not os.path.lexists(path):
             continue
         try:
-            snapshot = _immutable_backup_snapshot(
-                path, staging_dir, repair_temp_aliases=True
-            )
+            snapshot = _immutable_backup_snapshot(path, staging_dir, repair_temp_aliases=True)
             if snapshot is None:
                 raise StagingError(f"transaction backup is not a regular file: {path}")
             backup_sha256, file_id = snapshot
@@ -2402,9 +2179,7 @@ def _cleanup_transaction_backups(
             if (
                 (current.st_dev, current.st_ino) != file_id
                 or current.st_nlink != 1
-                or not _existing_path_is_canonical_staging_descendant(
-                    path, staging_dir
-                )
+                or not _existing_path_is_canonical_staging_descendant(path, staging_dir)
             ):
                 raise StagingError(f"transaction backup identity changed: {path}")
             _unlink_fsync(path)
@@ -2443,15 +2218,11 @@ def _cleanup_created_directories(
                 or not stat.S_ISDIR(info.st_mode)
                 or (info.st_dev, info.st_ino) != expected_id
             ):
-                raise StagingError(
-                    f"created directory identity changed during recovery: {path}"
-                )
+                raise StagingError(f"created directory identity changed during recovery: {path}")
             os.rmdir(path)
             _fsync_parent(path)
         except BaseException as exc:
-            errors.append(
-                f"created directory {path}: {type(exc).__name__}: {exc}"
-            )
+            errors.append(f"created directory {path}: {type(exc).__name__}: {exc}")
     return errors
 
 
@@ -2459,9 +2230,7 @@ def _recover_transaction_locked(
     staging_dir: str,
     wal: Dict[str, Any],
     *,
-    expected_proposal_file_ids: Optional[
-        Dict[str, tuple[int, int]]
-    ] = None,
+    expected_proposal_file_ids: Optional[Dict[str, tuple[int, int]]] = None,
 ) -> List[str]:
     """Idempotently roll back one WAL while its staging and target locks are held."""
     try:
@@ -2474,9 +2243,7 @@ def _recover_transaction_locked(
         try:
             _recover_target(
                 target,
-                expected_proposal_file_id=(
-                    expected_proposal_file_ids or {}
-                ).get(target.key),
+                expected_proposal_file_id=(expected_proposal_file_ids or {}).get(target.key),
             )
         except BaseException as exc:
             errors.append(f"target {target.key}: {type(exc).__name__}: {exc}")
@@ -2518,17 +2285,333 @@ def _verify_published_targets(
             expected_basename=target.expected_basename,
         )
         current, current_mode, current_file_id = _file_snapshot(target.live_path)
-        proposal_mode = (
-            target.original_mode if target.original_mode is not None else 0o600
-        )
+        proposal_mode = target.original_mode if target.original_mode is not None else 0o600
         if (
             _bytes_sha256(current) != target.proposed_sha256
             or not _modes_match(current_mode, proposal_mode)
             or current_file_id != published_file_ids.get(target.key)
         ):
-            raise StagingError(
-                f"live target for {target.key} changed after publication"
-            )
+            raise StagingError(f"live target for {target.key} changed after publication")
+
+
+_LINEAGE_FILENAME = ".adoption_lineage.json"
+_LINEAGE_LOCK_FILENAME = ".adoption_lineage.lock"
+
+
+def _lineage_path(staging_root_dir: str) -> str:
+    return os.path.join(staging_root_dir, _LINEAGE_FILENAME)
+
+
+def _lineage_lock_path(staging_root_dir: str) -> str:
+    return os.path.join(staging_root_dir, _LINEAGE_LOCK_FILENAME)
+
+
+@contextmanager
+def _lineage_lock(staging_root_dir: str):
+    lock_path = _lineage_lock_path(staging_root_dir)
+    with _exclusive_create_locks([lock_path]):
+        yield
+
+
+def _read_lineage(staging_root_dir: str) -> List[Dict[str, Any]]:
+    path = _lineage_path(staging_root_dir)
+    if not os.path.isfile(path) or _is_link_or_junction(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("entries"), list):
+            return data["entries"]
+    except Exception:
+        pass
+    return []
+
+
+def _write_lineage(staging_root_dir: str, entries: List[Dict[str, Any]]) -> None:
+    path = _lineage_path(staging_root_dir)
+    payload = json.dumps({"version": 1, "entries": entries}, ensure_ascii=False, indent=2)
+    _write_atomic(path, payload, create_parents=False)
+
+
+def _active_targets_from_lineage(entries: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """Compute mapping of target_key -> stack of active staging directories."""
+    active_per_target: Dict[str, List[str]] = {}
+    for entry in entries:
+        action = entry.get("action")
+        sdir = entry.get("staging_dir")
+        if not sdir:
+            continue
+        sdir_key = _path_identity_key(sdir)
+        targets = entry.get("targets", [])
+        if action == "adopt":
+            for t in targets:
+                stack = active_per_target.setdefault(t, [])
+                stack.append(sdir)
+        elif action == "revert":
+            for t in targets:
+                stack = active_per_target.setdefault(t, [])
+                for i in range(len(stack) - 1, -1, -1):
+                    if _path_identity_key(stack[i]) == sdir_key:
+                        stack.pop(i)
+                        break
+    return active_per_target
+
+
+def _sanitize_lineage_entries(entries: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
+    """Sanitize lineage entries by removing duplicate consecutive adoptions or redundant reverts.
+
+    Returns the sanitized entries and a boolean indicating whether modifications were made.
+    """
+    sanitized: List[Dict[str, Any]] = []
+    active_per_target: Dict[str, List[str]] = {}
+    modified = False
+
+    for entry in entries:
+        action = entry.get("action")
+        sdir = entry.get("staging_dir")
+        targets = entry.get("targets", [])
+        if not sdir or not targets or action not in ("adopt", "revert"):
+            modified = True
+            continue
+        sdir_key = _path_identity_key(sdir)
+
+        if action == "adopt":
+            valid_targets = []
+            for t in targets:
+                stack = active_per_target.setdefault(t, [])
+                if stack and _path_identity_key(stack[-1]) == sdir_key:
+                    modified = True
+                    continue
+                valid_targets.append(t)
+                stack.append(sdir)
+            if valid_targets:
+                if len(valid_targets) != len(targets):
+                    modified = True
+                    clean_entry = dict(entry)
+                    clean_entry["targets"] = valid_targets
+                    clean_entry["id"] = len(sanitized) + 1
+                    sanitized.append(clean_entry)
+                else:
+                    if entry.get("id") != len(sanitized) + 1:
+                        modified = True
+                        clean_entry = dict(entry)
+                        clean_entry["id"] = len(sanitized) + 1
+                        sanitized.append(clean_entry)
+                    else:
+                        sanitized.append(entry)
+            else:
+                modified = True
+
+        elif action == "revert":
+            valid_targets = []
+            for t in targets:
+                stack = active_per_target.setdefault(t, [])
+                found_index = -1
+                for i in range(len(stack) - 1, -1, -1):
+                    if _path_identity_key(stack[i]) == sdir_key:
+                        found_index = i
+                        break
+                if found_index >= 0:
+                    stack.pop(found_index)
+                    valid_targets.append(t)
+                else:
+                    modified = True
+            if valid_targets:
+                if len(valid_targets) != len(targets):
+                    modified = True
+                    clean_entry = dict(entry)
+                    clean_entry["targets"] = valid_targets
+                    clean_entry["id"] = len(sanitized) + 1
+                    sanitized.append(clean_entry)
+                else:
+                    if entry.get("id") != len(sanitized) + 1:
+                        modified = True
+                        clean_entry = dict(entry)
+                        clean_entry["id"] = len(sanitized) + 1
+                        sanitized.append(clean_entry)
+                    else:
+                        sanitized.append(entry)
+            else:
+                modified = True
+
+    return sanitized, modified
+
+
+def _ensure_lineage_synchronized(
+    staging_root_dir: str,
+    *,
+    pending_adoption: Optional[tuple[str, Sequence[str]]] = None,
+) -> List[Dict[str, Any]]:
+    raw_entries = _read_lineage(staging_root_dir)
+    entries, needs_update = _sanitize_lineage_entries(raw_entries)
+    active_per_target = _active_targets_from_lineage(entries)
+
+    recorded_adoptions: set[tuple[str, str]] = set()
+    for entry in entries:
+        if entry.get("action") == "adopt":
+            sdir = entry.get("staging_dir")
+            if sdir:
+                skey = _path_identity_key(sdir)
+                for t in entry.get("targets", []):
+                    recorded_adoptions.add((skey, t))
+
+    pending_sdir_key = None
+    pending_targets_set = set()
+    if pending_adoption:
+        pending_sdir, p_targets = pending_adoption
+        pending_sdir_key = _path_identity_key(pending_sdir)
+        pending_targets_set = set(p_targets)
+
+    if os.path.isdir(staging_root_dir) and not _is_link_or_junction(staging_root_dir):
+        subs = []
+        for entry in os.listdir(staging_root_dir):
+            if not _STAGING_DIR_RE.fullmatch(entry):
+                continue
+            path = os.path.join(staging_root_dir, entry)
+            if _is_link_or_junction(path) or not os.path.isdir(path):
+                continue
+            manifest_path = os.path.join(path, "manifest.json")
+            if _is_link_or_junction(manifest_path) or not os.path.isfile(manifest_path):
+                continue
+            subs.append(path)
+        subs.sort(key=_staging_order)
+
+        for sdir in subs:
+            sdir_key = _path_identity_key(sdir)
+            s_receipt = os.path.join(sdir, "adopted_skills.json")
+            if os.path.isfile(s_receipt) and not _is_link_or_junction(s_receipt):
+                try:
+                    rows, _, _, _ = _read_existing_receipts(s_receipt, sdir)
+                    unrecorded_skills = []
+                    for r in rows:
+                        tkey = f"skill:{r['skill_name']}"
+                        if sdir_key == pending_sdir_key and tkey in pending_targets_set:
+                            continue
+                        if (sdir_key, tkey) not in recorded_adoptions:
+                            unrecorded_skills.append(tkey)
+                            recorded_adoptions.add((sdir_key, tkey))
+                            active_per_target.setdefault(tkey, []).append(sdir)
+                    if unrecorded_skills:
+                        entries.append(
+                            {
+                                "id": len(entries) + 1,
+                                "action": "adopt",
+                                "timestamp": os.path.getmtime(s_receipt),
+                                "staging_dir": sdir,
+                                "staging_name": os.path.basename(sdir),
+                                "kind": "skills",
+                                "targets": unrecorded_skills,
+                            }
+                        )
+                        needs_update = True
+                except Exception:
+                    pass
+
+            l_receipt = os.path.join(sdir, "adopted_legacy.json")
+            if os.path.isfile(l_receipt) and not _is_link_or_junction(l_receipt):
+                try:
+                    l_rows, _, _, _ = _read_legacy_receipts(l_receipt, sdir)
+                    unrecorded_legacy = []
+                    for r in l_rows:
+                        tkey = f"legacy:{r['target']}"
+                        if sdir_key == pending_sdir_key and tkey in pending_targets_set:
+                            continue
+                        if (sdir_key, tkey) not in recorded_adoptions:
+                            unrecorded_legacy.append(tkey)
+                            recorded_adoptions.add((sdir_key, tkey))
+                            active_per_target.setdefault(tkey, []).append(sdir)
+                    if unrecorded_legacy:
+                        entries.append(
+                            {
+                                "id": len(entries) + 1,
+                                "action": "adopt",
+                                "timestamp": os.path.getmtime(l_receipt),
+                                "staging_dir": sdir,
+                                "staging_name": os.path.basename(sdir),
+                                "kind": "legacy",
+                                "targets": unrecorded_legacy,
+                            }
+                        )
+                        needs_update = True
+                except Exception:
+                    pass
+
+    if needs_update or (not os.path.exists(_lineage_path(staging_root_dir)) and entries):
+        _write_lineage(staging_root_dir, entries)
+    return entries
+
+
+def _record_adoption_in_lineage(staging_dir: str, *, kind: str, target_keys: Sequence[str]) -> None:
+    if not target_keys:
+        return
+    staging_root_dir = os.path.dirname(staging_dir)
+    if not os.path.isdir(staging_root_dir) or _is_link_or_junction(staging_root_dir):
+        return
+    with _lineage_lock(staging_root_dir):
+        entries = _ensure_lineage_synchronized(staging_root_dir, pending_adoption=(staging_dir, target_keys))
+        active_per_target = _active_targets_from_lineage(entries)
+        sdir_key = _path_identity_key(staging_dir)
+
+        targets_to_record = []
+        for t in target_keys:
+            stack = active_per_target.get(t, [])
+            if not (stack and _path_identity_key(stack[-1]) == sdir_key):
+                targets_to_record.append(t)
+                stack.append(staging_dir)
+
+        if not targets_to_record:
+            return
+
+        entries.append(
+            {
+                "id": len(entries) + 1,
+                "action": "adopt",
+                "timestamp": time.time(),
+                "staging_dir": staging_dir,
+                "staging_name": os.path.basename(staging_dir),
+                "kind": kind,
+                "targets": targets_to_record,
+            }
+        )
+        _write_lineage(staging_root_dir, entries)
+
+
+def _record_revert_in_lineage(staging_dir: str, *, kind: str, target_keys: Sequence[str]) -> None:
+    if not target_keys:
+        return
+    staging_root_dir = os.path.dirname(staging_dir)
+    if not os.path.isdir(staging_root_dir) or _is_link_or_junction(staging_root_dir):
+        return
+    with _lineage_lock(staging_root_dir):
+        entries = _ensure_lineage_synchronized(staging_root_dir)
+        active_per_target = _active_targets_from_lineage(entries)
+        sdir_key = _path_identity_key(staging_dir)
+
+        targets_to_revert = []
+        for t in target_keys:
+            stack = active_per_target.get(t, [])
+            if any(_path_identity_key(s) == sdir_key for s in stack):
+                targets_to_revert.append(t)
+                for i in range(len(stack) - 1, -1, -1):
+                    if _path_identity_key(stack[i]) == sdir_key:
+                        stack.pop(i)
+                        break
+
+        if not targets_to_revert:
+            return
+
+        entries.append(
+            {
+                "id": len(entries) + 1,
+                "action": "revert",
+                "timestamp": time.time(),
+                "staging_dir": staging_dir,
+                "staging_name": os.path.basename(staging_dir),
+                "kind": kind,
+                "targets": targets_to_revert,
+            }
+        )
+        _write_lineage(staging_root_dir, entries)
 
 
 def _execute_transaction_locked(
@@ -2568,20 +2651,13 @@ def _execute_transaction_locked(
                 _fsync_parent(directory)
                 _fsync_directory(directory)
             except FileExistsError as exc:
-                raise StagingError(
-                    f"live directory appeared during adoption: {directory}"
-                ) from exc
+                raise StagingError(f"live directory appeared during adoption: {directory}") from exc
             info = os.lstat(directory)
             if _is_link_or_junction(directory) or not stat.S_ISDIR(info.st_mode):
-                raise StagingError(
-                    f"live directory changed during adoption: {directory}"
-                )
+                raise StagingError(f"live directory changed during adoption: {directory}")
             created_id = (info.st_dev, info.st_ino)
             for target in targets:
-                ids = list(
-                    target.created_dir_ids
-                    or tuple(None for _path in target.created_dirs)
-                )
+                ids = list(target.created_dir_ids or tuple(None for _path in target.created_dirs))
                 for index, path in enumerate(target.created_dirs):
                     if _path_identity_key(path) == _path_identity_key(directory):
                         ids[index] = created_id
@@ -2611,13 +2687,9 @@ def _execute_transaction_locked(
                     target.original_bytes or b"",
                     mode=target.original_mode,
                 )
-                backup_sha256 = _immutable_backup_sha256(
-                    target.backup_path, staging_dir
-                )
+                backup_sha256 = _immutable_backup_sha256(target.backup_path, staging_dir)
                 if backup_sha256 != target.baseline_sha256:
-                    raise StagingError(
-                        f"immutable backup for {target.key} was not published safely"
-                    )
+                    raise StagingError(f"immutable backup for {target.key} was not published safely")
             _adopt_target_ok(
                 target.key,
                 target.live_path,
@@ -2631,8 +2703,7 @@ def _execute_transaction_locked(
                 or not _modes_match(current_mode, target.original_mode)
             ):
                 raise StagingError(
-                    f"live target for {target.key} changed bytes, mode, or identity; "
-                    "discard and rerun this night"
+                    f"live target for {target.key} changed bytes, mode, or identity; discard and rerun this night"
                 )
             # This final snapshot narrows, but cannot portably eliminate, the
             # pre-replace editor race: Python exposes no cross-platform
@@ -2643,53 +2714,47 @@ def _execute_transaction_locked(
                 target.proposed_bytes.decode("utf-8"),
                 create_parents=False,
             )
-            current, current_mode, current_file_id = _file_snapshot(
-                target.live_path
-            )
-            proposal_mode = (
-                target.original_mode if target.original_mode is not None else 0o600
-            )
-            if (
-                _bytes_sha256(current) != target.proposed_sha256
-                or not _modes_match(current_mode, proposal_mode)
-            ):
-                raise StagingError(
-                    f"live target for {target.key} changed during publication"
-                )
+            current, current_mode, current_file_id = _file_snapshot(target.live_path)
+            proposal_mode = target.original_mode if target.original_mode is not None else 0o600
+            if _bytes_sha256(current) != target.proposed_sha256 or not _modes_match(current_mode, proposal_mode):
+                raise StagingError(f"live target for {target.key} changed during publication")
             if current_file_id is None:
-                raise StagingError(
-                    f"live target for {target.key} disappeared during publication"
-                )
+                raise StagingError(f"live target for {target.key} disappeared during publication")
             published_file_ids[target.key] = current_file_id
         _verify_published_targets(targets, published_file_ids)
-        receipt_current, receipt_current_mode, receipt_current_file_id = (
-            _file_snapshot(receipt_path)
-        )
+        receipt_current, receipt_current_mode, receipt_current_file_id = _file_snapshot(receipt_path)
         if (
             _bytes_sha256(receipt_current) != _bytes_sha256(receipt_original)
             or receipt_current_file_id != receipt_file_id
             or not _modes_match(receipt_current_mode, receipt_mode)
         ):
-            raise StagingError(
-                "adoption receipt changed bytes, mode, or identity during adoption"
-            )
+            raise StagingError("adoption receipt changed bytes, mode, or identity during adoption")
         _write_atomic(
             receipt_path,
             receipt_after.decode("utf-8"),
             create_parents=False,
         )
-        receipt_current, receipt_current_mode, _receipt_file_id = _file_snapshot(
-            receipt_path
-        )
+        receipt_current, receipt_current_mode, _receipt_file_id = _file_snapshot(receipt_path)
         receipt_proposal_mode = receipt_mode if receipt_mode is not None else 0o600
-        if (
-            _bytes_sha256(receipt_current) != hashlib.sha256(receipt_after).hexdigest()
-            or not _modes_match(receipt_current_mode, receipt_proposal_mode)
+        if _bytes_sha256(receipt_current) != hashlib.sha256(receipt_after).hexdigest() or not _modes_match(
+            receipt_current_mode, receipt_proposal_mode
         ):
             raise StagingError("adoption receipt changed during publication")
         _verify_published_targets(targets, published_file_ids)
         # WAL unlink + parent fsync is the transaction commit point.
         _remove_transaction_wal(staging_dir, expected_wal=wal)
+        try:
+            target_keys = []
+            for t in targets:
+                if t.key.startswith("skill '") and t.key.endswith("'"):
+                    target_keys.append(f"skill:{t.key[7:-1]}")
+                elif t.key.startswith("legacy "):
+                    target_keys.append(f"legacy:{t.key[7:]}")
+                else:
+                    target_keys.append(t.key)
+            _record_adoption_in_lineage(staging_dir, kind=kind, target_keys=target_keys)
+        except Exception:
+            pass
     except BaseException as primary:
         recovery_errors = _recover_transaction_locked(
             staging_dir,
@@ -2701,16 +2766,373 @@ def _execute_transaction_locked(
                 try:
                     _write_transaction_wal(staging_dir, wal)
                 except BaseException as exc:
-                    recovery_errors.append(
-                        f"could not restore recovery journal: {type(exc).__name__}: {exc}"
-                    )
+                    recovery_errors.append(f"could not restore recovery journal: {type(exc).__name__}: {exc}")
             raise StagingRecoveryError(
-                "adoption failed and automatic rollback was incomplete; "
-                f"journal and backups retained at {staging_dir}",
+                f"adoption failed and automatic rollback was incomplete; journal and backups retained at {staging_dir}",
                 primary=primary,
                 recovery_errors=recovery_errors,
             ) from primary
         raise
+
+
+def _clean_empty_backup_dir(path: str, staging_dir: str) -> None:
+    """Prune empty parent directories inside staging_dir/backup after backup removal."""
+    try:
+        backup_root = os.path.realpath(os.path.join(staging_dir, "backup"))
+        curr = os.path.realpath(path)
+        while curr != backup_root and curr.startswith(backup_root + os.sep):
+            if os.path.isdir(curr) and not os.listdir(curr):
+                os.rmdir(curr)
+                curr = os.path.dirname(curr)
+            else:
+                break
+    except Exception:
+        pass
+
+
+@dataclass
+class _RevertTarget:
+    key: str
+    target_key: str
+    live_path: str
+    expected_realpath: str
+    expected_basename: str
+    current_sha256: str
+    target_sha256: str
+    proposal_bytes: bytes
+    target_bytes: Optional[bytes]
+    target_mode: Optional[int]
+    backup_path: str
+    backup_sha256: str
+
+
+def _revert_target_wal_row(target: _RevertTarget) -> Dict[str, Any]:
+    return {
+        "key": target.key,
+        "target_key": target.target_key,
+        "live_path": target.live_path,
+        "expected_realpath": target.expected_realpath,
+        "expected_basename": target.expected_basename,
+        "current_sha256": target.current_sha256,
+        "target_sha256": target.target_sha256,
+        "proposal_b64": _b64(target.proposal_bytes),
+        "target_b64": _b64(target.target_bytes),
+        "target_mode": target.target_mode,
+        "backup_path": target.backup_path,
+        "backup_sha256": target.backup_sha256,
+    }
+
+
+def _revert_transaction_wal(
+    *,
+    kind: str,
+    staging_dir: str,
+    targets: Sequence[_RevertTarget],
+    receipt_path: str,
+    receipt_original: Optional[bytes],
+    receipt_mode: Optional[int],
+    receipt_file_id: Optional[tuple[int, int]],
+    receipt_after: bytes,
+) -> Dict[str, Any]:
+    return {
+        "version": _REVERT_WAL_VERSION,
+        "kind": kind,
+        "staging_dir": staging_dir,
+        "targets": [_revert_target_wal_row(t) for t in targets],
+        "receipt": {
+            "path": receipt_path,
+            "original_b64": _b64(receipt_original),
+            "original_mode": receipt_mode,
+            "original_file_id": (list(receipt_file_id) if receipt_file_id is not None else None),
+            "proposed_b64": _b64(receipt_after),
+            "proposed_sha256": hashlib.sha256(receipt_after).hexdigest(),
+        },
+    }
+
+
+def _read_revert_wal(staging_dir: str) -> Optional[Dict[str, Any]]:
+    path = _revert_wal_path(staging_dir)
+    if not os.path.lexists(path):
+        return None
+    _remove_private_temp_aliases(path)
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise StagingError(f"cannot inspect rollback recovery journal: {exc}") from exc
+    if _is_link_or_junction(path) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise StagingError(f"rollback recovery journal is unsafe: {path}")
+    try:
+        raw, _mode, _file_id = _file_snapshot(path)
+        if raw is None:
+            raise StagingError("rollback recovery journal disappeared")
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise StagingError(f"cannot read rollback recovery journal: {exc}") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"version", "kind", "staging_dir", "targets", "receipt"}
+        or payload.get("version") != _REVERT_WAL_VERSION
+    ):
+        raise StagingError("rollback recovery journal has an unsupported format")
+    return payload
+
+
+def _write_revert_wal(staging_dir: str, wal: Dict[str, Any]) -> None:
+    path = _revert_wal_path(staging_dir)
+    if os.path.lexists(path):
+        raise StagingError(f"a rollback recovery journal already exists; recover it first: {path}")
+    payload = json.dumps(wal, ensure_ascii=False, indent=2).encode("utf-8")
+    _write_new_bytes(path, payload, mode=0o600)
+
+
+def _remove_revert_wal(staging_dir: str) -> None:
+    path = _revert_wal_path(staging_dir)
+    if os.path.lexists(path):
+        _remove_private_temp_aliases(path)
+        info = os.lstat(path)
+        if _is_link_or_junction(path) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise StagingError(f"rollback recovery journal is unsafe: {path}")
+        _unlink_fsync(path)
+
+
+def _decode_revert_wal_targets(staging_dir: str, wal: Dict[str, Any]) -> List[_RevertTarget]:
+    raw_targets = wal.get("targets")
+    if not isinstance(raw_targets, list) or not raw_targets:
+        raise StagingError("rollback recovery journal has no targets")
+    targets = []
+    seen = set()
+    for row in raw_targets:
+        if not isinstance(row, dict):
+            raise StagingError("rollback recovery journal target must be an object")
+        key = row.get("key")
+        target_key = row.get("target_key")
+        if not key or not target_key or target_key in seen:
+            raise StagingError("rollback recovery journal has invalid target keys")
+        seen.add(target_key)
+        live = _safe_live_path(row.get("live_path"))
+        expected_realpath = _safe_live_path(row.get("expected_realpath"))
+        expected_basename = row.get("expected_basename")
+        if not live or not expected_realpath or expected_basename not in {"SKILL.md", "CLAUDE.md"}:
+            raise StagingError("rollback recovery journal has unsafe target paths")
+        current_sha256 = row.get("current_sha256")
+        target_sha256 = row.get("target_sha256")
+        if not _valid_sha256_pin(current_sha256):
+            raise StagingError("rollback recovery journal has invalid current hash")
+        if target_sha256 != "" and not _valid_sha256_pin(target_sha256):
+            raise StagingError("rollback recovery journal has invalid target hash")
+        proposal_bytes = _from_b64(row.get("proposal_b64"), field="proposal_b64")
+        if proposal_bytes is None or _bytes_sha256(proposal_bytes) != current_sha256:
+            raise StagingError("rollback recovery journal has invalid proposal bytes")
+        target_bytes = _from_b64(row.get("target_b64"), field="target_b64")
+        if _bytes_sha256(target_bytes) != target_sha256:
+            raise StagingError("rollback recovery journal has invalid target bytes")
+        target_mode = row.get("target_mode")
+        if target_mode is not None and (type(target_mode) is not int or target_mode < 0 or target_mode > 0o7777):
+            raise StagingError("rollback recovery journal has invalid file mode")
+        backup_path = row.get("backup_path") or ""
+        backup_sha256 = row.get("backup_sha256") or ""
+        if backup_path and not _path_is_within(backup_path, staging_dir):
+            raise StagingError("rollback recovery journal backup escapes staging")
+        targets.append(
+            _RevertTarget(
+                key=key,
+                target_key=target_key,
+                live_path=live,
+                expected_realpath=expected_realpath,
+                expected_basename=expected_basename,
+                current_sha256=current_sha256,
+                target_sha256=target_sha256,
+                proposal_bytes=proposal_bytes,
+                target_bytes=target_bytes,
+                target_mode=target_mode,
+                backup_path=backup_path,
+                backup_sha256=backup_sha256,
+            )
+        )
+    return targets
+
+
+def _execute_revert_transaction_locked(
+    staging_dir: str,
+    *,
+    kind: str,
+    targets: Sequence[_RevertTarget],
+    receipt_path: str,
+    receipt_original: Optional[bytes],
+    receipt_mode: Optional[int],
+    receipt_file_id: Optional[tuple[int, int]],
+    receipt_after: bytes,
+) -> None:
+    wal = _revert_transaction_wal(
+        kind=kind,
+        staging_dir=staging_dir,
+        targets=targets,
+        receipt_path=receipt_path,
+        receipt_original=receipt_original,
+        receipt_mode=receipt_mode,
+        receipt_file_id=receipt_file_id,
+        receipt_after=receipt_after,
+    )
+    _write_revert_wal(staging_dir, wal)
+    try:
+        for target in targets:
+            _adopt_target_ok(
+                target.key,
+                target.live_path,
+                target.expected_realpath,
+                expected_basename=target.expected_basename,
+            )
+            current, current_mode, _ = _file_snapshot(target.live_path)
+            current_sha = _bytes_sha256(current)
+            if current_sha == target.target_sha256:
+                continue
+            if current_sha != target.current_sha256:
+                raise StagingError(f"live target for {target.key} changed during rollback")
+            if target.target_bytes is None:
+                if current is not None:
+                    _unlink_fsync(target.live_path)
+            else:
+                _write_atomic_bytes(
+                    target.live_path,
+                    target.target_bytes,
+                    create_parents=False,
+                    mode=target.target_mode,
+                )
+            verified, verified_mode, _ = _file_snapshot(target.live_path)
+            if _bytes_sha256(verified) != target.target_sha256:
+                raise StagingError(f"restoring {target.key} failed sha256 verification")
+            if target.target_bytes is not None and not _modes_match(verified_mode, target.target_mode):
+                raise StagingError(f"restoring {target.key} failed file mode verification")
+
+        receipt_current, receipt_current_mode, receipt_current_id = _file_snapshot(receipt_path)
+        if (
+            _bytes_sha256(receipt_current) != _bytes_sha256(receipt_original)
+            or receipt_current_id != receipt_file_id
+            or not _modes_match(receipt_current_mode, receipt_mode)
+        ):
+            raise StagingError("adoption receipt changed during rollback")
+
+        _write_atomic(
+            receipt_path,
+            receipt_after.decode("utf-8"),
+            create_parents=False,
+        )
+        check_receipt, _, _ = _file_snapshot(receipt_path)
+        expected_receipt_sha = hashlib.sha256(receipt_after).hexdigest()
+        if _bytes_sha256(check_receipt) != expected_receipt_sha:
+            raise StagingError("adoption receipt changed during publication")
+
+        for target in targets:
+            if target.backup_path and os.path.lexists(target.backup_path):
+                _unlink_fsync(target.backup_path)
+                _clean_empty_backup_dir(os.path.dirname(target.backup_path), staging_dir)
+
+        try:
+            _record_revert_in_lineage(
+                staging_dir,
+                kind=kind,
+                target_keys=[target.target_key for target in targets],
+            )
+        except Exception:
+            pass
+
+        _remove_revert_wal(staging_dir)
+
+    except BaseException as primary:
+        recovery_errors = _recover_revert_transaction_locked(staging_dir, wal)
+        if recovery_errors:
+            if not os.path.lexists(_revert_wal_path(staging_dir)):
+                try:
+                    _write_revert_wal(staging_dir, wal)
+                except BaseException as exc:
+                    recovery_errors.append(f"could not restore rollback recovery journal: {type(exc).__name__}: {exc}")
+            raise StagingRecoveryError(
+                f"rollback failed and automatic recovery was incomplete; journal retained at {staging_dir}",
+                primary=primary,
+                recovery_errors=recovery_errors,
+            ) from primary
+        raise
+
+
+def _recover_revert_transaction_locked(staging_dir: str, wal: Dict[str, Any]) -> List[str]:
+    try:
+        targets = _decode_revert_wal_targets(staging_dir, wal)
+    except BaseException as exc:
+        return [f"invalid rollback recovery journal: {type(exc).__name__}: {exc}"]
+    receipt_info = wal.get("receipt")
+    if not isinstance(receipt_info, dict):
+        return ["invalid rollback recovery journal receipt"]
+    receipt_path = receipt_info.get("path")
+    proposed_receipt_sha = receipt_info.get("proposed_sha256")
+    errors: List[str] = []
+
+    current_receipt, _, _ = _file_snapshot(receipt_path)
+    current_receipt_sha = _bytes_sha256(current_receipt)
+
+    if current_receipt_sha == proposed_receipt_sha:
+        for target in targets:
+            try:
+                if target.backup_path and os.path.lexists(target.backup_path):
+                    _unlink_fsync(target.backup_path)
+                    _clean_empty_backup_dir(os.path.dirname(target.backup_path), staging_dir)
+            except BaseException as exc:
+                errors.append(f"backup removal {target.backup_path}: {type(exc).__name__}: {exc}")
+        if not errors:
+            try:
+                _record_revert_in_lineage(
+                    staging_dir,
+                    kind=wal.get("kind") or "skills",
+                    target_keys=[target.target_key for target in targets],
+                )
+            except Exception:
+                pass
+            try:
+                _remove_revert_wal(staging_dir)
+            except BaseException as exc:
+                errors.append(f"journal removal: {type(exc).__name__}: {exc}")
+        return errors
+
+    for target in reversed(targets):
+        try:
+            current_live, current_mode, _ = _file_snapshot(target.live_path)
+            current_live_sha = _bytes_sha256(current_live)
+            if current_live_sha == target.target_sha256:
+                _write_atomic_bytes(
+                    target.live_path,
+                    target.proposal_bytes,
+                    create_parents=False,
+                    mode=target.target_mode,
+                )
+                verified, _, _ = _file_snapshot(target.live_path)
+                if _bytes_sha256(verified) != target.current_sha256:
+                    raise StagingError(f"rollback recovery of {target.key} failed sha256 verification")
+            elif current_live_sha == target.current_sha256:
+                pass
+            else:
+                raise StagingError(f"rollback recovery conflict for {target.key}: live content changed")
+        except BaseException as exc:
+            errors.append(f"target {target.key}: {type(exc).__name__}: {exc}")
+
+    try:
+        orig_receipt_bytes = _from_b64(receipt_info.get("original_b64"), field="original_b64")
+        orig_mode = receipt_info.get("original_mode")
+        if orig_receipt_bytes is None:
+            if os.path.lexists(receipt_path):
+                _unlink_fsync(receipt_path)
+        else:
+            _write_atomic_bytes(receipt_path, orig_receipt_bytes, mode=orig_mode)
+    except BaseException as exc:
+        errors.append(f"receipt recovery: {type(exc).__name__}: {exc}")
+
+    if errors:
+        return errors
+
+    try:
+        _remove_revert_wal(staging_dir)
+    except BaseException as exc:
+        errors.append(f"journal removal: {type(exc).__name__}: {exc}")
+
+    return errors
 
 
 @contextmanager
@@ -2718,11 +3140,12 @@ def _adoption_locks(staging_dir: str, live_paths: Sequence[str]):
     staging_lock = os.path.join(staging_dir, ".adopt-skills.lock")
     with _exclusive_create_locks([staging_lock]):
         wal = _read_transaction_wal(staging_dir)
+        revert_wal = _read_revert_wal(staging_dir)
         recovery_paths: List[str] = []
         if wal is not None:
-            recovery_paths = [
-                target.live_path for target in _decode_wal_targets(staging_dir, wal)
-            ]
+            recovery_paths.extend([target.live_path for target in _decode_wal_targets(staging_dir, wal)])
+        if revert_wal is not None:
+            recovery_paths.extend([target.live_path for target in _decode_revert_wal_targets(staging_dir, revert_wal)])
         all_paths = list(live_paths) + recovery_paths
         with _exclusive_create_locks(_target_lock_paths(all_paths)):
             if wal is not None:
@@ -2732,33 +3155,51 @@ def _adoption_locks(staging_dir: str, live_paths: Sequence[str]):
                         "cannot recover an interrupted adoption; journal and backups retained",
                         recovery_errors=recovery_errors,
                     )
+            if revert_wal is not None:
+                recovery_errors = _recover_revert_transaction_locked(staging_dir, revert_wal)
+                if recovery_errors:
+                    raise StagingRecoveryError(
+                        "cannot recover an interrupted rollback; journal retained",
+                        recovery_errors=recovery_errors,
+                    )
             yield
 
 
 def _recover_before_manifest(staging_dir: str) -> None:
-    """Recover a WAL without depending on a still-readable staging manifest."""
+    """Recover an adoption or rollback WAL without depending on a still-readable staging manifest."""
     if _is_link_or_junction(staging_dir) or not os.path.isdir(staging_dir):
         raise StagingError(f"staging directory is unsafe: {staging_dir}")
     staging_lock = os.path.join(staging_dir, ".adopt-skills.lock")
     with _exclusive_create_locks([staging_lock]):
         wal = _read_transaction_wal(staging_dir)
-        if wal is None:
+        revert_wal = _read_revert_wal(staging_dir)
+        if wal is None and revert_wal is None:
             return
-        targets = _decode_wal_targets(staging_dir, wal)
-        with _exclusive_create_locks(
-            _target_lock_paths([target.live_path for target in targets])
-        ):
-            recovery_errors = _recover_transaction_locked(staging_dir, wal)
-            if recovery_errors:
-                raise StagingRecoveryError(
-                    "cannot recover an interrupted adoption; journal and backups retained",
-                    recovery_errors=recovery_errors,
-                )
+        recovery_paths = []
+        if wal is not None:
+            targets = _decode_wal_targets(staging_dir, wal)
+            recovery_paths.extend([t.live_path for t in targets])
+        if revert_wal is not None:
+            revert_targets = _decode_revert_wal_targets(staging_dir, revert_wal)
+            recovery_paths.extend([t.live_path for t in revert_targets])
+        with _exclusive_create_locks(_target_lock_paths(recovery_paths)):
+            if wal is not None:
+                recovery_errors = _recover_transaction_locked(staging_dir, wal)
+                if recovery_errors:
+                    raise StagingRecoveryError(
+                        "cannot recover an interrupted adoption; journal and backups retained",
+                        recovery_errors=recovery_errors,
+                    )
+            if revert_wal is not None:
+                recovery_errors = _recover_revert_transaction_locked(staging_dir, revert_wal)
+                if recovery_errors:
+                    raise StagingRecoveryError(
+                        "cannot recover an interrupted rollback; journal retained",
+                        recovery_errors=recovery_errors,
+                    )
 
 
-def adopt_skills(
-    staging_dir: str, skill_names: Optional[Sequence[str]] = None
-) -> List[AdoptedSkill]:
+def adopt_skills(staging_dir: str, skill_names: Optional[Sequence[str]] = None) -> List[AdoptedSkill]:
     """Durably adopt a reviewed per-skill subset with restart-safe rollback."""
     staging_dir = _canonical_staging_dir(staging_dir)
     _recover_before_manifest(staging_dir)
@@ -2771,30 +3212,23 @@ def adopt_skills(
     for row in initial_rows:
         live = _safe_live_path(row.get("live_skill_path"))
         if not live:
-            raise StagingError(
-                f"unsafe live skill path: {row.get('live_skill_path')!r}"
-            )
+            raise StagingError(f"unsafe live skill path: {row.get('live_skill_path')!r}")
         initial_live_paths.append(live)
 
     with _adoption_locks(staging_dir, initial_live_paths):
         all_rows = staged_skills(staging_dir)
         rows = _selected_rows(all_rows, skill_names)
         locked_paths = {_path_identity_key(path) for path in initial_live_paths}
-        current_paths = {
-            _path_identity_key(str(row.get("live_skill_path") or ""))
-            for row in rows
-        }
+        current_paths = {_path_identity_key(str(row.get("live_skill_path") or "")) for row in rows}
         if locked_paths != current_paths:
             raise StagingError("staging manifest changed while adoption was locking")
         _revalidate_selected_skill_rows(rows, all_rows=all_rows)
 
         receipt_path = os.path.join(staging_dir, "adopted_skills.json")
-        existing_receipts, receipt_original, receipt_mode, receipt_file_id = (
-            _read_existing_receipts(receipt_path, staging_dir)
+        existing_receipts, receipt_original, receipt_mode, receipt_file_id = _read_existing_receipts(
+            receipt_path, staging_dir
         )
-        already_adopted = {
-            str(row["skill_name"]) for row in existing_receipts
-        }
+        already_adopted = {str(row["skill_name"]) for row in existing_receipts}
 
         targets: List[_TransactionTarget] = []
         receipts: List[AdoptedSkill] = []
@@ -2802,22 +3236,15 @@ def adopt_skills(
         for row in rows:
             name = _safe_skill_name(row.get("skill_name"))
             if not name:
-                raise StagingError(
-                    f"unsafe staged skill name: {row.get('skill_name')!r}"
-                )
+                raise StagingError(f"unsafe staged skill name: {row.get('skill_name')!r}")
             if name in already_adopted:
-                raise StagingError(
-                    f"staged skill {name!r} was already adopted from this night"
-                )
+                raise StagingError(f"staged skill {name!r} was already adopted from this night")
             live = _safe_live_path(row.get("live_skill_path"))
             expected_realpath = _safe_live_path(row.get("live_realpath"))
             live_pin = row.get("live_sha256")
-            if not live or not expected_realpath or (
-                live_pin != "" and not _valid_sha256_pin(live_pin)
-            ):
+            if not live or not expected_realpath or (live_pin != "" and not _valid_sha256_pin(live_pin)):
                 raise StagingError(
-                    f"staged skill {name!r} is missing safe live baseline pins; "
-                    "discard and restage this night"
+                    f"staged skill {name!r} is missing safe live baseline pins; discard and restage this night"
                 )
             _adopt_live_target_ok(name, live, expected_realpath, skill_roots)
 
@@ -2829,72 +3256,55 @@ def adopt_skills(
                 )
             staged = os.path.join(staging_dir, expected_file)
             if _is_link_or_junction(staged) or not os.path.isfile(staged):
-                raise StagingError(
-                    f"staged proposal for {name!r} is missing or a symlink: {staged}"
-                )
+                raise StagingError(f"staged proposal for {name!r} is missing or a symlink: {staged}")
             try:
                 with open(staged, "rb") as handle:
                     proposed_bytes = handle.read()
                 proposed_bytes.decode("utf-8")
             except UnicodeDecodeError as exc:
-                raise StagingError(
-                    f"staged proposal for {name!r} must be valid UTF-8"
-                ) from exc
+                raise StagingError(f"staged proposal for {name!r} must be valid UTF-8") from exc
             except OSError as exc:
-                raise StagingError(
-                    f"could not read staged proposal for {name!r}: {staged}"
-                ) from exc
+                raise StagingError(f"could not read staged proposal for {name!r}: {staged}") from exc
             pin = row.get("sha256")
             if not _valid_sha256_pin(pin):
-                raise StagingError(
-                    f"staged proposal for {name!r} is missing a sha256 pin"
-                )
+                raise StagingError(f"staged proposal for {name!r} is missing a sha256 pin")
             if hashlib.sha256(proposed_bytes).hexdigest() != pin:
-                raise StagingError(
-                    f"staged proposal for {name!r} does not match its manifest sha256"
-                )
+                raise StagingError(f"staged proposal for {name!r} does not match its manifest sha256")
             if not proposed_bytes.strip():
                 raise StagingError(f"staged proposal for {name!r} is empty")
 
             original, original_mode, original_file_id = _file_snapshot(live)
             if _bytes_sha256(original) != live_pin:
-                raise StagingError(
-                    f"live skill for {name!r} changed since staging; "
-                    "discard and rerun this night"
-                )
-            backup_path = (
-                os.path.join(backup_dir, name, "SKILL.md")
-                if original is not None
-                else ""
-            )
+                raise StagingError(f"live skill for {name!r} changed since staging; discard and rerun this night")
+            backup_path = os.path.join(backup_dir, name, "SKILL.md") if original is not None else ""
             if backup_path and os.path.lexists(backup_path):
-                raise StagingError(
-                    f"immutable backup already exists for {name!r}: {backup_path}"
+                raise StagingError(f"immutable backup already exists for {name!r}: {backup_path}")
+            targets.append(
+                _TransactionTarget(
+                    key=f"skill {name!r}",
+                    live_path=live,
+                    expected_realpath=expected_realpath,
+                    expected_basename="SKILL.md",
+                    proposed_bytes=proposed_bytes,
+                    proposed_sha256=pin,
+                    original_bytes=original,
+                    original_mode=original_mode,
+                    original_file_id=original_file_id,
+                    baseline_sha256=live_pin,
+                    backup_path=backup_path,
                 )
-            targets.append(_TransactionTarget(
-                key=f"skill {name!r}",
-                live_path=live,
-                expected_realpath=expected_realpath,
-                expected_basename="SKILL.md",
-                proposed_bytes=proposed_bytes,
-                proposed_sha256=pin,
-                original_bytes=original,
-                original_mode=original_mode,
-                original_file_id=original_file_id,
-                baseline_sha256=live_pin,
-                backup_path=backup_path,
-            ))
-            receipts.append(AdoptedSkill(
-                skill_name=name,
-                live_skill_path=live,
-                sha256_before=live_pin,
-                sha256_after=pin,
-                backup_path=backup_path,
-            ))
+            )
+            receipts.append(
+                AdoptedSkill(
+                    skill_name=name,
+                    live_skill_path=live,
+                    sha256_before=live_pin,
+                    sha256_after=pin,
+                    backup_path=backup_path,
+                )
+            )
 
-        combined_receipts = existing_receipts + [
-            receipt.__dict__ for receipt in receipts
-        ]
+        combined_receipts = existing_receipts + [receipt.__dict__ for receipt in receipts]
         receipt_after = json.dumps(
             combined_receipts,
             ensure_ascii=False,
@@ -2931,13 +3341,8 @@ def _load_manifest(staging_dir: str) -> Dict[str, Any]:
 def _legacy_rows(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     version = _manifest_schema_version(manifest)
     if version == _MANIFEST_VERSION:
-        if (
-            manifest.get("has_skill") is not False
-            or manifest.get("has_memory") is not False
-        ):
-            raise StagingError(
-                "versioned staging manifest has unsafe legacy compatibility flags"
-            )
+        if manifest.get("has_skill") is not False or manifest.get("has_memory") is not False:
+            raise StagingError("versioned staging manifest has unsafe legacy compatibility flags")
         skill_flag = manifest.get("has_managed_skill")
         memory_flag = manifest.get("has_managed_memory")
         if type(skill_flag) is not bool or type(memory_flag) is not bool:
@@ -2946,22 +3351,17 @@ def _legacy_rows(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         if not skill_flag and not memory_flag:
             return {}
     else:
-        flags = (("skill", bool(manifest.get("has_skill"))),
-                 ("memory", bool(manifest.get("has_memory"))))
+        flags = (("skill", bool(manifest.get("has_skill"))), ("memory", bool(manifest.get("has_memory"))))
     raw = manifest.get("legacy")
     if not isinstance(raw, dict):
-        raise StagingError(
-            "legacy staging manifest is missing integrity pins; discard and restage"
-        )
+        raise StagingError("legacy staging manifest is missing integrity pins; discard and restage")
     rows: Dict[str, Dict[str, Any]] = {}
     for label, present in flags:
         if not present:
             continue
         row = raw.get(label)
         if not isinstance(row, dict):
-            raise StagingError(
-                f"legacy {label} staging row is missing; discard and restage"
-            )
+            raise StagingError(f"legacy {label} staging row is missing; discard and restage")
         rows[label] = row
     if not rows:
         return {}
@@ -2998,11 +3398,7 @@ def _read_legacy_receipts(
             raise StagingError("existing legacy adoption receipt is invalid")
         seen.add(label)
         expected_basename = "SKILL.md" if label == "skill" else "CLAUDE.md"
-        if (
-            not live
-            or os.path.basename(live) != expected_basename
-            or (before != "" and not _valid_sha256_pin(before))
-        ):
+        if not live or os.path.basename(live) != expected_basename or (before != "" and not _valid_sha256_pin(before)):
             raise StagingError("existing legacy adoption receipt is invalid")
         if not _valid_sha256_pin(after) or not isinstance(backup, str):
             raise StagingError("existing legacy adoption receipt is invalid")
@@ -3043,17 +3439,12 @@ def adopt(staging_dir: str) -> List[str]:
     with _adoption_locks(staging_dir, initial_paths):
         manifest = _load_manifest(staging_dir)
         rows = _legacy_rows(manifest)
-        current_paths = {
-            _path_identity_key(str(row.get("live_path") or ""))
-            for row in rows.values()
-        }
+        current_paths = {_path_identity_key(str(row.get("live_path") or "")) for row in rows.values()}
         if current_paths != {_path_identity_key(path) for path in initial_paths}:
             raise StagingError("legacy staging manifest changed while adoption was locking")
 
         receipt_path = os.path.join(staging_dir, "adopted_legacy.json")
-        existing, receipt_original, receipt_mode, receipt_file_id = (
-            _read_legacy_receipts(receipt_path, staging_dir)
-        )
+        existing, receipt_original, receipt_mode, receipt_file_id = _read_legacy_receipts(receipt_path, staging_dir)
         already = {str(row["target"]) for row in existing}
         targets: List[_TransactionTarget] = []
         new_receipts: List[Dict[str, Any]] = []
@@ -3064,9 +3455,7 @@ def adopt(staging_dir: str) -> List[str]:
                 continue
             if label in already:
                 raise StagingError(f"legacy {label} was already adopted from this night")
-            expected_file = (
-                "proposed_SKILL.md" if label == "skill" else "proposed_CLAUDE.md"
-            )
+            expected_file = "proposed_SKILL.md" if label == "skill" else "proposed_CLAUDE.md"
             expected_basename = "SKILL.md" if label == "skill" else "CLAUDE.md"
             live = _safe_live_path(row.get("live_path"))
             expected_realpath = _safe_live_path(row.get("live_realpath"))
@@ -3079,9 +3468,7 @@ def adopt(staging_dir: str) -> List[str]:
                 or (live_pin != "" and not _valid_sha256_pin(live_pin))
                 or not _valid_sha256_pin(proposal_pin)
             ):
-                raise StagingError(
-                    f"legacy {label} staging pins are invalid; discard and restage"
-                )
+                raise StagingError(f"legacy {label} staging pins are invalid; discard and restage")
             created_dirs = _planned_live_directories(
                 f"legacy {label}",
                 live,
@@ -3104,43 +3491,39 @@ def adopt(staging_dir: str) -> List[str]:
                 proposed.decode("utf-8")
             except UnicodeDecodeError as exc:
                 raise StagingError(f"legacy {label} proposal must be valid UTF-8") from exc
-            if (
-                label == "skill" and not proposed.strip()
-            ) or hashlib.sha256(proposed).hexdigest() != proposal_pin:
+            if (label == "skill" and not proposed.strip()) or hashlib.sha256(proposed).hexdigest() != proposal_pin:
                 raise StagingError(f"legacy {label} proposal does not match its sha256")
             original, original_mode, original_file_id = _file_snapshot(live)
             if _bytes_sha256(original) != live_pin:
-                raise StagingError(
-                    f"legacy {label} changed since staging; discard and restage"
-                )
-            backup_path = (
-                os.path.join(staging_dir, "backup", expected_basename)
-                if original is not None
-                else ""
-            )
+                raise StagingError(f"legacy {label} changed since staging; discard and restage")
+            backup_path = os.path.join(staging_dir, "backup", expected_basename) if original is not None else ""
             if backup_path and os.path.lexists(backup_path):
                 raise StagingError(f"immutable legacy backup already exists: {backup_path}")
-            targets.append(_TransactionTarget(
-                key=f"legacy {label}",
-                live_path=live,
-                expected_realpath=expected_realpath,
-                expected_basename=expected_basename,
-                proposed_bytes=proposed,
-                proposed_sha256=proposal_pin,
-                original_bytes=original,
-                original_mode=original_mode,
-                original_file_id=original_file_id,
-                baseline_sha256=live_pin,
-                backup_path=backup_path,
-                created_dirs=created_dirs,
-            ))
-            new_receipts.append({
-                "target": label,
-                "live_path": live,
-                "sha256_before": live_pin,
-                "sha256_after": proposal_pin,
-                "backup_path": backup_path,
-            })
+            targets.append(
+                _TransactionTarget(
+                    key=f"legacy {label}",
+                    live_path=live,
+                    expected_realpath=expected_realpath,
+                    expected_basename=expected_basename,
+                    proposed_bytes=proposed,
+                    proposed_sha256=proposal_pin,
+                    original_bytes=original,
+                    original_mode=original_mode,
+                    original_file_id=original_file_id,
+                    baseline_sha256=live_pin,
+                    backup_path=backup_path,
+                    created_dirs=created_dirs,
+                )
+            )
+            new_receipts.append(
+                {
+                    "target": label,
+                    "live_path": live,
+                    "sha256_before": live_pin,
+                    "sha256_after": proposal_pin,
+                    "backup_path": backup_path,
+                }
+            )
             updated.append(live)
 
         receipt_after = json.dumps(
@@ -3152,6 +3535,469 @@ def adopt(staging_dir: str) -> List[str]:
             staging_dir,
             kind="legacy",
             targets=targets,
+            receipt_path=receipt_path,
+            receipt_original=receipt_original,
+            receipt_mode=receipt_mode,
+            receipt_file_id=receipt_file_id,
+            receipt_after=receipt_after,
+        )
+        return updated
+
+
+def adopted_skill_names(staging_dir: str) -> List[str]:
+    """Names of per-skill proposals adopted from this night and not yet reverted."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_skills.json")
+    if not os.path.exists(receipt_path) or _is_link_or_junction(receipt_path):
+        return []
+    try:
+        rows, _, _, _ = _read_existing_receipts(receipt_path, staging_dir)
+        return [str(r["skill_name"]) for r in rows if r.get("skill_name")]
+    except Exception:
+        return []
+
+
+def has_adopted_legacy(staging_dir: str) -> bool:
+    """Whether the managed skill/memory pair is adopted and not yet reverted."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_legacy.json")
+    if not os.path.exists(receipt_path) or _is_link_or_junction(receipt_path):
+        return False
+    try:
+        rows, _, _, _ = _read_legacy_receipts(receipt_path, staging_dir)
+        return bool(rows)
+    except Exception:
+        return False
+
+
+def latest_adopted_staging(project: str) -> Optional[str]:
+    """The newest staging directory holding an adoption that can still be undone.
+
+    Deliberately not `latest_staging`: the newest proposal on disk may never
+    have been adopted, and reverting that would restore a backup for a change
+    the live files never received.
+    """
+    root = staging_root(project)
+    if _is_link_or_junction(root) or not os.path.isdir(root):
+        return None
+    with _lineage_lock(root):
+        entries = _ensure_lineage_synchronized(root)
+        active_per_target = _active_targets_from_lineage(entries)
+
+        for entry in reversed(entries):
+            if entry.get("action") != "adopt":
+                continue
+            sdir = entry.get("staging_dir")
+            if not sdir or not os.path.isdir(sdir) or _is_link_or_junction(sdir):
+                continue
+            is_active = any(
+                stack and _path_identity_key(stack[-1]) == _path_identity_key(sdir)
+                for stack in active_per_target.values()
+            )
+            if is_active and (has_adopted_legacy(sdir) or adopted_skill_names(sdir)):
+                return sdir
+
+    subs = []
+    for entry in os.listdir(root):
+        if not _STAGING_DIR_RE.fullmatch(entry):
+            continue
+        path = os.path.join(root, entry)
+        if _is_link_or_junction(path) or not os.path.isdir(path):
+            continue
+        manifest_path = os.path.join(path, "manifest.json")
+        if _is_link_or_junction(manifest_path) or not os.path.isfile(manifest_path):
+            continue
+        subs.append(path)
+    subs.sort(key=_staging_order, reverse=True)
+    for p in subs:
+        if has_adopted_legacy(p) or adopted_skill_names(p):
+            return p
+    return None
+
+
+def _assert_current_adopted_head(
+    staging_dir: str,
+    *,
+    kind: str,
+    skill_name: Optional[str] = None,
+    target_keys: Optional[Sequence[str]] = None,
+) -> None:
+    """Enforce a strict stack model using adoption lineage: only the most
+    recent adopted staging night for each target can be reverted.
+    """
+    if target_keys is None:
+        if kind == "skills" and skill_name:
+            target_keys = [f"skill:{skill_name}"]
+        elif kind == "legacy":
+            target_keys = ["legacy:skill", "legacy:memory"]
+        else:
+            target_keys = []
+    if not target_keys:
+        return
+
+    staging_root_dir = os.path.dirname(staging_dir)
+    if not os.path.isdir(staging_root_dir) or _is_link_or_junction(staging_root_dir):
+        return
+
+    with _lineage_lock(staging_root_dir):
+        entries = _ensure_lineage_synchronized(staging_root_dir)
+        active_per_target = _active_targets_from_lineage(entries)
+
+        for target_key in target_keys:
+            stack = active_per_target.get(target_key, [])
+            if not stack:
+                continue
+            current_head = stack[-1]
+            if _path_identity_key(current_head) != _path_identity_key(staging_dir):
+                head_name = os.path.basename(current_head)
+                this_name = os.path.basename(staging_dir)
+                raise StagingError(
+                    f"cannot revert {target_key} from older adoption in {this_name!r}: "
+                    f"newer adoption in {head_name!r} must be reverted first"
+                )
+
+
+def revert_skills(staging_dir: str, skill_names: Optional[Sequence[str]] = None) -> List[AdoptedSkill]:
+    """Revert adopted skills back to their pre-adoption state using backups."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    _recover_before_manifest(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_skills.json")
+    if not os.path.exists(receipt_path):
+        return []
+
+    initial_receipts, receipt_original, receipt_mode, receipt_file_id = _read_existing_receipts(
+        receipt_path, staging_dir
+    )
+    if not initial_receipts:
+        return []
+
+    if skill_names is not None:
+        wanted_names = {str(name).strip() for name in skill_names if str(name).strip()}
+        rows = [r for r in initial_receipts if r["skill_name"] in wanted_names]
+        missing = wanted_names - {r["skill_name"] for r in rows}
+        if missing:
+            raise StagingError("not adopted from this night: " + ", ".join(repr(m) for m in sorted(missing)))
+    else:
+        rows = list(initial_receipts)
+
+    if not rows:
+        return []
+
+    all_staged = staged_skills(staging_dir)
+    manifest_by_name = {row.get("skill_name"): row for row in all_staged}
+    skill_roots = staged_skill_roots(staging_dir)
+
+    initial_live_paths: List[str] = []
+    for row in rows:
+        name = row["skill_name"]
+        manifest_row = manifest_by_name.get(name)
+        if not manifest_row:
+            raise StagingError(f"receipt for {name!r} not found in staging manifest")
+        manifest_live = _safe_live_path(manifest_row.get("live_skill_path"))
+        receipt_live = _safe_live_path(row.get("live_skill_path"))
+        if (
+            not manifest_live
+            or not receipt_live
+            or _path_identity_key(manifest_live) != _path_identity_key(receipt_live)
+        ):
+            raise StagingError(f"receipt for {name!r} has untrusted live path")
+        expected_realpath = _safe_live_path(manifest_row.get("live_realpath"))
+        _adopt_live_target_ok(name, receipt_live, expected_realpath, skill_roots)
+        initial_live_paths.append(receipt_live)
+
+    with _adoption_locks(staging_dir, initial_live_paths):
+        current_receipts, current_original, current_mode, current_file_id = _read_existing_receipts(
+            receipt_path, staging_dir
+        )
+        if (
+            current_file_id != receipt_file_id
+            or current_original != receipt_original
+            or not _modes_match(current_mode, receipt_mode)
+        ):
+            raise StagingError("adoption receipt changed while revert was locking")
+
+        if skill_names is not None:
+            active_rows = [r for r in current_receipts if r["skill_name"] in wanted_names]
+        else:
+            active_rows = list(current_receipts)
+
+        revert_targets: List[_RevertTarget] = []
+        receipts_to_return: List[AdoptedSkill] = []
+        reverted_names: set[str] = set()
+
+        for row in active_rows:
+            name = row["skill_name"]
+            manifest_row = manifest_by_name.get(name)
+            if not manifest_row:
+                raise StagingError(f"receipt for {name!r} not found in staging manifest")
+
+            manifest_live = _safe_live_path(manifest_row.get("live_skill_path"))
+            receipt_live = _safe_live_path(row.get("live_skill_path"))
+            if (
+                not manifest_live
+                or not receipt_live
+                or _path_identity_key(manifest_live) != _path_identity_key(receipt_live)
+            ):
+                raise StagingError(f"receipt for {name!r} has untrusted live path")
+
+            expected_realpath = _safe_live_path(manifest_row.get("live_realpath"))
+            _adopt_live_target_ok(name, receipt_live, expected_realpath, skill_roots)
+
+            manifest_proposal_sha = manifest_row.get("sha256")
+            manifest_baseline_sha = manifest_row.get("live_sha256") or ""
+            if not _valid_sha256_pin(manifest_proposal_sha):
+                raise StagingError(f"manifest proposal hash for {name!r} is invalid")
+            if manifest_baseline_sha != "" and not _valid_sha256_pin(manifest_baseline_sha):
+                raise StagingError(f"manifest baseline hash for {name!r} is invalid")
+
+            if row.get("sha256_after") != manifest_proposal_sha:
+                raise StagingError(f"receipt proposal hash for {name!r} does not match manifest")
+            if (row.get("sha256_before") or "") != manifest_baseline_sha:
+                raise StagingError(f"receipt baseline hash for {name!r} does not match manifest")
+
+            receipt_backup = row.get("backup_path") or ""
+            if manifest_baseline_sha == "":
+                if receipt_backup != "":
+                    raise StagingError(f"receipt for newly created skill {name!r} has unexpected backup")
+                expected_backup = ""
+            else:
+                expected_backup = os.path.join(staging_dir, "backup", "skills", name, "SKILL.md")
+                if _path_identity_key(receipt_backup) != _path_identity_key(expected_backup):
+                    raise StagingError(f"receipt for {name!r} has invalid backup path")
+                backup_sha = _immutable_backup_sha256(expected_backup, staging_dir)
+                if backup_sha is None:
+                    raise StagingError(f"backup for {name!r} is missing; cannot revert")
+                if backup_sha != manifest_baseline_sha:
+                    raise StagingError(f"backup for {name!r} changed; cannot safely revert")
+
+            _assert_current_adopted_head(staging_dir, kind="skills", target_keys=[f"skill:{name}"])
+
+            current, current_mode, _ = _file_snapshot(receipt_live)
+            current_sha = _bytes_sha256(current)
+
+            if current_sha == manifest_proposal_sha:
+                if manifest_baseline_sha == "":
+                    target_bytes = None
+                    target_mode = None
+                else:
+                    with open(expected_backup, "rb") as bf:
+                        target_bytes = bf.read()
+                    if _bytes_sha256(target_bytes) != manifest_baseline_sha:
+                        raise StagingError(f"backup content for {name!r} does not match hash")
+                    target_mode = current_mode
+                proposal_bytes = current or b""
+            elif current_sha == manifest_baseline_sha:
+                target_bytes = current
+                target_mode = current_mode
+                expected_file = proposal_filename(name)
+                staged = os.path.join(staging_dir, expected_file)
+                if os.path.isfile(staged) and not _is_link_or_junction(staged):
+                    with open(staged, "rb") as sf:
+                        proposal_bytes = sf.read()
+                else:
+                    proposal_bytes = b""
+            else:
+                raise StagingError(f"live skill for {name!r} changed since adoption; cannot safely revert")
+
+            revert_targets.append(
+                _RevertTarget(
+                    key=f"skill {name!r}",
+                    target_key=f"skill:{name}",
+                    live_path=receipt_live,
+                    expected_realpath=expected_realpath,
+                    expected_basename="SKILL.md",
+                    current_sha256=manifest_proposal_sha,
+                    target_sha256=manifest_baseline_sha,
+                    proposal_bytes=proposal_bytes,
+                    target_bytes=target_bytes,
+                    target_mode=target_mode,
+                    backup_path=expected_backup,
+                    backup_sha256=manifest_baseline_sha,
+                )
+            )
+            receipts_to_return.append(
+                AdoptedSkill(
+                    skill_name=name,
+                    live_skill_path=receipt_live,
+                    sha256_before=manifest_proposal_sha,
+                    sha256_after=manifest_baseline_sha,
+                    backup_path="",
+                )
+            )
+            reverted_names.add(name)
+
+        remaining_receipts = [r for r in current_receipts if r["skill_name"] not in reverted_names]
+        receipt_after = json.dumps(remaining_receipts, ensure_ascii=False, indent=2).encode("utf-8")
+
+        _execute_revert_transaction_locked(
+            staging_dir,
+            kind="skills",
+            targets=revert_targets,
+            receipt_path=receipt_path,
+            receipt_original=receipt_original,
+            receipt_mode=receipt_mode,
+            receipt_file_id=receipt_file_id,
+            receipt_after=receipt_after,
+        )
+        return receipts_to_return
+
+
+def revert(staging_dir: str) -> List[str]:
+    """Revert adopted legacy managed skills back to their pre-adoption state."""
+    staging_dir = _canonical_staging_dir(staging_dir)
+    _recover_before_manifest(staging_dir)
+    receipt_path = os.path.join(staging_dir, "adopted_legacy.json")
+    if not os.path.exists(receipt_path):
+        return []
+
+    initial_receipts, receipt_original, receipt_mode, receipt_file_id = _read_legacy_receipts(receipt_path, staging_dir)
+    if not initial_receipts:
+        return []
+
+    manifest = _load_manifest(staging_dir)
+    legacy_rows = _legacy_rows(manifest)
+
+    initial_live_paths: List[str] = []
+    for row in initial_receipts:
+        label = row.get("target")
+        manifest_row = legacy_rows.get(label)
+        if not manifest_row:
+            raise StagingError(f"legacy {label} not found in staging manifest")
+        manifest_live = _safe_live_path(manifest_row.get("live_path"))
+        receipt_live = _safe_live_path(row.get("live_path"))
+        if (
+            not manifest_live
+            or not receipt_live
+            or _path_identity_key(manifest_live) != _path_identity_key(receipt_live)
+        ):
+            raise StagingError(f"legacy {label} receipt has untrusted live path")
+        expected_realpath = _safe_live_path(manifest_row.get("live_realpath"))
+        expected_basename = "SKILL.md" if label == "skill" else "CLAUDE.md"
+        _adopt_target_ok(
+            f"legacy {label}",
+            receipt_live,
+            expected_realpath,
+            expected_basename=expected_basename,
+        )
+        initial_live_paths.append(receipt_live)
+
+    with _adoption_locks(staging_dir, initial_live_paths):
+        current_receipts, current_original, current_mode, current_file_id = _read_legacy_receipts(
+            receipt_path, staging_dir
+        )
+        if (
+            current_file_id != receipt_file_id
+            or current_original != receipt_original
+            or not _modes_match(current_mode, receipt_mode)
+        ):
+            raise StagingError("legacy adoption receipt changed while revert was locking")
+
+        revert_targets: List[_RevertTarget] = []
+        updated: List[str] = []
+
+        for row in current_receipts:
+            label = row["target"]
+            manifest_row = legacy_rows.get(label)
+            if not manifest_row:
+                raise StagingError(f"legacy {label} not found in staging manifest")
+
+            manifest_live = _safe_live_path(manifest_row.get("live_path"))
+            receipt_live = _safe_live_path(row.get("live_path"))
+            if (
+                not manifest_live
+                or not receipt_live
+                or _path_identity_key(manifest_live) != _path_identity_key(receipt_live)
+            ):
+                raise StagingError(f"legacy {label} receipt has untrusted live path")
+
+            expected_realpath = _safe_live_path(manifest_row.get("live_realpath"))
+            expected_basename = "SKILL.md" if label == "skill" else "CLAUDE.md"
+            _adopt_target_ok(
+                f"legacy {label}",
+                receipt_live,
+                expected_realpath,
+                expected_basename=expected_basename,
+            )
+
+            manifest_proposal_sha = manifest_row.get("sha256")
+            manifest_baseline_sha = manifest_row.get("live_sha256") or ""
+            if not _valid_sha256_pin(manifest_proposal_sha):
+                raise StagingError(f"manifest proposal hash for legacy {label} is invalid")
+            if manifest_baseline_sha != "" and not _valid_sha256_pin(manifest_baseline_sha):
+                raise StagingError(f"manifest baseline hash for legacy {label} is invalid")
+
+            if row.get("sha256_after") != manifest_proposal_sha:
+                raise StagingError(f"receipt proposal hash for legacy {label} does not match manifest")
+            if (row.get("sha256_before") or "") != manifest_baseline_sha:
+                raise StagingError(f"receipt baseline hash for legacy {label} does not match manifest")
+
+            receipt_backup = row.get("backup_path") or ""
+            if manifest_baseline_sha == "":
+                if receipt_backup != "":
+                    raise StagingError(f"receipt for newly created legacy {label} has unexpected backup")
+                expected_backup = ""
+            else:
+                expected_backup = os.path.join(staging_dir, "backup", expected_basename)
+                if _path_identity_key(receipt_backup) != _path_identity_key(expected_backup):
+                    raise StagingError(f"receipt for legacy {label} has invalid backup path")
+                backup_sha = _immutable_backup_sha256(expected_backup, staging_dir)
+                if backup_sha is None:
+                    raise StagingError(f"legacy backup for {label} is missing; cannot revert")
+                if backup_sha != manifest_baseline_sha:
+                    raise StagingError(f"legacy backup for {label} changed; cannot safely revert")
+
+            _assert_current_adopted_head(staging_dir, kind="legacy", target_keys=[f"legacy:{label}"])
+
+            current, current_mode, _ = _file_snapshot(receipt_live)
+            current_sha = _bytes_sha256(current)
+
+            if current_sha == manifest_proposal_sha:
+                if manifest_baseline_sha == "":
+                    target_bytes = None
+                    target_mode = None
+                else:
+                    with open(expected_backup, "rb") as bf:
+                        target_bytes = bf.read()
+                    if _bytes_sha256(target_bytes) != manifest_baseline_sha:
+                        raise StagingError(f"restoring legacy {label} failed sha256 verification")
+                    target_mode = current_mode
+                proposal_bytes = current or b""
+            elif current_sha == manifest_baseline_sha:
+                target_bytes = current
+                target_mode = current_mode
+                staged = os.path.join(staging_dir, expected_basename)
+                if os.path.isfile(staged) and not _is_link_or_junction(staged):
+                    with open(staged, "rb") as sf:
+                        proposal_bytes = sf.read()
+                else:
+                    proposal_bytes = b""
+            else:
+                raise StagingError(f"legacy {label} changed since adoption; cannot safely revert")
+
+            revert_targets.append(
+                _RevertTarget(
+                    key=f"legacy {label}",
+                    target_key=f"legacy:{label}",
+                    live_path=receipt_live,
+                    expected_realpath=expected_realpath,
+                    expected_basename=expected_basename,
+                    current_sha256=manifest_proposal_sha,
+                    target_sha256=manifest_baseline_sha,
+                    proposal_bytes=proposal_bytes,
+                    target_bytes=target_bytes,
+                    target_mode=target_mode,
+                    backup_path=expected_backup,
+                    backup_sha256=manifest_baseline_sha,
+                )
+            )
+            updated.append(receipt_live)
+
+        receipt_after = json.dumps([], ensure_ascii=False, indent=2).encode("utf-8")
+
+        _execute_revert_transaction_locked(
+            staging_dir,
+            kind="legacy",
+            targets=revert_targets,
             receipt_path=receipt_path,
             receipt_original=receipt_original,
             receipt_mode=receipt_mode,
