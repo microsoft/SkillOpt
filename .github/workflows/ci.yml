@@ -19,7 +19,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: pip install -e ".[dev]"
+        # `parallel` is an opt-in extra, but the OfficeQA Parallel search tests
+        # skip without it, so CI installs it to keep that provider covered.
+        run: pip install -e ".[dev,parallel]"
       - name: Pytest
         run: python -m pytest -q
         env:

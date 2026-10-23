@@ -7,6 +7,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
+  provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
+  config selects Parallel automatically. Selecting it sends the generated
+  search queries and the full task question (as the MCP `objective`) to
+  Parallel's hosted endpoint, over an anonymous, lower-rate free tier, so
+  its scores are not directly comparable to the paper's Google-backed search
+  setting. The MCP client ships in a new `parallel` extra
+  (`pip install 'skillopt[parallel]'`) and is imported lazily, so OfficeQA
+  runs and offline installs do not require `mcp`.
 - **SkillOpt-Sleep paired A/B evalkit** (`python -m skillopt_sleep.evalkit`):
   McNemar plus percentile-bootstrap CIs on a fixed task manifest, with
   task-cluster multi-seed inference and seeded null calibration for exact-test
