@@ -14,7 +14,9 @@ API call:
   * no_refusal               — the response is not a bare refusal/abstention
   * tool_called <name>       — a tool with <name> was invoked (needs a tool loop;
                                in single-shot replay we approximate via an
-                               explicit "TOOL_CALL: <name>" marker the agent emits)
+                               explicit "TOOL_CALL: <name>" marker the agent emits;
+                               once tool calls were measured, only the measured
+                               calls count -- see ``verified_tools``)
 
 Ops divide into two families, and the distinction is load-bearing:
 
@@ -100,12 +102,16 @@ def _is_refusal(response: str) -> bool:
 
 
 def _check(op: str, arg: Any, response: str,
-           tools_called: List[str]) -> Tuple[bool, str]:
+           tools_called: List[str], verified_tools: bool = False) -> Tuple[bool, str]:
     """Evaluate one check.
 
     Returns ``(passed, problem)``. ``problem`` is non-empty only when the check
     itself is malformed (e.g. an unparseable regex) rather than simply unmet —
     the two need opposite fixes, so they must not look alike in the rationale.
+
+    ``verified_tools`` means ``tools_called`` was measured by a tool route, so
+    a ``TOOL_CALL:`` marker in the response text is a self-report, not
+    evidence, and must not satisfy ``tool_called``.
     """
     r = response or ""
     if op == "section_present":
@@ -134,6 +140,8 @@ def _check(op: str, arg: Any, response: str,
         name = str(arg).lower()
         if any(name == t.lower() for t in tools_called):
             return True, ""
+        if verified_tools:
+            return False, ""
         # single-shot approximation: the agent emits an explicit marker
         return bool(re.search(r"(?i)\btool_call\s*:\s*%s\b" % re.escape(name), r)), ""
     # unknown op: do not block
@@ -301,8 +309,15 @@ def score_rule_judge_with_feedback(
     judge: Dict[str, Any],
     response: str,
     tools_called: List[str] | None = None,
+    *,
+    verified_tools: bool = False,
 ) -> Tuple[float, float, str, str]:
-    """Return scores, audit rationale, and optimizer-safe feedback."""
+    """Return scores, audit rationale, and optimizer-safe feedback.
+
+    Pass ``verified_tools=True`` when ``tools_called`` came from a tool route
+    (``attempt_with_tools``); the response's own ``TOOL_CALL:`` markers are
+    then ignored for ``tool_called`` checks.
+    """
     checks = (judge or {}).get("checks", []) or []
     if not checks:
         return (
@@ -316,7 +331,9 @@ def score_rule_judge_with_feedback(
     failed_desc: List[str] = []
     semantic_failures: List[str] = []
     for c in checks:
-        ok, problem = _check(c.get("op", ""), c.get("arg"), response, tools_called)
+        ok, problem = _check(
+            c.get("op", ""), c.get("arg"), response, tools_called, verified_tools
+        )
         if ok:
             passed += 1
         else:
@@ -336,9 +353,11 @@ def score_rule_judge(
     judge: Dict[str, Any],
     response: str,
     tools_called: List[str] | None = None,
+    *,
+    verified_tools: bool = False,
 ) -> Tuple[float, float, str]:
     """Return the backward-compatible (hard, soft, rationale) tuple."""
     hard, soft, rationale, _feedback = score_rule_judge_with_feedback(
-        judge, response, tools_called
+        judge, response, tools_called, verified_tools=verified_tools
     )
     return hard, soft, rationale

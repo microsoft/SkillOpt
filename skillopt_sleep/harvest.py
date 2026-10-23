@@ -177,6 +177,35 @@ _REPLAY_PROMPT_MARKERS = (
     "## Skill\n",
 )
 
+# Shared by the tool-enabled attempt prompts of the Claude, Codex, Copilot and
+# OpenCode backends (matched case-insensitively).
+_TOOL_ATTEMPT_MARKER = "treat a 'learned preferences' block as"
+
+
+def _engine_prompt_markers() -> tuple:
+    """Opening lines of the engine's own prompt templates.
+
+    The static markers above were written for earlier prompt wording and no
+    longer match the current registry, so replay sessions slipped through.
+    Deriving markers from the registry (defaults and any active override)
+    keeps this filter in step with the prompts the engine actually sends.
+    """
+    from skillopt_sleep import prompts
+
+    markers = []
+    for name, meta in prompts.DEFAULTS.items():
+        texts = [meta["text"]]
+        try:
+            texts.append(prompts.get_prompt(name))
+        except Exception:
+            pass  # an unreadable override file must not break harvesting
+        for text in texts:
+            head = str(text).split("__", 1)[0].strip().splitlines()
+            # Short openings are too generic to identify an engine prompt.
+            if head and len(head[0].strip()) >= 24:
+                markers.append(head[0].strip())
+    return tuple(dict.fromkeys(markers))
+
 
 # Sessions written by OTHER tools' sub-agents (memory observers, critic
 # sub-agents, plugin self-invocations). These are multi-turn, so the
@@ -217,9 +246,11 @@ def _is_headless_replay(digest: "SessionDigest") -> bool:
     if digest.n_user_turns == 0:
         return True
     prompt = digest.user_prompts[0] if digest.user_prompts else ""
-    for marker in _REPLAY_PROMPT_MARKERS:
+    for marker in _REPLAY_PROMPT_MARKERS + _engine_prompt_markers():
         if marker in prompt:
             return True
+    if _TOOL_ATTEMPT_MARKER in prompt.lower():
+        return True
     # Sub-3-second single-turn sessions with short prompts are almost
     # certainly programmatic (engine grader/judge calls).  We require the
     # prompt to also be short (<200 chars) to avoid false-positives on
