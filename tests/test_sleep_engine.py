@@ -82,6 +82,205 @@ class TestHarvest(unittest.TestCase):
         self.assertTrue(_is_meta_prompt("<system-reminder>x</system-reminder>"))
         self.assertFalse(_is_meta_prompt("please refactor the auth module"))
 
+    def _write_claude_session(self, path, turns):
+        """Write one Claude Code transcript; ``turns`` are (role, text) pairs.
+
+        Records are an hour apart so the sub-3-second heuristic in
+        _is_headless_replay never decides these fixtures.
+        """
+        self._write_jsonl(path, [
+            {"type": role,
+             "timestamp": f"2026-10-15T0{index + 1}:00:00Z",
+             "cwd": "/repo/example",
+             "sessionId": os.path.splitext(os.path.basename(path))[0],
+             "message": {"role": role, "content": text}}
+            for index, (role, text) in enumerate(turns)
+        ])
+
+    def test_meta_prompt_keeps_pasted_user_content(self):
+        # issue #318: the desktop app delivers a pasted brief inside a tag
+        # pair carrying the same id. The user typed that brief, so it is user
+        # content, and dropping it left the session's follow-up as the intent.
+        from skillopt_sleep.harvest import _strip_host_wrappers
+
+        brief = ('<pasted_content id="a1b2">\n'
+                 'Install tool X into a dedicated folder, pin the version.\n'
+                 '</pasted_content id="a1b2">')
+
+        self.assertFalse(_is_meta_prompt(brief))
+        # the helper removes the tags only; callers strip the remainder
+        self.assertEqual(
+            _strip_host_wrappers(brief),
+            "\nInstall tool X into a dedicated folder, pin the version.\n",
+        )
+
+    def test_literal_pasted_content_in_a_request_is_user_text(self):
+        # #321 review: the wrapper is the host's only while it leads the
+        # message. A request that names the tag pair literally — inline code,
+        # a fenced XML example, a fixture carrying attributes — keeps it, in
+        # the harvested request and in the mined intent alike.
+        from skillopt_sleep.harvest import _strip_host_wrappers
+
+        inline = ("Add a parser test for the literal inline example "
+                  "`<pasted_content>LITERAL_XML_VALUE</pasted_content>`.")
+        fenced = ("Add a parser test for this fenced example:\n\n```xml\n"
+                  "<pasted_content>LITERAL_XML_VALUE</pasted_content>\n```")
+        attributed = ('Keep `<pasted_content id="a1b2">LITERAL_XML_VALUE'
+                      '</pasted_content id="a1b2">` in the fixture.')
+        for text in (inline, fenced, attributed):
+            self.assertEqual(_strip_host_wrappers(text), text)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "literal-session.jsonl")
+            self._write_claude_session(path, [
+                ("user", inline),
+                ("assistant", "Plan: ..."),
+                ("user", "Yes, go ahead."),
+                ("assistant", "Done."),
+            ])
+            digest = digest_transcript(path)
+
+        [task] = heuristic_mine([digest])
+        self.assertIn("<pasted_content>LITERAL_XML_VALUE</pasted_content>", task.intent)
+
+    def test_meta_prompt_filters_only_known_host_tags(self):
+        self.assertTrue(_is_meta_prompt("<local-command-stdout>ok</local-command-stdout>"))
+        self.assertTrue(_is_meta_prompt(
+            "<command-message>skillopt-sleep</command-message>\n"
+            "<command-name>/skillopt-sleep</command-name>"
+        ))
+        # VS Code Copilot Chat brackets each request's machine context the
+        # same way; it is host detail, not a prompt, and must stay out
+        # (tests/test_copilot_harvest.py pins the privacy boundary).
+        self.assertTrue(_is_meta_prompt(
+            "<environment_info>private machine context</environment_info>"
+        ))
+        # A wrapper the host does not own is user text, not noise: it must
+        # survive the filter with its content instead of being dropped for
+        # being wrapped in angle brackets, which is what lost pasted briefs.
+        self.assertFalse(_is_meta_prompt("<release-notes>Ship 1.4</release-notes>"))
+
+    def test_pasted_brief_becomes_the_mined_intent(self):
+        brief = ('<pasted_content id="a1b2">\n'
+                 'Install tool X into a dedicated folder, pin the version, '
+                 'back up the configs first.\n'
+                 '</pasted_content id="a1b2">')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "pasted-session.jsonl")
+            self._write_claude_session(path, [
+                ("user", brief),
+                ("assistant", "Plan: ..."),
+                ("user", "Yes, go ahead with option A."),
+                ("assistant", "Done."),
+            ])
+            digest = digest_transcript(path)
+
+        [task] = heuristic_mine([digest])
+        self.assertEqual(
+            task.intent,
+            "Install tool X into a dedicated folder, pin the version, back up the configs first.",
+        )
+        self.assertNotIn("pasted_content", task.intent)
+        # the follow-up stays available as constraint context, not as intent
+        self.assertIn("Yes, go ahead with option A.", task.context_excerpt)
+
+    def test_session_whose_only_user_turn_is_a_pasted_brief_survives_harvest(self):
+        from skillopt_sleep.harvest import harvest
+
+        brief = ('<pasted_content id="a1b2">\nInstall tool X into a dedicated folder.\n'
+                 '</pasted_content id="a1b2">')
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "projects", "-repo-example")
+            os.makedirs(project_dir)
+            self._write_claude_session(os.path.join(project_dir, "pasted-only.jsonl"), [
+                ("user", brief),
+                ("assistant", "Plan: ..."),
+                ("assistant", "Done."),
+            ])
+
+            digests = harvest(os.path.join(tmp, "projects"), scope="all")
+
+        self.assertEqual([d.session_id for d in digests], ["pasted-only"])
+        self.assertEqual(digests[0].user_prompts,
+                         ["Install tool X into a dedicated folder."])
+
+    def test_system_reminder_prefix_does_not_ride_into_the_intent(self):
+        request = "Yes: run the third review on range r2..abc1234 and update the report."
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "reminder-prefix.jsonl")
+            self._write_claude_session(path, [
+                ("user", "<system-reminder>\nStatus note injected by the host app.\n"
+                         f"</system-reminder>\n\n{request}"),
+                ("assistant", "Running the review."),
+            ])
+            digest = digest_transcript(path)
+
+        self.assertEqual(digest.user_prompts, [request])
+        [task] = heuristic_mine([digest])
+        self.assertEqual(task.intent, request)
+        self.assertNotIn("Status note", task.intent)
+
+    def test_host_only_transcript_does_not_take_a_session_slot(self):
+        from skillopt_sleep.harvest import harvest
+
+        # Review of #318: a record with no user intent must not be admitted
+        # before the cap. It mines nothing, so admitting it turns a night into
+        # zero tasks by displacing a real session with a newer host-only one.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "projects", "-repo-example")
+            os.makedirs(project_dir)
+            host_only = os.path.join(project_dir, "host-note.jsonl")
+            self._write_jsonl(host_only, [
+                {"type": "user", "isMeta": True,
+                 "timestamp": "2026-10-15T09:00:00Z",
+                 "cwd": "/repo/example", "sessionId": "host-note",
+                 "message": {"role": "user",
+                             "content": "<local-command-stdout>ok</local-command-stdout>"}},
+                {"type": "assistant", "timestamp": "2026-10-15T09:00:30Z",
+                 "cwd": "/repo/example", "sessionId": "host-note",
+                 "message": {"role": "assistant", "content": "Noted."}},
+            ])
+            real = os.path.join(project_dir, "real-task.jsonl")
+            self._write_claude_session(real, [
+                ("user", "Fix the failing date parser test in module B."),
+                ("assistant", "Fixed."),
+            ])
+            os.utime(host_only, (2_000_000, 2_000_000))   # newer
+            os.utime(real, (1_000_000, 1_000_000))
+
+            digests = harvest(os.path.join(tmp, "projects"), scope="all", limit=1)
+
+        self.assertEqual([d.session_id for d in digests], ["real-task"])
+
+    def test_inline_code_system_reminder_example_is_user_text(self):
+        # Review of #318: the user quoting a reminder inside inline code was
+        # being deleted, which changed both the request and the mined intent.
+        request = ("How should I escape `<system-reminder>note</system-reminder>` "
+                   "inside my transcript fixture?")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "inline-example.jsonl")
+            self._write_claude_session(path, [
+                ("user", request),
+                ("assistant", "Use html.escape()."),
+            ])
+            digest = digest_transcript(path)
+
+        self.assertEqual(digest.user_prompts, [request])
+
+    def test_fenced_system_reminder_example_is_user_text(self):
+        request = ("This is what our host writes before a real request:\n"
+                   "```xml\n<system-reminder>\ncontext\n</system-reminder>\n```\n"
+                   "Please make the parser strip it.")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "fenced-example.jsonl")
+            self._write_claude_session(path, [
+                ("user", request),
+                ("assistant", "Will do."),
+            ])
+            digest = digest_transcript(path)
+
+        self.assertEqual(digest.user_prompts, [request])
+
     def _claude_session_with_injected_messages(self, tmp, follow_up):
         """A Claude Code session as written to disk when a skill is loaded.
 

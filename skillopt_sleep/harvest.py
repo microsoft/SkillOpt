@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -134,12 +135,78 @@ def _detect_feedback(text: str) -> List[str]:
     return sig
 
 
+# ── Issue #318: host wrappers around user text ─────────────────────────
+#
+# The Claude Code desktop app delivers a pasted block as the user message,
+# wrapped in ``<pasted_content id="…">…</pasted_content id="…">``. The brief
+# the user pasted is typed by them and is often the whole point of the
+# session, so the wrapper is unwrapped instead of dropped — but only while it
+# leads the message, because the same tag pair inside a prompt the user wrote
+# is their content (#321 review: four literal-example cases).
+_PASTED_CONTENT_LEAD_RE = re.compile(
+    r"<pasted_content\b[^>]*>(.*?)</pasted_content[^>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Host-injected status notes. A message that is only a reminder is host noise,
+# and a reminder *prefixed* to a real request must not ride into the mined
+# intent as text the user never wrote. The match is anchored by the caller:
+# only the block that leads a message is removed.
+_SYSTEM_REMINDER_RE = re.compile(
+    r"<system-reminder\b[^>]*>.*?</system-reminder\s*>", re.IGNORECASE | re.DOTALL
+)
+
+# Tags the host injects as a whole user message: expanded slash-command
+# bodies, local-command output, shell-mode input and editor selections. The
+# list is closed deliberately — a wrapper this list does not know about is
+# treated as user text, so such a message keeps its request instead of losing
+# it. <system-reminder> is listed as well as stripped, so a variant carrying
+# attributes is still recognised as host noise.
+_HOST_META_TAGS = (
+    "command-name", "command-message", "command-args",
+    "local-command-stdout", "local-command-caveat",
+    "system-reminder",
+    "bash-input", "bash-stdout", "bash-stderr",
+    "ide_opened_file", "ide_selection",
+    # VS Code Copilot Chat brackets the machine context of every request
+    # (<environment_info>…</environment_info>); harvesting it leaks local
+    # environment detail and was never a user prompt.
+    "environment_info",
+)
+
+
+def _strip_host_wrappers(text: str) -> str:
+    """Unwrap a host's leading pasted block and drop its own leading notes.
+
+    Both are positioned, not textual. A ``<pasted_content>`` wrapper is
+    unwrapped only while it *leads* the message, which is how the host
+    prepends it — and a ``<system-reminder>`` block only while it leads as
+    well. Neither rule reaches inside the text the user wrote: a request that
+    names the tag pair literally (an inline-code sample, a fenced XML
+    example, a fixture with attributes) keeps its tags, so the harvested
+    request and the mined intent stay what they typed. Stripping every
+    occurrence changed both.
+    """
+    if "<" not in text:
+        return text
+    out = text
+    while True:
+        stripped = out.lstrip()
+        pasted = _PASTED_CONTENT_LEAD_RE.match(stripped)
+        if pasted is not None:
+            out = pasted.group(1) + stripped[pasted.end():]
+            continue
+        reminder = _SYSTEM_REMINDER_RE.match(stripped)
+        if reminder is not None:
+            out = stripped[reminder.end():]
+            continue
+        return out
+
+
 def _is_meta_prompt(text: str) -> bool:
     """Skip slash-commands / system noise that aren't real user intents."""
-    t = text.strip()
+    t = _strip_host_wrappers(text).strip()
     if not t:
-        return True
-    if t.startswith("<") and t.endswith(">"):
         return True
     if t.startswith("/") and len(t.split()) <= 3:
         return True
@@ -152,6 +219,14 @@ def _is_meta_prompt(text: str) -> bool:
         return True
     if t.startswith("# /"):
         return True
+    # A message that is nothing but one host tag block (`<system-reminder>`,
+    # `<local-command-stdout>`, …) carries no user intent. The tag list is
+    # closed on purpose: text that merely arrives wrapped in angle brackets
+    # is user content, and dropping it loses the session's real request
+    # (issue #318: the desktop app delivers a pasted brief that way).
+    if t.startswith("<") and t.endswith(">"):
+        head = t[1:].split(">", 1)[0].split(None, 1)
+        return bool(head) and head[0].lower() in _HOST_META_TAGS
     return False
 
 
@@ -215,6 +290,11 @@ def _is_headless_replay(digest: "SessionDigest") -> bool:
     if digest.n_user_turns > 1:
         return False
     if digest.n_user_turns == 0:
+        # Every user turn was filtered as host noise or engine input, so there
+        # is no user intent to mine. Such a record must not be admitted: it
+        # would take a slot under --max-sessions and yield no task, displacing
+        # a real session (review of #318). A pasted brief is not this case —
+        # it now survives the filter as a user turn.
         return True
     prompt = digest.user_prompts[0] if digest.user_prompts else ""
     for marker in _REPLAY_PROMPT_MARKERS:
@@ -278,7 +358,10 @@ def digest_transcript(path: str) -> Optional[SessionDigest]:
             # other sessions, usage-limit notices. The user typed none of it.
             # A body that names a known agent session is still kept, so
             # _is_agent_session can drop the whole session as before.
-            text = _text_from_content(content)
+            # Host wrappers are removed before the meta test: a pasted brief
+            # (#318) is user content, and a <system-reminder> prefix must not
+            # ride into the intent (see _strip_host_wrappers).
+            text = _strip_host_wrappers(_text_from_content(content))
             if rec.get("isMeta") is True and not any(
                 marker in text for marker in _AGENT_SESSION_MARKERS
             ):
