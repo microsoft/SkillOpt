@@ -13,7 +13,19 @@ from skillopt_sleep.harvest_pi import harvest_pi
 from skillopt_sleep.types import SessionDigest
 
 
-def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) -> list[SessionDigest]:
+def harvest_for_config(
+    cfg,
+    *,
+    since_iso: Optional[str] = None,
+    limit: int = 0,
+    stats: Optional[dict] = None,
+) -> list[SessionDigest]:
+    """Harvest with the configured source.
+
+    ``stats`` is filled in place by the Claude source (see
+    `skillopt_sleep.harvest.harvest`); the other sources have no repeat
+    filter to report yet and leave it untouched.
+    """
     source = cfg.get("transcript_source", "claude")
     scope = cfg.get("projects", "invoked")
     invoked_project = cfg.get("invoked_project", "")
@@ -83,4 +95,5 @@ def harvest_for_config(cfg, *, since_iso: Optional[str] = None, limit: int = 0) 
         invoked_project=invoked_project,
         since_iso=since_iso,
         limit=limit,
+        stats=stats,
     )

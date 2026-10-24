@@ -35,6 +35,7 @@ from typing import Any, Dict
 from skillopt_sleep.backend import CursorBackendError
 from skillopt_sleep.config import ConfigError, load_config
 from skillopt_sleep.cycle import _one_line_display_text, run_sleep_cycle
+from skillopt_sleep.harvest import format_harvest_note
 from skillopt_sleep.harvest_sources import harvest_for_config
 from skillopt_sleep.mine import mine
 from skillopt_sleep.staging import (
@@ -788,13 +789,14 @@ def cmd_adopt(args) -> int:
 def cmd_harvest(args) -> int:
     cfg = _cfg_from_args(args)
     session_limit = cfg.get("max_sessions_per_night", 0) or cfg.get("max_tasks_per_night", 40) * 3
+    harvest_stats: Dict[str, int] = {}
     target_skill_path = cfg.managed_skill_path() if cfg.get("target_skill_path", "") else ""
     target_skill_text = _read_text(target_skill_path) if target_skill_path else ""
     max_tasks = cfg.get("max_tasks_per_night", 40)
     candidate_limit = max_tasks
     if cfg.get("target_task_filter", True) and target_skill_text:
         candidate_limit = max(max_tasks, max_tasks * 3)
-    digests = harvest_for_config(cfg, limit=session_limit)
+    digests = harvest_for_config(cfg, limit=session_limit, stats=harvest_stats)
     tasks = mine(
         digests,
         max_tasks=max_tasks,
@@ -820,7 +822,8 @@ def cmd_harvest(args) -> int:
             json_payload["output"] = output_path
         print(json.dumps(json_payload, ensure_ascii=False, indent=2))
     else:
-        print(f"[sleep] {len(digests)} sessions -> {len(tasks)} tasks")
+        print(f"[sleep] {len(digests)} sessions -> {len(tasks)} tasks"
+              f"{format_harvest_note(harvest_stats)}")
         if output_path:
             print(f"[sleep] wrote reviewed-task draft: {output_path}")
         for t in tasks:
