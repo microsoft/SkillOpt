@@ -1,0 +1,3 @@
+# Evidence hashes identify exact bytes, including line endings.
+*.json text eol=lf
+*.jsonl text eol=lf

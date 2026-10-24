@@ -1,0 +1,13 @@
+{
+  "classification": "RECONSTRUCTED",
+  "origin": "synthetic",
+  "run_id": "synthetic-example-only",
+  "source_revision": "synthetic-example-not-a-historical-commit",
+  "aggregation": "single_run_unweighted_all_items",
+  "manifest_sha256": "9c7c3be628488fdf640ff7a4fe8cc6f8bf18fd6798e10ed571c4fbb9577d8c8e",
+  "results_sha256": "48c912fcd09985619bc01dbf84ac309ff53bbc3460bb66e59c577eba3f48d062",
+  "summary_sha256": "6c1c9209a2898fb1ac3c957c0a4e4e0eb537e35ccbd5df6ca7cdb23a1f594d05",
+  "train_sha256": "5e488fa13a3542d97577a48a657cd86788274d8a221b168fb193ef19220973af",
+  "val_sha256": "6a2bb60cf6b680d783fd4f547bb9ea7e9e63464d950169f420bca383399d96b6",
+  "test_sha256": "1985d8ec2557b474716b558c29911015af11b810f1540a70d78cdc36b5ede28f"
+}
