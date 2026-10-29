@@ -1203,6 +1203,56 @@ class TestSkillProposalsFromGroups(unittest.TestCase):
             self.assertTrue(any("ghost-skill" in note for note in notes))
             self.assertFalse(any("skillopt-sleep-learned" in note for note in notes))
 
+    def test_plugin_qualified_group_stages_under_the_live_directory_name(self):
+        from skillopt_sleep.config import load_config
+        from skillopt_sleep.cycle import _skill_proposals_from_groups
+
+        with tempfile.TemporaryDirectory() as home:
+            claude_home = os.path.join(home, ".claude")
+            live = os.path.join(
+                claude_home, "plugins", "cache", "market", "toolbox", "0.6.4",
+                "skills", "doc-truth", "SKILL.md",
+            )
+            _write(live, "# original\n")
+            cfg = load_config(claude_home=claude_home)
+
+            proposals, notes = _skill_proposals_from_groups(
+                cfg,
+                {"toolbox:doc-truth": _accepted_group(
+                    "toolbox:doc-truth", "# improved\n")},
+                "skillopt-sleep-learned",
+            )
+
+            self.assertEqual(notes, [])
+            self.assertEqual(len(proposals), 1)
+            self.assertEqual(proposals[0].skill_name, "doc-truth")
+            self.assertEqual(proposals[0].live_skill_path, os.path.realpath(live))
+
+    def test_pinned_plugin_path_stages_under_directory_name(self):
+        from skillopt_sleep.config import load_config
+        from skillopt_sleep.cycle import _skill_proposals_from_groups
+
+        with tempfile.TemporaryDirectory() as home:
+            claude_home = os.path.join(home, ".claude")
+            live = os.path.join(
+                claude_home, "plugins", "cache", "market", "toolbox", "0.6.4",
+                "skills", "doc-truth", "SKILL.md",
+            )
+            _write(live, "# original\n")
+            cfg = load_config(claude_home=claude_home)
+
+            proposals, notes = _skill_proposals_from_groups(
+                cfg,
+                {"toolbox:doc-truth": _accepted_group(
+                    "toolbox:doc-truth", "# improved\n")},
+                "skillopt-sleep-learned",
+                resolved_paths={"toolbox:doc-truth": os.path.realpath(live)},
+                resolved_hashes={"toolbox:doc-truth": "known-hash"},
+            )
+
+            self.assertEqual(notes, [])
+            self.assertEqual([proposal.skill_name for proposal in proposals], ["doc-truth"])
+
     def test_skips_a_second_skill_that_resolves_to_the_same_live_file(self):
         from skillopt_sleep.config import load_config
         from skillopt_sleep.cycle import _skill_proposals_from_groups

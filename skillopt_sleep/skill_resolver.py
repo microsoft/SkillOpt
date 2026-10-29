@@ -210,18 +210,66 @@ def _contained_skill_file(root: str, name: str) -> str:
     return skill_file
 
 
+def _plugin_name_for_root(root: str) -> str:
+    """Return the Claude plugin name for an installed plugin skills root.
+
+    Installed Claude plugin roots have the versioned shape
+    ``.../plugins/cache/<marketplace>/<plugin>/<version>/skills`` and a
+    legacy unversioned shape ``.../plugins/cache/<marketplace>/<plugin>/skills``.
+    Requiring one of those shapes prevents an explicit user skill root from
+    accidentally being treated as a plugin root just because its directory
+    happens to be named like one.
+    """
+    parts = os.path.normpath(os.path.realpath(root)).split(os.sep)
+    if (
+        len(parts) >= 8
+        and parts[-1] == "skills"
+        and parts[-6:-4] == ["plugins", "cache"]
+    ):
+        return parts[-3]
+    if (
+        len(parts) >= 7
+        and parts[-1] == "skills"
+        and parts[-5:-3] == ["plugins", "cache"]
+    ):
+        return parts[-2]
+    return ""
+
+
 def resolve_skill(name: object, roots: Sequence[str]) -> SkillResolution:
     """Resolve ``name`` against ``roots`` without touching any skill content."""
-    normalized = normalize_skill_name(name)
+    original = name.strip() if isinstance(name, str) else ""
+    plugin_name = ""
+    if ":" in original:
+        if original.count(":") != 1:
+            return SkillResolution(
+                name=original,
+                status=REJECTED,
+                reason="plugin-qualified skill name must contain one safe plugin and skill name",
+            )
+        raw_plugin, raw_skill = original.split(":", 1)
+        plugin_name = normalize_skill_name(raw_plugin)
+        normalized = normalize_skill_name(raw_skill)
+        if not plugin_name or not normalized:
+            normalized = ""
+    else:
+        normalized = normalize_skill_name(name)
+
     if not normalized:
         return SkillResolution(
             name=name if isinstance(name, str) else "",
             status=REJECTED,
-            reason="skill name is empty or not a single safe path segment",
+            reason=(
+                "plugin-qualified skill name must contain one safe plugin and skill name"
+                if plugin_name or ":" in original
+                else "skill name is empty or not a single safe path segment"
+            ),
         )
 
     matches: List[str] = []
     for root in roots:
+        if plugin_name and _plugin_name_for_root(root) != plugin_name:
+            continue
         found = _contained_skill_file(root, normalized)
         if found and found not in matches:
             matches.append(found)

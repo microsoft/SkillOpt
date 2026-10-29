@@ -598,6 +598,16 @@ def _skill_proposals_from_groups(
             if not live_path:
                 notes.append(_cycle_skip_note(name, "no resolved live baseline"))
                 continue
+            # Plugin calls are recorded as ``plugin:skill`` but proposals
+            # target the actual skill directory and must use its portable
+            # basename (the colon is not a valid staged filename on Windows).
+            # Keep ordinary names unchanged so symlink aliases retain their
+            # existing refusal behavior during staging.
+            proposal_name = (
+                os.path.basename(os.path.dirname(live_path))
+                if ":" in name
+                else name
+            )
             live_sha256 = (
                 resolved_hashes.get(name, "")
                 if resolved_hashes is not None
@@ -614,6 +624,7 @@ def _skill_proposals_from_groups(
                 )
                 continue
             live_path = resolution.path
+            proposal_name = resolution.name
             live_sha256 = None
         live_key = unicodedata.normalize(
             "NFC", os.path.realpath(live_path)
@@ -627,7 +638,7 @@ def _skill_proposals_from_groups(
             )
             continue
         candidate = SkillProposal(
-            name,
+            proposal_name,
             new_skill,
             live_path,
             live_sha256=live_sha256,
