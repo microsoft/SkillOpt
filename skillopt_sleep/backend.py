@@ -836,6 +836,27 @@ class ClaudeCliBackend(CliBackend):
                 self.last_call_error = combined[:500]
                 return
 
+    @staticmethod
+    def _require_isolated_auth() -> None:
+        """Refuse OAuth-only CLI calls that can inherit user instructions.
+
+        Claude Code's subscription login cannot be combined with ``--bare``.
+        Without that flag, a clean working directory and disabled slash
+        commands still do not isolate user-level instructions and hooks. Do
+        not inspect the user's Claude configuration to guess whether an
+        ``apiKeyHelper`` is present; require an explicit API key for this
+        backend until the CLI offers a verifiably isolated OAuth mode.
+        """
+        if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+            from skillopt_sleep.staging import StagingError
+
+            raise StagingError(
+                "Claude replay refused: ANTHROPIC_API_KEY is required for isolated "
+                "measurement. Subscription/OAuth authentication cannot use --bare, "
+                "so user-level instructions and hooks may contaminate scores. "
+                "Configure an API key or choose another backend."
+            )
+
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
         # Run ISOLATED so the ambient Claude Code environment does not leak into
         # the optimizer/target call. Critically, the user's GLOBAL skills
@@ -850,9 +871,9 @@ class ClaudeCliBackend(CliBackend):
         #   --exclude-dynamic-...     drop per-machine cwd/env/memory/git sections
         #   cwd=<clean temp>          no project CLAUDE.md
         import tempfile
+        self._require_isolated_auth()
         cmd = [self.claude_path, "-p", "--output-format", "text"]
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            cmd.append("--bare")
+        cmd.append("--bare")
         cmd += [
             "--disable-slash-commands",
             "--disallowedTools", "*",
@@ -923,8 +944,8 @@ class ClaudeCliBackend(CliBackend):
                 "Return ONLY the final answer text."
             )
             cmd = [self.claude_path, "-p", "--output-format", "text"]
-            if os.environ.get("ANTHROPIC_API_KEY"):
-                cmd.append("--bare")
+            self._require_isolated_auth()
+            cmd.append("--bare")
             cmd += [
                 "--disable-slash-commands",
                 "--allowedTools", "Bash",

@@ -201,6 +201,16 @@ An existing file that cannot be decoded, parsed, or read stops the command
 with a configuration error and exit code 2; it does not discard your settings
 and run with default budgets. Explicit CLI flags still override loaded values.
 
+#### Claude replay isolation
+
+The `claude` replay backend requires `ANTHROPIC_API_KEY` so it can use
+Claude Code's `--bare` mode and avoid user-level instructions and hooks
+contaminating evaluation scores. Subscription/OAuth login cannot currently be
+combined with this isolation mode; the backend stops with a clear error instead
+of reporting an uncontrolled score. Use another backend when an API key is not
+available. SkillOpt does not inspect the user's Claude configuration to infer
+whether an API key helper is configured.
+
 ### Harvest filters (environment)
 
 Harvest keeps what you typed and drops what a machine wrote. Four environment

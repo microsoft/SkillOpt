@@ -306,6 +306,7 @@ def test_attempt_with_tools_sets_call_local_delta(monkeypatch):
     from skillopt_sleep.backend import ClaudeCliBackend
 
     b = ClaudeCliBackend(model="", claude_path="claude", timeout=10)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
     def fake_run(*args, **kwargs):
         return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
@@ -328,6 +329,7 @@ def test_dual_backend_attempt_with_tools_sets_target_delta(monkeypatch):
     target = ClaudeCliBackend(model="", claude_path="claude", timeout=10)
     optimizer = ClaudeCliBackend(model="", claude_path="claude", timeout=10)
     db = DualBackend(target=target, optimizer=optimizer)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
     def fake_run(*args, **kwargs):
         return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
