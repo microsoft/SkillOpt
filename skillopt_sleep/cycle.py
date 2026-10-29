@@ -326,6 +326,41 @@ def _report_score(value: object) -> str:
     return f"{score:.3f}" if math.isfinite(score) else "—"
 
 
+def _render_gate_trials_md(trials: List[dict], *, heading_level: int = 3) -> List[str]:
+    """Render held-out comparisons without changing their owning report."""
+    lines: List[str] = []
+    for trial in trials:
+        target = _markdown_table_text(trial.get("target", "candidate"))
+        accepted = bool(trial.get("accepted", False))
+        blocked = bool(trial.get("blocked_by_regression", False))
+        decision = "accepted" if accepted else "rejected"
+        if blocked:
+            decision += " (task regression)"
+        baseline = _report_score(trial.get("baseline_score"))
+        candidate = _report_score(trial.get("candidate_score"))
+        lines.append(
+            f"{'#' * heading_level} `{target}` candidate — {decision} "
+            f"({baseline} → {candidate})"
+        )
+        lines.append("")
+        lines.append("| Task | Tags | Baseline | Candidate | Change |")
+        lines.append("|---|---|---:|---:|---|")
+        for delta in trial.get("task_deltas", []):
+            task_id = _markdown_table_text(delta.get("task_id", ""))
+            tags = _markdown_table_text(
+                ", ".join(str(tag) for tag in delta.get("tags", [])) or "—"
+            )
+            baseline_score = _report_score(delta.get("baseline_score"))
+            candidate_score = _report_score(delta.get("candidate_score"))
+            status = _markdown_table_text(delta.get("status", "unchanged"))
+            lines.append(
+                f"| `{task_id}` | {tags} | {baseline_score} "
+                f"| {candidate_score} | {status} |"
+            )
+        lines.append("")
+    return lines
+
+
 def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
     project = _markdown_text(report.project)
     backend = _markdown_text(cfg.get("backend"))
@@ -370,35 +405,7 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
             "they do not establish that a particular edit caused the change._"
         )
         lines.append("")
-        for trial in report.gate_trials:
-            target = _markdown_table_text(trial.get("target", "candidate"))
-            accepted = bool(trial.get("accepted", False))
-            blocked = bool(trial.get("blocked_by_regression", False))
-            decision = "accepted" if accepted else "rejected"
-            if blocked:
-                decision += " (task regression)"
-            baseline = _report_score(trial.get("baseline_score"))
-            candidate = _report_score(trial.get("candidate_score"))
-            lines.append(
-                f"### `{target}` candidate — {decision} "
-                f"({baseline} → {candidate})"
-            )
-            lines.append("")
-            lines.append("| Task | Tags | Baseline | Candidate | Change |")
-            lines.append("|---|---|---:|---:|---|")
-            for delta in trial.get("task_deltas", []):
-                task_id = _markdown_table_text(delta.get("task_id", ""))
-                tags = _markdown_table_text(
-                    ", ".join(str(tag) for tag in delta.get("tags", [])) or "—"
-                )
-                baseline_score = _report_score(delta.get("baseline_score"))
-                candidate_score = _report_score(delta.get("candidate_score"))
-                status = _markdown_table_text(delta.get("status", "unchanged"))
-                lines.append(
-                    f"| `{task_id}` | {tags} | {baseline_score} "
-                    f"| {candidate_score} | {status} |"
-                )
-            lines.append("")
+        lines.extend(_render_gate_trials_md(report.gate_trials))
     if report.edits:
         lines.append("## Accepted edits")
         for e in report.edits:
@@ -478,6 +485,12 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
                 f"| `{name}` | **{decision}**{reason} | {group_gate} "
                 f"| {g.n_tasks} | {scores} | {edits} |")
         lines.append("")
+        for group in report.skill_groups:
+            if group.gate_trials:
+                name = _markdown_table_text(group.skill_name or "_(no skill name)_")
+                lines.append(f"### `{name}` held-out task changes")
+                lines.append("")
+                lines.extend(_render_gate_trials_md(group.gate_trials, heading_level=4))
     if report.notes:
         lines.append("## Notes")
         for n in report.notes:
@@ -1064,13 +1077,14 @@ def run_sleep_cycle(
                 if outcome is not None:
                     group_outcomes[name] = outcome
             group_rows = skill_group_reports(group_outcomes)
-            # Skill hints and isolated backend failures are both untrusted
-            # free text. Scrub them before either report.json or report.md is
+            # Skill hints, backend failures, and trial task text are untrusted.
+            # Scrub them before either report.json or report.md is
             # rendered so staging cannot turn a failed call into a credential
             # leak.
             for row in group_rows:
                 row.skill_name = str(redact_secrets(row.skill_name))
                 row.reason = str(redact_secrets(row.reason))
+                row.gate_trials = redact_secrets(row.gate_trials)
             report.skill_groups = group_rows
 
     report.tokens_used = backend.tokens_used()
@@ -1178,6 +1192,7 @@ def run_sleep_cycle(
                             getattr(result, "holdout_detail", [])
                         ),
                         "gate_trials": report.gate_trials,
+                        "skill_groups": [row.to_dict() for row in report.skill_groups],
                     }),
                     _fh,
                     indent=2,
