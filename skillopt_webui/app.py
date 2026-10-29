@@ -760,12 +760,16 @@ def main():
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--host", type=str, default="127.0.0.1",
-                        help="Server host. Default is localhost; use 0.0.0.0 "
-                             "to expose publicly (no auth, use with care).")
+                        help="Server host. Default is localhost; binding any "
+                             "other address requires --auth-user/--auth-pass.")
     parser.add_argument("--auth-user", type=str, default=None,
                         help="Username for basic auth (or set SKILLOPT_WEBUI_USER).")
     parser.add_argument("--auth-pass", type=str, default=None,
                         help="Password for basic auth (or set SKILLOPT_WEBUI_PASS).")
+    parser.add_argument("--allow-unauthenticated", action="store_true",
+                        help="Allow --share or a non-loopback --host without "
+                             "auth. Anyone who can reach the UI can then launch "
+                             "training jobs with your API keys.")
     args = parser.parse_args()
 
     if args.host and args.host not in ("127.0.0.1", "localhost", "::1"):
@@ -799,6 +803,19 @@ def main():
             "--auth-user and --auth-pass (or both SKILLOPT_WEBUI_USER and "
             "SKILLOPT_WEBUI_PASS) to require login, or neither to run without "
             "authentication. Refusing to start.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # The training controls launch jobs with the API keys from .env and
+    # .secrets/, so never expose them beyond loopback without login unless
+    # the operator explicitly opts in.
+    exposed = args.share or args.host not in ("127.0.0.1", "localhost", "::1")
+    if exposed and not auth and not args.allow_unauthenticated:
+        print(
+            "Refusing to start: --share / a non-loopback --host requires "
+            "--auth-user and --auth-pass (or SKILLOPT_WEBUI_USER and "
+            "SKILLOPT_WEBUI_PASS). Pass --allow-unauthenticated to override.",
             file=sys.stderr,
         )
         sys.exit(1)

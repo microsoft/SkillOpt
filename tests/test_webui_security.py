@@ -48,7 +48,7 @@ def test_main_warns_on_public_host(webui, monkeypatch, capsys):
     app_mock = mock.MagicMock()
     app_mock.launch = launcher
     monkeypatch.setattr(webui_mod, "build_ui", lambda: app_mock)
-    monkeypatch.setattr(sys, "argv", ["app.py", "--host", "0.0.0.0"])
+    monkeypatch.setattr(sys, "argv", ["app.py", "--host", "0.0.0.0", "--allow-unauthenticated"])
 
     webui_mod.main()
 
@@ -65,13 +65,47 @@ def test_main_warns_on_share(webui, monkeypatch, capsys):
     app_mock = mock.MagicMock()
     app_mock.launch = launcher
     monkeypatch.setattr(webui_mod, "build_ui", lambda: app_mock)
-    monkeypatch.setattr(sys, "argv", ["app.py", "--share"])
+    monkeypatch.setattr(sys, "argv", ["app.py", "--share", "--allow-unauthenticated"])
 
     webui_mod.main()
 
     captured = capsys.readouterr()
     assert "share" in captured.err.lower()
     assert "public" in captured.err.lower() or "tunnel" in captured.err.lower()
+
+
+@pytest.mark.parametrize("argv", [["--host", "0.0.0.0"], ["--share"]])
+def test_main_refuses_exposed_without_auth(webui, monkeypatch, argv):
+    """A public bind or share link without auth must fail closed (never launch)."""
+    webui_mod = webui
+    launcher = mock.MagicMock()
+    app_mock = mock.MagicMock()
+    app_mock.launch = launcher
+    monkeypatch.setattr(webui_mod, "build_ui", lambda: app_mock)
+    monkeypatch.setattr(sys, "argv", ["app.py", *argv])
+    monkeypatch.delenv("SKILLOPT_WEBUI_USER", raising=False)
+    monkeypatch.delenv("SKILLOPT_WEBUI_PASS", raising=False)
+    with pytest.raises(SystemExit):
+        webui_mod.main()
+    launcher.assert_not_called()
+
+
+def test_main_allows_exposed_with_auth(webui, monkeypatch):
+    """A public bind with auth configured must launch with that auth."""
+    webui_mod = webui
+    launcher = mock.MagicMock()
+    app_mock = mock.MagicMock()
+    app_mock.launch = launcher
+    monkeypatch.setattr(webui_mod, "build_ui", lambda: app_mock)
+    monkeypatch.setattr(
+        sys, "argv", ["app.py", "--host", "0.0.0.0", "--auth-user", "admin", "--auth-pass", "s3cret"]
+    )
+
+    webui_mod.main()
+
+    _args, kwargs = launcher.call_args
+    assert kwargs["server_name"] == "0.0.0.0"
+    assert kwargs.get("auth") == ("admin", "s3cret")
 
 
 def test_main_auth_via_cli_args(webui, monkeypatch):

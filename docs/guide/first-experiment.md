@@ -127,8 +127,8 @@ python -m skillopt_webui.app
 ```
 
 Then open `http://localhost:7860` in your browser to configure parameters and
-launch training. The default host is `0.0.0.0`; pass `--host 127.0.0.1` for a
-local-only dashboard.
+launch training. The default host is `127.0.0.1`; exposing it with `--host 0.0.0.0`
+requires `--auth-user`/`--auth-pass`.
 
 ## Next Steps
 
