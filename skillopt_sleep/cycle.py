@@ -663,6 +663,20 @@ def run_sleep_cycle(
     clock: Optional[float] = None,
     backend: Optional[Backend] = None,
 ) -> CycleOutcome:
+    """Run one cycle with exclusive ownership of its shared state transaction."""
+    cfg = cfg or load_config()
+    with SleepState.lock(cfg.state_path):
+        return _run_sleep_cycle(cfg, seed_tasks=seed_tasks, dry_run=dry_run, clock=clock, backend=backend)
+
+
+def _run_sleep_cycle(
+    cfg: Optional[SleepConfig] = None,
+    *,
+    seed_tasks: Optional[List[TaskRecord]] = None,
+    dry_run: bool = False,
+    clock: Optional[float] = None,
+    backend: Optional[Backend] = None,
+) -> CycleOutcome:
     """Run one full sleep cycle and return the outcome.
 
     Parameters
