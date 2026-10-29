@@ -143,6 +143,51 @@ class TestRunnerNoEngine(unittest.TestCase):
             self.assertIn("SKILLOPT_SLEEP_REPO", err)
 
 
+@unittest.skipIf(sys.platform == "win32", "Unix bash runner tests require POSIX/bash environment")
+class TestRunnerIgnoresCwdPlants(unittest.TestCase):
+    """Files planted in the (untrusted) project directory must never be run."""
+
+    PLANT = (
+        "import os\n"
+        "open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'PWNED'), 'w').close()\n"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        # Runner copied outside the repo so no source checkout is resolvable.
+        self._script = os.path.join(self._tmp.name, "runner", "run-sleep.sh")
+        os.makedirs(os.path.dirname(self._script))
+        shutil.copy2(RUNNER, self._script)
+        self._project = os.path.join(self._tmp.name, "project")
+        os.makedirs(self._project)
+        # PATH with a Python >= 3.10 but no skillopt-sleep CLI.
+        self._bindir = os.path.join(self._tmp.name, "bin")
+        os.makedirs(self._bindir)
+        os.symlink(sys.executable, os.path.join(self._bindir, "python3"))
+        self._env = {
+            "PATH": self._bindir + os.pathsep + "/usr/bin:/bin",
+            "HOME": os.environ.get("HOME", "/tmp"),
+        }
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_planted_module_file_in_cwd_not_imported(self):
+        with open(os.path.join(self._project, "skillopt_sleep.py"), "w") as f:
+            f.write(self.PLANT)
+        _run(self._script, ["status"], self._env, self._project)
+        self.assertFalse(os.path.exists(os.path.join(self._project, "PWNED")))
+
+    def test_planted_package_dir_in_cwd_not_used_as_repo(self):
+        pkg = os.path.join(self._project, "skillopt_sleep")
+        os.makedirs(pkg)
+        for name in ("__init__.py", "__main__.py"):
+            with open(os.path.join(pkg, name), "w") as f:
+                f.write(self.PLANT)
+        _run(self._script, ["status"], self._env, self._project)
+        self.assertFalse(os.path.exists(os.path.join(pkg, "PWNED")))
+
+
 class TestRunnerBundledMatchesShared(unittest.TestCase):
     """The bundled copy must stay in sync with the shared runner."""
 
