@@ -10,11 +10,11 @@ OpenClaw integration. It illustrates one way to connect the shared
 `skillopt_sleep` cycle to a custom DeepSeek Chat Completions backend and a set of
 environment-specific task fixtures.
 
-Do not run or schedule the files unchanged. Several scripts and the sample
-configuration preserve assumptions from the contributor's original machine,
-and parts of the wrapper have not yet been ported to the current shared-engine
-interfaces. Start with the directory's [README.md](README.md), which is the
-authoritative status and adaptation guide.
+Do not run or schedule the files unchanged. Backend, transcript-conversion, and
+adoption assumptions remain from the contributor's original setup, and parts
+of the wrapper have not yet been ported to the current shared-engine interfaces.
+Start with the directory's [README.md](README.md), which is the authoritative
+status and adaptation guide.
 
 ## What is included
 
@@ -36,8 +36,9 @@ authoritative status and adaptation guide.
 
 Before treating this as an integration, a maintainer must at least:
 
-1. Replace every absolute workspace, repository, state, skill, log, and task
-   path with explicit user configuration.
+1. Configure the OpenClaw home/state/profile and SkillOpt repository explicitly
+   when they differ from the defaults. The scripts derive their own plugin,
+   skill, and task locations; check all resolved paths before use.
 2. Update the custom backend factory to the current `get_backend` call contract,
    including the project directory, and update its backend methods and edit
    records to the current protocol.

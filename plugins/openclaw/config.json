@@ -1,8 +1,8 @@
 {
-  "_comment": "OpenClaw adaptation of skillopt-sleep. Edit and run via run_sleep.py",
+  "_comment": "OpenClaw adaptation. Blank path fields follow OPENCLAW_HOME, OPENCLAW_STATE_DIR, and OPENCLAW_PROFILE; edit and run via run_sleep.py",
 
-  "claude_home": "/home/ethanclaw/.openclaw/agents",
-  "invoked_project": "/home/ethanclaw/.openclaw/workspace",
+  "claude_home": "",
+  "invoked_project": "",
   "projects": "invoked",
   "lookback_hours": 168,
 

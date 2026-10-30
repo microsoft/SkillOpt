@@ -24,23 +24,23 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-SKILL_DIR = Path("/home/ethanclaw/.openclaw/workspace/skills/skillopt-sleep")
-STATE_DIR = Path(os.path.expanduser("~/.skillopt-sleep"))  # default
-STAGING_ROOT = STATE_DIR
+from openclaw_paths import openclaw_state_dir, openclaw_workspace_dir
+
+SKILL_DIR = Path(__file__).resolve().parent
 
 def _resolve_state_dir():
     """Find the actual state dir.
 
     Priority: scan in order:
       1. ~/.skillopt-sleep/                 (default)
-      2. /home/ethanclaw/.openclaw/workspace/.skillopt-sleep/  (when staging is there)
-      3. /home/ethanclaw/.openclaw/.skillopt-sleep/            (parent of overridden claude_home)
+      2. <OPENCLAW_STATE_DIR>/workspace/.skillopt-sleep/  (when staging is there)
+      3. <OPENCLAW_STATE_DIR>/.skillopt-sleep/            (parent of OpenClaw agents)
     Pick the first one that has a state.json OR staging dir.
     """
     candidates = [
         Path(os.path.expanduser("~/.skillopt-sleep")),
-        Path("/home/ethanclaw/.openclaw/workspace/.skillopt-sleep"),
-        Path("/home/ethanclaw/.openclaw/.skillopt-sleep"),
+        openclaw_workspace_dir() / ".skillopt-sleep",
+        openclaw_state_dir() / ".skillopt-sleep",
     ]
     # Prefer the one with state.json
     for c in candidates:
@@ -161,8 +161,8 @@ def adopt(night: str = None) -> int:
             m = json.load(f)
         proposed = m.get("proposed_skill")
         if proposed and Path(proposed).exists():
-            live = STATE_DIR / "live_skill.md"
-            backup = STATE_DIR / f"live_skill.md.bak-{target['night']}"
+            live = state_dir / "live_skill.md"
+            backup = state_dir / f"live_skill.md.bak-{target['night']}"
             if live.exists():
                 shutil.copy2(live, backup)
                 print(f"  backed up current live skill → {backup}")
