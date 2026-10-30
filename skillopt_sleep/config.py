@@ -23,6 +23,7 @@ CLAUDE_HOME = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser("~/.codex")
 PI_HOME = os.path.expanduser("~/.pi")
 CURSOR_HOME = os.path.expanduser("~/.cursor")
+KIMI_HOME = os.path.expanduser("~/.kimi-code")
 
 
 DEFAULTS: Dict[str, Any] = {
@@ -31,6 +32,7 @@ DEFAULTS: Dict[str, Any] = {
     "codex_home": CODEX_HOME,
     "pi_home": PI_HOME,
     "cursor_home": CURSOR_HOME,
+    "kimi_home": KIMI_HOME,
     "vscode_workspace_storage": "",  # "" => auto-detect platform defaults
     "copilot_cli_session_store": "",  # "" => ~/.copilot/session-store.db
     "opencode_db": "",  # "" => OPENCODE_DB or the OpenCode XDG data path
@@ -139,6 +141,10 @@ class SleepConfig:
     @property
     def codex_archived_sessions_dir(self) -> str:
         return os.path.join(self.data["codex_home"], "archived_sessions")
+
+    @property
+    def kimi_sessions_dir(self) -> str:
+        return os.path.join(self.data["kimi_home"], "sessions")
 
     @property
     def pi_sessions_dir(self) -> str:
