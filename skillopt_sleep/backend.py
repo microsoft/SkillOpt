@@ -1153,6 +1153,97 @@ def _prepare_opencode_replay_project(work: str, tools: List[str]) -> _OpenCodeRe
         raise OpenCodeError("OpenCode CLI tool replay could not be prepared") from None
 
 
+class KimiCliBackend(CliBackend):
+    """Drives the authenticated `kimi` CLI (Kimi Code): kimi -p --output-format text."""
+
+    name = "kimicode"
+
+    def __init__(self, model: str = "", kimi_path: str = "kimi", timeout: int = 0) -> None:
+        # Cold starts run ~60s unloaded but can exceed 180s when the Kimi
+        # desktop app is busy on the same account/machine; allow an env
+        # override and default to a generous 600s rather than the 180s the
+        # other backends use.
+        if not timeout:
+            timeout = int(os.environ.get("SKILLOPT_SLEEP_KIMI_TIMEOUT", "600") or "600")
+        super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_KIMI_MODEL", ""),
+                         timeout=timeout)
+        import shutil as _shutil
+        resolved = _shutil.which(kimi_path)
+        if not resolved and kimi_path in ("kimi", "kimi.exe", "kimi.cmd"):
+            # Only the bare default name falls back to the desktop install
+            # location; an explicit custom path is kept as-is even if missing
+            # (better a clear spawn error than a silent wrong binary).
+            candidate = os.path.join(os.path.expanduser("~"), ".kimi-code", "bin",
+                                     "kimi.exe" if os.name == "nt" else "kimi")
+            resolved = candidate if os.path.exists(candidate) else kimi_path
+        self.kimi_path = resolved or kimi_path
+
+    _CLI_ERROR_MARKERS = (
+        "not logged in",
+        "please run /login",
+        "authentication required",
+        "invalid api key",
+        "unauthorized",
+        "401",
+    )
+
+    def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
+        # Isolated cwd so no project AGENTS.md leaks into the optimizer call.
+        # Note: the user's global ~/.kimi-code/AGENTS.md is still injected by
+        # the CLI (there is no --bare equivalent); treat that as ambient memory.
+        import tempfile
+        # NOTE: kimi's -p/--prompt takes the prompt INLINE (unlike claude -p
+        # which reads stdin); `--output-format text` alone would be swallowed
+        # as the prompt value and the real prompt would error as a command.
+        cmd = [self.kimi_path, "--prompt", prompt, "--output-format", "text"]
+        if self.model:
+            cmd += ["-m", self.model]
+        clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_kimi_")
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, creationflags=_NO_WINDOW,
+                timeout=self.timeout, cwd=clean_cwd,
+            )
+        except subprocess.TimeoutExpired:
+            import logging
+            self.last_call_error = f"Kimi CLI timed out after {self.timeout}s"
+            logging.getLogger("skillopt_sleep").warning(
+                "Kimi CLI call timed out after %ss; consider SKILLOPT_SLEEP_KIMI_TIMEOUT",
+                self.timeout,
+            )
+            return ""
+        except Exception as exc:
+            import logging
+            self.last_call_error = f"Kimi CLI spawn failed: {exc}"
+            logging.getLogger("skillopt_sleep").warning(
+                "Kimi CLI could not be executed: %s", exc,
+            )
+            return ""
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(clean_cwd, ignore_errors=True)
+            except OSError:
+                pass
+        # The CLI emits UTF-8 regardless of the Windows console codepage;
+        # decoding with the locale codec (gbk) crashes on multibyte output.
+        out = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+        stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace")
+        check = out if len(out) < 300 else ""
+        combined = check + "\n" + stderr_text
+        for marker in self._CLI_ERROR_MARKERS:
+            if marker in combined.lower():
+                from skillopt_sleep.staging import redact_secrets
+                import logging
+                self.last_call_error = combined[:500]
+                logging.getLogger("skillopt_sleep").warning(
+                    "Kimi CLI returned a likely auth error: %s",
+                    redact_secrets(combined[:200].replace("\n", " ")),
+                )
+                break
+        return out
+
+
 def _opencode_temporary_workspace(prefix: str, error: str) -> tempfile.TemporaryDirectory:
     try:
         return tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True)
@@ -2715,6 +2806,7 @@ def get_backend(
     pi_path: str = "",
     cursor_path: str = "",
     opencode_path: str = "",
+    kimi_path: str = "",
     opencode_tool_replay: bool = False,
     azure_endpoint: str = "",
     project_dir: str = "",
@@ -2735,6 +2827,8 @@ def get_backend(
         return CopilotCliBackend(model=model)
     if n in {"cursor", "cursor_agent", "cursor_cli"}:
         return CursorCliBackend(model=model, cursor_path=cursor_path)
+    if n in {"kimi", "kimicode", "kimi_code", "kimi-cli", "kimi_cli"}:
+        return KimiCliBackend(model=model, kimi_path=kimi_path or "kimi")
     if n in {"opencode", "opencode_cli", "opencode-cli"}:
         return OpenCodeCliBackend(
             model=model,
@@ -2763,6 +2857,7 @@ def build_backend(
     pi_path: str = "",
     cursor_path: str = "",
     opencode_path: str = "",
+    kimi_path: str = "",
     opencode_tool_replay: bool = False,
     azure_endpoint: str = "",
     preferences: str = "",
@@ -2784,6 +2879,7 @@ def build_backend(
             pi_path=pi_path,
             cursor_path=cursor_path,
             opencode_path=opencode_path,
+            kimi_path=kimi_path,
             opencode_tool_replay=opencode_tool_replay,
             azure_endpoint=azure_endpoint,
             project_dir=project_dir,
