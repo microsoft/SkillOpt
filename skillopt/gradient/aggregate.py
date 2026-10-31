@@ -10,7 +10,7 @@ import json
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, strict_optimizer_errors
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.update_modes import (
     get_payload_items,
@@ -58,6 +58,8 @@ def _merge_batch(
                 e["merge_level"] = level
             return merged
     except Exception:  # noqa: BLE001 — optimizer/provider failures must fall back
+        if strict_optimizer_errors():
+            raise
         warnings.warn(
             "Optimizer call or parsing failed during batch merge; using fallback",
             stacklevel=2,
@@ -259,6 +261,8 @@ def merge_patches(
                 )
             return final
     except Exception:  # noqa: BLE001 — optimizer/provider failures must fall back
+        if strict_optimizer_errors():
+            raise
         warnings.warn(
             "Optimizer call or parsing failed during final merge; using fallback",
             stacklevel=2,

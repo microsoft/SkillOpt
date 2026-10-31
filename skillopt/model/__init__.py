@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from skillopt.model import azure_openai as _openai
@@ -25,14 +26,21 @@ from skillopt.model.backend_config import (  # noqa: F401
     get_copilot_exec_config,
     get_cursor_exec_config,
     get_optimizer_backend,
+    get_optimizer_chat,
     get_target_backend,
     is_optimizer_chat_backend,
     is_target_chat_backend,
     is_target_exec_backend,
+    reset_optimizer_chat,
     set_optimizer_backend,
+    set_optimizer_chat,
+    set_strict_optimizer_errors,
     set_target_backend,
+    strict_optimizer_errors,
 )
-from skillopt.model.common import normalize_backend_name
+from skillopt.model.common import TokenTracker, normalize_backend_name
+
+_custom_tracker = TokenTracker()
 
 
 def set_backend(name: str | None) -> str:
@@ -118,6 +126,17 @@ def get_backend_name() -> str:
     return f"{optimizer}+{target}"
 
 
+def _custom_optimizer_chat() -> Callable[..., tuple[Any, dict]] | None:
+    """Return the caller-supplied optimizer function, if one is registered."""
+    custom_chat = get_optimizer_chat()
+    if custom_chat is None and get_optimizer_backend() == "custom":
+        raise RuntimeError(
+            "optimizer_backend 'custom' requires a function registered with "
+            "skillopt.model.set_optimizer_chat()"
+        )
+    return custom_chat
+
+
 def chat_optimizer(
     system: str,
     user: str,
@@ -127,6 +146,15 @@ def chat_optimizer(
     reasoning_effort: str | None = None,
     timeout: int | None = None,
 ) -> tuple[str, dict]:
+    if _custom_optimizer_chat() is not None:
+        return chat_optimizer_messages(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            timeout=timeout,
+        )
     if get_optimizer_backend() == "claude_chat":
         return _claude.chat_optimizer(
             system=system,
@@ -292,6 +320,21 @@ def chat_optimizer_messages(
     return_message: bool = False,
     timeout: int | None = None,
 ) -> tuple[Any, dict]:
+    custom_chat = _custom_optimizer_chat()
+    if custom_chat is not None:
+        response, usage = custom_chat(
+            messages,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_choice=tool_choice,
+            return_message=return_message,
+            timeout=timeout,
+        )
+        _custom_tracker.record(stage, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        return response, usage
     if get_optimizer_backend() == "copilot_chat":
         return _copilot.chat_optimizer_messages(
             messages=messages,
@@ -602,6 +645,17 @@ def get_token_summary() -> dict:
         summary[stage]["prompt_tokens"] += values["prompt_tokens"]
         summary[stage]["completion_tokens"] += values["completion_tokens"]
         summary[stage]["total_tokens"] += values["total_tokens"]
+    custom_summary = _custom_tracker.summary()
+    for stage, values in custom_summary.items():
+        if stage == "_total":
+            continue
+        if stage not in summary:
+            summary[stage] = values
+            continue
+        summary[stage]["calls"] += values["calls"]
+        summary[stage]["prompt_tokens"] += values["prompt_tokens"]
+        summary[stage]["completion_tokens"] += values["completion_tokens"]
+        summary[stage]["total_tokens"] += values["total_tokens"]
     total = {
         "calls": 0,
         "prompt_tokens": 0,
@@ -628,6 +682,7 @@ def reset_token_tracker() -> None:
     _openai_compat.reset_token_tracker()
     _codex.reset_token_tracker()
     _copilot.reset_token_tracker()
+    _custom_tracker.reset()
 
 
 def configure_azure_openai(

@@ -27,7 +27,7 @@ import random
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, strict_optimizer_errors
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.skill_aware import (
     augment_error_prompt,
@@ -372,6 +372,8 @@ def run_error_analyst_minibatch(
                 "appendix_notes": notes,
             }
     except Exception:  # noqa: BLE001
+        if strict_optimizer_errors():
+            raise
         traceback.print_exc()
     return None
 
@@ -456,6 +458,8 @@ def run_success_analyst_minibatch(
                 result["appendix_notes"] = extract_appendix_notes(result)
             return result
     except Exception:  # noqa: BLE001
+        if strict_optimizer_errors():
+            raise
         traceback.print_exc()
     return None
 

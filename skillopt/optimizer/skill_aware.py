@@ -172,8 +172,10 @@ def consolidate_appendix_notes(
     Mirrors GMemory ``_maybe_refactor_execution_notes`` and paper Eq.11. ``chat_fn``
     is the optimizer chat callable ``(system, user, max_completion_tokens, retries,
     stage) -> (text, meta)``. On ANY failure (parse, empty, exception) the original
-    notes are returned unchanged, so consolidation can never lose the appendix.
+    notes are returned unchanged, so consolidation can never lose the appendix;
+    with ``optimizer.strict_errors`` an exception is re-raised instead.
     """
+    from skillopt.model import strict_optimizer_errors
     from skillopt.utils import extract_json  # local import to avoid cycles
 
     clean = [str(n).strip() for n in (notes or []) if str(n).strip()]
@@ -202,5 +204,6 @@ def consolidate_appendix_notes(
         if compacted and len(compacted) <= len(clean):
             return compacted
     except Exception:  # noqa: BLE001
-        pass
+        if strict_optimizer_errors():
+            raise
     return clean

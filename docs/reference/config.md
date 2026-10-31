@@ -21,6 +21,11 @@ selecting the generic OpenAI-compatible backend.
 | `claude_code_exec` | ✓ | ✓ |
 | `cursor_exec` | — | ✓ |
 | `copilot_exec` | — | ✓ |
+| `custom` | ✓ | — |
+
+`custom` sends optimizer calls to a function registered with
+`skillopt.model.set_optimizer_chat()`; see
+[Add a New Model Backend](../guide/new-backend.md#route-optimizer-calls-through-your-own-function).
 
 MiniMax currently has one shared deployment. `model.minimax_model` is applied
 when MiniMax is the target; mixed-backend runs cannot independently choose a
@@ -34,7 +39,7 @@ resolves to `https://api.minimax.io/v1` and `cn_zh` resolves to
 | `model.backend` | str | `azure_openai` | Backward-compatible high-level run label |
 | `model.optimizer` | str | `gpt-5.5` | Optimizer deployment/model |
 | `model.target` | str | `gpt-5.5` | Target deployment/model |
-| `model.optimizer_backend` | str | `openai_chat` | Optimizer client path; chat backends plus `codex_exec` and `claude_code_exec` |
+| `model.optimizer_backend` | str | `openai_chat` | Optimizer client path; chat backends plus `codex_exec`, `claude_code_exec`, and `custom` |
 | `model.target_backend` | str | `openai_chat` | Target client path; chat or exec backend |
 | `model.reasoning_effort` | str | `medium` | Shared reasoning effort |
 | `model.rewrite_reasoning_effort` | str | empty | Optional full-rewrite effort override |
@@ -178,6 +183,7 @@ forwarded consistently to both SDK and CLI execution paths.
 | `optimizer.use_skill_aware_reflection` | bool | `false` | Enable skill-defect vs execution-lapse routing |
 | `optimizer.skill_aware_appendix_source` | str | `both` | `both` or `failure_only` |
 | `optimizer.skill_aware_consolidate_threshold` | int | `0` | Appendix compaction threshold; `0` disables it |
+| `optimizer.strict_errors` | bool | `false` | Re-raise failed optimizer calls instead of using each stage's fallback |
 
 ## Evaluation (`evaluation`)
 

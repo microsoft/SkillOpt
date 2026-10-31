@@ -112,6 +112,43 @@ Responses API features are outside this backend's contract.
 Only write a new backend when the provider is not compatible with this surface
 or requires behavior that cannot be expressed by its configuration.
 
+## Route optimizer calls through your own function
+
+When SkillOpt runs as a library inside an application that must send model
+calls through its own client (for example, to apply its own authentication,
+logging, or data-handling rules), register that client as the optimizer
+function instead of writing a backend module:
+
+```python
+import skillopt.model as model
+
+def my_optimizer_chat(messages, *, stage, **options):
+    reply = my_client.complete(messages)  # your own client
+    usage = {"prompt_tokens": reply.input_tokens, "completion_tokens": reply.output_tokens}
+    return reply.text, usage
+
+model.set_optimizer_chat(my_optimizer_chat)
+```
+
+The function takes the arguments of `skillopt.model.chat_optimizer_messages`
+(the message list plus `max_completion_tokens`, `retries`, `stage`,
+`reasoning_effort`, `tools`, `tool_choice`, `return_message`, and `timeout`) and
+returns `(text, usage)`, or `(message, usage)` when `return_message=True`.
+`chat_optimizer` sends it a system and a user message. Every optimizer stage
+calls it, including modules that imported `chat_optimizer` by name, and its
+usage is added to the token summary. `model.reset_optimizer_chat()` restores
+built-in dispatch.
+
+Set `model.optimizer_backend: custom` to record that the optimizer is
+caller-supplied; training refuses to start if no function is registered.
+Built-in provider clients are created lazily, so no optimizer provider client
+is created or authenticated. Target calls still follow `model.target_backend`.
+
+Optimizer stages normally fall back when a call fails: reflection yields no
+edits, merging concatenates, and ranking truncates. Set
+`optimizer.strict_errors: true` to re-raise the failure instead, so a broken
+client stops the run rather than leaving the skill unchanged.
+
 ## Backend architecture
 
 The active split optimizer/target dispatcher is the public

@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from skillopt.model.common import normalize_backend_name
@@ -148,11 +148,12 @@ def set_optimizer_backend(backend: str) -> None:
         "copilot_chat",
         "codex_exec",
         "claude_code_exec",
+        "custom",
     }:
         raise ValueError(
             f"Unsupported optimizer backend: {OPTIMIZER_BACKEND!r}. "
             "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', "
-            "'openai_compatible', 'copilot_chat', 'codex_exec', and 'claude_code_exec'."
+            "'openai_compatible', 'copilot_chat', 'codex_exec', 'claude_code_exec', and 'custom'."
         )
     os.environ["OPTIMIZER_BACKEND"] = OPTIMIZER_BACKEND
 
@@ -192,11 +193,53 @@ def is_optimizer_chat_backend() -> bool:
         "copilot_chat",
         "codex_exec",
         "claude_code_exec",
+        "custom",
     }
 
 
 def is_target_chat_backend() -> bool:
     return TARGET_BACKEND in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "openai_compatible", "copilot_chat"}
+
+
+# A caller-supplied optimizer chat function.  The dispatchers in
+# ``skillopt.model`` read it on every call, so modules that imported
+# ``chat_optimizer`` by name route through it without being patched.
+_OPTIMIZER_CHAT: Callable[..., tuple[Any, dict]] | None = None
+_STRICT_OPTIMIZER_ERRORS = False
+
+
+def set_optimizer_chat(fn: Callable[..., tuple[Any, dict]]) -> None:
+    """Send every optimizer call to *fn* instead of a built-in backend.
+
+    *fn* has the signature of ``skillopt.model.chat_optimizer_messages``: it
+    receives the chat ``messages`` list plus keyword options and returns
+    ``(text, usage)``, or ``(message, usage)`` when ``return_message=True``.
+    ``usage`` is a dict with ``prompt_tokens`` and ``completion_tokens``.
+    """
+    global _OPTIMIZER_CHAT
+    if not callable(fn):
+        raise TypeError(f"set_optimizer_chat() expects a callable, got {type(fn).__name__}")
+    _OPTIMIZER_CHAT = fn
+
+
+def reset_optimizer_chat() -> None:
+    """Restore built-in optimizer backend dispatch."""
+    global _OPTIMIZER_CHAT
+    _OPTIMIZER_CHAT = None
+
+
+def get_optimizer_chat() -> Callable[..., tuple[Any, dict]] | None:
+    return _OPTIMIZER_CHAT
+
+
+def set_strict_optimizer_errors(enabled: bool) -> None:
+    """Make optimizer stages re-raise call failures instead of falling back."""
+    global _STRICT_OPTIMIZER_ERRORS
+    _STRICT_OPTIMIZER_ERRORS = _coerce_bool_setting(enabled, name="optimizer.strict_errors")
+
+
+def strict_optimizer_errors() -> bool:
+    return _STRICT_OPTIMIZER_ERRORS
 
 
 _ALLOWED_CODEX_SANDBOXES = frozenset({"read-only", "workspace-write", "danger-full-access"})

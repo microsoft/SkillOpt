@@ -27,7 +27,7 @@ from skillopt.envs.task_output import (
     confined_legacy_task_output_dir,
     task_output_segment,
 )
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, strict_optimizer_errors
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
 
@@ -438,6 +438,8 @@ def run_slow_update(
                 "slow_update_content": str(result["slow_update_content"]).strip(),
             }
     except Exception:  # noqa: BLE001
+        if strict_optimizer_errors():
+            raise
         traceback.print_exc()
 
     return None

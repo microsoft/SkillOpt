@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import traceback
 
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, strict_optimizer_errors
 from skillopt.optimizer.slow_update import format_comparison_text
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
@@ -74,6 +74,8 @@ def run_meta_skill(
                 "meta_skill_content": str(result["meta_skill_content"]).strip(),
             }
     except Exception:  # noqa: BLE001
+        if strict_optimizer_errors():
+            raise
         traceback.print_exc()
 
     return None

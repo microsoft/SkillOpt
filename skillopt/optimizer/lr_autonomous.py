@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, strict_optimizer_errors
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.update_modes import describe_item, get_payload_items, payload_label
 from skillopt.prompts import load_prompt
@@ -84,6 +84,8 @@ def decide_autonomous_learning_rate(
         if parsed:
             decision = _coerce_nonnegative_int(parsed.get("learning_rate"))
     except Exception as exc:  # noqa: BLE001
+        if strict_optimizer_errors():
+            raise
         parsed = {"error": str(exc)}
 
     fallback = False

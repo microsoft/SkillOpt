@@ -195,6 +195,7 @@ not via a base class subclass. Supported values (as of this writing):
 | `claude_code_exec` | — | ✓ |
 | `cursor_exec` | — | ✓ |
 | `copilot_exec` | — | ✓ |
+| `custom` (function from `set_optimizer_chat()`) | ✓ | — |
 
 See `skillopt/model/backend_config.py` for the live whitelist and
 [`docs/reference/config.md`](./config.md) for the per-backend

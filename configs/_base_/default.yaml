@@ -103,6 +103,7 @@ optimizer:
   use_skill_aware_reflection: false  # EmbodiSkill: split failures into SKILL_DEFECT (edit body) vs EXECUTION_LAPSE (protected appendix)
   skill_aware_appendix_source: both  # both = success+failure emit appendix notes; failure_only = only EXECUTION_LAPSE (paper-faithful)
   skill_aware_consolidate_threshold: 0  # 0 = off; >0 = LLM-consolidate the appendix when its note count exceeds N
+  strict_errors: false  # true = a failed optimizer call stops the run instead of using the stage's fallback
 
 evaluation:
   use_gate: true

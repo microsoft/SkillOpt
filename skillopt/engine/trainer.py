@@ -37,11 +37,13 @@ from skillopt.model import (
     configure_minimax_chat,
     configure_openai_compatible,
     configure_qwen_chat,
+    get_optimizer_chat,
     get_qwen_thinking_modes,
     get_token_summary,
     set_optimizer_backend,
     set_optimizer_deployment,
     set_reasoning_effort,
+    set_strict_optimizer_errors,
     set_target_backend,
     set_target_deployment,
 )
@@ -711,6 +713,12 @@ class ReflACTTrainer:
         cfg["target_backend"] = target_backend
         set_optimizer_backend(optimizer_backend)
         set_target_backend(target_backend)
+        if optimizer_backend == "custom" and get_optimizer_chat() is None:
+            raise ValueError(
+                "optimizer_backend 'custom' requires a function registered with "
+                "skillopt.model.set_optimizer_chat() before training"
+            )
+        set_strict_optimizer_errors(cfg.get("optimizer_strict_errors", False))
         configure_codex_exec_from_config(cfg)
 
         # ── Adapter setup (one-time init) ────────────────────────────
@@ -999,8 +1007,11 @@ class ReflACTTrainer:
                     best_skill = f.read()
             else:
                 best_skill = current_skill
-            current_score = float(runtime_state.get("current_score", -1.0) or -1.0)
-            best_score = float(runtime_state.get("best_score", current_score) or current_score)
+            # A stored 0.0 is a real score; only a missing value means "unscored".
+            stored_current = runtime_state.get("current_score")
+            current_score = -1.0 if stored_current is None else float(stored_current)
+            stored_best = runtime_state.get("best_score")
+            best_score = current_score if stored_best is None else float(stored_best)
             best_step = runtime_state.get("best_step", last_step)
             current_origin = str(
                 runtime_state.get("current_origin")

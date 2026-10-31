@@ -6,7 +6,7 @@ effective step size. Previously core/select.py.
 """
 from __future__ import annotations
 
-from skillopt.model import chat_optimizer
+from skillopt.model import chat_optimizer, strict_optimizer_errors
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.update_modes import (
     describe_item,
@@ -99,7 +99,8 @@ def rank_and_select(
                     "ranking_details": result,
                 }
     except Exception:  # noqa: BLE001
-        pass
+        if strict_optimizer_errors():
+            raise
 
     # Fallback: simple truncation
     return {

@@ -86,6 +86,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   in #138).
 - End-to-end wiring for the documented reflection `--preferences` option
   (thanks @AKhozya, #131).
+- `skillopt.model.set_optimizer_chat()` routes every optimizer call through a
+  caller-supplied function, for library users whose model calls must go
+  through their own client. Modules that import `chat_optimizer` by name pick
+  it up without patching; `model.optimizer_backend: custom` declares it in the
+  config, and `optimizer.strict_errors: true` re-raises optimizer call failures
+  instead of using each stage's fallback. Both default to existing behavior.
 
 ### Changed
 - Claude Code's Sleep plugin can now use a `pip`/`uv`-installed
@@ -120,6 +126,8 @@ All notable changes to SkillOpt are documented here. This project adheres to
   zero-edit candidates safely (thanks @SparshGarg999, #102).
 - Route optimizer-role MiniMax calls through the MiniMax backend (thanks
   @jcforever1, #116).
+- Resuming a run keeps a persisted `current_score`/`best_score` of `0.0`
+  instead of treating it as unscored and re-running the baseline evaluation.
 - Surface Claude CLI spawn failures instead of silently turning them into zero
   scores (thanks @Phoenix0531-sudo, #126).
 - Improve Claude CLI behavior on Windows, including `.cmd` resolution and

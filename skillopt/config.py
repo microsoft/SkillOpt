@@ -165,6 +165,7 @@ _FLATTEN_MAP: dict[str, str] = {
     "optimizer.use_skill_aware_reflection": "use_skill_aware_reflection",
     "optimizer.skill_aware_appendix_source": "skill_aware_appendix_source",
     "optimizer.skill_aware_consolidate_threshold": "skill_aware_consolidate_threshold",
+    "optimizer.strict_errors": "optimizer_strict_errors",
     "evaluation.use_gate": "use_gate",
     "evaluation.gate_metric": "gate_metric",
     "evaluation.gate_mixed_weight": "gate_mixed_weight",
