@@ -12,6 +12,7 @@ import json
 import os
 import re
 
+from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -177,6 +178,10 @@ def run_alfworld_batch(
 
     Also saves conversation.json per environment in out_root/predictions/<task_id>/
     """
+    if out_root and result_ids:
+        for rid in result_ids:
+            confined_task_output_dir(out_root, str(rid))
+
     skill_prompt = _build_skill_prompt(skill_content)
 
     obs, infos = env_manager.reset({})
@@ -295,7 +300,6 @@ def run_alfworld_batch(
 
     # Build results and save conversations
     results: list[dict] = []
-    pred_dir = os.path.join(out_root, "predictions") if out_root else ""
 
     for i in range(env_num):
         gamefile = env_meta[i]["gamefile"]
@@ -329,10 +333,10 @@ def run_alfworld_batch(
         results.append(result)
 
         # Save conversation
-        if pred_dir:
-            conv_dir = os.path.join(pred_dir, task_id)
+        if out_root:
+            conv_dir = confined_task_output_dir(out_root, task_id)
             os.makedirs(conv_dir, exist_ok=True)
-            with open(os.path.join(conv_dir, "conversation.json"), "w") as f:
+            with open(os.path.join(conv_dir, "conversation.json"), "w", encoding="utf-8") as f:
                 json.dump(conversations[i], f, ensure_ascii=False, indent=2)
 
     return results
