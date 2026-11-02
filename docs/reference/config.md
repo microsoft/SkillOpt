@@ -222,8 +222,9 @@ corpus and makes no network search call.
 | `env.search_mode: custom_search` | Use the token-authenticated HTTP service. Set `search_api_url`, `search_auth_env` and `search_provider` for your service. |
 | `env.search_mode: azure_search` | Use the model-provided Azure search path. |
 | `env.search_mode: parallel` | Opt in to Parallel's hosted Search MCP. Requires `openai_chat` or `qwen_chat` and the `parallel` extra. |
-| `env.search_timeout_seconds` | Whole MCP discovery/search deadline in seconds (default `20`). |
-| `env.search_max_num_results` | Maximum number of Parallel evidence results per round (default `4`). |
+| `env.search_mode: keenable` | Opt in to Keenable's search API. Requires `openai_chat` or `qwen_chat`; no extra and no key needed. |
+| `env.search_timeout_seconds` | Whole MCP discovery/search deadline in seconds (default `20`); for `keenable`, the deadline for all queries of one round. |
+| `env.search_max_num_results` | Maximum number of Parallel evidence results per round, or Keenable results per query (default `4`). |
 | `env.max_queries_per_turn` / `env.max_tool_turns` | Bound model-requested queries and model rounds. |
 
 #### Parallel Search MCP (opt-in)
@@ -250,6 +251,40 @@ the rollout with a search diagnostic; an explicit provider never silently
 falls back to another one.
 
 Parallel search does not require a local OfficeQA document corpus; parsed
+source-page context is included when that corpus is available. This mode
+changes the evidence source, so its scores are not directly comparable to,
+and are not a reproduction of, the paper's Google-backed search setting.
+
+#### Keenable search (opt-in)
+
+[Keenable](https://docs.keenable.ai/api-reference) search is never selected
+automatically, by default or by `auto`. It is used only when you set
+`env.search_mode=keenable` explicitly, for example with
+`--cfg-options env.search_mode=keenable`. It calls a plain HTTPS JSON API
+through the core `httpx` dependency, so it needs no extra. SkillOpt bundles no
+Keenable API key, credential or account; if you enable this mode, you use the
+service under [Keenable's own terms](https://keenable.ai/terms).
+
+**Data boundary.** When this mode is selected, each search round sends each
+query from the model's generated `<search_queries>` to Keenable, one HTTPS
+`POST` per query. A request carries exactly:
+
+- the query text and `max_results` (`env.search_max_num_results`) as JSON;
+- an `X-Keenable-Title: SkillOpt` header naming the app;
+- SkillOpt's `User-Agent` (`SkillOpt/<version> (+https://github.com/microsoft/SkillOpt)`)
+  and httpx's standard transport headers;
+- only if you set `KEENABLE_API_KEY`: that key, in an `X-API-Key` header.
+
+SkillOpt does not send the task question, the OfficeQA corpus or any other
+credential, although a generated query can repeat words from the question.
+Without `KEENABLE_API_KEY` the requests go to the keyless endpoint
+`https://api.keenable.ai/v1/search/public`, which is limited to 10 requests per
+second and 1,000 requests per hour per IP address. With the key they go to
+`https://api.keenable.ai/v1/search`, under the rate limits of the key's
+account. Rate-limit and other service errors fail the rollout with a search
+diagnostic; an explicit provider never silently falls back to another one.
+
+Keenable search does not require a local OfficeQA document corpus; parsed
 source-page context is included when that corpus is available. This mode
 changes the evidence source, so its scores are not directly comparable to,
 and are not a reproduction of, the paper's Google-backed search setting.
