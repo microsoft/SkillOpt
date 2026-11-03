@@ -550,13 +550,37 @@ def _compute_task_type_buckets(results: list[dict], task_types: list[str]) -> di
     for task in task_types + ["overall"]:
         buckets[task] = {"total": 0, "hard": 0, "soft": 0.0}
     for r in results:
-        tt = r.get("task_type", "other")
+        if r is None:
+            continue
+        tt = (
+            r.get("task_type", "other")
+            if isinstance(r, dict)
+            else getattr(r, "task_type", "other")
+        )
         for key in [tt, "overall"]:
             if key not in buckets:
                 buckets[key] = {"total": 0, "hard": 0, "soft": 0.0}
             buckets[key]["total"] += 1
-            buckets[key]["hard"] += float(r.get("hard", 0))
-            buckets[key]["soft"] += float(r.get("soft", 0.0))
+            hard_val = (
+                r.get("hard")
+                if isinstance(r, dict)
+                else getattr(r, "hard", None)
+            )
+            soft_val = (
+                r.get("soft")
+                if isinstance(r, dict)
+                else getattr(r, "soft", None)
+            )
+            try:
+                if hard_val is not None:
+                    buckets[key]["hard"] += float(hard_val)
+            except (ValueError, TypeError):
+                pass
+            try:
+                if soft_val is not None:
+                    buckets[key]["soft"] += float(soft_val)
+            except (ValueError, TypeError):
+                pass
     return buckets
 
 
