@@ -999,8 +999,10 @@ class ReflACTTrainer:
                     best_skill = f.read()
             else:
                 best_skill = current_skill
-            current_score = float(runtime_state.get("current_score", -1.0) or -1.0)
-            best_score = float(runtime_state.get("best_score", current_score) or current_score)
+            raw_curr = runtime_state.get("current_score")
+            current_score = float(raw_curr if raw_curr is not None else -1.0)
+            raw_best = runtime_state.get("best_score")
+            best_score = float(raw_best if raw_best is not None else current_score)
             best_step = runtime_state.get("best_step", last_step)
             current_origin = str(
                 runtime_state.get("current_origin")
