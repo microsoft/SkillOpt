@@ -109,6 +109,7 @@ def contrastive_reflect(
     scores. The default remains hard-score selection for direct callers that do
     not provide gate settings.
     """
+    gate_metric = (gate_metric or "hard").strip().lower()
     informative: List[Tuple[float, RolloutSet, ReplayResult, ReplayResult, float, float]] = []
     for rs in rollout_sets:
         if len(rs.attempts) < 2:
