@@ -788,6 +788,28 @@ class TestHarvest(unittest.TestCase):
 
         cursor_harvest.assert_not_called()
 
+    def test_harvest_for_config_rejects_unknown_source(self):
+        from skillopt_sleep.harvest_sources import SUPPORTED_SOURCES, harvest_for_config
+
+        cfg = load_config(transcript_source="unknown_engine", invoked_project="/repo/project")
+        with self.assertRaises(ValueError) as ctx:
+            harvest_for_config(cfg)
+
+        msg = str(ctx.exception)
+        self.assertIn("Unknown transcript source 'unknown_engine'", msg)
+        self.assertIn("Supported sources:", msg)
+        for expected in SUPPORTED_SOURCES:
+            self.assertIn(expected, msg)
+
+    def test_harvest_for_config_accepts_empty_and_case_insensitive_source(self):
+        from skillopt_sleep.harvest_sources import harvest_for_config
+
+        expected = [SessionDigest(session_id="claude-session", project="/repo/project")]
+        for s in ("", "claude", "CLAUDE", "Claude"):
+            cfg = load_config(transcript_source=s, invoked_project="/repo/project")
+            with mock.patch("skillopt_sleep.harvest_sources.harvest", return_value=expected):
+                self.assertEqual(harvest_for_config(cfg), expected)
+
     def test_harvest_codex_filters_project_and_cli_source(self):
         from skillopt_sleep.__main__ import _cfg_from_args
         from skillopt_sleep.harvest_sources import harvest_for_config

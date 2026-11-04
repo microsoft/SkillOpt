@@ -12,6 +12,17 @@ from skillopt_sleep.harvest_opencode import harvest_opencode
 from skillopt_sleep.harvest_pi import harvest_pi
 from skillopt_sleep.types import SessionDigest
 
+SUPPORTED_SOURCES = (
+    "claude",
+    "codex",
+    "copilot",
+    "copilot_cli",
+    "cursor",
+    "pi",
+    "opencode",
+    "auto",
+)
+
 
 def harvest_for_config(
     cfg,
@@ -26,9 +37,16 @@ def harvest_for_config(
     `skillopt_sleep.harvest.harvest`); the other sources have no repeat
     filter to report yet and leave it untouched.
     """
-    source = cfg.get("transcript_source", "claude")
+    raw_source = cfg.get("transcript_source", "claude")
+    source = (raw_source or "claude").strip().lower()
     scope = cfg.get("projects", "invoked")
     invoked_project = cfg.get("invoked_project", "")
+
+    if source not in SUPPORTED_SOURCES:
+        supported = ", ".join(SUPPORTED_SOURCES)
+        raise ValueError(
+            f"Unknown transcript source '{raw_source}'. Supported sources: {supported}"
+        )
 
     if source == "codex":
         return harvest_codex(
