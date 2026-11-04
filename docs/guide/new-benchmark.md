@@ -181,10 +181,15 @@ Two design points worth flagging:
   `skillopt/envs/searchqa/`, `skillopt/envs/docvqa/`, or
   `skillopt/envs/officeqa/` for working examples.
 - **Persist a conversation for reflection.** The shared `EnvAdapter.reflect()`
-  looks under `<rollout_dir>/predictions/<result-id>/conversation.json` and
-  skips results whose trajectory is absent or empty. Returning `hard`/`soft`
-  scores alone is sufficient for evaluation, but it cannot produce learning
-  patches.
+  reads `conversation.json` from the directory that
+  `confined_task_output_dir(out_root, id, map_unsafe=True)` in
+  `skillopt/envs/task_output.py` returns:
+  `<rollout_dir>/predictions/<result-id>/` for a filesystem-safe id (the case
+  the example above assumes), otherwise
+  `<rollout_dir>/predictions/_mapped-<sha256 of id>/`. It falls back to a
+  raw-id directory only when that stays inside `predictions/`, and skips
+  results whose trajectory is absent or empty. Returning `hard`/`soft` scores
+  alone is sufficient for evaluation, but it cannot produce learning patches.
 
 ## Step 4 — Implement the environment adapter
 
@@ -312,8 +317,9 @@ the answer against `item["ground_truth"]`, and returns a list of dicts:
 The trainer requires `id`, `hard`, and `soft` for scoring. The remaining fields
 are preserved on `RolloutResult.extras` (see `skillopt/types.py`). The shared
 reflection implementation combines those fields with each persisted
-`predictions/<id>/conversation.json`; without that file the result is omitted
-from reflection.
+`conversation.json` (in `predictions/<id>/`, or
+`predictions/_mapped-<sha256 of id>/` for an id that is not filesystem-safe;
+see Step 3); without that file the result is omitted from reflection.
 
 ## Step 5 — Register the adapter
 
@@ -399,8 +405,11 @@ you forgot to implement one of the four abstract methods on `EnvAdapter`:
 - Noisy scoring kills the optimizer. Spend time on `run_batch`'s scoring
   before you spend time on prompts.
 - If training repeatedly reports `skip_no_patches`, first verify that every
-  rollout result has a non-empty
-  `rollout/predictions/<id>/conversation.json` using the same `id` string.
+  rollout result has a non-empty `conversation.json` in
+  `rollout/predictions/<segment>/`, where `<segment>` is
+  `task_output_segment(id, map_unsafe=True)` for the result's `id` string:
+  the id itself when it is filesystem-safe, `_mapped-<sha256 of id>`
+  otherwise.
 - If your benchmark needs heavy optional deps (selenium, vllm, ...),
   wrap both registration blocks with `try / except ImportError` (Step 5)
   so people without those deps can still `--help`.

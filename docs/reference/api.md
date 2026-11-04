@@ -66,9 +66,15 @@ class EnvAdapter(ABC):
 
 The default `reflect()` delegates to `run_minibatch_reflect` and returns raw
 patch dicts with a `patch` payload plus a `failure` or `success` source type.
-It expects each rollout to persist a non-empty trajectory at
-`<rollout_dir>/predictions/<result-id>/conversation.json`; results without that
-file can be scored but are skipped during reflection.
+It expects each rollout to persist a non-empty `conversation.json` in the task
+directory that `confined_task_output_dir(out_dir, result_id, map_unsafe=True)`
+from `skillopt/envs/task_output.py` returns. A filesystem-safe id (see
+`is_safe_task_id`) keeps `<rollout_dir>/predictions/<result-id>/`; any other
+id, such as `202602:12`, maps to
+`<rollout_dir>/predictions/_mapped-<sha256 of id>/`. Reflection reads the
+mapped directory first and falls back to a raw-id directory only when that
+stays inside `predictions/`. Results without a trajectory can be scored but
+are skipped during reflection.
 The trainer also calls several default-implemented helpers on every adapter:
 `build_reference_text`, `get_reference_metadata`, `attach_reference_context`,
 `select_representative_items`, and `build_env_from_batch`. Read the docstrings

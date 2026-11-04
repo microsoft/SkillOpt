@@ -189,3 +189,73 @@ def test_reflect_never_reads_escaping_legacy_directory(tmp_path):
     )
 
     assert formatted == ""
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["202602:12\x00", "\ud800"],
+    ids=["nul-byte", "lone-surrogate"],
+)
+def test_reflect_skips_unreadable_task_id_without_aborting(tmp_path, task_id):
+    _write_rollout_outputs(tmp_path / "predictions" / "task-1", conversation="ordinary trajectory")
+
+    formatted = fmt_minibatch_trajectories(
+        [
+            {"id": task_id, "task_description": "unreadable id", "n_turns": 1},
+            {"id": "task-1", "task_description": "ordinary id", "n_turns": 1},
+        ],
+        str(tmp_path / "predictions"),
+    )
+
+    assert "unreadable id" not in formatted
+    assert "ordinary trajectory" in formatted
+
+
+def test_reflect_refuses_legacy_directory_symlinked_outside_predictions(tmp_path):
+    task_id = "202602:12"
+    predictions = tmp_path / "predictions"
+    predictions.mkdir()
+    outside = tmp_path / "outside"
+    _write_rollout_outputs(outside, conversation="outside trajectory")
+    try:
+        os.symlink(outside, predictions / task_id, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks are not available on this host")
+
+    formatted = fmt_minibatch_trajectories(
+        [{"id": task_id, "task_description": "symlink escape", "n_turns": 1}],
+        str(predictions),
+    )
+
+    assert formatted == ""
+
+
+def test_reflect_refuses_legacy_directory_it_cannot_compare(monkeypatch, tmp_path):
+    # os.path.commonpath raises for paths on different drives on Windows.
+    task_id = "202602:12"
+    _write_rollout_outputs(tmp_path / "predictions" / task_id, conversation="legacy trajectory")
+
+    def _different_drives(paths):
+        raise ValueError("Paths don't have the same drive")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os.path, "commonpath", _different_drives)
+        formatted = fmt_minibatch_trajectories(
+            [{"id": task_id, "task_description": "other drive", "n_turns": 1}],
+            str(tmp_path / "predictions"),
+        )
+
+    assert formatted == ""
+
+
+def test_reflect_legacy_fallback_stays_inside_the_given_prediction_dir(tmp_path):
+    task_id = "202602:12"
+    _write_rollout_outputs(tmp_path / "predictions" / task_id, conversation="sibling trajectory")
+    (tmp_path / "preds").mkdir()
+
+    formatted = fmt_minibatch_trajectories(
+        [{"id": task_id, "task_description": "sibling", "n_turns": 1}],
+        str(tmp_path / "preds"),
+    )
+
+    assert formatted == ""
