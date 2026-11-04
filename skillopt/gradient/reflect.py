@@ -27,7 +27,10 @@ import random
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from skillopt.envs.task_output import task_output_segment
+from skillopt.envs.task_output import (
+    confined_legacy_task_output_dir,
+    task_output_segment,
+)
 from skillopt.model import chat_optimizer
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.skill_aware import (
@@ -110,7 +113,7 @@ def fmt_trajectory(
 # ── Minibatch trajectory formatting ──────────────────────────────────────────
 
 
-def _task_output_dir(prediction_dir: str, task_id: str) -> str:
+def _task_output_dir(prediction_dir: str, task_id: str) -> str | None:
     """Return the directory holding one task's rollout outputs.
 
     Rollouts write under the portable segment :func:`task_output_segment` maps
@@ -118,18 +121,28 @@ def _task_output_dir(prediction_dir: str, task_id: str) -> str:
     the raw id names nothing. Runs from before #309 still use the raw id as the
     directory name, so keep reading that layout -- without letting an id such
     as ``../escape`` read outside ``prediction_dir``.
+
+    A legacy path that cannot be checked (an embedded NUL byte, or another
+    drive on Windows) is refused like an escape: the missing mapped directory
+    comes back and the caller skips the item. Returns ``None`` for an id that
+    cannot be mapped at all, such as one holding a lone surrogate.
     """
-    mapped = os.path.join(
-        prediction_dir, task_output_segment(task_id, map_unsafe=True)
-    )
-    if os.path.isdir(mapped):
+    try:
+        segment = task_output_segment(task_id, map_unsafe=True)
+    except ValueError:
+        return None
+    mapped = os.path.join(prediction_dir, segment)
+    if segment == str(task_id) or os.path.isdir(mapped):
         return mapped
-    legacy = os.path.join(prediction_dir, str(task_id))
-    if os.path.commonpath(
-        [os.path.realpath(prediction_dir), os.path.realpath(legacy)]
-    ) != os.path.realpath(prediction_dir):
+    # The legacy helper confines to ``<out_root>/predictions``, which is
+    # ``prediction_dir`` only when the directory carries that name.
+    out_root, name = os.path.split(os.path.abspath(prediction_dir))
+    if name != "predictions":
         return mapped
-    return legacy
+    try:
+        return confined_legacy_task_output_dir(out_root, task_id)
+    except ValueError:
+        return mapped
 
 
 def fmt_minibatch_trajectories(
@@ -162,6 +175,8 @@ def fmt_minibatch_trajectories(
     for idx, item in enumerate(items, 1):
         tid = str(item["id"])
         task_dir = _task_output_dir(prediction_dir, tid)
+        if task_dir is None:
+            continue
         conv_path = os.path.join(task_dir, "conversation.json")
         if not os.path.exists(conv_path):
             continue
