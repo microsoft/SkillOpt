@@ -9,6 +9,7 @@ from skillopt.envs.task_output import (
     confined_task_output_dir,
     task_output_segment,
 )
+from skillopt.gradient.reflect import fmt_minibatch_trajectories
 from skillopt.optimizer.slow_update import _read_trajectory
 
 
@@ -126,3 +127,65 @@ def test_confined_task_output_dir_rejects_symlink_escape(tmp_path):
 
     with pytest.raises(ValueError, match="escapes predictions"):
         confined_task_output_dir(str(tmp_path / "out"), "task-1")
+
+
+def _write_rollout_outputs(task_dir, *, conversation=None, system_prompt=None, preview=None):
+    task_dir.mkdir(parents=True, exist_ok=True)
+    if conversation is not None:
+        (task_dir / "conversation.json").write_text(
+            json.dumps([{"type": "message", "role": "user", "content": conversation}]),
+            encoding="utf-8",
+        )
+    if system_prompt is not None:
+        (task_dir / "target_system_prompt.txt").write_text(system_prompt, encoding="utf-8")
+    if preview is not None:
+        (task_dir / "spreadsheet_preview.txt").write_text(preview, encoding="utf-8")
+
+
+def test_reflect_reads_mapped_live_math_task_directory(tmp_path):
+    task_id = "202602:12"
+    segment = task_output_segment(task_id, map_unsafe=True)
+    _write_rollout_outputs(
+        tmp_path / "predictions" / segment,
+        conversation="mapped trajectory",
+        system_prompt="mapped system prompt",
+        preview="mapped spreadsheet preview",
+    )
+
+    formatted = fmt_minibatch_trajectories(
+        [{"id": task_id, "task_description": "Pick A.", "n_turns": 1}],
+        str(tmp_path / "predictions"),
+    )
+
+    assert "mapped trajectory" in formatted
+    assert "mapped system prompt" in formatted
+    assert "mapped spreadsheet preview" in formatted
+
+
+def test_reflect_reads_legacy_live_math_task_directory(tmp_path):
+    task_id = "202602:12"
+    _write_rollout_outputs(tmp_path / "predictions" / task_id, conversation="legacy trajectory")
+
+    formatted = fmt_minibatch_trajectories(
+        [{"id": task_id, "task_description": "Pick A.", "n_turns": 1}],
+        str(tmp_path / "predictions"),
+    )
+
+    assert "legacy trajectory" in formatted
+
+
+def test_reflect_never_reads_escaping_legacy_directory(tmp_path):
+    (tmp_path / "predictions").mkdir()
+    outside = tmp_path.parent / "reflect-escape" / "conversation.json"
+    outside.parent.mkdir(exist_ok=True)
+    outside.write_text(
+        json.dumps([{"type": "message", "content": "outside trajectory"}]),
+        encoding="utf-8",
+    )
+
+    formatted = fmt_minibatch_trajectories(
+        [{"id": "../../reflect-escape", "task_description": "escape attempt", "n_turns": 1}],
+        str(tmp_path / "predictions"),
+    )
+
+    assert formatted == ""
