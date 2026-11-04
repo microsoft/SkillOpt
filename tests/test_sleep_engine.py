@@ -2865,8 +2865,8 @@ class TestClaudeCliBackendBare(unittest.TestCase):
                 be._call("test prompt")
             self.assertIn("--bare", captured["cmd"])
 
-    def test_oauth_without_api_key_is_refused_before_cli_invocation(self):
-        """OAuth cannot use bare mode, so never produce a potentially contaminated score."""
+    def test_oauth_without_safe_mode_is_refused_before_replay(self):
+        """An unsupported CLI may be probed, but never run an unisolated replay."""
         from skillopt_sleep.backend import ClaudeCliBackend
         from skillopt_sleep.staging import StagingError
         be = ClaudeCliBackend(claude_path="/usr/bin/false", timeout=5)
@@ -2874,9 +2874,11 @@ class TestClaudeCliBackendBare(unittest.TestCase):
         env.pop("ANTHROPIC_API_KEY", None)
         with unittest.mock.patch.dict(os.environ, env, clear=True):
             with unittest.mock.patch("subprocess.run") as run:
+                run.return_value = mock.Mock(stdout="  --other  Option", returncode=0)
                 with self.assertRaisesRegex(StagingError, "user-level instructions and hooks"):
                     be._call("test prompt")
-            run.assert_not_called()
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0], [be.claude_path, "--help"])
 
     def test_tool_aware_call_also_uses_bare_with_api_key(self):
         """The tool-aware replay path must not reintroduce ambient hooks."""
@@ -2899,7 +2901,7 @@ class TestClaudeCliBackendBare(unittest.TestCase):
                 be.attempt_with_tools(task, skill="", memory="", tools=["search"])
         self.assertIn("--bare", captured["cmd"])
 
-    def test_tool_aware_oauth_call_is_refused_before_cli_invocation(self):
+    def test_tool_aware_oauth_call_is_refused_without_safe_mode(self):
         from skillopt_sleep.backend import ClaudeCliBackend
         from skillopt_sleep.staging import StagingError
         from skillopt_sleep.types import TaskRecord
@@ -2909,9 +2911,11 @@ class TestClaudeCliBackendBare(unittest.TestCase):
         env.pop("ANTHROPIC_API_KEY", None)
         with unittest.mock.patch.dict(os.environ, env, clear=True):
             with unittest.mock.patch("skillopt_sleep.backend.subprocess.run") as run:
-                with self.assertRaisesRegex(StagingError, "OAuth authentication cannot use --bare"):
+                run.return_value = mock.Mock(stdout="  --other  Option", returncode=0)
+                with self.assertRaisesRegex(StagingError, "CLI advertising --safe-mode"):
                     be.attempt_with_tools(task, skill="", memory="", tools=["search"])
-            run.assert_not_called()
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.args[0], [be.claude_path, "--help"])
 
     def test_cli_error_detected_and_logged(self):
         """Auth errors in CLI output should trigger a warning."""
