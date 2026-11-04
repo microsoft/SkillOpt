@@ -29,7 +29,7 @@ from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.evidence import EvidenceLog
 from skillopt_sleep.handoff_backend import PendingCalls
 from skillopt_sleep.harvest import format_harvest_note
-from skillopt_sleep.harvest_sources import harvest_for_config
+from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
 from skillopt_sleep.replay import aggregate_scores, replay_batch
@@ -676,6 +676,8 @@ def run_sleep_cycle(
         it can inspect the backend's pending calls after the run.
     """
     cfg = cfg or load_config()
+    # Checked before the night writes anything (state, staging dir, evidence).
+    harvest_source = normalize_transcript_source(cfg.get("transcript_source"))
     budget = _night_token_budget(cfg)
     state = SleepState.load(cfg.state_path)
     project = _project_paths(cfg)
@@ -791,7 +793,7 @@ def run_sleep_cycle(
     # ── 1+2. harvest + mine (unless seed_tasks injected) ─────────────────
     # The harvest cursor is per (project, source): each source reads its own
     # store, so one shared cursor would make a source skip its sessions (#312).
-    harvest_source = cfg.get("transcript_source", "")
+    # harvest_source is the canonical name harvest_for_config reads.
     digests: List[SessionDigest] = []
     if seed_tasks is not None:
         tasks = seed_tasks
@@ -815,7 +817,7 @@ def run_sleep_cycle(
             candidate_limit = max(max_tasks, max_tasks * 3)
         _progress(
             cfg,
-            f"harvest start: source={cfg.get('transcript_source')} max_sessions={max_sessions}",
+            f"harvest start: source={harvest_source} max_sessions={max_sessions}",
         )
         digests = harvest_for_config(
             cfg,

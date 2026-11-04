@@ -10,8 +10,14 @@ Run:  python -m pytest tests/test_harvest_checkpoint_source.py
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+from types import SimpleNamespace
+from unittest import mock
+
+import pytest
 
 from skillopt_sleep.config import load_config
 from skillopt_sleep.state import SleepState, harvest_cursor_key
@@ -143,3 +149,149 @@ def test_a_source_still_skips_what_it_already_harvested(tmp_path):
 
     # its own cursor advanced: the same session is not harvested twice
     assert run_sleep_cycle(claude, dry_run=True).report.n_sessions == 0
+
+
+# ── source spelling (follow-up to #354) ─────────────────────────────────────
+# harvest_for_config accepts "Codex" or " codex " as Codex, so the cursor has
+# to be the Codex one too. A "<project>::Codex" cursor may hold a time written
+# while that spelling still silently harvested Claude; reading it would skip
+# older Codex sessions for good, the #312 failure again.
+
+STALE = "2026-01-09T03:00:00"     # written under the raw spelling
+CODEX_CURSOR = "2026-01-05T03:00:00"
+
+
+def _codex_cfg(tmp_path, source):
+    proj = str(tmp_path / "proj")
+    os.makedirs(proj, exist_ok=True)
+    os.makedirs(tmp_path / ".claude", exist_ok=True)
+    return proj, load_config(
+        invoked_project=proj, projects="all", backend="mock",
+        claude_home=str(tmp_path / ".claude"),
+        codex_home=str(tmp_path / ".codex"),
+        transcript_source=source, lookback_hours=24,
+    )
+
+
+def _seed_cursors(cfg, proj, spelling):
+    state = SleepState.load(cfg.state_path)
+    state.set_last_harvest(proj, CODEX_CURSOR, "codex")
+    state.set_last_harvest(proj, STALE, spelling)
+    state.save()
+
+
+@pytest.mark.parametrize("spelling", ["Codex", " codex ", "CODEX"])
+def test_source_spelling_uses_the_canonical_cursor_and_harvester(tmp_path, spelling):
+    from skillopt_sleep.cycle import run_sleep_cycle
+
+    proj, cfg = _codex_cfg(tmp_path, spelling)
+    _seed_cursors(cfg, proj, spelling)
+
+    with mock.patch("skillopt_sleep.harvest_sources.harvest_codex",
+                    return_value=[]) as codex, \
+            mock.patch("skillopt_sleep.harvest_sources.harvest") as claude:
+        run_sleep_cycle(cfg, dry_run=False)
+
+    claude.assert_not_called()
+    assert codex.call_args.kwargs["since_iso"] == CODEX_CURSOR
+    cursors = SleepState.load(cfg.state_path).data["last_harvest"]
+    # the Codex cursor advanced; the stale one is neither read nor rewritten
+    assert set(cursors) == {harvest_cursor_key(proj, "codex"),
+                            harvest_cursor_key(proj, spelling)}
+    assert cursors[harvest_cursor_key(proj, "codex")] != CODEX_CURSOR
+    assert cursors[harvest_cursor_key(proj, spelling)] == STALE
+
+
+def test_handoff_pinning_uses_the_canonical_cursor(tmp_path):
+    from skillopt_sleep.__main__ import _handoff_mine_and_pin
+    from skillopt_sleep.handoff_backend import HandoffBackend
+
+    proj, cfg = _codex_cfg(tmp_path, "Codex")
+    _seed_cursors(cfg, proj, "Codex")
+    backend = HandoffBackend(handoff_dir=str(tmp_path / "handoff"))
+
+    with mock.patch("skillopt_sleep.harvest_sources.harvest_codex",
+                    return_value=[]) as codex, \
+            contextlib.redirect_stdout(io.StringIO()):
+        rc, tasks = _handoff_mine_and_pin(
+            cfg, SimpleNamespace(json=False), backend,
+            str(tmp_path / "tasks.json"), False,
+        )
+
+    assert (rc, tasks) == (0, None)
+    assert codex.call_args.kwargs["since_iso"] == CODEX_CURSOR
+    cursors = SleepState.load(cfg.state_path).data["last_harvest"]
+    assert cursors[harvest_cursor_key(proj, "codex")] != CODEX_CURSOR
+    assert cursors[harvest_cursor_key(proj, "Codex")] == STALE
+
+
+def test_harvest_command_records_the_canonical_source(tmp_path):
+    from skillopt_sleep.__main__ import cmd_harvest
+
+    _, cfg = _codex_cfg(tmp_path, " Codex ")
+    out = io.StringIO()
+    with mock.patch("skillopt_sleep.__main__._cfg_from_args", return_value=cfg), \
+            mock.patch("skillopt_sleep.harvest_sources.harvest_codex",
+                       return_value=[]), \
+            contextlib.redirect_stdout(out):
+        assert cmd_harvest(SimpleNamespace(json=True, output="")) == 0
+
+    assert json.loads(out.getvalue())["transcript_source"] == "codex"
+
+
+@pytest.mark.parametrize("value", [1, ["codex"], {"name": "codex"}, True])
+def test_non_string_source_is_a_clear_value_error(tmp_path, value):
+    from skillopt_sleep.harvest_sources import (
+        harvest_for_config,
+        normalize_transcript_source,
+    )
+
+    for call in (lambda: normalize_transcript_source(value),
+                 lambda: harvest_for_config(_codex_cfg(tmp_path, value)[1])):
+        with pytest.raises(ValueError, match="transcript_source must be a string"):
+            call()
+
+
+@pytest.mark.parametrize("value", [["codex"], "Codexx"])
+def test_invalid_source_fails_before_the_night_writes_anything(tmp_path, value):
+    from skillopt_sleep.cycle import run_sleep_cycle
+
+    proj, cfg = _codex_cfg(tmp_path, value)
+    with pytest.raises(ValueError):
+        run_sleep_cycle(cfg, dry_run=False)
+
+    # no staging dir for a night that never started, and no state change
+    assert os.listdir(proj) == []
+    assert not os.path.exists(cfg.state_path)
+
+
+def test_canonical_sources_keep_their_cursor_keys():
+    from skillopt_sleep.harvest_sources import (
+        SUPPORTED_SOURCES,
+        normalize_transcript_source,
+    )
+
+    for source in SUPPORTED_SOURCES:
+        assert normalize_transcript_source(source) == source
+        assert harvest_cursor_key(PROJECT, normalize_transcript_source(source)) \
+            == f"{PROJECT}::{source}"
+    assert normalize_transcript_source("") == "claude"
+    assert normalize_transcript_source(None) == "claude"
+
+
+def test_default_claude_source_still_reads_the_legacy_cursor(tmp_path):
+    from skillopt_sleep.cycle import run_sleep_cycle
+
+    proj, cfg = _codex_cfg(tmp_path, "claude")
+    state = SleepState.load(cfg.state_path)
+    state.set_last_harvest(proj, STALE)  # pre-#322 bare project key
+    state.save()
+
+    with mock.patch("skillopt_sleep.harvest_sources.harvest",
+                    return_value=[]) as claude:
+        run_sleep_cycle(cfg, dry_run=False)
+
+    assert claude.call_args.kwargs["since_iso"] == STALE
+    cursors = SleepState.load(cfg.state_path).data["last_harvest"]
+    assert set(cursors) == {proj, f"{proj}::claude"}
+    assert cursors[proj] == STALE

@@ -36,7 +36,7 @@ from skillopt_sleep.backend import CursorBackendError
 from skillopt_sleep.config import ConfigError, load_config
 from skillopt_sleep.cycle import _one_line_display_text, run_sleep_cycle
 from skillopt_sleep.harvest import format_harvest_note
-from skillopt_sleep.harvest_sources import harvest_for_config
+from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.mine import mine
 from skillopt_sleep.staging import (
     StagingError,
@@ -406,6 +406,7 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
     from skillopt_sleep.types import SessionDigest
 
     project = cfg.get("invoked_project") or os.getcwd()
+    source = normalize_transcript_source(cfg.get("transcript_source"))
     state = SleepState.load(cfg.state_path)
     started = _now_iso()
 
@@ -425,7 +426,7 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
                   file=sys.stderr)
             digests = None
     if digests is None:
-        since = state.last_harvest_for(project, cfg.get("transcript_source", ""))
+        since = state.last_harvest_for(project, source)
         lookback_hours = cfg.get("lookback_hours", 72)
         if since is None and lookback_hours and lookback_hours > 0:
             since = _now_iso(time.time() - lookback_hours * 3600)
@@ -477,13 +478,13 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
         if not dry:
             # Advance the harvest window like run_sleep_cycle's no-tasks
             # branch, or every later run re-scans the same stale window.
-            state.set_last_harvest(project, started, cfg.get("transcript_source", ""))
+            state.set_last_harvest(project, started, source)
             state.save()
         return 0, None
     payload = make_tasks_payload(
         tasks,
         project=project,
-        transcript_source=cfg.get("transcript_source", ""),
+        transcript_source=source,
         n_sessions=len(digests),
         target_skill_path=target_skill_path,
     )
@@ -809,7 +810,7 @@ def cmd_harvest(args) -> int:
     payload = make_tasks_payload(
         tasks,
         project=cfg.get("invoked_project") or os.getcwd(),
-        transcript_source=cfg.get("transcript_source", ""),
+        transcript_source=normalize_transcript_source(cfg.get("transcript_source")),
         n_sessions=len(digests),
         target_skill_path=target_skill_path,
     )
