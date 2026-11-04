@@ -66,7 +66,7 @@ https://github.com/user-attachments/assets/eb12d3bc-371c-467f-904d-91b61f339ed7
 
 A backend = a chat / exec target (e.g. `openai_chat`, `claude_chat`,
 `qwen_chat`, `minimax_chat`, `copilot_chat`, `openai_compatible`, `codex_exec`,
-`claude_code_exec`, `cursor_exec`, `copilot_exec`). If a provider implements the OpenAI Chat Completions
+`claude_code_exec`, `cursor_exec`, `copilot_exec`, `opencode_exec`). If a provider implements the OpenAI Chat Completions
 protocol, try the built-in `openai_compatible` backend before adding code. See
 [`docs/guide/new-backend.md`](docs/guide/new-backend.md) for the full
 contract. Chat backends add a `skillopt/model/<name>_backend.py` module;
