@@ -150,21 +150,25 @@ class TestHeuristicMineSkillHint(unittest.TestCase):
 class TestDreamAndRecallSkillHint(unittest.TestCase):
     def test_dream_augment_preserves_hint(self):
         source = TaskRecord(
-            id="t1", project="/p", intent="add validation", skill_hint="example-skill"
+            id="t1", project="/p", intent="add validation", skill_hint="example-skill",
+            source_sessions=["session-1"],
         )
         dreamed = dream_augment([source], factor=1)
         self.assertEqual(len(dreamed), 1)
         self.assertEqual(dreamed[0].skill_hint, "example-skill")
+        self.assertEqual(dreamed[0].source_sessions, ["session-1"])
 
     def test_recall_similar_preserves_hint(self):
         new = TaskRecord(id="new", project="/p", intent="add form validation")
         historical = TaskRecord(
             id="old", project="/p", intent="improve form validation",
             skill_hint="example-skill",
+            source_sessions=["session-2"],
         )
         recalled = recall_similar([new], [historical], 1)
         self.assertEqual(len(recalled), 1)
         self.assertEqual(recalled[0].skill_hint, "example-skill")
+        self.assertEqual(recalled[0].source_sessions, ["session-2"])
 
 
 class TestLlmMinerSkillHint(unittest.TestCase):

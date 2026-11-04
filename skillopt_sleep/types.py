@@ -124,13 +124,40 @@ class ReplayResult:
 
 @dataclass
 class EditRecord:
-    """One bounded edit proposed/applied to skill or memory."""
+    """One bounded edit proposed/applied to skill or memory.
+
+    Source IDs name the task evidence supplied to the reflection call that
+    produced this edit. They record context availability, not which evidence
+    the model relied on or what caused the proposal.
+    """
 
     target: str                       # "skill" | "memory"
     op: str                           # add | delete | replace
     content: str = ""
     anchor: str = ""                  # for replace/delete: text being changed
     rationale: str = ""
+    # Appended for positional compatibility with existing constructors.
+    source_task_ids: List[str] = field(default_factory=list)
+    source_session_ids: List[str] = field(default_factory=list)
+
+
+def attach_edit_provenance(edits: List[EditRecord], tasks: List[TaskRecord]) -> List[EditRecord]:
+    """Attach the task/session IDs available to the reflection call.
+
+    IDs are deduplicated in first-seen order. This is mechanical provenance,
+    not a model-authored attribution or a causal claim.
+    """
+    task_ids = list(dict.fromkeys(task.id for task in tasks if task.id))
+    session_ids = list(dict.fromkeys(
+        session_id
+        for task in tasks
+        for session_id in (task.source_sessions or [])
+        if session_id
+    ))
+    for edit in edits:
+        edit.source_task_ids = list(task_ids)
+        edit.source_session_ids = list(session_ids)
+    return edits
 
 
 @dataclass

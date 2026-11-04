@@ -52,6 +52,22 @@ class TestUnmatchedEditsInReport(unittest.TestCase):
         self.assertEqual(len(d["unmatched_edits"]), 1)
         self.assertEqual(d["unmatched_edits"][0]["target"], "memory")
 
+    def test_staged_report_renders_and_serializes_edit_provenance(self) -> None:
+        edit = EditRecord(
+            target="skill", op="add", content="new rule",
+            source_task_ids=["task-1", "task-2"],
+            source_session_ids=["session-a"],
+        )
+        rep = _report(edits=[edit], rejected_edits=[edit])
+
+        md = _render_report_md(rep, self.cfg)
+        payload = rep.to_dict()
+
+        self.assertIn("source task IDs: `task-1`, `task-2`", md)
+        self.assertIn("source session IDs: `session-a`", md)
+        self.assertEqual(payload["edits"][0]["source_task_ids"], ["task-1", "task-2"])
+        self.assertEqual(payload["rejected_edits"][0]["source_session_ids"], ["session-a"])
+
 
 if __name__ == "__main__":
     unittest.main()
