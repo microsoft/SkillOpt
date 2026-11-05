@@ -2074,6 +2074,24 @@ class TestDurableAdoptionTransaction(unittest.TestCase):
                     ["skill", "memory"],
                 )
 
+    def test_legacy_skill_retarget_outside_staged_roots_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staging, skill, _memory = self._legacy_night(tmp)
+            outside = os.path.join(_canonical(tmp), "outside", "skill", "SKILL.md")
+            _write(outside, "# skill v1\n")
+            manifest_path = os.path.join(staging, "manifest.json")
+            with open(manifest_path, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            manifest["legacy"]["skill"]["live_path"] = outside
+            manifest["legacy"]["skill"]["live_realpath"] = outside
+            with open(manifest_path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle)
+
+            with self.assertRaisesRegex(StagingError, "outside the skills roots"):
+                adopt(staging)
+            self.assertEqual(_read(outside), "# skill v1\n")
+            self.assertEqual(_read(skill), "# skill v1\n")
+
     def test_legacy_missing_targets_can_share_one_new_parent(self):
         with tempfile.TemporaryDirectory() as tmp:
             live_root = os.path.join(_canonical(tmp), "new-live")
