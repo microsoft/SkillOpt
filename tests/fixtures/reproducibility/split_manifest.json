@@ -1,0 +1,9 @@
+{
+  "benchmark": "SYNTHETIC - not a paper dataset",
+  "source_revision": "synthetic-v1",
+  "counts": {
+    "train": 1,
+    "val": 1,
+    "test": 2
+  }
+}

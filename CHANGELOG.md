@@ -7,6 +7,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
+  provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
+  config selects Parallel automatically. Selecting it sends the generated
+  search queries and the full task question (as the MCP `objective`) to
+  Parallel's hosted endpoint, over an anonymous, lower-rate free tier, so
+  its scores are not directly comparable to the paper's Google-backed search
+  setting. The MCP client ships in a new `parallel` extra
+  (`pip install 'skillopt[parallel]'`) and is imported lazily, so OfficeQA
+  runs and offline installs do not require `mcp`.
 - **SkillOpt-Sleep paired A/B evalkit** (`python -m skillopt_sleep.evalkit`):
   McNemar plus percentile-bootstrap CIs on a fixed task manifest, with
   task-cluster multi-seed inference and seeded null calibration for exact-test
@@ -91,6 +100,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
   `--cfg-options`, or a structured or legacy flat config file) is accepted and
   warns rather than being dropped in silence (reported by @xs229 in #213;
   implemented by @wilyan09007 in #219).
+- A misspelled SkillOpt-Sleep `backend` or `transcript_source` now stops the
+  run with an error that lists the supported names. Previously it silently
+  fell back to the mock backend or to Claude transcripts, so a scheduled run
+  with a typo appeared to succeed; it now fails until the config is fixed
+  (thanks @Hrushikesh-ramilla, #350, #354).
+- `transcript_source` ignores case and surrounding whitespace, and the
+  normalized name also keys the harvest checkpoint and the tasks document, so
+  `"Codex"` no longer reads a different checkpoint than `"codex"`. A non-string
+  value is rejected with a clear error.
 
 ### Fixed
 - Apply Codex executable and sandbox aliases consistently across inherited
@@ -134,8 +152,8 @@ All notable changes to SkillOpt are documented here. This project adheres to
 
 ### Acknowledgements 🙏
 Thank you to the contributors behind this unreleased work:
-@AKhozya, @Alphaxalchemy, @Phoenix0531-sudo, @SparshGarg999,
-@Tanmay9223, @chirag127, @codeL1985, @dimitarvdenev,
+@AKhozya, @Alphaxalchemy, @Hrushikesh-ramilla, @Phoenix0531-sudo,
+@SparshGarg999, @Tanmay9223, @chirag127, @codeL1985, @dimitarvdenev,
 @bogdanbaciu21, @ichoosetoaccept, @jcforever1, @nankingjing, @wilyan09007,
 @xs229, and @zixuanguo786-ctrl.
 

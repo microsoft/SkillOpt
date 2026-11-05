@@ -72,13 +72,25 @@ def _mk_task(d: SessionDigest, obj: Dict[str, Any], idx: int) -> TaskRecord | No
             continue
         op = c.get("op")
         arg = c.get("arg")
+        description_raw = c.get("description")
+        description = (
+            description_raw.strip()
+            if isinstance(description_raw, str) and description_raw.strip()
+            else ""
+        )
+
+        def _with_description(check: Dict[str, Any]) -> Dict[str, Any]:
+            if description:
+                check["description"] = description
+            return check
+
         if op in _needs_str_arg:
             # Store the stripped value: stray whitespace would otherwise become
             # part of the required substring / tool name.
             if isinstance(arg, str) and arg.strip():
-                clean_checks.append(
+                clean_checks.append(_with_description(
                     {"op": op, "arg": arg.strip() if op in _strip_arg else arg}
-                )
+                ))
         elif op in {"max_chars", "min_chars"}:
             # Shared parser with validate_checks() so the two cannot drift:
             # rejects bools, non-integral floats and inf/nan (OverflowError).
@@ -88,9 +100,9 @@ def _mk_task(d: SessionDigest, obj: Dict[str, Any], idx: int) -> TaskRecord | No
                 continue
             if bound < 0:
                 continue
-            clean_checks.append({"op": op, "arg": bound})
+            clean_checks.append(_with_description({"op": op, "arg": bound}))
         elif op == "no_refusal":
-            clean_checks.append({"op": op, "arg": None})
+            clean_checks.append(_with_description({"op": op, "arg": None}))
 
     import hashlib
     tid = "llm_" + hashlib.sha256((d.project + intent).encode()).hexdigest()[:12]

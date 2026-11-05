@@ -22,6 +22,8 @@ CONSOLIDATED = "consolidated"
 SKIPPED = "skipped"
 FAILED = "failed"
 
+BUDGET_REACHED = "token budget for the night was reached"
+
 
 @dataclass
 class SkillGroup:
@@ -54,6 +56,7 @@ def consolidate_groups(
     *,
     consolidate_fn: Callable[..., ConsolidationResult] = consolidate,
     group_kwargs_fn: Optional[Callable[[SkillGroup], Dict[str, object]]] = None,
+    budget_exhausted: Optional[Callable[[], bool]] = None,
     **consolidate_kwargs: object,
 ) -> Dict[str, GroupConsolidation]:
     """Consolidate each group independently, in order, isolating failures.
@@ -68,7 +71,9 @@ def consolidate_groups(
 
     A group is ``skipped`` when it is unusable (blank name, or no tasks) and
     ``failed`` when its own consolidation raised; both leave every other
-    group's decision untouched.
+    group's decision untouched. When ``budget_exhausted`` returns True before a
+    usable group starts, that group is ``skipped`` too; a group that already
+    started finishes, and the predicate is passed on to ``consolidate_fn``.
 
     ``memory`` is the shared agent memory and is passed through read-only: group
     runs evolve skills only, so no group can rewrite another group's memory.
@@ -82,6 +87,8 @@ def consolidate_groups(
     # duplicate keyword (which would otherwise turn the group into a failure).
     consolidate_kwargs = dict(consolidate_kwargs)
     consolidate_kwargs["evolve_memory"] = False
+    if budget_exhausted is not None:
+        consolidate_kwargs["budget_exhausted"] = budget_exhausted
     out: Dict[str, GroupConsolidation] = {}
     for group in groups:
         name = (group.skill_name or "").strip()
@@ -99,6 +106,11 @@ def consolidate_groups(
         if not group.tasks:
             out[name] = GroupConsolidation(
                 name, SKIPPED, reason="no mined tasks for this skill"
+            )
+            continue
+        if budget_exhausted is not None and budget_exhausted():
+            out[name] = GroupConsolidation(
+                name, SKIPPED, reason=BUDGET_REACHED, n_tasks=len(group.tasks)
             )
             continue
         try:
@@ -122,8 +134,15 @@ def consolidate_groups(
                 n_tasks=len(group.tasks),
             )
             continue
+        skipped_steps = getattr(result, "budget_skipped", None) or []
+        reason = (
+            f"{BUDGET_REACHED}; skipped {', '.join(skipped_steps)}"
+            if skipped_steps
+            else ""
+        )
         out[name] = GroupConsolidation(
-            name, CONSOLIDATED, result=result, n_tasks=len(group.tasks)
+            name, CONSOLIDATED, result=result, reason=reason,
+            n_tasks=len(group.tasks),
         )
     return out
 

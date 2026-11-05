@@ -29,10 +29,13 @@ This directory provides scaffold files for adding a new benchmark to SkillOpt.
    and fix the cross-import in `adapter.py`.
 3. **Implement the TODO blocks** inside `adapter.py:rollout` and the
    `_normalize_item` helper in `dataloader.py`. In addition to returning
-   `id`/`hard`/`soft`, persist each non-empty trajectory at
-   `<out_dir>/predictions/<id>/conversation.json`; the inherited `reflect`
-   method reads those files. Override `reflect` only for custom reflection
-   logic.
+   `id`/`hard`/`soft`, persist each non-empty trajectory as
+   `conversation.json` in the directory that
+   `confined_task_output_dir(out_dir, id, map_unsafe=True)` from
+   `skillopt/envs/task_output.py` returns (`<out_dir>/predictions/<id>/` for a
+   filesystem-safe id, `<out_dir>/predictions/_mapped-<sha256 of id>/`
+   otherwise); the inherited `reflect` method reads those files. Override
+   `reflect` only for custom reflection logic.
 4. **Register** the adapter — add matching `try / except ImportError` blocks
    to `_register_builtins()` in both `scripts/train.py` and
    `scripts/eval_only.py`, mapping the registry key to your

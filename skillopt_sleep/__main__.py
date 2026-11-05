@@ -33,9 +33,10 @@ import sys
 from typing import Any, Dict
 
 from skillopt_sleep.backend import CursorBackendError
-from skillopt_sleep.config import load_config
+from skillopt_sleep.config import ConfigError, load_config
 from skillopt_sleep.cycle import _one_line_display_text, run_sleep_cycle
-from skillopt_sleep.harvest_sources import harvest_for_config
+from skillopt_sleep.harvest import format_harvest_note
+from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.mine import mine
 from skillopt_sleep.staging import (
     StagingError,
@@ -44,6 +45,7 @@ from skillopt_sleep.staging import (
     json_safe,
     latest_staging,
     pending_staged_skills,
+    redact_secrets,
     staged_skills,
 )
 from skillopt_sleep.staging import adopt as adopt_staging
@@ -227,7 +229,11 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["progress"] = True
     if getattr(args, "auto_adopt", False):
         overrides["auto_adopt"] = True
-    return load_config(**overrides)
+    try:
+        return load_config(**overrides)
+    except ConfigError as exc:
+        print(f"[sleep] configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def cmd_run(args, dry: bool = False) -> int:
@@ -333,15 +339,16 @@ def _handoff_dir_for(cfg) -> str:
 
 
 def _redact_deep(obj):
-    """Redact secret-looking substrings in every string of a JSON-like tree."""
+    """Redact secrets key-aware across the whole structure (see redact_secrets).
+
+    This used to recurse values and only scrub string leaves, losing the
+    mapping-key context — so ``{"api_key": "x"}`` leaked. Delegating to the
+    key-aware ``redact_secrets`` walker fixes every output boundary that routes
+    through this helper (--json, digests/snapshot files, gate_trials, extra,
+    display) at once, keeping them all consistent.
+    """
     from skillopt_sleep.staging import redact_secrets
-    if isinstance(obj, str):
-        return redact_secrets(obj)
-    if isinstance(obj, list):
-        return [_redact_deep(x) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _redact_deep(v) for k, v in obj.items()}
-    return obj
+    return redact_secrets(obj)
 
 
 def _display_error(exc: object) -> str:
@@ -399,6 +406,7 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
     from skillopt_sleep.types import SessionDigest
 
     project = cfg.get("invoked_project") or os.getcwd()
+    source = normalize_transcript_source(cfg.get("transcript_source"))
     state = SleepState.load(cfg.state_path)
     started = _now_iso()
 
@@ -418,7 +426,7 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
                   file=sys.stderr)
             digests = None
     if digests is None:
-        since = state.last_harvest_for(project)
+        since = state.last_harvest_for(project, source)
         lookback_hours = cfg.get("lookback_hours", 72)
         if since is None and lookback_hours and lookback_hours > 0:
             since = _now_iso(time.time() - lookback_hours * 3600)
@@ -470,20 +478,20 @@ def _handoff_mine_and_pin(cfg, args, backend, snapshot: str, dry: bool):
         if not dry:
             # Advance the harvest window like run_sleep_cycle's no-tasks
             # branch, or every later run re-scans the same stale window.
-            state.set_last_harvest(project, started)
+            state.set_last_harvest(project, started, source)
             state.save()
         return 0, None
     payload = make_tasks_payload(
         tasks,
         project=project,
-        transcript_source=cfg.get("transcript_source", ""),
+        transcript_source=source,
         n_sessions=len(digests),
         target_skill_path=target_skill_path,
     )
     # NOT marked reviewed: feeding this snapshot back through --tasks-file
     # with a real backend must still hit the human-review gate above. The
     # driver itself loads it directly, with the same trust as in-cycle mining.
-    write_tasks_file(snapshot, _redact_deep(payload))
+    write_tasks_file(snapshot, redact_secrets(payload))
     print(
         f"[sleep] handoff: pinned {len(tasks)} tasks -> {snapshot}",
         file=sys.stderr if args.json else sys.stdout,
@@ -782,13 +790,14 @@ def cmd_adopt(args) -> int:
 def cmd_harvest(args) -> int:
     cfg = _cfg_from_args(args)
     session_limit = cfg.get("max_sessions_per_night", 0) or cfg.get("max_tasks_per_night", 40) * 3
+    harvest_stats: Dict[str, int] = {}
     target_skill_path = cfg.managed_skill_path() if cfg.get("target_skill_path", "") else ""
     target_skill_text = _read_text(target_skill_path) if target_skill_path else ""
     max_tasks = cfg.get("max_tasks_per_night", 40)
     candidate_limit = max_tasks
     if cfg.get("target_task_filter", True) and target_skill_text:
         candidate_limit = max(max_tasks, max_tasks * 3)
-    digests = harvest_for_config(cfg, limit=session_limit)
+    digests = harvest_for_config(cfg, limit=session_limit, stats=harvest_stats)
     tasks = mine(
         digests,
         max_tasks=max_tasks,
@@ -801,20 +810,21 @@ def cmd_harvest(args) -> int:
     payload = make_tasks_payload(
         tasks,
         project=cfg.get("invoked_project") or os.getcwd(),
-        transcript_source=cfg.get("transcript_source", ""),
+        transcript_source=normalize_transcript_source(cfg.get("transcript_source")),
         n_sessions=len(digests),
         target_skill_path=target_skill_path,
     )
     output_path = ""
     if getattr(args, "output", ""):
-        output_path = write_tasks_file(args.output, payload)
+        output_path = write_tasks_file(args.output, redact_secrets(payload))
     if args.json:
-        json_payload = dict(payload)
+        json_payload = redact_secrets(payload)
         if output_path:
             json_payload["output"] = output_path
         print(json.dumps(json_payload, ensure_ascii=False, indent=2))
     else:
-        print(f"[sleep] {len(digests)} sessions -> {len(tasks)} tasks")
+        print(f"[sleep] {len(digests)} sessions -> {len(tasks)} tasks"
+              f"{format_harvest_note(harvest_stats)}")
         if output_path:
             print(f"[sleep] wrote reviewed-task draft: {output_path}")
         for t in tasks:

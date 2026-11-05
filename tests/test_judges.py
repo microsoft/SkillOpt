@@ -9,7 +9,13 @@ import unittest
 
 import pytest
 
-from skillopt_sleep.judges import KNOWN_OPS, SHAPE_OPS, score_rule_judge, validate_checks
+from skillopt_sleep.judges import (
+    KNOWN_OPS,
+    SHAPE_OPS,
+    score_rule_judge,
+    score_rule_judge_with_feedback,
+    validate_checks,
+)
 from skillopt_sleep.tasks_file import load_tasks_file
 
 
@@ -111,6 +117,56 @@ class TestSoftAndHardScoring(unittest.TestCase):
 
     def test_empty_checks_score_zero(self) -> None:
         self.assertEqual(score_rule_judge({"kind": "rule", "checks": []}, "x")[:2], (0.0, 0.0))
+
+
+class TestOptimizerFeedbackSeparation(unittest.TestCase):
+    def test_regex_remains_in_audit_rationale_but_not_optimizer_feedback(self) -> None:
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        hard, soft, rationale, feedback = score_rule_judge_with_feedback(
+            {"kind": "rule", "checks": [{"op": "regex", "arg": pattern}]},
+            "No route declaration here.",
+        )
+
+        self.assertEqual((hard, soft), (0.0, 0.0))
+        self.assertIn(pattern, rationale)
+        self.assertNotIn(pattern, feedback)
+        self.assertNotIn("regex", feedback.lower())
+        self.assertIn("private", feedback.lower())
+
+    def test_plain_language_description_is_the_optimizer_signal(self) -> None:
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        description = "Route this class of request to the consultation utility."
+        _hard, _soft, rationale, feedback = score_rule_judge_with_feedback(
+            {
+                "kind": "rule",
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ],
+            },
+            "No route declaration here.",
+        )
+
+        self.assertIn(pattern, rationale)
+        self.assertEqual(feedback, description)
+
+    def test_regex_copied_into_description_fails_closed(self) -> None:
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        _hard, _soft, _rationale, feedback = score_rule_judge_with_feedback(
+            {
+                "kind": "rule",
+                "checks": [
+                    {
+                        "op": "regex",
+                        "arg": pattern,
+                        "description": f"Make the answer match {pattern}",
+                    }
+                ],
+            },
+            "No route declaration here.",
+        )
+
+        self.assertNotIn(pattern, feedback)
+        self.assertIn("private", feedback.lower())
 
 
 class TestMalformedRegexIsDistinguishable(unittest.TestCase):

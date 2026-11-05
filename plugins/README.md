@@ -298,7 +298,9 @@ the shipping CLI defaults.
 - `mock` and `handoff` make no network calls.
 - `run` stages proposals; `adopt` is the normal live-change boundary.
 - Adoption backs up existing target files.
-- `--max-sessions` and `--max-tasks` bound work, but the main CLI does not yet
-  enforce a hard token or elapsed-time budget.
+- `--max-sessions` and `--max-tasks` bound work. `max_tokens_per_night` in the
+  config file (default `400000`) stops a night from starting new steps once its
+  token count reaches the budget, but a started step finishes, so it is not a
+  hard cap. There is no elapsed-time budget.
 - Treat real-backend transcript excerpts as data shared with the selected
   provider.

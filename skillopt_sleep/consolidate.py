@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from skillopt_sleep.backend import Backend
 
@@ -22,6 +22,10 @@ from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
 
 _HAVE_REPO_GATE = True
+
+# gate_action of an epoch that never ran because the token budget was spent.
+# Its scores were not measured, so callers must not report them as results.
+BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 def _finite_score(value: float) -> float | None:
@@ -59,6 +63,8 @@ class ConsolidationResult:
     # fresh final replay, so aggregate changes never hide an individual task.
     # Keep new optional fields last to preserve positional construction.
     gate_trials: List[dict] = field(default_factory=list)
+    # Steps that never started because the caller's token budget was spent.
+    budget_skipped: List[str] = field(default_factory=list)
 
 
 def _split(tasks: List[TaskRecord]) -> Tuple[List[TaskRecord], List[TaskRecord], bool]:
@@ -192,6 +198,7 @@ def consolidate(
     evolve_skill: bool = True,
     evolve_memory: bool = True,
     night: int = 1,
+    budget_exhausted: Optional[Callable[[], bool]] = None,
 ) -> ConsolidationResult:
     """Run one consolidation epoch: reflect -> bounded edit -> gate.
 
@@ -201,12 +208,44 @@ def consolidate(
     recorded so the report shows whether quality moved.
 
     Skill and memory are evolved in sequence (skill first if both enabled).
+
+    ``budget_exhausted`` is checked before the epoch starts, before each
+    evolve target and before the final validation replay. Once it returns
+    True, the steps that have not started are skipped and listed in
+    ``budget_skipped``. A started step always finishes, so every gate decision
+    still rests on complete evidence. When the final replay is skipped, the
+    decision uses the validation replay that already scored the final skill
+    and memory: the baseline replay, or the trial replay of the last kept edit.
     """
     from skillopt_sleep import evidence as evlog
     ev = evlog.get(backend)
     train_tasks, val_tasks, holdout_leaked = _split(tasks)
     gate_off = str(gate_mode).strip().lower() in {"off", "none", "false", "greedy"}
     holdout_detail: List[dict] = []
+    budget_skipped: List[str] = []
+
+    def _budget_spent(step: str) -> bool:
+        if budget_exhausted is None or not budget_exhausted():
+            return False
+        budget_skipped.append(step)
+        if ev is not None:
+            ev.log("budget", "skip", step=step, night=night)
+        return True
+
+    if _budget_spent("consolidation"):
+        return ConsolidationResult(
+            accepted=False,
+            gate_action=BUDGET_EXHAUSTED,
+            baseline_score=0.0,
+            candidate_score=0.0,
+            new_skill=skill,
+            new_memory=memory,
+            applied_edits=[],
+            rejected_edits=[],
+            holdout_baseline=0.0,
+            holdout_candidate=0.0,
+            budget_skipped=budget_skipped,
+        )
 
     # ── baseline on the VAL slice (the gate reference) ────────────────────
     # When the gate is OFF the user has opted out of holding out a validation set
@@ -307,7 +346,7 @@ def consolidate(
         all_rejected.extend(applied)
         return doc
 
-    if evolve_skill:
+    if evolve_skill and not _budget_spent("skill edits"):
         if rollouts_k > 1:
             # multi-rollout contrastive reflection: run each train task K times
             # and distill a rule from the good-vs-bad contrast (the imagination signal).
@@ -354,7 +393,7 @@ def consolidate(
             )
         cand_skill = _gate_apply(cand_skill, edits, "skill")
 
-    if evolve_memory:
+    if evolve_memory and not _budget_spent("memory edits"):
         # re-evaluate failures under the (possibly improved) skill
         evlog.set_phase(backend, "train_post_skill")
         train_pairs2 = replay_batch(backend, train_tasks, cand_skill, cand_memory)
@@ -378,8 +417,16 @@ def consolidate(
         base_gate_score = 0.0
     else:
         # scored on the VAL slice (the gate reference)
-        evlog.set_phase(backend, "final_val")
-        final_pairs = replay_batch(backend, val_tasks, cand_skill, cand_memory)
+        if val_tasks and _budget_spent("final validation replay"):
+            # Replaying is not free on every route: tool replay and failed calls
+            # are not served from the response cache. current_pairs already
+            # scores exactly (cand_skill, cand_memory) on val_tasks (the
+            # baseline replay, or the trial of the last edit kept), so decide
+            # from that complete replay instead of starting a new one.
+            final_pairs = current_pairs
+        else:
+            evlog.set_phase(backend, "final_val")
+            final_pairs = replay_batch(backend, val_tasks, cand_skill, cand_memory)
         final_hard, final_soft = aggregate_scores(final_pairs)
         final_score = select_gate_score(final_hard, final_soft, gate_metric, gate_mixed_weight)
         base_gate_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
@@ -493,4 +540,5 @@ def consolidate(
         reflect_raw=getattr(backend, "last_reflect_raw", "") or "",
         call_error=getattr(backend, "last_call_error", "") or "",
         holdout_leaked=holdout_leaked,
+        budget_skipped=budget_skipped,
     )

@@ -155,6 +155,20 @@ function quoteArgv(argv) {
   return IS_WINDOWS ? `& ${quoted}` : quoted
 }
 
+/**
+ * Run one resolved spec on the host shell executor.
+ *
+ * dsh 0.2.x: `shell.execute(spec)` returns a ShellExecution; the foreground
+ * outcome is `await handle.result()`. dsh 0.1.x has only `shell.run(spec)`.
+ * plugins/dsh declares @deepseek-ai/dsh-tools for BOTH generations
+ * (`>=0.1.1-rc.2 <0.2.0 || >=0.2.0-rc.1 <0.3.0`), so the seam is detected
+ * instead of hard-switched — a hard switch breaks whichever side is older.
+ */
+export async function runShell(shell, spec) {
+  if (typeof shell.execute === 'function') return (await shell.execute(spec)).result()
+  return shell.run(spec)
+}
+
 // Pick exactly the parameters a tool declares. dsh's parameter schema does
 // not reject undeclared properties by default (no additionalProperties:false),
 // so without this filter the model could inject fields (backend, model, json,
@@ -370,7 +384,7 @@ export function apply(ctx, config = {}) {
           }
           const spec = typeof shell.resolve === 'function' ? shell.resolve(request) : request
           try {
-            const result = await shell.run(spec)
+            const result = await runShell(shell, spec)
             // Distinguish the executor's timeout (timedOut: true, exitCode null)
             // from an abort/kill (exitCode null, no timedOut) so the marker is
             // honest instead of lumping both under "signal".

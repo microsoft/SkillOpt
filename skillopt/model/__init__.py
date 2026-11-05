@@ -242,6 +242,7 @@ def chat_target(
             retries=retries,
             stage=stage,
             reasoning_effort=reasoning_effort,
+            timeout=timeout,
         )
     if get_target_backend() == "openai_compatible":
         return _openai_compat.chat_target(
@@ -326,7 +327,7 @@ def chat_optimizer_messages(
             timeout=timeout,
         )
     if get_optimizer_backend() == "minimax_chat":
-        return _minimax.chat_target_messages(
+        return _minimax.chat_optimizer_messages(
             messages=messages,
             max_completion_tokens=max_completion_tokens,
             retries=retries,
@@ -764,9 +765,15 @@ def configure_openai_compatible(
     optimizer_base_url: str | None = None,
     optimizer_api_key: str | None = None,
     optimizer_model: str | None = None,
+    optimizer_temperature: float | str | None = None,
+    optimizer_timeout_seconds: float | str | None = None,
+    optimizer_max_tokens: int | str | None = None,
     target_base_url: str | None = None,
     target_api_key: str | None = None,
     target_model: str | None = None,
+    target_temperature: float | str | None = None,
+    target_timeout_seconds: float | str | None = None,
+    target_max_tokens: int | str | None = None,
 ) -> None:
     _openai_compat.configure_openai_compatible(
         base_url=base_url,
@@ -778,9 +785,15 @@ def configure_openai_compatible(
         optimizer_base_url=optimizer_base_url,
         optimizer_api_key=optimizer_api_key,
         optimizer_model=optimizer_model,
+        optimizer_temperature=optimizer_temperature,
+        optimizer_timeout_seconds=optimizer_timeout_seconds,
+        optimizer_max_tokens=optimizer_max_tokens,
         target_base_url=target_base_url,
         target_api_key=target_api_key,
         target_model=target_model,
+        target_temperature=target_temperature,
+        target_timeout_seconds=target_timeout_seconds,
+        target_max_tokens=target_max_tokens,
     )
 
 
@@ -809,5 +822,6 @@ def set_optimizer_deployment(deployment: str) -> None:
     _claude.set_optimizer_deployment(deployment)
     _claude_code.set_optimizer_deployment(deployment)
     _qwen.set_optimizer_deployment(deployment)
+    _minimax.set_optimizer_deployment(deployment)
     _openai_compat.set_optimizer_deployment(deployment)
     _codex.set_optimizer_deployment(deployment)

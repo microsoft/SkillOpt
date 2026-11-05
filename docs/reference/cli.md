@@ -418,6 +418,11 @@ a new harvest checkpoint; subsequent runs use that checkpoint rather than the
 initial lookback. Use `harvest` or `dry-run` to verify counts before the first
 stateful run.
 
+There is one checkpoint per project **and transcript source**, because each
+source reads a different store with its own timestamps. Feeding one project from
+several sources therefore keeps a separate window per source, and a run of one
+source does not advance another source's window.
+
 The managed `schedule` command persists the project, backend, time, and optional
 auto-adopt setting only. It does not copy source, Cursor paths, model, or target
 skill flags into the scheduled command. Put `transcript_source`, `cursor_home`,
@@ -439,8 +444,8 @@ python -m skillopt_webui.app [--port PORT] [--share]
 | Argument | Default | Description |
 |---|---|---|
 | `--port` | 7860 | Port number |
-| `--host` | `0.0.0.0` | Server bind address |
+| `--host` | `127.0.0.1` | Server bind address |
 | `--share` | false | Create public Gradio link |
 
-The default host binds every network interface. Use `--host 127.0.0.1` when
-the dashboard should be reachable only from the local machine.
+The default host binds loopback only. Exposing the dashboard (`--host 0.0.0.0` or `--share`) requires
+`--auth-user`/`--auth-pass` (or `SKILLOPT_WEBUI_USER`/`SKILLOPT_WEBUI_PASS`).

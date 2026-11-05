@@ -1,0 +1,6 @@
+{
+  "split": "test",
+  "n_items": 2,
+  "hard": 0.5,
+  "soft": 0.6
+}

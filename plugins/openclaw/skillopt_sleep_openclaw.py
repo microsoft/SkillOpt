@@ -12,12 +12,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-from skillopt_sleep.backend import Backend, _normalize, exact_score
+from skillopt_sleep.backend import Backend, _optimizer_feedback, exact_score
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
-
 
 # ── DeepSeek + Ollama OpenAI-compatible API client (curl-based, no extra deps) ──
 
@@ -194,12 +192,13 @@ Return ONLY a single float 0.0-1.0 on one line. No explanation. No markdown.
     ) -> List[EditRecord]:
         # Compact digest of failures + successes
         fail_digest = "\n".join(
-            f"- TASK: {t.intent[:200]}\n  RESPONSE: {r.response[:300]}\n  WHY FAIL: {r.judge_rationale or r.fail_reason or 'unknown'}\n  REFERENCE: {t.reference[:200]}"
+            f"- TASK: {t.intent[:200]}\n  RESPONSE: {r.response[:300]}\n"
+            f"  ACTIONABLE FEEDBACK: {_optimizer_feedback(t, r)[:240]}\n"
+            f"  REFERENCE: {t.reference[:200]}"
             for t, r in failures[:5]
         ) or "(none)"
         succ_digest = "\n".join(
-            f"- TASK: {t.intent[:150]} -> OK ({r.judge_rationale or 'high score'})"
-            for t, r in successes[:3]
+            f"- TASK: {t.intent[:150]} -> OK" for t, _r in successes[:3]
         ) or "(none)"
 
         rubric_text = ""
@@ -216,6 +215,7 @@ Return ONLY a single float 0.0-1.0 on one line. No explanation. No markdown.
             "that, if applied, would help future agents do better on the failed tasks. "
             "NEVER propose adding new sections wholesale. NEVER delete entire sections. "
             "Edit primitives: ADD (append a step/rule at end), DELETE (remove a specific line by exact match), REPLACE (swap a specific line for another by exact match). "
+            "Use only the actionable semantic feedback; never quote or reconstruct private verifier syntax such as regexes or check source. "
             "If you cannot identify a clear, minimal improvement, return an empty list."
         )
         usr = f"""## CURRENT SKILL

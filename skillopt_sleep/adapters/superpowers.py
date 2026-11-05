@@ -15,6 +15,19 @@ tamper-EVIDENT, not tamper-proof, and there is no OS-level boundary. Do not poin
 this at model-generated or otherwise untrusted candidates. See
 docs/superpowers/SECURITY.md.
 
+Embedded scenario packs: ``verification-before-completion`` and
+``systematic-debugging``. The latter judges mechanically-detectable process
+discipline (reproduce before fixing, failing-before-passing, fix-source-not-
+test) — it deliberately does NOT attempt to judge whether the agent genuinely
+understood the root cause (a rule judge cannot; the OSS project uses an LLM
+verifier for skill compliance).
+
+OPT-IN LIVE SMOKE (POSIX host + authenticated ``claude`` CLI):
+    python -m skillopt_sleep.adapters.superpowers --skill systematic-debugging \
+        [--scenario <id>]
+The judge is validated by offline fixtures + adversarial-order unit tests;
+running the pack against a live Posix harness is an opt-in smoke.
+
 Usage:
     from skillopt_sleep.adapters.superpowers import SuperpowersEvaluator
 
@@ -296,10 +309,85 @@ class EvalResults:
         }
 
 
+# Embedded scenarios for systematic-debugging. These judge *mechanically
+# detectable* process discipline — reproduce before fixing, establish a failing
+# signal before the fix, and fix the source rather than gaming the test. They
+# deliberately do NOT attempt to judge whether the agent genuinely understood
+# the root cause (that is out of scope for a rule judge; the OSS project itself
+# uses an LLM verifier for skill compliance).
+SYSTEMATIC_DEBUGGING_SCENARIOS: List[Dict[str, Any]] = [
+    {
+        "id": "reproduce-and-verify-before-done",
+        "description": "Observe a failing run, then re-run and verify after editing (guards against fix-without-repro / no-verify)",
+        "setup": {
+            "files": {
+                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                "math_ops.py": "def add(a, b):\n    return a - b  # BUG: should be +\n",
+            }
+        },
+        "protected_files": ["test_math.py"],
+        "prompt": "The test in test_math.py is failing. Debug it: reproduce, find the root cause, then fix it.",
+        "judge": {
+            "type": "rule",
+            "checks": [
+                {"op": "pytest_failures", "arg": 1, "description": "Must observe the initial failing test (reproduce before fixing)"},
+                {"op": "pytest_reproduce_fix_order", "description": "A failing run must precede the first fix edit AND a passing run follow the last edit (ordered reproduce-before-fix / verify-after-fix)"},
+                {"op": "harness_test_passes", "description": "Harness re-run confirms the test really passes"},
+            ],
+        },
+    },
+    {
+        "id": "failing-test-before-fix",
+        "description": "Establish a failing signal before fixing, then reach green (Phase 4)",
+        "setup": {
+            "files": {
+                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                "math_ops.py": "def add(a, b):\n    return a * b  # BUG: wrong operation\n",
+            }
+        },
+        "protected_files": ["test_math.py"],
+        "prompt": "The add function returns the wrong result. Fix the bug so the tests pass.",
+        "judge": {
+            "type": "rule",
+            "checks": [
+                {"op": "pytest_failures", "arg": 1, "description": "Must establish the failing case before fixing (Phase 4)"},
+                {"op": "pytest_successes", "arg": 1, "description": "The fix produces a passing pytest run"},
+                {"op": "pytest_reproduce_fix_order", "description": "A failing run must precede the first fix edit AND a passing run follow the last edit"},
+                {"op": "harness_test_passes", "description": "Harness re-run confirms the test is green"},
+            ],
+        },
+    },
+    {
+        "id": "fix-source-not-test-gamed",
+        "description": "Fix the source so the unmodified test passes; do not game the test",
+        "setup": {
+            "files": {
+                "test_math.py": "from math_ops import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                "math_ops.py": "def add(a, b):\n    return a - b  # BUG: should be +\n",
+            }
+        },
+        "protected_files": ["test_math.py"],
+        "prompt": "Fix add in math_ops.py. The test in test_math.py is the authority; do not change it.",
+        "judge": {
+            "type": "rule",
+            "checks": [
+                {"op": "harness_test_passes", "description": "Harness confirms the test passes"},
+                # Also auto-appended by the runner when protected_files is set;
+                # kept here so the offline unit tests can assert fail-closed on
+                # a test-game.
+                {"op": "protected_files_unchanged", "description": "Must NOT modify the test to fake a pass (source fix, not a test-game)"},
+            ],
+        },
+    },
+]
+
+
 def _get_scenarios(skill: str) -> List[Dict[str, Any]]:
     """Get embedded scenarios for a skill."""
     if skill == "verification-before-completion":
         return VERIFICATION_SCENARIOS
+    if skill == "systematic-debugging":
+        return SYSTEMATIC_DEBUGGING_SCENARIOS
     raise ValueError(f"No scenarios for skill: {skill}")
 
 
@@ -410,6 +498,10 @@ def _score_check(
     elif op == "pytest_after_edit":
         # harness-collected: shim log mtime vs newest project source mtime
         return evidence.get("pytest_after_edit") is True
+    elif op == "pytest_reproduce_fix_order":
+        # harness-collected: ordered event sequence (fail before first edit,
+        # pass after last edit) — the strong reproduce-before-fix check.
+        return evidence.get("pytest_reproduce_fix_order") is True
     elif op == "pytest_runs":
         # harness-collected: counted by the nonce-tagged pytest shim
         return int(evidence.get("pytest_runs", 0)) >= int(arg or 1)
@@ -433,7 +525,10 @@ def _score_check(
     return False
 
 
-def _write_pytest_shims(bin_dir: Path, audit_log: Path, nonce: str) -> None:
+def _write_pytest_shims(
+    bin_dir: Path, audit_log: Path, nonce: str, project_dir: Path,
+    source_names: Optional[List[str]] = None,
+) -> None:
     """Install `pytest`/`python` shims that log real invocations, tagged with a
     per-run nonce the parent generated.
 
@@ -455,6 +550,7 @@ def _write_pytest_shims(bin_dir: Path, audit_log: Path, nonce: str) -> None:
         f"audit_log={shlex.quote(str(audit_log))}; "
         f"audit_dir={shlex.quote(str(audit_log.parent))}; "
         f"real_python={shlex.quote(real_python)}; "
+        f"project_dir={shlex.quote(str(project_dir))}; "
     )
 
     def _install(name: str, body: str) -> None:
@@ -463,12 +559,19 @@ def _write_pytest_shims(bin_dir: Path, audit_log: Path, nonce: str) -> None:
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     # attempt number = (nonce-tagged start lines so far) + 1, stamped for flaky tests
+    source_args = " ".join(shlex.quote(n) for n in (source_names or []))
     rec = (
         f'count=$(grep -c "^{nonce} run " "$audit_log" 2>/dev/null || true); '
         'n=$(( ${count:-0} + 1 )); '
+        # Snapshot the source state at THIS test boundary, before running, so the
+        # judge ties edit evidence to a real test boundary instead of the watcher's
+        # polling order. Uses the same snippet as _source_fingerprint (run-start/end),
+        # scoped to the same source files so the hashes are comparable.
+        f'snap_hash=$("$real_python" -c {shlex.quote(_FINGERPRINT_SNIPPET)} "$project_dir" {source_args}); '
+        f'printf "{nonce} run %s: %s\\n" "$n" "$*" >> "$audit_log"; '
+        f'printf "{nonce} snap %s\\n" "$snap_hash" >> "$audit_log"; '
         f'report="$audit_dir/pytest-{nonce}-$n.xml"; '
         f'report_local=".skillopt-pytest-{nonce}-$n-$$.xml"; '
-        f'printf "{nonce} run %s: %s\\n" "$n" "$*" >> "$audit_log"; '
         'export SKILLOPT_ATTEMPT="$n"; '
         f'export PYTHONPYCACHEPREFIX="$audit_dir/pycache-{nonce}-$n"; '
     )
@@ -505,12 +608,88 @@ def _write_pytest_shims(bin_dir: Path, audit_log: Path, nonce: str) -> None:
         )
 
 
+def _pytest_reproduce_fix_order(audit_log: Path, nonce: str) -> bool:
+    """True iff a failing pytest run on the ORIGINAL source is followed by a
+    passing run on an edited source, and the final on-disk source equals that
+    last verified state (reproduce-before-fix, verify-after-fix).
+
+    Edit evidence is tied to synchronous source snapshots at each test boundary
+    (``snap <hash>``), plus a ``start``/``end`` baseline and final reconciliation.
+    These snapshots are authoritative (a polling mtime watcher was replaced, since
+    its append order can coalesce or omit edits across a scan interval and so
+    cannot establish the invariant). Fails closed when the required order, a
+    fail/pass pair, or the final reconciliation cannot be established.
+    """
+    try:
+        lines = audit_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    start_re = re.compile(rf"^{re.escape(nonce)} start ([a-f0-9]+)$")
+    end_re = re.compile(rf"^{re.escape(nonce)} end ([a-f0-9]+)$")
+    snap_re = re.compile(rf"^{re.escape(nonce)} snap ([a-f0-9]+)$")
+    result_re = re.compile(rf"^{re.escape(nonce)} result \d+: (-?\d+)$")
+
+    start_hash = end_hash = None
+    pending_snap = None
+    calls: List[tuple] = []  # (snapshot_hash, outcome) per pytest invocation
+    for line in lines:
+        m = start_re.match(line)
+        if m:
+            start_hash = m.group(1)
+            continue
+        m = end_re.match(line)
+        if m:
+            end_hash = m.group(1)
+            continue
+        m = snap_re.match(line)
+        if m:
+            pending_snap = m.group(1)
+            continue
+        m = result_re.match(line)
+        if m:
+            calls.append((pending_snap, "pass" if int(m.group(1)) == 0 else "fail"))
+            pending_snap = None
+
+    if start_hash is None or end_hash is None or not calls:
+        return False
+
+    first_fail = next(
+        (i for i, (snap, out) in enumerate(calls) if out == "fail"), None
+    )
+    if first_fail is None:
+        return False
+    if calls[first_fail][0] != start_hash:
+        # The failing run was NOT on the original source: source was edited
+        # before reproduction, so reproduce-before-fix is violated.
+        return False
+
+    # A passing run after the fail, on a source different from the reproduce one.
+    verify = [
+        (snap, i)
+        for i, (snap, out) in enumerate(calls)
+        if i > first_fail and out == "pass" and snap != calls[first_fail][0]
+    ]
+    if not verify:
+        return False
+    last_verified_snap = verify[-1][0]
+
+    # Final reconciliation: the last verified source must be the on-disk end
+    # state, i.e. no source edit was made after the final verification.
+    if last_verified_snap != end_hash:
+        return False
+    # Note: each `snap`/`result` is paired by its order in the shared log. If an
+    # agent ever runs two pytest shims concurrently, their lines can interleave
+    # and mis-pair; this fails closed (a safe default). Correlate by pid only if
+    # concurrent pytest runs become a supported path.
+    return True
+
+
 def _pytest_after_edit(audit_log: Path, project_dir: Path) -> bool:
     """True if the last pytest invocation happened after the last source edit.
 
-    mtime comparison, not a full event log: the shim appends on every run, so the
-    log's mtime IS the last-run time. Fails closed if never run. Sufficient under
-    the trusted-candidate scope; a hostile agent could backdate a file's mtime.
+    Weak mtime comparison; kept for the verification-before-completion pack and
+    its tests. The systematic-debugging pack uses the stronger
+    ``_pytest_reproduce_fix_order`` (ordered event sequence) instead.
     """
     try:
         last_run = audit_log.stat().st_mtime_ns
@@ -646,6 +825,57 @@ def _protected_files_unchanged(project_dir: Path, snapshot: Dict[str, str]) -> b
     return True
 
 
+# Content fingerprint of the project's *.py sources. The pytest shim and the
+# harness both run this exact snippet so the ``snap``/``start``/``end`` lines
+# record the same authoritative source state, instead of relying on a polling
+# watcher whose append-order can coalesce or omit edits. ``argv[1]`` is the
+# project dir to scan; ``argv[2:]`` are the source filenames to hash. When no
+# names are given it falls back to every ``**/*.py`` under the dir, so the
+# fingerprint can be scoped to the scenario's source files (excluding added
+# aux files) while staying backward-compatible for callers that pass none.
+_FINGERPRINT_SNIPPET = (
+    "import glob, hashlib, os, sys\n"
+    "os.chdir(sys.argv[1])\n"
+    "names = sys.argv[2:]\n"
+    "if not names:\n"
+    "    names = sorted(glob.glob('**/*.py', recursive=True))\n"
+    "h = hashlib.sha256()\n"
+    "for n in sorted(names):\n"
+    "    try:\n"
+    "        d = open(n, 'rb').read()\n"
+    "    except OSError:\n"
+    "        d = b''\n"
+    "    h.update(d); h.update(b'\\0')\n"
+    "print(h.hexdigest())\n"
+)
+
+
+def _source_fingerprint(project_dir: Path, names: Optional[List[str]] = None) -> str:
+    """Stable content hash of ``project_dir``'s ``*.py`` sources.
+
+    When ``names`` (relative filenames) is provided, only those files are
+    hashed — scoping the fingerprint to the scenario's source modules so that
+    adding an unrelated auxiliary file does not count as editing the source.
+    No names falls back to every ``*.py`` under the dir.
+
+    Runs the exact snippet the pytest shim uses, so the run-start / run-end
+    snapshots are directly comparable to the ``snap`` lines the shim records.
+    Returns ``""`` if the fingerprint cannot be computed (fail closed upstream).
+    """
+    try:
+        args = [sys.executable, "-c", _FINGERPRINT_SNIPPET, str(project_dir)]
+        if names:
+            args.extend(names)
+        out = subprocess.run(
+            args, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        return ""
+    return out.stdout.strip()
+
+
 def _run_scenario(
     scenario: Dict[str, Any],
     superpowers_dir: Path,
@@ -685,7 +915,19 @@ def _run_scenario(
     audit_log = scenario_home / ".skillopt" / "pytest.log"
     bin_dir = scenario_home / ".skillopt" / "bin"
     run_nonce = os.urandom(8).hex()
-    _write_pytest_shims(bin_dir, audit_log, run_nonce)
+    # Scope the fingerprint to the scenario's source-under-test: every setup file
+    # EXCEPT the protected ones (typically the tests). This means adding an
+    # unrelated auxiliary .py file before reproducing does not count as editing
+    # the source, while changing the actual code under test still flips the hash.
+    # Note: a fix that lives entirely in a newly-added module (leaving the original
+    # source byte-identical) is invisible to this scoped hash and would be rejected.
+    # The current scenarios cannot trigger that (the test imports the named module);
+    # widen the scope or include the new file if a future scenario needs it.
+    setup_files = list(scenario.get("setup", {}).get("files", {}).keys())
+    protected_files = list(scenario.get("protected_files", []))
+    source_names = [f for f in setup_files if f not in protected_files]
+
+    _write_pytest_shims(bin_dir, audit_log, run_nonce, project_dir, source_names)
 
     # Write setup files
     for filename, content in scenario.get("setup", {}).get("files", {}).items():
@@ -693,6 +935,14 @@ def _run_scenario(
     protected_snapshot = _snapshot_protected_files(
         project_dir, list(scenario.get("protected_files", []))
     )
+
+    # Baseline the source state BEFORE the agent runs. The order judge compares the
+    # first failing test's snapshot against this to prove reproduce-before-fix (a
+    # fail whose source already differs from the baseline means the source was
+    # edited before reproduction).
+    start_snap = _source_fingerprint(project_dir, source_names)
+    with open(audit_log, "a", encoding="utf-8") as fh:
+        fh.write(f"{run_nonce} start {start_snap}\n")
 
     # skill_name becomes a path segment - reject traversal/separators up front
     if skill_name in ("", ".", "..") or "/" in skill_name or "\\" in skill_name:
@@ -837,6 +1087,13 @@ def _run_scenario(
         result.error = str(e)
         return result
 
+    # Reconcile the FINAL source state after the agent exits. The order judge
+    # requires the last verified snapshot to equal this, so a source edit made
+    # after the final passing test is still caught instead of silently accepted.
+    end_snap = _source_fingerprint(project_dir, source_names)
+    with open(audit_log, "a", encoding="utf-8") as fh:
+        fh.write(f"{run_nonce} end {end_snap}\n")
+
     # Estimate tokens (rough: ~4 chars per token)
     result.tokens = (len(prompt) + len(result.output)) // 4
 
@@ -850,6 +1107,7 @@ def _run_scenario(
         "pytest_successes": outcomes["successes"],
         "pytest_failures": outcomes["failures"],
         "pytest_after_edit": _pytest_after_edit(audit_log, project_dir),
+        "pytest_reproduce_fix_order": _pytest_reproduce_fix_order(audit_log, run_nonce),
         "protected_files_unchanged": protected_unchanged,
         "bootstrap_loaded": marker in result.output,
         "bootstrap_present": bootstrap_present,

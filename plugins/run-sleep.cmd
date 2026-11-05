@@ -22,20 +22,9 @@ if not "%SKILLOPT_SLEEP_REPO%"=="" if exist "%SKILLOPT_SLEEP_REPO%\skillopt_slee
     goto root_resolved
 )
 
-:: Search upward from current directory
-set "d=%CD%"
-:loop
-if exist "!d!\skillopt_sleep" (
-    set "REPO_ROOT=!d!"
-    goto root_resolved
-)
-for %%I in ("!d!") do set "parent=%%~dpI"
-:: Strip trailing backslash from parent if it's not root
-if "!parent!"=="!d!" goto root_resolved
-set "parent=!parent:~0,-1!"
-if "!parent!"=="" goto root_resolved
-set "d=!parent!"
-goto loop
+:: Deliberately no search upward from the current directory: it is the
+:: (possibly untrusted) project being worked on, and a skillopt_sleep folder
+:: planted there would be run.
 
 :root_resolved
 
@@ -90,13 +79,19 @@ exit /b !errorlevel!
 
 :try_fallback_2
 :: Fallback 2: importable as a module (pip install into the active Python).
+:: `python -c`/`-m` put the current directory (the user's project) first on
+:: sys.path, so a planted skillopt_sleep.py there would run; strip it before
+:: importing. The current directory itself is kept because the engine uses it
+:: as the default project.
+set "NO_CWD_IMPORT=import sys; sys.path[:] = [p for p in sys.path if p]; import skillopt_sleep"
+set "NO_CWD_RUN=import sys; sys.path[:] = [p for p in sys.path if p]; import runpy; runpy.run_module('skillopt_sleep', run_name='__main__', alter_sys=True)"
 set "PY="
 for %%p in (python3.exe python.exe py.exe) do (
     where %%p >nul 2>nul
     if !errorlevel! equ 0 (
         %%p -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
         if !errorlevel! equ 0 (
-            %%p -c "import skillopt_sleep" >nul 2>nul
+            %%p -c "!NO_CWD_IMPORT!" >nul 2>nul
             if !errorlevel! equ 0 (
                 set "PY=%%p"
                 goto py_import_found
@@ -109,9 +104,9 @@ for %%p in (python3.exe python.exe py.exe) do (
 if "%PY%" == "" goto not_found
 
 if "%~1" == "" (
-    "%PY%" -m skillopt_sleep status
+    "%PY%" -c "!NO_CWD_RUN!" status
 ) else (
-    "%PY%" -m skillopt_sleep %*
+    "%PY%" -c "!NO_CWD_RUN!" %*
 )
 exit /b !errorlevel!
 

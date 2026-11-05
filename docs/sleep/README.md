@@ -91,6 +91,56 @@ checks and should be paired with an outcome check or substantive rubric.
 > `"evidence_log": false` to disable it; setting `"redact_secrets": false`
 > deliberately disables this defense-in-depth redaction.
 
+### Optimizer feedback boundary
+
+Judge evidence and optimizer feedback have different trust and retention needs.
+`ReplayResult.fail_reason` and `judge_rationale` retain the raw scoring evidence
+for replay results and audit surfaces such as diagnostics and `evidence.jsonl`.
+Reflection, contrastive reflection, and slow update instead consume
+`optimizer_feedback`, which is a semantic projection intended to describe the
+user-visible behavior to improve.
+
+For a rule judge, the separation looks like this:
+
+| Stage | Example |
+|---|---|
+| Mined check | `{"op":"regex","arg":"(?im)^\\s*ROUTE:...$","description":"Route recurring consultation requests through the consultation utility."}` |
+| Raw audit evidence | `failed: regex=(?im)^\s*ROUTE:...$` |
+| Before this boundary | The raw failure could be copied into reflection, encouraging a rule that imitates the regex. |
+| Optimizer feedback now | `Route recurring consultation requests through the consultation utility.` |
+| Reviewable proposal | A general routing instruction, without the regex or check expression. |
+
+The deterministic integration regression in
+`tests/test_optimizer_feedback_flow.py` carries that description through mining,
+replay, reflection, the validation gate, and staging: its synthetic rule score
+moves from 0.0 to 1.0 while the proposal remains free of the regex. That proves
+useful signal survives this specific rule-judge path; it is not evidence that
+optimization quality is preserved for every judge type or real workload.
+
+Descriptions are a targeted projection, not a universal sanitizer. They are
+expected to be trusted, operator- or miner-provided semantic statements. A regex
+description that literally copies its pattern is rejected, but arbitrary prose
+may still contain unsafe, sensitive, misleading, or prompt-like content. Do not
+treat this channel as an adversarial-input boundary, and continue to review mined
+tasks and staged proposals before adoption. Raw evidence files remain sensitive
+local artifacts even though they are excluded from optimizer prompts.
+
+Non-rule judges have no structured check from which the engine can reliably
+derive a safe semantic explanation. A failed exact, rubric, or legacy
+deserialized result therefore receives the generic optimizer message:
+
+```text
+The response did not satisfy the task's evaluation criteria.
+```
+
+This fail-closed fallback prevents an exact/rubric judge rationale such as
+`private-evaluator-expression: expected internal label X` from becoming learning
+context, but it also removes potentially useful information about how the answer
+was deficient. The change contains verifier leakage; it does **not** establish
+that optimization quality is preserved for non-rule tasks. Restoring richer
+feedback requires a future typed, explicitly learning-safe feedback API rather
+than reusing raw judge rationale.
+
 ## How to use it
 
 ### Quickest path: the `skillopt-sleep` CLI (pip)
@@ -128,6 +178,78 @@ One engine, thin per-agent shells (see [`plugins/`](https://github.com/microsoft
 | **Copilot** | [`plugins/copilot`](https://github.com/microsoft/SkillOpt/tree/main/plugins/copilot) | register `plugins/copilot/mcp_server.py` as an MCP server |
 | **Devin** | [`plugins/devin`](https://github.com/microsoft/SkillOpt/tree/main/plugins/devin) | register `plugins/devin/mcp_server.py` as an MCP server |
 | **OpenClaw** | [`plugins/openclaw`](https://github.com/microsoft/SkillOpt/tree/main/plugins/openclaw) | adapt the reference wrapper and paths for your installation |
+
+### Codex replay provenance
+
+Codex backend calls carry a `[skillopt-sleep:codex-engine:v1]` prefix so the
+harvester can exclude engine-generated attempt, judge, reflection, and tool
+sessions, including custom prompt templates. Ordinary user sessions that quote
+headings such as `## TASK` or `## CURRENT SKILL` remain eligible for harvesting.
+Legacy tool-replay sessions are recognized by their complete prompt structure.
+
+### Configuration files
+
+Sleep reads `~/.skillopt-sleep/config.json`, falling back to `config.yaml` or
+`config.yml` when the earlier names are absent. YAML requires PyYAML.
+Save new files as UTF-8. Existing files written with the system's legacy
+encoding (for example, GBK or cp1252) are still readable under that locale:
+Sleep tries UTF-8 first, then the system encoding, and warns when the latter is
+used. Open the file with its original encoding and save it as UTF-8 before
+moving it to a machine with a different locale. Sleep does not rewrite it.
+
+An existing file that cannot be decoded, parsed, or read stops the command
+with a configuration error and exit code 2; it does not discard your settings
+and run with default budgets. Explicit CLI flags still override loaded values.
+
+### Harvest filters (environment)
+
+Harvest keeps what you typed and drops what a machine wrote. Four environment
+variables extend the built-in filters. They apply to the Claude Code source and
+are read when the process starts, so set them in the shell or in whatever runs
+the night:
+
+| Variable | Effect |
+|---|---|
+| `SKILLOPT_SLEEP_AGENT_MARKERS` | Comma-separated markers. A session whose **first** user prompt contains one is dropped entire — for prompts written by another tool's sub-agent (memory observers, critic agents, hook-driven runs). |
+| `SKILLOPT_SLEEP_NEG_FEEDBACK` | Extra comma-separated phrases, in any language, that count as you disapproving of the previous answer. |
+| `SKILLOPT_SLEEP_POS_FEEDBACK` | The same, for approval. |
+| `SKILLOPT_SLEEP_REPEAT_MIN_SESSIONS` | Sessions a prompt prefix must recur in before the repeats are treated as one template (default `0`: off; `3` is the usual opt-in, `0` turns a configured value back off). |
+
+The first three cover a tool whose prompt template you can quote, and the
+filter they feed is exact: it checks the session's first user prompt against
+each marker. A nightly hook that summarises the previous session — the shape
+that fills a harvest window without your ever typing anything — is the case
+they exist for:
+
+```bash
+# the hook's own template, as its first line appears in the transcript
+export SKILLOPT_SLEEP_AGENT_MARKERS="Below is a conversation log from a coding session"
+```
+
+`SKILLOPT_SLEEP_REPEAT_MIN_SESSIONS` covers the templates you cannot quote, but
+recurrence is not proof of who wrote a prompt, so it is **off by default**. A
+single-turn session that shares its first 120 characters of prompt with `N`
+others in the same harvest window is dropped *before* `--max-sessions` is
+applied, so the repeats cannot consume the cap the way they did in #319 — but
+only once you opt in with a value for `N` (3 is the usual choice). The reason
+for the default: three people asking for a code review against one long shared
+checklist are structurally identical to a hook re-running itself — one turn, one
+long common prefix, a different task after it — and losing a real task is worse
+than harvesting a hook's summary sessions. Set the variable for a project whose
+recurring sessions you have recognized. A session with a follow-up user turn is
+never matched (it is interactive by definition), and neither is a prompt shorter
+than the prefix — a real one-shot request repeats entirely rather than sharing a
+long boilerplate header.
+
+`harvest` and the progress output of `run` / `dry-run` report what was dropped,
+so a night that looks empty is explainable:
+
+```text
+[sleep] 120 sessions -> 40 tasks (skipped: 297 repeated-template sessions, 2 past the session cap)
+```
+
+With the filter off (the default) nothing is dropped by it, `--max-sessions`
+still bounds how many transcripts are read, and the note reports only the cap.
 
 ### VS Code GitHub Copilot Chat
 
@@ -273,7 +395,9 @@ adopt, or advance state. Use another backend for those tasks.
 The initial harvest window is 72 hours. Set `--lookback-hours N` explicitly when
 older sessions should be considered; `0` scans all history subject to the
 session limit. A stateful `run`, even with no mined tasks, advances the harvest
-checkpoint. Use `harvest` or `dry-run` to inspect counts first. A real-backend
+checkpoint for that project and transcript source — each source keeps its own
+window, so a run of one source never hides another source's sessions. Use
+`harvest` or `dry-run` to inspect counts first. A real-backend
 `dry-run` still incurs provider calls and spend, and session/task limits are not
 hard call, token, time, or monetary budgets.
 
@@ -293,6 +417,60 @@ documents the separate HTTPS-only boundary for Azure managed-identity credential
 
 Deterministic proof (no API key):
 `python -m skillopt_sleep.experiments.run_experiment --persona researcher --assert-improves`.
+
+### Nightly token budget
+
+`max_tokens_per_night` in `~/.skillopt-sleep/config.json` (default `400000`)
+stops a `run` or `dry-run` from starting more model work once tonight's spend
+reaches it. The cycle checks the budget before the consolidation, before its
+skill and memory edit steps, before its final validation replay, before the
+held-out test replay, and before each per-skill fan-out group. Steps that did
+not start are listed in a note in `report.md`, for example
+`max_tokens_per_night reached (431870 of 400000 tokens); skipped: memory edits, final validation replay`.
+
+When the final validation replay is skipped, the gate decides from the
+validation replay that already scored the same skill and memory: the baseline
+replay when no edit was kept, or the trial replay of the last edit that was
+kept. That replay is complete, so no decision rests on partial evidence, and
+it is not repeated. This matters for replays the response cache does not
+serve, such as tool replay or a call that failed or timed out, which would
+otherwise start the model again.
+
+```json
+{"max_tokens_per_night": 200000}
+```
+
+Set the value to `0` or `null` for no budget. Anything other than a whole,
+non-negative number stops the run with an error before any model call. There
+is no elapsed-time budget.
+
+This is not a hard cap. A step that has started always finishes, so a night
+can end above the budget by the cost of one step: the first replay of the
+validation and training tasks, one edit step (a training replay, a reflect
+call and a validation replay of the candidate; with `dream_rollouts` set to K,
+K attempts per training task), the final validation replay, or the held-out
+test replay. Each fan-out group that starts runs its own first replay.
+
+Spend comes from the backend's token counter, the one the report header prints
+as `tokens used`. The header shows the backend's running total and the note
+shows tonight's spend; they are equal unless a caller reuses one backend object
+across nights. What the counter covers depends on the backend:
+
+- CLI backends estimate tokens from prompt and reply length. LLM task mining and
+  contrastive reflection (`dream_rollouts` above 1) call the model directly and
+  are not counted.
+- `azure_openai` adds the usage reported by the API to that estimate, so it
+  counts mining, and replay and reflect calls count roughly twice.
+- `handoff` counts the prompt and answer text of the current round. A budget
+  check that finds unanswered prompts pauses the round for answers instead of
+  stopping it, so a round only stops on the budget once every counted call has
+  a real answer.
+- `mock` reports no usage and never reaches the budget.
+
+A night that stops on the budget still advances the harvest checkpoint, so its
+sessions are not mined again, and skipped work is not retried on a later night.
+Tonight's tasks stay in the task archive, which later nights only use through
+`recall_k`.
 
 ### Opt-in: per-skill fan-out
 
@@ -338,6 +516,14 @@ correctness signal; the validation gate still governs what ships.
 | `dream_rollouts` | `1` | Run each task K times → learn from the good-vs-bad contrast (contrastive reflection). |
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
+
+The nightly cycle persists task split exposure separately from the capped recall
+archive. Once a task has entered training, re-mining it or a recorded derivative
+cannot move it into validation or test; validation exposure likewise prevents
+later claims of pristine test coverage. This also applies to small-pool fallback
+assignments across growing or shrinking nightly pools. Restored assignments emit
+a warning when they reduce holdout coverage. If no disjoint validation pool
+remains, the existing gate reports leakage and does not certify the edits.
 
 ### Paired A/B evalkit
 

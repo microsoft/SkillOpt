@@ -356,6 +356,28 @@ def test_miner_preserves_regex_whitespace() -> None:
     assert errors == []
 
 
+def test_miner_preserves_plain_language_check_description() -> None:
+    pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+    description = "Route this class of request to the consultation utility."
+    task = _mk_task(
+        _digest(),
+        {
+            "intent": "route a recurring consultation request",
+            "checks": [
+                {"op": "regex", "arg": pattern, "description": description}
+            ],
+            "rubric": "",
+            "satisfied": False,
+        },
+        0,
+    )
+
+    assert task is not None
+    assert task.judge["checks"] == [
+        {"op": "regex", "arg": pattern, "description": description}
+    ]
+
+
 
 def test_mined_checks_always_pass_validate_checks() -> None:
     # The miner must never emit a judge that validate_checks() later rejects:

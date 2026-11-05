@@ -20,12 +20,10 @@ import-light — no `openai` dependency.
 """
 from __future__ import annotations
 
-import re
 from typing import List, Optional, Tuple
 
-from skillopt_sleep.backend import Backend, _extract_json
+from skillopt_sleep.backend import Backend, _extract_json, _optimizer_feedback
 from skillopt_sleep.types import ReplayResult, TaskRecord
-
 
 SLOW_UPDATE_START = "<!-- SLOW_UPDATE_START -->"
 SLOW_UPDATE_END = "<!-- SLOW_UPDATE_END -->"
@@ -95,7 +93,8 @@ def _summarize_pairs(
             cat = "persistent_fail"
         counts[cat] += 1
         if cat in ("regressed", "persistent_fail") and len(lines) < 8:
-            lines.append(f"- [{cat}] {t.intent[:120]} (why: {r.fail_reason[:80]})")
+            feedback = _optimizer_feedback(t, r)
+            lines.append(f"- [{cat}] {t.intent[:120]} (why: {feedback[:160]})")
     head = ", ".join(f"{k}={v}" for k, v in counts.items())
     return head + ("\n" + "\n".join(lines) if lines else ""), counts  # type: ignore[return-value]
 

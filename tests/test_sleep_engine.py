@@ -82,6 +82,296 @@ class TestHarvest(unittest.TestCase):
         self.assertTrue(_is_meta_prompt("<system-reminder>x</system-reminder>"))
         self.assertFalse(_is_meta_prompt("please refactor the auth module"))
 
+    def _write_claude_session(self, path, turns):
+        """Write one Claude Code transcript; ``turns`` are (role, text) pairs.
+
+        Records are an hour apart so the sub-3-second heuristic in
+        _is_headless_replay never decides these fixtures.
+        """
+        self._write_jsonl(path, [
+            {"type": role,
+             "timestamp": f"2026-10-15T0{index + 1}:00:00Z",
+             "cwd": "/repo/example",
+             "sessionId": os.path.splitext(os.path.basename(path))[0],
+             "message": {"role": role, "content": text}}
+            for index, (role, text) in enumerate(turns)
+        ])
+
+    def test_meta_prompt_keeps_pasted_user_content(self):
+        # issue #318: the desktop app delivers a pasted brief inside a tag
+        # pair carrying the same id. The user typed that brief, so it is user
+        # content, and dropping it left the session's follow-up as the intent.
+        from skillopt_sleep.harvest import _strip_host_wrappers
+
+        brief = ('<pasted_content id="a1b2">\n'
+                 'Install tool X into a dedicated folder, pin the version.\n'
+                 '</pasted_content id="a1b2">')
+
+        self.assertFalse(_is_meta_prompt(brief))
+        # the helper removes the tags only; callers strip the remainder
+        self.assertEqual(
+            _strip_host_wrappers(brief),
+            "\nInstall tool X into a dedicated folder, pin the version.\n",
+        )
+
+    def test_literal_pasted_content_in_a_request_is_user_text(self):
+        # #321 review: the wrapper is the host's only while it leads the
+        # message. A request that names the tag pair literally — inline code,
+        # a fenced XML example, a fixture carrying attributes — keeps it, in
+        # the harvested request and in the mined intent alike.
+        from skillopt_sleep.harvest import _strip_host_wrappers
+
+        inline = ("Add a parser test for the literal inline example "
+                  "`<pasted_content>LITERAL_XML_VALUE</pasted_content>`.")
+        fenced = ("Add a parser test for this fenced example:\n\n```xml\n"
+                  "<pasted_content>LITERAL_XML_VALUE</pasted_content>\n```")
+        attributed = ('Keep `<pasted_content id="a1b2">LITERAL_XML_VALUE'
+                      '</pasted_content id="a1b2">` in the fixture.')
+        for text in (inline, fenced, attributed):
+            self.assertEqual(_strip_host_wrappers(text), text)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "literal-session.jsonl")
+            self._write_claude_session(path, [
+                ("user", inline),
+                ("assistant", "Plan: ..."),
+                ("user", "Yes, go ahead."),
+                ("assistant", "Done."),
+            ])
+            digest = digest_transcript(path)
+
+        [task] = heuristic_mine([digest])
+        self.assertIn("<pasted_content>LITERAL_XML_VALUE</pasted_content>", task.intent)
+
+    def test_meta_prompt_filters_only_known_host_tags(self):
+        self.assertTrue(_is_meta_prompt("<local-command-stdout>ok</local-command-stdout>"))
+        self.assertTrue(_is_meta_prompt(
+            "<command-message>skillopt-sleep</command-message>\n"
+            "<command-name>/skillopt-sleep</command-name>"
+        ))
+        # VS Code Copilot Chat brackets each request's machine context the
+        # same way; it is host detail, not a prompt, and must stay out
+        # (tests/test_copilot_harvest.py pins the privacy boundary).
+        self.assertTrue(_is_meta_prompt(
+            "<environment_info>private machine context</environment_info>"
+        ))
+        # A wrapper the host does not own is user text, not noise: it must
+        # survive the filter with its content instead of being dropped for
+        # being wrapped in angle brackets, which is what lost pasted briefs.
+        self.assertFalse(_is_meta_prompt("<release-notes>Ship 1.4</release-notes>"))
+
+    def test_pasted_brief_becomes_the_mined_intent(self):
+        brief = ('<pasted_content id="a1b2">\n'
+                 'Install tool X into a dedicated folder, pin the version, '
+                 'back up the configs first.\n'
+                 '</pasted_content id="a1b2">')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "pasted-session.jsonl")
+            self._write_claude_session(path, [
+                ("user", brief),
+                ("assistant", "Plan: ..."),
+                ("user", "Yes, go ahead with option A."),
+                ("assistant", "Done."),
+            ])
+            digest = digest_transcript(path)
+
+        [task] = heuristic_mine([digest])
+        self.assertEqual(
+            task.intent,
+            "Install tool X into a dedicated folder, pin the version, back up the configs first.",
+        )
+        self.assertNotIn("pasted_content", task.intent)
+        # the follow-up stays available as constraint context, not as intent
+        self.assertIn("Yes, go ahead with option A.", task.context_excerpt)
+
+    def test_session_whose_only_user_turn_is_a_pasted_brief_survives_harvest(self):
+        from skillopt_sleep.harvest import harvest
+
+        brief = ('<pasted_content id="a1b2">\nInstall tool X into a dedicated folder.\n'
+                 '</pasted_content id="a1b2">')
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "projects", "-repo-example")
+            os.makedirs(project_dir)
+            self._write_claude_session(os.path.join(project_dir, "pasted-only.jsonl"), [
+                ("user", brief),
+                ("assistant", "Plan: ..."),
+                ("assistant", "Done."),
+            ])
+
+            digests = harvest(os.path.join(tmp, "projects"), scope="all")
+
+        self.assertEqual([d.session_id for d in digests], ["pasted-only"])
+        self.assertEqual(digests[0].user_prompts,
+                         ["Install tool X into a dedicated folder."])
+
+    def test_system_reminder_prefix_does_not_ride_into_the_intent(self):
+        request = "Yes: run the third review on range r2..abc1234 and update the report."
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "reminder-prefix.jsonl")
+            self._write_claude_session(path, [
+                ("user", "<system-reminder>\nStatus note injected by the host app.\n"
+                         f"</system-reminder>\n\n{request}"),
+                ("assistant", "Running the review."),
+            ])
+            digest = digest_transcript(path)
+
+        self.assertEqual(digest.user_prompts, [request])
+        [task] = heuristic_mine([digest])
+        self.assertEqual(task.intent, request)
+        self.assertNotIn("Status note", task.intent)
+
+    def test_host_only_transcript_does_not_take_a_session_slot(self):
+        from skillopt_sleep.harvest import harvest
+
+        # Review of #318: a record with no user intent must not be admitted
+        # before the cap. It mines nothing, so admitting it turns a night into
+        # zero tasks by displacing a real session with a newer host-only one.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "projects", "-repo-example")
+            os.makedirs(project_dir)
+            host_only = os.path.join(project_dir, "host-note.jsonl")
+            self._write_jsonl(host_only, [
+                {"type": "user", "isMeta": True,
+                 "timestamp": "2026-10-15T09:00:00Z",
+                 "cwd": "/repo/example", "sessionId": "host-note",
+                 "message": {"role": "user",
+                             "content": "<local-command-stdout>ok</local-command-stdout>"}},
+                {"type": "assistant", "timestamp": "2026-10-15T09:00:30Z",
+                 "cwd": "/repo/example", "sessionId": "host-note",
+                 "message": {"role": "assistant", "content": "Noted."}},
+            ])
+            real = os.path.join(project_dir, "real-task.jsonl")
+            self._write_claude_session(real, [
+                ("user", "Fix the failing date parser test in module B."),
+                ("assistant", "Fixed."),
+            ])
+            os.utime(host_only, (2_000_000, 2_000_000))   # newer
+            os.utime(real, (1_000_000, 1_000_000))
+
+            digests = harvest(os.path.join(tmp, "projects"), scope="all", limit=1)
+
+        self.assertEqual([d.session_id for d in digests], ["real-task"])
+
+    def test_inline_code_system_reminder_example_is_user_text(self):
+        # Review of #318: the user quoting a reminder inside inline code was
+        # being deleted, which changed both the request and the mined intent.
+        request = ("How should I escape `<system-reminder>note</system-reminder>` "
+                   "inside my transcript fixture?")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "inline-example.jsonl")
+            self._write_claude_session(path, [
+                ("user", request),
+                ("assistant", "Use html.escape()."),
+            ])
+            digest = digest_transcript(path)
+
+        self.assertEqual(digest.user_prompts, [request])
+
+    def test_fenced_system_reminder_example_is_user_text(self):
+        request = ("This is what our host writes before a real request:\n"
+                   "```xml\n<system-reminder>\ncontext\n</system-reminder>\n```\n"
+                   "Please make the parser strip it.")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "fenced-example.jsonl")
+            self._write_claude_session(path, [
+                ("user", request),
+                ("assistant", "Will do."),
+            ])
+            digest = digest_transcript(path)
+
+        self.assertEqual(digest.user_prompts, [request])
+
+    def _claude_session_with_injected_messages(self, tmp, follow_up):
+        """A Claude Code session as written to disk when a skill is loaded.
+
+        Claude Code records the loaded skill's SKILL.md body, and messages it
+        relays from other sessions, as ``role: user`` records marked
+        ``isMeta: true``. The user typed neither. The skill body here uses
+        words the feedback heuristic treats as a complaint ("wrong",
+        "revert", "did not"), as real skill documents do.
+        """
+        def record(role, content, **extra):
+            return {
+                "type": role,
+                "timestamp": "2026-09-29T03:56:20Z",
+                "cwd": "/repo/example",
+                "message": {"role": role, "content": content},
+                **extra,
+            }
+
+        path = os.path.join(tmp, "session.jsonl")
+        records = [
+            record("user", "update the release notes for 1.4"),
+            record("assistant", [
+                {"type": "tool_use", "name": "Skill", "input": {"skill": "docs:release-notes"}},
+            ]),
+            record("user", [{"type": "text", "text": (
+                "Base directory for this skill: /home/u/.claude/plugins/cache/m/docs/1.0.0/"
+                "skills/release-notes\n\n# Release notes\n\nIf an entry is wrong, revert it."
+                " A note that did not name the version is broken."
+            )}], isMeta=True),
+            record("user", "Another Claude session sent a message:\n<cross-session-message>"
+                           "status: still failing</cross-session-message>", isMeta=True),
+            record("assistant", [{"type": "text", "text": "Release notes updated."}]),
+        ]
+        if follow_up:
+            records.append(record("user", follow_up))
+        self._write_jsonl(path, records)
+        return path
+
+    def test_digest_skips_claude_injected_meta_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            digest = digest_transcript(self._claude_session_with_injected_messages(tmp, ""))
+
+        self.assertEqual(digest.user_prompts, ["update the release notes for 1.4"])
+        self.assertEqual(digest.n_user_turns, 1)
+        self.assertEqual(digest.feedback_signals, [])
+        # The skill is still attributed from the assistant's Skill tool call.
+        self.assertEqual(digest.skills_used, ["docs:release-notes"])
+
+    def test_injected_skill_body_does_not_decide_the_mined_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            digest = digest_transcript(
+                self._claude_session_with_injected_messages(tmp, "perfect, thanks")
+            )
+
+        [task] = heuristic_mine([digest])
+        self.assertEqual(task.intent, "update the release notes for 1.4")
+        self.assertEqual(task.outcome, "success")
+        self.assertNotIn("Base directory for this skill", task.context_excerpt)
+
+    def test_injected_agent_marker_body_still_drops_the_session(self):
+        # The plugin's own /skillopt-sleep body arrives the same way as a
+        # skill body. It must still mark the session as machine-driven.
+        from skillopt_sleep.harvest import harvest
+
+        def record(content, **extra):
+            return {
+                "type": "user",
+                "timestamp": "2026-09-29T03:56:20Z",
+                "cwd": "/repo/example",
+                "message": {"role": "user", "content": content},
+                **extra,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = os.path.join(tmp, "-repo-example")
+            os.makedirs(project_dir)
+            self._write_jsonl(os.path.join(project_dir, "session.jsonl"), [
+                record("<command-message>skillopt-sleep</command-message>\n"
+                       "<command-name>/skillopt-sleep</command-name>"),
+                record([{"type": "text", "text": (
+                    "Base directory for this skill: /plugins/claude-code\n\n"
+                    "You are driving **SkillOpt-Sleep**: a tool that ..."
+                )}], isMeta=True),
+                {"type": "assistant", "timestamp": "2026-09-29T03:56:30Z",
+                 "message": {"role": "assistant",
+                             "content": [{"type": "text", "text": "Status: idle."}]}},
+                dict(record("ok, run it tonight please"), timestamp="2026-09-29T04:10:00Z"),
+            ])
+
+            self.assertEqual(harvest(tmp, scope="all"), [])
+
     def test_digest_real_transcript_if_present(self):
         # uses the live machine's transcripts when available; skips otherwise
         base = os.path.expanduser("~/.claude/projects")
@@ -497,6 +787,28 @@ class TestHarvest(unittest.TestCase):
             self.assertEqual(harvest_for_config(cfg), expected)
 
         cursor_harvest.assert_not_called()
+
+    def test_harvest_for_config_rejects_unknown_source(self):
+        from skillopt_sleep.harvest_sources import SUPPORTED_SOURCES, harvest_for_config
+
+        cfg = load_config(transcript_source="unknown_engine", invoked_project="/repo/project")
+        with self.assertRaises(ValueError) as ctx:
+            harvest_for_config(cfg)
+
+        msg = str(ctx.exception)
+        self.assertIn("Unknown transcript source 'unknown_engine'", msg)
+        self.assertIn("Supported sources:", msg)
+        for expected in SUPPORTED_SOURCES:
+            self.assertIn(expected, msg)
+
+    def test_harvest_for_config_accepts_empty_and_case_insensitive_source(self):
+        from skillopt_sleep.harvest_sources import harvest_for_config
+
+        expected = [SessionDigest(session_id="claude-session", project="/repo/project")]
+        for s in ("", "claude", "CLAUDE", "Claude"):
+            cfg = load_config(transcript_source=s, invoked_project="/repo/project")
+            with mock.patch("skillopt_sleep.harvest_sources.harvest", return_value=expected):
+                self.assertEqual(harvest_for_config(cfg), expected)
 
     def test_harvest_codex_filters_project_and_cli_source(self):
         from skillopt_sleep.__main__ import _cfg_from_args
@@ -1033,6 +1345,201 @@ class TestMultiObjectiveAndPrefs(unittest.TestCase):
                    [], "skill", "", edit_budget=2, evolve_skill=True, evolve_memory=False)
         self.assertIn("British English", captured["prompt"])
 
+    def test_reflect_does_not_receive_raw_verifier_syntax(self):
+        from skillopt_sleep.backend import CliBackend
+        from skillopt_sleep.types import ReplayResult
+
+        captured = {}
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        description = "Route this class of request to the consultation utility."
+
+        class CapBackend(CliBackend):
+            name = "cap"
+
+            def _call(self, prompt, *, max_tokens=1024):
+                captured["prompt"] = prompt
+                return "[]"
+
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="Route a consultation request",
+            reference_kind="rule",
+            judge={
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ]
+            },
+        )
+        # No optimizer_feedback on purpose: legacy/deserialized results must be
+        # projected safely from the task instead of falling back to fail_reason.
+        result = ReplayResult(
+            id="t",
+            hard=0.0,
+            response="No route declaration here.",
+            fail_reason=f"failed: regex={pattern}",
+        )
+
+        CapBackend().reflect(
+            [(task, result)],
+            [],
+            "skill",
+            "",
+            edit_budget=2,
+            evolve_skill=True,
+            evolve_memory=False,
+        )
+
+        self.assertIn(description, captured["prompt"])
+        self.assertNotIn(pattern, captured["prompt"])
+        self.assertNotIn("regex=", captured["prompt"])
+
+    def test_legacy_non_rule_feedback_fails_closed(self):
+        from skillopt_sleep.backend import _optimizer_feedback
+        from skillopt_sleep.types import ReplayResult
+
+        raw_evidence = "judge implementation: private-evaluator-expression"
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="Answer the request",
+            reference_kind="rubric",
+            reference="Give a helpful answer.",
+        )
+        result = ReplayResult(
+            id="t",
+            hard=0.0,
+            fail_reason=raw_evidence,
+            judge_rationale=raw_evidence,
+        )
+
+        feedback = _optimizer_feedback(task, result)
+
+        self.assertNotIn(raw_evidence, feedback)
+        self.assertIn("did not satisfy", feedback)
+
+    def test_supplied_rule_feedback_is_recomputed_from_safe_description(self):
+        from skillopt_sleep.backend import _optimizer_feedback
+        from skillopt_sleep.types import ReplayResult
+
+        pattern = r"(?im)^\\s*SKILL:\\s*jyoti-prashna-util\\s*$"
+        description = "Route this class of request to the consultation utility."
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="Route a consultation request",
+            reference_kind="rule",
+            judge={
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ]
+            },
+        )
+        result = ReplayResult(
+            id="t",
+            hard=0.0,
+            response="No route declaration here.",
+            optimizer_feedback=f"unsafe regex={pattern}",
+        )
+
+        feedback = _optimizer_feedback(task, result)
+
+        self.assertEqual(feedback, description)
+        self.assertNotIn(pattern, feedback)
+
+    def test_replay_non_rule_feedback_is_generic_even_when_rationale_is_raw(self):
+        from skillopt_sleep.backend import Backend
+        from skillopt_sleep.replay import replay_one
+
+        pattern = r"private-check-expression"
+
+        class StubBackend(Backend):
+            name = "stub"
+
+            def attempt(self, task, skill, memory, sample_id=0):
+                return "bad"
+
+            def judge(self, task, response):
+                return 0.0, 0.0, f"judge implementation: {pattern}"
+
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="Answer the request",
+            reference_kind="rubric",
+            reference="Give a helpful answer.",
+        )
+
+        result = replay_one(StubBackend(), task, "", "")
+
+        self.assertIn(pattern, result.judge_rationale)
+        self.assertNotIn(pattern, result.optimizer_feedback)
+        self.assertIn("did not satisfy", result.optimizer_feedback)
+
+    def test_openclaw_reflect_uses_only_optimizer_feedback(self):
+        import importlib.util
+        from pathlib import Path
+
+        from skillopt_sleep.types import ReplayResult
+
+        backend_path = (
+            Path(__file__).resolve().parents[1]
+            / "plugins"
+            / "openclaw"
+            / "skillopt_sleep_openclaw.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "skillopt_sleep_openclaw_feedback_test", backend_path
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        description = "Route this class of request to the consultation utility."
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="Route a consultation request",
+            reference_kind="rule",
+            judge={
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ]
+            },
+        )
+        failure = ReplayResult(
+            id="t",
+            hard=0.0,
+            response="No route declaration here.",
+            fail_reason=f"failed: regex={pattern}",
+            judge_rationale=f"failed: regex={pattern}",
+        )
+        success = ReplayResult(
+            id="t",
+            hard=1.0,
+            response="good",
+            judge_rationale=f"all checks passed: regex={pattern}",
+        )
+
+        with mock.patch.object(module, "_chat", return_value='{"edits": []}') as chat:
+            module.OpenClawDeepSeekBackend().reflect(
+                [(task, failure)],
+                [(task, success)],
+                "skill",
+                "",
+                edit_budget=2,
+                evolve_skill=True,
+                evolve_memory=False,
+            )
+
+        messages = chat.call_args.args[0]
+        optimizer_prompt = "\n".join(message["content"] for message in messages)
+        self.assertIn(description, optimizer_prompt)
+        self.assertNotIn(pattern, optimizer_prompt)
+        self.assertNotIn("regex=", optimizer_prompt)
+
     def test_reflect_records_last_raw(self):
         # the optimizer's raw reply must be retained so a no-edits night is
         # diagnosable (empty/non-JSON reflect vs genuinely no failures).
@@ -1059,6 +1566,33 @@ class TestMultiObjectiveAndPrefs(unittest.TestCase):
         r = replay_one(MockBackend(), t, "some skill text", "")
         self.assertGreater(r.tokens, 0)
         self.assertGreaterEqual(r.latency_ms, 0.0)
+
+    def test_replay_keeps_raw_evidence_separate_from_optimizer_feedback(self):
+        from skillopt_sleep.backend import MockBackend
+        from skillopt_sleep.replay import replay_one
+
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        description = "Route this class of request to the consultation utility."
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="Route a consultation request",
+            reference_kind="rule",
+            judge={
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ]
+            },
+        )
+
+        result = replay_one(MockBackend(), task, "", "")
+        serialized = result.to_dict()
+
+        self.assertIn(pattern, result.fail_reason)
+        self.assertIn(pattern, result.judge_rationale)
+        self.assertEqual(result.optimizer_feedback, description)
+        self.assertIn(pattern, serialized["fail_reason"])
+        self.assertNotIn(pattern, serialized["optimizer_feedback"])
 
 
 class TestCodexBackend(unittest.TestCase):
@@ -1273,6 +1807,52 @@ class TestMultiRolloutAndBudget(unittest.TestCase):
         self.assertEqual(len(edits), 1)
         self.assertIn("good thing", edits[0].content)
 
+    def test_contrastive_reflect_hides_raw_verifier_syntax(self):
+        from skillopt_sleep.backend import Backend
+        from skillopt_sleep.rollout import RolloutSet, contrastive_reflect
+        from skillopt_sleep.types import ReplayResult
+
+        captured = {}
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        description = "Route this class of request to the consultation utility."
+
+        class StubBackend(Backend):
+            name = "stub"
+
+            def _call(self, prompt, *, max_tokens=1024):
+                captured["prompt"] = prompt
+                return "[]"
+
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="route a consultation request",
+            reference_kind="rule",
+            judge={
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ]
+            },
+        )
+        rs = RolloutSet(
+            task=task,
+            attempts=[
+                ReplayResult(id="t", hard=1.0, response="good"),
+                ReplayResult(
+                    id="t",
+                    hard=0.0,
+                    response="bad",
+                    fail_reason=f"failed: regex={pattern}",
+                ),
+            ],
+        )
+
+        contrastive_reflect(StubBackend(), [rs], "skill", "")
+
+        self.assertIn(description, captured["prompt"])
+        self.assertNotIn(pattern, captured["prompt"])
+        self.assertNotIn("regex=", captured["prompt"])
+
 
 class TestSlowUpdate(unittest.TestCase):
     def test_protected_field_roundtrip(self):
@@ -1318,6 +1898,58 @@ class TestSlowUpdate(unittest.TestCase):
         out2 = run_slow_update(StubBackend(), prev_skill="s0", curr_skill="s1",
                                prev_pairs=prev2, curr_pairs=curr2)
         self.assertIn("keep doing X", out2)
+
+    def test_slow_update_hides_raw_verifier_syntax(self):
+        from skillopt_sleep.backend import Backend
+        from skillopt_sleep.slow_update import run_slow_update
+        from skillopt_sleep.types import ReplayResult
+
+        captured = {}
+        pattern = r"(?im)^\s*SKILL:\s*jyoti-prashna-util\s*$"
+        description = "Route this class of request to the consultation utility."
+
+        class StubBackend(Backend):
+            name = "stub"
+
+            def _call(self, prompt, *, max_tokens=1024):
+                captured["prompt"] = prompt
+                return '{"guidance": "keep routing consultation requests"}'
+
+        task = TaskRecord(
+            id="t",
+            project="/p",
+            intent="route a consultation request",
+            reference_kind="rule",
+            judge={
+                "checks": [
+                    {"op": "regex", "arg": pattern, "description": description}
+                ]
+            },
+        )
+        previous = [(task, ReplayResult(id="t", hard=1.0))]
+        current = [
+            (
+                task,
+                ReplayResult(
+                    id="t",
+                    hard=0.0,
+                    response="bad",
+                    fail_reason=f"failed: regex={pattern}",
+                ),
+            )
+        ]
+
+        run_slow_update(
+            StubBackend(),
+            prev_skill="s0",
+            curr_skill="s1",
+            prev_pairs=previous,
+            curr_pairs=current,
+        )
+
+        self.assertIn(description, captured["prompt"])
+        self.assertNotIn(pattern, captured["prompt"])
+        self.assertNotIn("regex=", captured["prompt"])
 
 
 class TestToolLoop(unittest.TestCase):
@@ -1473,6 +2105,114 @@ class TestFullCycleAndAdopt(unittest.TestCase):
                 os.path.realpath(memory_path),
             )
 
+    def _assert_only_changed_documents_are_staged(
+        self, new_skill, new_memory, expect_skill, expect_memory
+    ):
+        from skillopt_sleep.consolidate import ConsolidationResult
+
+        skill = "# managed baseline\nrule\n"
+        memory = "# memory baseline\npreference\n"
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as home:
+            target = os.path.join(proj, ".agents", "skills", "taste", "SKILL.md")
+            memory_path = os.path.join(proj, "CLAUDE.md")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write(skill)
+            with open(memory_path, "w", encoding="utf-8") as handle:
+                handle.write(memory)
+            cfg = load_config(
+                invoked_project=proj,
+                projects="invoked",
+                backend="mock",
+                claude_home=os.path.join(home, ".claude"),
+                target_skill_path=target,
+                auto_adopt=False,
+            )
+            applied = []
+            if new_skill != skill:
+                applied.append(EditRecord("skill", "add", "sharpened rule"))
+            if new_memory != memory:
+                applied.append(EditRecord("memory", "add", "learned preference"))
+            result = ConsolidationResult(
+                accepted=True,
+                gate_action="accept_new_best",
+                baseline_score=0.1,
+                candidate_score=0.2,
+                new_skill=new_skill,
+                new_memory=new_memory,
+                applied_edits=applied,
+                rejected_edits=[],
+                holdout_baseline=0.1,
+                holdout_candidate=0.2,
+            )
+            tasks = assign_splits(
+                researcher_persona(), holdout_fraction=0.34, seed=42
+            )
+
+            with mock.patch(
+                "skillopt_sleep.cycle.dream_consolidate",
+                return_value=result,
+            ):
+                outcome = run_sleep_cycle(cfg, seed_tasks=tasks)
+
+            # Staging never edits the live documents; adoption stays explicit.
+            with open(target, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), skill)
+            with open(memory_path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), memory)
+
+            with open(
+                os.path.join(outcome.staging_dir, "manifest.json"),
+                encoding="utf-8",
+            ) as handle:
+                manifest = json.load(handle)
+            # Manifest flags and artifact presence have to agree; a flag without
+            # its file (or a file without its flag) would break adoption.
+            self.assertEqual(manifest["has_managed_skill"], expect_skill)
+            self.assertEqual(manifest["has_managed_memory"], expect_memory)
+            self.assertEqual(
+                os.path.exists(
+                    os.path.join(outcome.staging_dir, "proposed_SKILL.md")
+                ),
+                expect_skill,
+            )
+            self.assertEqual(
+                os.path.exists(
+                    os.path.join(outcome.staging_dir, "proposed_CLAUDE.md")
+                ),
+                expect_memory,
+            )
+
+    def test_cycle_stages_only_documents_that_changed(self):
+        # The staging contract is byte/text equality, not semantic or whitespace
+        # normalized comparison: an accepted cycle proposes a document only when it
+        # actually rewrote it. Covered for every shape an accepted result can take,
+        # so a symmetric regression on the skill side cannot hide behind the
+        # memory-only case.
+        skill = "# managed baseline\nrule\n"
+        memory = "# memory baseline\npreference\n"
+        new_skill = skill + "prefer the shortest reproduction\n"
+        new_memory = memory + "learned preference\n"
+        cases = (
+            ("neither_changed", skill, memory, False, False),
+            ("skill_only", new_skill, memory, True, False),
+            ("memory_only", skill, new_memory, False, True),
+            ("both_changed", new_skill, new_memory, True, True),
+            # Whitespace-only is a real change under a byte-equality contract, so it
+            # is a positive case. If this ever fails, the comparison has started
+            # normalizing and the documented contract has silently moved.
+            ("whitespace_only_skill", skill + "\n", memory, True, False),
+            ("whitespace_only_memory", skill, memory + "  \n", False, True),
+        )
+        for name, candidate_skill, candidate_memory, expect_skill, expect_memory in cases:
+            with self.subTest(case=name):
+                self._assert_only_changed_documents_are_staged(
+                    candidate_skill,
+                    candidate_memory,
+                    expect_skill,
+                    expect_memory,
+                )
+
     def test_managed_skill_change_during_consolidation_refuses_the_night(self):
         from skillopt_sleep.consolidate import ConsolidationResult
         from skillopt_sleep.staging import StagingError, latest_staging
@@ -1547,6 +2287,33 @@ class TestFullCycleAndAdopt(unittest.TestCase):
 
             with self.assertRaisesRegex(StagingError, "not valid UTF-8"):
                 run_sleep_cycle(cfg, seed_tasks=tasks)
+
+
+class TestGetBackend(unittest.TestCase):
+    """Validation and resolution tests for get_backend() and build_backend()."""
+
+    def test_mock_backend_default(self):
+        from skillopt_sleep.backend import MockBackend, get_backend
+        self.assertIsInstance(get_backend("mock"), MockBackend)
+        self.assertIsInstance(get_backend(""), MockBackend)
+        self.assertIsInstance(get_backend(None), MockBackend)
+        self.assertIsInstance(get_backend("  "), MockBackend)
+
+    def test_unknown_backend_raises_value_error(self):
+        from skillopt_sleep.backend import get_backend
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'unknown'"):
+            get_backend("unknown")
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'claud'"):
+            get_backend("claud")
+
+    def test_build_backend_rejects_unknown(self):
+        from skillopt_sleep.backend import build_backend
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'nonexistent'"):
+            build_backend(backend="nonexistent")
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'invalid_tgt'"):
+            build_backend(target_backend="invalid_tgt")
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'invalid_opt'"):
+            build_backend(optimizer_backend="invalid_opt")
 
 
 class TestCopilotBackend(unittest.TestCase):

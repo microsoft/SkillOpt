@@ -16,14 +16,9 @@ elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -d "$CLAUDE_PLUGIN_ROOT/../../skillop
   REPO_ROOT="$(cd "$CLAUDE_PLUGIN_ROOT/../.." && pwd)"
 elif [ -n "${SKILLOPT_SLEEP_REPO:-}" ] && [ -d "$SKILLOPT_SLEEP_REPO/skillopt_sleep" ]; then
   REPO_ROOT="$SKILLOPT_SLEEP_REPO"
-else
-  # last resort: search upward from CWD
-  d="$PWD"
-  while [ "$d" != "/" ]; do
-    [ -d "$d/skillopt_sleep" ] && { REPO_ROOT="$d"; break; }
-    d="$(dirname "$d")"
-  done
 fi
+# Deliberately no search upward from CWD: the CWD is the (possibly untrusted)
+# project being worked on, and a skillopt_sleep/ planted there would be run.
 if [ "$#" -eq 0 ]; then set -- status; fi
 
 if [ -n "${REPO_ROOT:-}" ]; then
@@ -59,18 +54,23 @@ if command -v skillopt-sleep >/dev/null 2>&1; then
 fi
 
 # Fallback 2: importable as a module (pip install into the active Python).
-# Pick a Python >= 3.10 and check importability.
+# Pick a Python >= 3.10 and check importability. `python -c`/`-m` put the CWD
+# (the user's project) first on sys.path, so a planted skillopt_sleep.py there
+# would run; strip it before importing. The CWD itself is kept because the
+# engine uses it as the default project.
+NO_CWD_IMPORT="import sys; sys.path[:] = [p for p in sys.path if p]; import skillopt_sleep"
+NO_CWD_RUN="import sys; sys.path[:] = [p for p in sys.path if p]; import runpy; runpy.run_module('skillopt_sleep', run_name='__main__', alter_sys=True)"
 PY=""
 for cand in python3.12 python3.11 python3.10 python3; do
   if command -v "$cand" >/dev/null 2>&1; then
     ver="$("$cand" -c 'import sys; print("%d%d" % sys.version_info[:2])' 2>/dev/null || echo 0)"
-    if [ "${ver:-0}" -ge 310 ] && "$cand" -c "import skillopt_sleep" >/dev/null 2>&1; then
+    if [ "${ver:-0}" -ge 310 ] && "$cand" -c "$NO_CWD_IMPORT" >/dev/null 2>&1; then
       PY="$cand"; break
     fi
   fi
 done
 if [ -n "$PY" ]; then
-  exec "$PY" -m skillopt_sleep "$@"
+  exec "$PY" -c "$NO_CWD_RUN" "$@"
 fi
 
 echo "[sleep] ERROR: could not locate the skillopt_sleep package." >&2

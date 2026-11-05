@@ -6,6 +6,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from skillopt.envs.docvqa.evaluator import evaluate
+from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target_messages, get_target_backend, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
@@ -139,6 +140,7 @@ def process_one(
     diagnostic_instruction: str = "",
 ) -> dict:
     item_id = str(item["id"])
+    pred_dir = confined_task_output_dir(out_root, item_id)
     result = {
         "id": item_id,
         "question": item["question"],
@@ -170,7 +172,7 @@ def process_one(
             ]
             for turn in range(max_turns):
                 response, _raw, system_prompt, user_text = _run_codex_once(
-                    pred_dir=os.path.join(out_root, "predictions", item_id),
+                    pred_dir=pred_dir,
                     item=item,
                     skill_content=skill_content,
                     model=_llm.TARGET_DEPLOYMENT,
@@ -229,7 +231,6 @@ def process_one(
         result["agent_ok"] = True
         result["n_turns"] = len(conversation) - 1
 
-        pred_dir = os.path.join(out_root, "predictions", item_id)
         os.makedirs(pred_dir, exist_ok=True)
         with open(os.path.join(pred_dir, "target_system_prompt.txt"), "w", encoding="utf-8") as f:
             f.write(system_prompt)

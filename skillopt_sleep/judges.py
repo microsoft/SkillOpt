@@ -250,18 +250,71 @@ def validate_checks(judge: Any) -> Tuple[List[str], List[str]]:
     return errors, warnings
 
 
-def score_rule_judge(
+def _semantic_failure(check: Dict[str, Any], problem: str = "") -> str:
+    """Describe an unmet check without exposing its implementation syntax.
+
+    Rule-judge details are evidence, not instructions for the optimizer. In
+    particular, copying a regex into reflection lets an evolving skill learn
+    the verifier rather than the intended behavior. An operator-supplied
+    plain-language description is the strongest signal; conservative built-in
+    descriptions are used for legacy checks that do not carry one.
+    """
+    if problem:
+        return (
+            "The evaluator configuration is invalid; do not change the skill "
+            "based on this result."
+        )
+
+    op = str(check.get("op", ""))
+    arg = check.get("arg")
+    description = check.get("description")
+    if isinstance(description, str) and description.strip():
+        cleaned = description.strip()
+        # A generated or hand-authored description may accidentally copy the
+        # regex it is meant to explain. Fail closed instead of laundering the
+        # verifier implementation into the optimizer channel.
+        if op != "regex" or not isinstance(arg, str) or arg not in cleaned:
+            return cleaned
+
+    if op == "max_chars":
+        return f"Keep the entire response at or below {arg} characters."
+    if op == "min_chars":
+        return f"Provide at least {arg} characters of substantive response."
+    if op == "section_present":
+        return f"Include a section or heading titled {arg!r}."
+    if op == "section_contains":
+        return f"Include {arg!r} in an ATX markdown heading."
+    if op == "contains":
+        return f"The response must include the required concept or phrase {arg!r}."
+    if op == "not_contains":
+        return f"The response included prohibited content related to {arg!r}."
+    if op == "no_refusal":
+        return "Complete the task instead of refusing it."
+    if op == "tool_called":
+        return f"Actually call the {arg!r} tool while completing the task."
+    if op == "regex":
+        return "The response did not satisfy a private content or format requirement."
+    return "The response did not satisfy one of the task requirements."
+
+
+def score_rule_judge_with_feedback(
     judge: Dict[str, Any],
     response: str,
     tools_called: List[str] | None = None,
-) -> Tuple[float, float, str]:
-    """Return (hard, soft, rationale) for a gbrain-style rule judge."""
+) -> Tuple[float, float, str, str]:
+    """Return scores, audit rationale, and optimizer-safe feedback."""
     checks = (judge or {}).get("checks", []) or []
     if not checks:
-        return 0.0, 0.0, "no checks"
+        return (
+            0.0,
+            0.0,
+            "no checks",
+            "The evaluator has no checks; do not change the skill based on this result.",
+        )
     tools_called = tools_called or []
     passed = 0
     failed_desc: List[str] = []
+    semantic_failures: List[str] = []
     for c in checks:
         ok, problem = _check(c.get("op", ""), c.get("arg"), response, tools_called)
         if ok:
@@ -271,7 +324,21 @@ def score_rule_judge(
             if problem:
                 desc += f" [{problem}]"
             failed_desc.append(desc)
+            semantic_failures.append(_semantic_failure(c, problem))
     soft = passed / len(checks)
     hard = 1.0 if passed == len(checks) else 0.0
     rationale = "all checks passed" if hard else "failed: " + ", ".join(failed_desc)
+    feedback = " ".join(dict.fromkeys(semantic_failures))
+    return hard, soft, rationale, feedback
+
+
+def score_rule_judge(
+    judge: Dict[str, Any],
+    response: str,
+    tools_called: List[str] | None = None,
+) -> Tuple[float, float, str]:
+    """Return the backward-compatible (hard, soft, rationale) tuple."""
+    hard, soft, rationale, _feedback = score_rule_judge_with_feedback(
+        judge, response, tools_called
+    )
     return hard, soft, rationale

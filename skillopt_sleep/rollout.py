@@ -127,6 +127,8 @@ def contrastive_reflect(
     if not informative:
         return []
 
+    from skillopt_sleep.backend import _optimizer_feedback
+
     blocks = []
     for _spread, rs, best, worst, best_score, worst_score in informative:
         blocks.append(
@@ -135,7 +137,7 @@ def contrastive_reflect(
             f"hard {best.hard:.3f}, soft {best.soft:.3f}): {best.response[:200]}\n"
             f"- BAD  attempt ({gate_metric} score {worst_score:.3f}; "
             f"hard {worst.hard:.3f}, soft {worst.soft:.3f}): {worst.response[:200]}\n"
-            f"  (bad failed: {worst.fail_reason[:100]})"
+            f"  (actionable feedback: {_optimizer_feedback(rs.task, worst)[:160]})"
         )
     # the output contract the proposed rules must not violate (same guardrail the
     # single-shot reflect uses — prevents harness-violating rules like "return VBA"
@@ -148,8 +150,9 @@ def contrastive_reflect(
         "others under the gate objective. Identify what the GOOD attempts did that "
         "the BAD ones did not, "
         f"and propose at most {edit_budget} SHORT, GENERAL, reusable rules for the "
-        f"{target} that would make the good behavior reliable every time. Quote "
-        "concrete thresholds/formats verbatim; do not paraphrase vaguely. "
+        f"{target} that would make the good behavior reliable every time. Be "
+        "concrete about public task requirements, but never quote, reconstruct, "
+        "or optimize for private verifier syntax such as regexes or check source. "
         "Every rule MUST obey the task output contract (if shown) — never propose "
         "a rule that changes the required output format/language or tells the agent "
         "to ask the user a question; such a rule scores ZERO.\n"

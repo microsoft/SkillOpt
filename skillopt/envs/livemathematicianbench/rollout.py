@@ -7,9 +7,11 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from skillopt.envs.livemathematicianbench.evaluator import evaluate
+from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target, get_target_backend, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
+
 
 def _build_system(skill_content: str) -> str:
     if skill_content.strip():
@@ -123,6 +125,7 @@ def process_one(
     max_completion_tokens: int = 16384,
 ) -> dict:
     item_id = str(item["id"])
+    pred_dir = confined_task_output_dir(out_root, item_id, map_unsafe=True)
     result = {
         "id": item_id,
         "question": item["question"],
@@ -141,7 +144,6 @@ def process_one(
     }
 
     try:
-        pred_dir = os.path.join(out_root, "predictions", item_id)
         os.makedirs(pred_dir, exist_ok=True)
         llm_timeout = int(exec_timeout) if exec_timeout and int(exec_timeout) > 0 else None
 

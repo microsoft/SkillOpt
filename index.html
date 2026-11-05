@@ -495,6 +495,74 @@
       transform: translateX(4px);
     }
 
+    .honors {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 14px;
+      margin-top: 18px;
+    }
+
+    .honor-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 16px 6px 8px;
+      color: inherit;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+      text-decoration: none;
+      transition: transform 180ms ease, border-color 180ms ease;
+    }
+
+    a.honor-pill:hover {
+      color: inherit;
+      transform: translateY(-2px);
+      border-color: var(--line-strong);
+    }
+
+    .honor-pill img {
+      width: 40px;
+      height: 40px;
+      flex: 0 0 auto;
+    }
+
+    .honor-mark {
+      width: 40px;
+      height: 40px;
+      flex: 0 0 auto;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 999px;
+      color: #ffffff;
+      font-size: 1.2rem;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed 56%, #ec4899);
+    }
+
+    .honor-text {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      line-height: 1.25;
+    }
+
+    .honor-tag {
+      color: var(--violet);
+      font-family: var(--mono);
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .honor-title {
+      color: var(--ink);
+      font-size: 0.86rem;
+      font-weight: 600;
+    }
+
     .hero-ledger {
       position: relative;
       overflow: hidden;
@@ -1825,6 +1893,29 @@
           </span>
           <span class="related-arrow" aria-hidden="true">-&gt;</span>
         </a>
+        <div class="honors" aria-label="Recognition">
+          <span class="honor-pill">
+            <span class="honor-mark" aria-hidden="true">&#9733;</span>
+            <span class="honor-text">
+              <span class="honor-tag">NeurIPS 2026</span>
+              <span class="honor-title">Spotlight &middot; See you in Sydney</span>
+            </span>
+          </span>
+          <a class="honor-pill" href="https://www.credly.com/badges/d9fd6cd8-e310-4e9b-9f63-ed7a3383fc85/public_url" target="_blank" rel="noopener">
+            <img src="skillopt-assets/hackathon-2026-executive-1st.png" alt="Microsoft Global Hackathon 2026 1st Place Executive Challenge Winner badge" width="40" height="40">
+            <span class="honor-text">
+              <span class="honor-tag">Microsoft Global Hackathon 2026</span>
+              <span class="honor-title">1st Place, Executive Challenge</span>
+            </span>
+          </a>
+          <a class="honor-pill" href="https://www.credly.com/badges/0d80e26a-55ac-4877-ac84-b300b035f39c/public_url" target="_blank" rel="noopener">
+            <img src="skillopt-assets/hackathon-2026-award-winner.png" alt="Microsoft Global Hackathon 2026 Award Winner badge" width="40" height="40">
+            <span class="honor-text">
+              <span class="honor-tag">Microsoft Global Hackathon 2026</span>
+              <span class="honor-title">Global Award Winner</span>
+            </span>
+          </a>
+        </div>
       </div>
 
       <aside class="hero-ledger" aria-label="Key result summary">

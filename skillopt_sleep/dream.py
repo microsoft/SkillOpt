@@ -17,7 +17,7 @@ runs. Pure-stdlib, zero research/private dependency.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from skillopt_sleep.consolidate import ConsolidationResult, consolidate
 from skillopt_sleep.types import TaskRecord
@@ -134,6 +134,7 @@ def dream_consolidate(
     evolve_skill: bool = True,
     evolve_memory: bool = True,
     night: int = 1,
+    budget_exhausted: Optional[Callable[[], bool]] = None,
 ) -> ConsolidationResult:
     """Recall similar past experience + dream synthetic variants, then run one
     gated consolidation epoch over the enlarged training pool.
@@ -142,6 +143,7 @@ def dream_consolidate(
     augmentation only enlarge the TRAIN split, so the val slice the gate scores
     on is never polluted. With ``recall_k=0`` and ``dream_rollouts=1`` (the
     defaults) this is exactly the previous single-shot ``consolidate``.
+    ``budget_exhausted`` is passed through to ``consolidate``.
     """
     train = [t for t in tasks if t.split == "train"]
     enlarged = list(tasks)
@@ -165,4 +167,5 @@ def dream_consolidate(
         gate_no_regression=gate_no_regression, gate_mode=gate_mode,
         rollouts_k=dream_rollouts, evolve_skill=evolve_skill,
         evolve_memory=evolve_memory, night=night,
+        budget_exhausted=budget_exhausted,
     )

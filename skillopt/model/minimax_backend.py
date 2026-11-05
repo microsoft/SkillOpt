@@ -1,4 +1,5 @@
 """OpenAI-compatible MiniMax chat backend for the target path."""
+
 from __future__ import annotations
 
 import json
@@ -33,10 +34,7 @@ def normalize_region(region: str | None) -> str:
     if not normalized:
         return DEFAULT_REGION
     if normalized not in REGION_BASE_URLS:
-        raise ValueError(
-            f"Unsupported MiniMax region: {region!r}. "
-            f"Supported values are {sorted(REGION_BASE_URLS)}."
-        )
+        raise ValueError(f"Unsupported MiniMax region: {region!r}. Supported values are {sorted(REGION_BASE_URLS)}.")
     return normalized
 
 
@@ -67,6 +65,10 @@ ENABLE_THINKING = os.environ.get("MINIMAX_ENABLE_THINKING", "false").strip().low
 
 TARGET_DEPLOYMENT = os.environ.get(
     "TARGET_DEPLOYMENT",
+    default_model_for_backend("minimax_chat"),
+)
+OPTIMIZER_DEPLOYMENT = os.environ.get(
+    "OPTIMIZER_DEPLOYMENT",
     default_model_for_backend("minimax_chat"),
 )
 
@@ -164,8 +166,11 @@ def _compat_message_from_payload(message: dict[str, Any], choice: dict[str, Any]
     )
 
 
-def _post_chat_completion(payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
-    headers = {"Content-Type": "application/json"}
+def _post_chat_completion(payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
     req = urllib.request.Request(
@@ -205,9 +210,7 @@ def _chat_messages_impl(
         "messages": _json_safe(messages),
         "max_tokens": min(max_completion_tokens, MAX_TOKENS),
     }
-    payload["thinking"] = {
-        "type": _resolve_thinking_type(deployment or TARGET_DEPLOYMENT)
-    }
+    payload["thinking"] = {"type": _resolve_thinking_type(deployment or TARGET_DEPLOYMENT)}
     if TEMPERATURE is not None:
         payload["temperature"] = TEMPERATURE
     if tools:
@@ -234,7 +237,7 @@ def _chat_messages_impl(
             return text, usage_info
         except Exception as e:  # noqa: BLE001
             last_err = e
-            time.sleep(min(2 ** attempt, 30))
+            time.sleep(min(2**attempt, 30))
     raise RuntimeError(f"MiniMax chat call failed after {retries} retries: {last_err}")
 
 
@@ -304,7 +307,7 @@ def chat_target(
     stage: str = "target",
     reasoning_effort: str | None = None,
     timeout: float | None = None,
-) -> tuple[str, dict[int]]:
+) -> tuple[str, dict[str, int]]:
     del reasoning_effort
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _chat_messages_impl(
@@ -312,6 +315,7 @@ def chat_target(
         max_completion_tokens,
         retries,
         stage,
+        deployment=TARGET_DEPLOYMENT,
         timeout=timeout,
     )
 
@@ -324,20 +328,22 @@ def chat_optimizer(
     stage: str = "optimizer",
     reasoning_effort: str | None = None,
     timeout: float | None = None,
-) -> tuple[str, dict[int]]:
+) -> tuple[str, dict[str, int]]:
     """Optimizer chat call. Backend stores the trained skill; uses the same
     MiniMax-proxied OpenAI-compat endpoint as `chat_target`. Added in the
     parallel-training fix; previously missing in skillopt 0.2.0's
-    miniamax backend, which forced the dispatcher into _openai.chat_optimizer
+    minimax backend, which forced the dispatcher into _openai.chat_optimizer
     (Azure) and produced "[skip] no usable patches" for any user running
     optimizer+target on `minimax_chat`.
     """
+    del reasoning_effort
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _chat_messages_impl(
         messages,
         max_completion_tokens,
         retries,
         stage,
+        deployment=OPTIMIZER_DEPLOYMENT,
         timeout=timeout,
     )
 
@@ -363,6 +369,33 @@ def chat_target_messages(
         tools=tools,
         tool_choice=tool_choice,
         return_message=return_message,
+        deployment=TARGET_DEPLOYMENT,
+        timeout=timeout,
+    )
+
+
+def chat_optimizer_messages(
+    messages: list[dict[str, Any]],
+    max_completion_tokens: int = 16384,
+    retries: int = 5,
+    stage: str = "optimizer",
+    reasoning_effort: str | None = None,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    return_message: bool = False,
+    timeout: float | None = None,
+) -> tuple[Any, dict[str, int]]:
+    del reasoning_effort
+    return _chat_messages_impl(
+        messages,
+        max_completion_tokens,
+        retries,
+        stage,
+        tools=tools,
+        tool_choice=tool_choice,
+        return_message=return_message,
+        deployment=OPTIMIZER_DEPLOYMENT,
         timeout=timeout,
     )
 
@@ -383,3 +416,9 @@ def set_target_deployment(deployment: str) -> None:
     global TARGET_DEPLOYMENT
     TARGET_DEPLOYMENT = deployment or default_model_for_backend("minimax_chat")
     os.environ["TARGET_DEPLOYMENT"] = TARGET_DEPLOYMENT
+
+
+def set_optimizer_deployment(deployment: str) -> None:
+    global OPTIMIZER_DEPLOYMENT
+    OPTIMIZER_DEPLOYMENT = deployment or default_model_for_backend("minimax_chat")
+    os.environ["OPTIMIZER_DEPLOYMENT"] = OPTIMIZER_DEPLOYMENT

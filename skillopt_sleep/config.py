@@ -12,7 +12,9 @@ Resolution order (later wins):
 from __future__ import annotations
 
 import json
+import locale
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -200,16 +202,35 @@ def _user_config_path() -> Optional[str]:
     return None
 
 
+class ConfigError(ValueError):
+    """An existing configuration could not be loaded safely."""
+
+
 def _load_file(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except UnicodeDecodeError:
+        # Older versions read using the process locale. Preserve that
+        # upgrade path without guessing unrelated encodings on a new machine.
+        encoding = locale.getencoding() if hasattr(locale, "getencoding") else locale.getpreferredencoding(False)
+        with open(path, encoding=encoding) as f:
+            text = f.read()
+        warnings.warn(
+            f"Sleep configuration {path!r} was read using the legacy {encoding} encoding; save it as UTF-8.",
+            UserWarning,
+            stacklevel=2,
+        )
     if path.endswith((".yaml", ".yml")):
-        try:
-            import yaml  # optional
-            with open(path) as f:
-                return yaml.safe_load(f) or {}
-        except Exception:
-            return {}
-    with open(path) as f:
-        return json.load(f)
+        import yaml  # optional
+        data = yaml.safe_load(text)
+    else:
+        data = json.loads(text)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("configuration must be a mapping")
+    return data
 
 
 def load_config(**overrides: Any) -> SleepConfig:
@@ -218,11 +239,14 @@ def load_config(**overrides: Any) -> SleepConfig:
     path = _user_config_path()
     if path:
         try:
-            file_data = _load_file(path) or {}
+            file_data = _load_file(path)
             user_keys.update(file_data.keys())
             data.update(file_data)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise ConfigError(
+                f"Cannot load sleep configuration {path!r}. Check its format and permissions, "
+                "and save it as UTF-8 (or restore the original system locale). YAML requires PyYAML."
+            ) from exc
     for key, value in overrides.items():
         if value is not None:
             data[key] = value

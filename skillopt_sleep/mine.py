@@ -15,6 +15,7 @@ basis of the deterministic experiment.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from collections import Counter
@@ -23,6 +24,8 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from skillopt_sleep.backend import CursorBackendError
 from skillopt_sleep.types import SessionDigest, TaskRecord
+
+_LOGGER = logging.getLogger("skillopt_sleep")
 
 
 def _tid(project: str, intent: str) -> str:
@@ -286,7 +289,10 @@ def assign_splits(
         NEVER placed in val/test.
 
     A stable hash of the task id keeps the same real task in the same split across
-    nights (a fixed held-out gate, like SkillOpt's D_sel/D_test).
+    nights (a fixed held-out gate, like SkillOpt's D_sel/D_test). For a small
+    batch whose hash assignment cannot supply both train and val, the minimum
+    number of test tasks is reassigned and a warning records the reduced test
+    coverage.
 
     Back-compat: if ``test_fraction`` is 0 (default), this behaves like the old
     two-way replay/holdout split — real tasks divide into train + val, no test.
@@ -320,13 +326,18 @@ def assign_splits(
         bucket = int(hashlib.sha256((str(seed) + task.id).encode()).hexdigest(), 16)
         return bucket, task.id
 
+    promoted_from_test: List[Tuple[str, str]] = []
+
     def _promote_one(*, to: str, from_splits: set[str]) -> None:
-        """Promote one real task using hash order; never demote hash-assigned test."""
+        """Promote one real task using stable hash order."""
         candidates = [t for t in real if t.split in from_splits]
         if not candidates:
             return
         candidates.sort(key=_stable_key)
-        candidates[0].split = to
+        selected = candidates[0]
+        if selected.split == "test":
+            promoted_from_test.append((selected.id, to))
+        selected.split = to
 
     for t in real:
         bucket = _stable_key(t)[0] % 100
@@ -337,13 +348,33 @@ def assign_splits(
         else:
             t.split = "train"
 
-    # Guarantee val (the gate) is non-empty when we have >=2 real tasks.
-    # Only promote from train so hash-assigned test tasks stay untouched.
+    # Guarantee val (the gate) is non-empty when we have >=2 real tasks. Keep
+    # hash-assigned test tasks untouched unless the non-test pool cannot supply
+    # distinct train and val tasks.
     if len(real) >= 2 and not any(t.split == "val" for t in real):
-        _promote_one(to="val", from_splits={"train"})
-    # Guarantee a train pool exists when possible; never borrow from test.
+        real_train = [t for t in real if t.split == "train"]
+        train_count = sum(t.split == "train" for t in tasks)
+        if real_train and train_count >= 2:
+            _promote_one(to="val", from_splits={"train"})
+        else:
+            _promote_one(to="val", from_splits={"test"})
+    # Guarantee a train pool exists when possible. Prefer a spare val task; if
+    # the only val task is the gate, borrow from test so val stays non-empty.
     if not any(t.split == "train" for t in tasks) and len(real) >= 2:
-        _promote_one(to="train", from_splits={"val"})
+        val_count = sum(t.split == "val" for t in real)
+        if val_count >= 2:
+            _promote_one(to="train", from_splits={"val"})
+        else:
+            _promote_one(to="train", from_splits={"test"})
+
+    if promoted_from_test:
+        assignments = ", ".join(f"{task_id}->{split}" for task_id, split in promoted_from_test)
+        _LOGGER.warning(
+            "assign_splits reassigned %d test task(s) to keep train and val "
+            "non-empty; held-out test coverage was reduced (%s)",
+            len(promoted_from_test),
+            assignments,
+        )
     return tasks
 
 

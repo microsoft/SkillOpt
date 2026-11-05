@@ -110,6 +110,11 @@ class ReplayResult:
     tools_called: List[str] = field(default_factory=list)
     tokens: int = 0                   # approx tokens this rollout cost (for token objective)
     latency_ms: float = 0.0           # wall-clock for this rollout (for latency objective)
+    # Semantic, task-level feedback that may be shown to the skill optimizer.
+    # ``fail_reason`` and ``judge_rationale`` remain the verbatim verifier
+    # evidence for audit/debugging; they may contain regexes or other grader
+    # implementation details and must not be used as learning context.
+    optimizer_feedback: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

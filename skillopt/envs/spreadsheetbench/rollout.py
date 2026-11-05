@@ -30,6 +30,10 @@ from skillopt.envs.spreadsheetbench.evaluator import (
     evaluate, _generate_cell_names, _compare_cell_value,
 )
 from skillopt.envs.spreadsheetbench.executor import run_generated_code
+from skillopt.envs.task_output import (
+    confined_task_output_dir as _confined_task_out_dir,
+    is_safe_task_id as _is_safe_task_id,
+)
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -226,6 +230,12 @@ def process_one(
     Returns a result dict compatible with ``compute_score()``.
     """
     task_id = str(item["id"])
+    # The id becomes a path segment under <out_root>/predictions, so a hostile
+    # value must stop here: before _find_test_cases() touches the data root,
+    # before the destination directory is created, and before the ReAct agent /
+    # code-execution path runs. (Sanitizing only the mkdtemp prefix let such an
+    # id continue on to the destination derived from the raw value.)
+    unsafe_task_id = not _is_safe_task_id(task_id)
     instruction = item["instruction"]
     instruction_type = item.get("instruction_type", "")
     answer_position = item.get("answer_position", "")
@@ -267,6 +277,10 @@ def process_one(
         "error": "",
     }
 
+    if unsafe_task_id:
+        result["fail_reason"] = "unsafe-task-id"
+        return result
+
     try:
         cases = _find_test_cases(task_dir)
         result["n_cases"] = len(cases)
@@ -274,7 +288,13 @@ def process_one(
             result["fail_reason"] = "no-test-cases"
             return result
 
-        task_out_dir = os.path.join(out_root, "predictions", task_id)
+        try:
+            task_out_dir = _confined_task_out_dir(out_root, task_id)
+        except ValueError:
+            # Destination is not confined (symlink / escape): stop before the
+            # directory is created and before any downstream operation runs.
+            result["fail_reason"] = "unsafe-task-id"
+            return result
         os.makedirs(task_out_dir, exist_ok=True)
 
         no1, ip1, _ = cases[0]
@@ -314,6 +334,9 @@ def process_one(
         # ── Stage 1: run ReAct agent on test case 1 ─────────────────────
         result["phase"] = "agent"
 
+        # task_id is already validated as a single safe segment above; using it
+        # verbatim keeps one validation gate instead of sanitizing shapes that
+        # have already been rejected.
         work_dir = tempfile.mkdtemp(prefix=f"react_{task_id}_")
         try:
             # Copy input so agent works in an isolated directory
@@ -606,6 +629,9 @@ def process_one_codegen(
     from skillopt.envs.spreadsheetbench.codegen_agent import run_single, run_multi
 
     task_id = str(item["id"])
+    # Same gate as process_one: validate before the data root is read, before
+    # the persistent destination exists, and before the LLM / code-exec path.
+    unsafe_task_id = not _is_safe_task_id(task_id)
     instruction = item["instruction"]
     instruction_type = item.get("instruction_type", "")
     answer_position = item.get("answer_position", "")
@@ -647,6 +673,10 @@ def process_one_codegen(
         "error": "",
     }
 
+    if unsafe_task_id:
+        result["fail_reason"] = "unsafe-task-id"
+        return result
+
     try:
         cases = _find_test_cases(task_dir)
         result["n_cases"] = len(cases)
@@ -654,7 +684,13 @@ def process_one_codegen(
             result["fail_reason"] = "no-test-cases"
             return result
 
-        task_out_dir = os.path.join(out_root, "predictions", task_id)
+        try:
+            task_out_dir = _confined_task_out_dir(out_root, task_id)
+        except ValueError:
+            # Destination is not confined (symlink / escape): stop before the
+            # directory is created and before any downstream operation runs.
+            result["fail_reason"] = "unsafe-task-id"
+            return result
         os.makedirs(task_out_dir, exist_ok=True)
 
         # ── Save context for Optimizer (Reflect stage) ──────────────────

@@ -28,11 +28,17 @@ A single `base_url` + `api_key` pair lets you point SkillOpt at, for example:
 | LiteLLM proxy | `http://localhost:4000` | any proxied model |
 | OpenRouter / Fireworks / xAI / … | provider base URL | provider model id |
 | OrcaRouter | `https://api.orcarouter.ai/v1` | `openai/gpt-5.5` |
+| Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini` |
 
 [OrcaRouter](https://www.orcarouter.ai) exposes OpenAI, Anthropic, Google,
 DeepSeek and other models behind one OpenAI-compatible endpoint. Its model IDs
 are namespaced by upstream provider (e.g. `openai/gpt-5.5`,
 `anthropic/claude-sonnet-4.6`), so pass a namespaced ID as the model.
+
+Cheaper Inference model IDs are not namespaced (e.g. `gpt-5.4-mini`), so pass
+the bare ID as the model. See its [API docs](https://www.cheaperinference.com/docs)
+for the base URL and its [model list](https://www.cheaperinference.com/markets)
+for the model IDs.
 
 ### Python API
 

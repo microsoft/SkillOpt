@@ -22,7 +22,7 @@ shared wrapper function.
 | Benchmark | Held-out test | Scoring |
 |---|---|---|
 | SearchQA | 1,400 items | SQuAD exact-match vs gold |
-| LiveMathematicianBench | 124 items | multiple-choice label (choices shuffled per item) |
+| LiveMathematicianBench | 125 items | multiple-choice label (choices shuffled per item) |
 | SpreadsheetBench | 280 items | the agent's generated openpyxl code is **executed**, output workbook compared cell-by-cell to a golden file |
 
 **Targets:** GPT-5.5, GPT-5.4-mini, GPT-5.4-nano. **Modes:** validation-gated

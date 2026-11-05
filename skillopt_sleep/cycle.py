@@ -15,20 +15,26 @@ import os
 import re
 import shutil
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from skillopt_sleep import evidence
 from skillopt_sleep.backend import Backend, CursorBackendError, build_backend
+from skillopt_sleep.budget import Budget
 from skillopt_sleep.config import DEFAULTS, SleepConfig, load_config
+from skillopt_sleep.consolidate import BUDGET_EXHAUSTED
 from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.evidence import EvidenceLog
-from skillopt_sleep.harvest_sources import harvest_for_config
+from skillopt_sleep.handoff_backend import PendingCalls
+from skillopt_sleep.harvest import format_harvest_note
+from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
 from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.multi_skill import (
+    BUDGET_REACHED,
     SKIPPED,
     GroupConsolidation,
     SkillGroup,
@@ -87,6 +93,29 @@ def _resolve_split_fractions(cfg: SleepConfig) -> tuple[float, float]:
             f"val_fraction + test_fraction must be < 1 (got {val} + {test})"
         )
     return val, test
+
+
+def _night_token_budget(cfg: SleepConfig) -> Budget:
+    """Return ``max_tokens_per_night`` as a Budget; 0 or null means no cap.
+
+    Raises ``ValueError`` before any model call for anything that is not a
+    whole, non-negative token count: negative numbers, booleans, fractional or
+    infinite floats (JSON ``Infinity`` included) and non-numeric strings.
+    """
+    raw = cfg.get("max_tokens_per_night")
+    if raw is None:
+        return Budget()
+    try:
+        if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+            raise ValueError(raw)
+        limit = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        limit = -1
+    if limit < 0:
+        raise ValueError(
+            f"max_tokens_per_night must be 0 (no cap) or a positive token count, got {raw!r}"
+        )
+    return Budget(max_tokens=limit or None)
 
 
 # ── Model-swap detection (F16) ───────────────────────────────
@@ -302,6 +331,10 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
     backend = _markdown_text(cfg.get("backend"))
     replay = _markdown_text(cfg.get("replay_mode"))
     gate_action = _markdown_text(report.gate_action)
+    # A consolidation skipped on budget measured nothing; show no score.
+    measured = report.gate_action != BUDGET_EXHAUSTED
+    baseline_score = report.baseline_score if measured else None
+    candidate_score = report.candidate_score if measured else None
     lines = [
         f"# SkillOpt-Sleep — night {report.night} report",
         "",
@@ -309,8 +342,8 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         f"- backend: `{backend}`  replay: `{replay}`",
         f"- sessions harvested: {report.n_sessions}",
         f"- tasks mined: {report.n_tasks}  (replayed: {report.n_replayed})",
-        f"- held-out score: {_report_score(report.baseline_score)} "
-        f"-> {_report_score(report.candidate_score)}",
+        f"- held-out score: {_report_score(baseline_score)} "
+        f"-> {_report_score(candidate_score)}",
         f"- gate: **{gate_action}** (accepted={bool(report.accepted)})",
         f"- no-regression gate: "
         f"{'enabled' if cfg.get('gate_no_regression', False) else 'disabled'}",
@@ -643,6 +676,9 @@ def run_sleep_cycle(
         it can inspect the backend's pending calls after the run.
     """
     cfg = cfg or load_config()
+    # Checked before the night writes anything (state, staging dir, evidence).
+    harvest_source = normalize_transcript_source(cfg.get("transcript_source"))
+    budget = _night_token_budget(cfg)
     state = SleepState.load(cfg.state_path)
     project = _project_paths(cfg)
 
@@ -667,6 +703,28 @@ def run_sleep_cycle(
     started = _now_iso(clock)
     backend.preferences = cfg.get("preferences", "")
     _progress(cfg, f"night {night}: project={project} backend={backend.name}")
+
+    # max_tokens_per_night is measured with the backend's token counter, the
+    # one the report prints as "tokens used". Only tonight's spend counts, so a
+    # reused backend starts from its current total. The budget is checked
+    # before each step that would start new model work; a step in progress is
+    # never interrupted.
+    budget.start(time.monotonic, backend.tokens_used())
+    budget_skipped: List[str] = []
+
+    def budget_exhausted() -> bool:
+        if not budget.exhausted(
+            tokens_now=backend.tokens_used(), clock_fn=time.monotonic
+        ):
+            return False
+        # A handoff round counts unanswered prompts and their placeholder
+        # replies. Stopping on that count would stage and save a night built
+        # from placeholders, so pause the round for answers instead and decide
+        # once every counted call is real.
+        pending = getattr(backend, "pending", None)
+        if pending:
+            raise PendingCalls(pending)
+        return True
 
     # ── evidence log (the night's full evidentiary chain) ────────────────
     # Pre-create the staging dir so evidence.jsonl accumulates exactly where
@@ -696,7 +754,8 @@ def run_sleep_cycle(
             "gate_mixed_weight", "gate_no_regression", "edit_budget",
             "holdout_fraction", "val_fraction", "test_fraction",
             "dream_rollouts", "dream_factor", "recall_k",
-            "max_tasks_per_night", "lookback_hours", "llm_mine",
+            "max_tasks_per_night", "max_tokens_per_night",
+            "lookback_hours", "llm_mine",
             "evolve_skill", "evolve_memory")}
         cycle_config["opencode_tool_replay"] = (
             cfg.get("opencode_tool_replay", False) is True
@@ -732,19 +791,22 @@ def run_sleep_cycle(
     )
 
     # ── 1+2. harvest + mine (unless seed_tasks injected) ─────────────────
+    # The harvest cursor is per (project, source): each source reads its own
+    # store, so one shared cursor would make a source skip its sessions (#312).
+    # harvest_source is the canonical name harvest_for_config reads.
     digests: List[SessionDigest] = []
     if seed_tasks is not None:
         tasks = seed_tasks
         n_sessions = 0
         _progress(cfg, f"using {len(tasks)} seeded tasks")
     else:
-        since = state.last_harvest_for(project)
+        since = state.last_harvest_for(project, harvest_source)
+        harvest_stats: Dict[str, int] = {}
         # On first run (no prior harvest), apply lookback_hours so we don't
         # scan the entire transcript history and trigger massive LLM mining.
         if since is None:
             lookback_hours = cfg.get("lookback_hours", 72)
             if lookback_hours is not None and lookback_hours > 0:
-                import time
                 ref_time = clock if clock is not None else time.time()
                 cutoff = ref_time - lookback_hours * 3600
                 since = _now_iso(cutoff)
@@ -755,15 +817,19 @@ def run_sleep_cycle(
             candidate_limit = max(max_tasks, max_tasks * 3)
         _progress(
             cfg,
-            f"harvest start: source={cfg.get('transcript_source')} max_sessions={max_sessions}",
+            f"harvest start: source={harvest_source} max_sessions={max_sessions}",
         )
         digests = harvest_for_config(
             cfg,
             since_iso=since,
             limit=max_sessions,
+            stats=harvest_stats,
         )
         n_sessions = len(digests)
-        _progress(cfg, f"harvest done: sessions={n_sessions}")
+        _progress(
+            cfg,
+            f"harvest done: sessions={n_sessions}{format_harvest_note(harvest_stats)}",
+        )
         if ev is not None:
             # The transcript end of the evidentiary chain: which sessions were
             # even considered, and what signals they carried into mining.
@@ -812,6 +878,8 @@ def run_sleep_cycle(
             raise
         _progress(cfg, f"mine done: tasks={len(tasks)}")
 
+    state.protect_splits(tasks)
+
     if ev is not None:
         # Final task pool with split assignment: which tasks train the edits
         # vs. which held-out tasks gate them (works for seeded tasks too).
@@ -832,7 +900,7 @@ def run_sleep_cycle(
     if not tasks:
         report.ended_at = _now_iso(clock)
         report.notes.append("no tasks mined — nothing to consolidate")
-        state.set_last_harvest(project, started)
+        state.set_last_harvest(project, started, harvest_source)
         state.record_night({"night": night, "accepted": False, "n_tasks": 0})
         if not dry_run:
             state.save()
@@ -867,10 +935,15 @@ def run_sleep_cycle(
             evolve_skill=cfg.get("evolve_skill", True),
             evolve_memory=cfg.get("evolve_memory", True),
             night=night,
+            budget_exhausted=budget_exhausted,
         )
     except CursorBackendError:
         _discard_unstaged_evidence(staging_dir_pre)
         raise
+    budget_skipped.extend(getattr(result, "budget_skipped", []))
+    # When the budget was spent before consolidation, nothing was replayed or
+    # scored; keep zero placeholders out of state history and diagnostics.
+    scores_measured = result.gate_action != BUDGET_EXHAUSTED
     # archive tonight's real (non-dream) tasks so future nights can recall them
     state.add_to_archive([t.to_dict() for t in tasks if t.origin != "dream"])
     _progress(
@@ -880,7 +953,7 @@ def run_sleep_cycle(
         + (f" unmatched={len(result.unmatched_edits)}" if result.unmatched_edits else ""),
     )
 
-    report.n_replayed = len(tasks)
+    report.n_replayed = len(tasks) if scores_measured else 0
     report.baseline_score = result.baseline_score
     report.candidate_score = result.candidate_score
     report.accepted = result.accepted
@@ -900,7 +973,12 @@ def run_sleep_cycle(
     # test_fraction=0.0 no test task exists and this block never runs, so
     # legacy nights are bit-for-bit unchanged and cost nothing extra.
     test_tasks = [t for t in tasks if t.split == "test"]
-    if test_tasks and ev is not None:
+    score_test = bool(test_tasks) and ev is not None
+    if score_test and budget_exhausted():
+        score_test = False
+        budget_skipped.append("held-out test replay")
+        ev.log("budget", "skip", step="held-out test replay", night=night)
+    if score_test:
         final_skill = result.new_skill if result.accepted else skill
         final_memory = result.new_memory if result.accepted else memory
         test_pairs = replay_batch(backend, test_tasks, final_skill, final_memory)
@@ -937,6 +1015,8 @@ def run_sleep_cycle(
                 cfg, grouped, managed_name, skill
             )
             report.notes.extend(skip_notes)
+            for group in live_groups:
+                state.protect_splits(group.tasks)
             try:
                 consolidated_groups = consolidate_groups(
                     backend,
@@ -960,10 +1040,26 @@ def run_sleep_cycle(
                     gate_mode=cfg.get("gate_mode", "on"),
                     evolve_skill=cfg.get("evolve_skill", True),
                     night=night,
+                    budget_exhausted=budget_exhausted,
                 )
             except CursorBackendError:
                 _discard_unstaged_evidence(staging_dir_pre)
                 raise
+            budget_groups = [
+                (name, outcome)
+                for name, outcome in consolidated_groups.items()
+                if outcome.reason.startswith(BUDGET_REACHED)
+            ]
+            if budget_groups:
+                budget_skipped.append(
+                    f"work in {len(budget_groups)} per-skill group(s)"
+                )
+            if ev is not None:
+                # Groups cut short log their own skip from consolidate().
+                for name, outcome in budget_groups:
+                    if outcome.status == SKIPPED:
+                        ev.log("budget", "skip", step="per-skill group",
+                               skill=name, night=night)
             for raw_name in grouped:
                 name = str(raw_name or "").strip()
                 outcome = skipped_groups.get(name) or consolidated_groups.get(name)
@@ -981,6 +1077,14 @@ def run_sleep_cycle(
 
     report.tokens_used = backend.tokens_used()
     report.ended_at = _now_iso(clock)
+    if budget_skipped:
+        # Never truncate silently: say which steps the budget stopped.
+        spent = budget.tokens_spent(report.tokens_used)
+        report.notes.append(
+            f"max_tokens_per_night reached ({spent} of {budget.max_tokens} "
+            f"tokens); skipped: {', '.join(budget_skipped)}"
+        )
+        _progress(cfg, f"token budget reached: skipped {', '.join(budget_skipped)}")
 
     # ── 5. stage (unless dry-run) ────────────────────────────────────────
     staging_dir = ""
@@ -988,8 +1092,24 @@ def run_sleep_cycle(
     adopted_paths: List[str] = []
     if not dry_run:
         _progress(cfg, "staging start")
-        proposed_skill = result.new_skill if (cfg.get("evolve_skill") and result.accepted) else None
-        proposed_memory = result.new_memory if (cfg.get("evolve_memory") and result.accepted) else None
+        proposed_skill = (
+            result.new_skill
+            if (
+                cfg.get("evolve_skill")
+                and result.accepted
+                and result.new_skill != skill
+            )
+            else None
+        )
+        proposed_memory = (
+            result.new_memory
+            if (
+                cfg.get("evolve_memory")
+                and result.accepted
+                and result.new_memory != memory
+            )
+            else None
+        )
         skill_proposals, skip_notes = _skill_proposals_from_groups(
             cfg,
             group_outcomes,
@@ -1040,8 +1160,12 @@ def run_sleep_cycle(
                         "gate_mode": cfg.get("gate_mode"),
                         "gate_no_regression": cfg.get("gate_no_regression", False),
                         "n_tasks": len(tasks),
-                        "baseline_score": result.baseline_score,
-                        "candidate_score": result.candidate_score,
+                        "baseline_score": (
+                            result.baseline_score if scores_measured else None
+                        ),
+                        "candidate_score": (
+                            result.candidate_score if scores_measured else None
+                        ),
                         "accepted": result.accepted,
                         "gate_action": result.gate_action,
                         "holdout_leaked": getattr(result, "holdout_leaked", False),
@@ -1063,10 +1187,14 @@ def run_sleep_cycle(
                 )
         except Exception:
             pass
-        state.set_last_harvest(project, started)
+        state.set_last_harvest(project, started, harvest_source)
+        night_scores = (
+            {"baseline": result.baseline_score, "candidate": result.candidate_score}
+            if scores_measured
+            else {}
+        )
         state.record_night({
-            "night": night, "accepted": result.accepted,
-            "baseline": result.baseline_score, "candidate": result.candidate_score,
+            "night": night, "accepted": result.accepted, **night_scores,
             "n_tasks": len(tasks), "staging": staging_dir,
         })
         state.set_last_model_key(_make_backend_key(backend))  # F16: track resolved model
@@ -1079,11 +1207,13 @@ def run_sleep_cycle(
     if ev is not None:
         ev.log("cycle", "end", night=night, outcome="completed",
                gate_action=report.gate_action, accepted=report.accepted,
-               baseline_score=report.baseline_score,
-               candidate_score=report.candidate_score,
+               baseline_score=report.baseline_score if scores_measured else None,
+               candidate_score=report.candidate_score if scores_measured else None,
                n_applied_edits=len(report.edits),
                n_rejected_edits=len(report.rejected_edits),
                n_unmatched_edits=len(report.unmatched_edits),
-               tokens_used=report.tokens_used, adopted=adopted)
+               tokens_used=report.tokens_used, adopted=adopted,
+               max_tokens_per_night=budget.max_tokens,
+               budget_skipped=list(budget_skipped))
 
     return CycleOutcome(report, staging_dir, adopted, adopted_paths)

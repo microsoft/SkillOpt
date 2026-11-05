@@ -56,8 +56,12 @@ staged files before changing a live skill.
    paths all point to isolated test locations.
 
 3. Review `config.json`. In particular, do not assume that values such as
-   `max_tokens_per_night` or `replay_mode` are enforced by this custom wrapper
-   merely because they appear in the example config.
+   `replay_mode` are enforced by this custom wrapper merely because they appear
+   in the example config. `max_tokens_per_night` is applied by the shared cycle,
+   but it is measured with the wrapper backend's rough `tokens_used()` estimate
+   (a quarter of the attempt prompt length plus 200 per attempt, 600 per rubric
+   judge call, and a third of the reflect prompt plus 1500 per reflect call), so
+   it is not a billing limit.
 
 4. Supply credentials through your normal secret-management mechanism. Do not
    commit a DeepSeek key or place it in a world-readable file.

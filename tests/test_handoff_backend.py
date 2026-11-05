@@ -301,10 +301,13 @@ class TestHandoffCli(unittest.TestCase):
             ])
             self.assertEqual(rc, 0)
             # the no-tasks branch must persist last-harvest, otherwise every
-            # later run re-scans the same stale window forever
+            # later run re-scans the same stale window forever. The cursor is
+            # keyed by (project, transcript source) — #312.
             cfg = load_config(invoked_project=proj, claude_home=claude_home)
             state = SleepState.load(cfg.state_path)
-            self.assertIsNotNone(state.last_harvest_for(proj))
+            self.assertIsNotNone(
+                state.last_harvest_for(proj, cfg.get("transcript_source", ""))
+            )
 
 
 if __name__ == "__main__":

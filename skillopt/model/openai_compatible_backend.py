@@ -372,9 +372,15 @@ def configure_openai_compatible(
     optimizer_base_url: str | None = None,
     optimizer_api_key: str | None = None,
     optimizer_model: str | None = None,
+    optimizer_temperature: float | str | None = None,
+    optimizer_timeout_seconds: float | str | None = None,
+    optimizer_max_tokens: int | str | None = None,
     target_base_url: str | None = None,
     target_api_key: str | None = None,
     target_model: str | None = None,
+    target_temperature: float | str | None = None,
+    target_timeout_seconds: float | str | None = None,
+    target_max_tokens: int | str | None = None,
 ) -> None:
     """Configure the generic OpenAI-compatible backend at runtime.
 
@@ -400,9 +406,9 @@ def configure_openai_compatible(
             base_url=optimizer_base_url if optimizer_base_url is not None else base_url,
             api_key=optimizer_api_key if optimizer_api_key is not None else api_key,
             deployment=optimizer_model if optimizer_model is not None else model,
-            temperature=temperature,
-            timeout_seconds=timeout_seconds,
-            max_tokens=max_tokens,
+            temperature=optimizer_temperature if optimizer_temperature is not None else temperature,
+            timeout_seconds=optimizer_timeout_seconds if optimizer_timeout_seconds is not None else timeout_seconds,
+            max_tokens=optimizer_max_tokens if optimizer_max_tokens is not None else max_tokens,
         )
         _update_config(
             TARGET_CONFIG,
@@ -410,9 +416,9 @@ def configure_openai_compatible(
             base_url=target_base_url if target_base_url is not None else base_url,
             api_key=target_api_key if target_api_key is not None else api_key,
             deployment=target_model if target_model is not None else model,
-            temperature=temperature,
-            timeout_seconds=timeout_seconds,
-            max_tokens=max_tokens,
+            temperature=target_temperature if target_temperature is not None else temperature,
+            timeout_seconds=target_timeout_seconds if target_timeout_seconds is not None else timeout_seconds,
+            max_tokens=target_max_tokens if target_max_tokens is not None else max_tokens,
         )
     _reset_clients()
 
