@@ -7,6 +7,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Pluggable transcript sources, backends, and public harvest helpers** (#314):
+  support discovering external transcript harvesters via the
+  `skillopt_sleep.sources` entry-point group or in-memory `register_source()`,
+  and external replay/optimizer backends via `skillopt_sleep.backends` or
+  `register_backend()`. Add `--source-module pkg.mod:func` and `--backend-module
+  pkg.mod:Class` flags for standalone adapters. Expose standard harvest helpers
+  (`is_headless_replay`, `is_agent_session`, `is_meta_prompt`, `detect_feedback`,
+  `redact_secrets`) in `skillopt_sleep.harvest` for external harvesters.
 - **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
   provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
   config selects Parallel automatically. Selecting it sends the generated

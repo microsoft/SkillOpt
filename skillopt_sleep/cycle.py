@@ -32,7 +32,6 @@ from skillopt_sleep.harvest import format_harvest_note
 from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
-from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.multi_skill import (
     BUDGET_REACHED,
     SKIPPED,
@@ -42,6 +41,7 @@ from skillopt_sleep.multi_skill import (
     consolidate_groups,
     skill_group_reports,
 )
+from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.skill_resolver import resolve_skill, skill_search_roots
 from skillopt_sleep.staging import (
     SkillProposal,
@@ -684,10 +684,13 @@ def run_sleep_cycle(
 
     backend = backend or build_backend(
         backend=cfg.get("backend", "mock"),
+        backend_module=cfg.get("backend_module", ""),
         model=cfg.get("model", ""),
         optimizer_backend=cfg.get("optimizer_backend", ""),
+        optimizer_backend_module=cfg.get("optimizer_backend_module", ""),
         optimizer_model=cfg.get("optimizer_model", ""),
         target_backend=cfg.get("target_backend", ""),
+        target_backend_module=cfg.get("target_backend_module", ""),
         target_model=cfg.get("target_model", ""),
         codex_path=cfg.get("codex_path", ""),
         pi_path=cfg.get("pi_path", ""),

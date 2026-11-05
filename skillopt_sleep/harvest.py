@@ -23,7 +23,6 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from skillopt_sleep.types import SessionDigest
 
-
 # Heuristic phrases that signal the user (dis)approving of prior output.
 # English-only by default. Users whose sessions are in another language can add
 # their own phrases via the SKILLOPT_SLEEP_NEG_FEEDBACK / _POS_FEEDBACK env vars
@@ -689,3 +688,23 @@ def harvest(
             sessions=len(digests),
         )
     return digests
+
+
+# ── Public helper API for built-in and out-of-tree harvesters (#314) ──────────
+from skillopt_sleep.staging import redact_secrets  # noqa: E402
+
+is_headless_replay = _is_headless_replay
+is_agent_session = _is_agent_session
+is_meta_prompt = _is_meta_prompt
+detect_feedback = _detect_feedback
+
+__all__ = [
+    "harvest",
+    "format_harvest_note",
+    "is_headless_replay",
+    "is_agent_session",
+    "is_meta_prompt",
+    "detect_feedback",
+    "redact_secrets",
+]
+
