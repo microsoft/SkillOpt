@@ -65,6 +65,10 @@ class ConsolidationResult:
     gate_trials: List[dict] = field(default_factory=list)
     # Steps that never started because the caller's token budget was spent.
     budget_skipped: List[str] = field(default_factory=list)
+    judge_requests: int = 0
+    judge_latency_ms: float = 0.0
+    judge_tokens: int = 0
+    judge_model: str = ""
 
 
 def _split(tasks: List[TaskRecord]) -> Tuple[List[TaskRecord], List[TaskRecord], bool]:
@@ -247,6 +251,7 @@ def consolidate(
             budget_skipped=budget_skipped,
         )
 
+    all_replays: List[ReplayResult] = []
     # ── baseline on the VAL slice (the gate reference) ────────────────────
     # When the gate is OFF the user has opted out of holding out a validation set
     # (the daily-use design): we accept edits greedily and judge quality only on
@@ -258,6 +263,7 @@ def consolidate(
     else:
         evlog.set_phase(backend, "baseline_val")
         base_pairs = replay_batch(backend, val_tasks, skill, memory)
+        all_replays.extend(r for _, r in base_pairs)
         base_hard, base_soft = aggregate_scores(base_pairs)
         holdout_detail = _holdout_detail(base_pairs)
     base_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
@@ -270,6 +276,7 @@ def consolidate(
     # ── reflect over TRAIN-split failures/successes ───────────────────────
     evlog.set_phase(backend, "train")
     train_pairs = replay_batch(backend, train_tasks, skill, memory)
+    all_replays.extend(r for _, r in train_pairs)
     failures = [(t, r) for (t, r) in train_pairs if r.hard < 1.0]
     successes = [(t, r) for (t, r) in train_pairs if r.hard >= 1.0]
 
@@ -312,6 +319,7 @@ def consolidate(
         trial_memory = new_doc if which == "memory" else cand_memory
         evlog.set_phase(backend, f"gate_trial:{which}")
         pairs = replay_batch(backend, val_tasks, trial_skill, trial_memory)
+        all_replays.extend(r for _, r in pairs)
         h, s = aggregate_scores(pairs)
         cand_score = select_gate_score(h, s, gate_metric, gate_mixed_weight)
         task_deltas = _task_deltas(
@@ -397,6 +405,7 @@ def consolidate(
         # re-evaluate failures under the (possibly improved) skill
         evlog.set_phase(backend, "train_post_skill")
         train_pairs2 = replay_batch(backend, train_tasks, cand_skill, cand_memory)
+        all_replays.extend(r for _, r in train_pairs2)
         failures2 = [(t, r) for (t, r) in train_pairs2 if r.hard < 1.0]
         successes2 = [(t, r) for (t, r) in train_pairs2 if r.hard >= 1.0]
         edits_m = backend.reflect(
@@ -427,6 +436,7 @@ def consolidate(
         else:
             evlog.set_phase(backend, "final_val")
             final_pairs = replay_batch(backend, val_tasks, cand_skill, cand_memory)
+            all_replays.extend(r for _, r in final_pairs)
         final_hard, final_soft = aggregate_scores(final_pairs)
         final_score = select_gate_score(final_hard, final_soft, gate_metric, gate_mixed_weight)
         base_gate_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
@@ -523,6 +533,13 @@ def consolidate(
                n_rejected=len(all_rejected),
                n_unmatched=len(all_unmatched), night=night)
 
+    j_reqs = sum(1 for r in all_replays if r.judge_model and r.judge_model != "rule")
+    j_lat = sum(r.judge_latency_ms for r in all_replays)
+    j_tok = sum(r.judge_tokens for r in all_replays)
+    j_model = next((r.judge_model for r in all_replays if r.judge_model and r.judge_model != "rule"), "")
+    if not j_model:
+        j_model = next((r.judge_model for r in all_replays if r.judge_model), "")
+
     return ConsolidationResult(
         accepted=accepted,
         gate_action=action,
@@ -541,4 +558,8 @@ def consolidate(
         call_error=getattr(backend, "last_call_error", "") or "",
         holdout_leaked=holdout_leaked,
         budget_skipped=budget_skipped,
+        judge_requests=j_reqs,
+        judge_latency_ms=round(j_lat, 1),
+        judge_tokens=j_tok,
+        judge_model=j_model,
     )

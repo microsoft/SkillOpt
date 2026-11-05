@@ -32,7 +32,6 @@ from skillopt_sleep.harvest import format_harvest_note
 from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
-from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.multi_skill import (
     BUDGET_REACHED,
     SKIPPED,
@@ -42,6 +41,7 @@ from skillopt_sleep.multi_skill import (
     consolidate_groups,
     skill_group_reports,
 )
+from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.skill_resolver import resolve_skill, skill_search_roots
 from skillopt_sleep.staging import (
     SkillProposal,
@@ -348,6 +348,11 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         f"- no-regression gate: "
         f"{'enabled' if cfg.get('gate_no_regression', False) else 'disabled'}",
         f"- tokens used: {report.tokens_used}",
+        (
+            f"- judge: {report.judge_requests} request(s), "
+            f"{report.judge_latency_ms:.1f}ms, {report.judge_tokens} tokens"
+            + (f" (model: `{_markdown_text(report.judge_model)}`)" if report.judge_model else "")
+        ),
         "",
     ]
     gate_on = str(cfg.get("gate_mode", "on")).strip().lower() not in {
@@ -964,6 +969,10 @@ def run_sleep_cycle(
     report.rejected_edits = result.rejected_edits
     report.unmatched_edits = result.unmatched_edits
     report.gate_trials = redact_secrets(getattr(result, "gate_trials", []))
+    report.judge_requests = getattr(result, "judge_requests", 0)
+    report.judge_latency_ms = getattr(result, "judge_latency_ms", 0.0)
+    report.judge_tokens = getattr(result, "judge_tokens", 0)
+    report.judge_model = getattr(result, "judge_model", "")
 
     # ── held-out test measure (write-only; the gate never reads it) ──────
     # consolidate() holds the test split out entirely and documents that the
@@ -982,6 +991,13 @@ def run_sleep_cycle(
         final_skill = result.new_skill if result.accepted else skill
         final_memory = result.new_memory if result.accepted else memory
         test_pairs = replay_batch(backend, test_tasks, final_skill, final_memory)
+        for _, r in test_pairs:
+            if r.judge_model and r.judge_model != "rule":
+                report.judge_requests += 1
+            report.judge_latency_ms = round(report.judge_latency_ms + r.judge_latency_ms, 1)
+            report.judge_tokens += r.judge_tokens
+            if not report.judge_model and r.judge_model:
+                report.judge_model = r.judge_model
         test_hard, test_soft = aggregate_scores(test_pairs)
         ev.log("test", "held_out_score", night=night,
                n_test=len(test_tasks),
@@ -1065,6 +1081,15 @@ def run_sleep_cycle(
                 outcome = skipped_groups.get(name) or consolidated_groups.get(name)
                 if outcome is not None:
                     group_outcomes[name] = outcome
+                    if outcome.result is not None:
+                        report.judge_requests += getattr(outcome.result, "judge_requests", 0)
+                        report.judge_latency_ms = round(
+                            report.judge_latency_ms + getattr(outcome.result, "judge_latency_ms", 0.0),
+                            1,
+                        )
+                        report.judge_tokens += getattr(outcome.result, "judge_tokens", 0)
+                        if not report.judge_model and getattr(outcome.result, "judge_model", ""):
+                            report.judge_model = outcome.result.judge_model
             group_rows = skill_group_reports(group_outcomes)
             # Skill hints and isolated backend failures are both untrusted
             # free text. Scrub them before either report.json or report.md is
@@ -1214,6 +1239,10 @@ def run_sleep_cycle(
                n_unmatched_edits=len(report.unmatched_edits),
                tokens_used=report.tokens_used, adopted=adopted,
                max_tokens_per_night=budget.max_tokens,
-               budget_skipped=list(budget_skipped))
+               budget_skipped=list(budget_skipped),
+               judge_requests=report.judge_requests,
+               judge_latency_ms=report.judge_latency_ms,
+               judge_tokens=report.judge_tokens,
+               judge_model=report.judge_model)
 
     return CycleOutcome(report, staging_dir, adopted, adopted_paths)

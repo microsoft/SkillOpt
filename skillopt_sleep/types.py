@@ -115,6 +115,9 @@ class ReplayResult:
     # evidence for audit/debugging; they may contain regexes or other grader
     # implementation details and must not be used as learning context.
     optimizer_feedback: str = ""
+    judge_latency_ms: float = 0.0     # wall-clock for the judge evaluation
+    judge_tokens: int = 0             # tokens consumed by judge call
+    judge_model: str = ""             # model identity used for evaluation
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -194,6 +197,10 @@ class SleepReport:
     # Per-candidate held-out comparisons, including rejected intermediate
     # skill/memory trials and the final replay.
     gate_trials: List[Dict[str, Any]] = field(default_factory=list)
+    judge_requests: int = 0
+    judge_latency_ms: float = 0.0
+    judge_tokens: int = 0
+    judge_model: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
