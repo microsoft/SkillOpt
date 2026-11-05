@@ -152,6 +152,8 @@ class SkillGroupReport:
     n_applied_edits: int = 0
     n_rejected_edits: int = 0
     reason: str = ""
+    # Keep optional fields last for callers using positional construction.
+    gate_trials: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
