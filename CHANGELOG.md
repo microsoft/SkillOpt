@@ -88,6 +88,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   (thanks @AKhozya, #131).
 
 ### Changed
+- **SkillOpt-Sleep legacy adoption confinement**: `adopt` now derives allowed
+  destinations from the caller (`invoked_project`, `skill_search_roots(cfg)`,
+  and explicit `target_skill_path`), treating manifest values as a consistency
+  check. Nights staged prior to this change that lack a recorded `project_root`
+  in `manifest.json` now fail closed with `StagingError` ("missing 'project_root'
+  … Discard and restage this night").
 - Claude Code's Sleep plugin can now use a `pip`/`uv`-installed
   `skillopt-sleep` when no repository checkout is present (thanks
   @ichoosetoaccept, #107).

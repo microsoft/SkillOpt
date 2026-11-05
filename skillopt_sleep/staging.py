@@ -3051,7 +3051,14 @@ def _read_legacy_receipts(
     return payload, original, mode, file_id
 
 
-def adopt(staging_dir: str) -> List[str]:
+def adopt(
+    staging_dir: str,
+    project_root: Optional[str] = None,
+    skill_roots: Optional[Sequence[str]] = None,
+    target_skill_path: Optional[str] = None,
+    *,
+    cfg: Optional[Any] = None,
+) -> List[str]:
     """Durably adopt the pinned legacy SKILL.md/CLAUDE.md proposal pair."""
     staging_dir = _canonical_staging_dir(staging_dir)
     _recover_before_manifest(staging_dir)
@@ -3059,12 +3066,62 @@ def adopt(staging_dir: str) -> List[str]:
     initial_rows = _legacy_rows(initial_manifest)
     if not initial_rows:
         return []
-    skill_roots: List[str] = []
+
+    if cfg is not None:
+        if project_root is None:
+            project_root = (
+                getattr(cfg, "invoked_project", "")
+                or (cfg.get("invoked_project") if hasattr(cfg, "get") else "")
+                or os.getcwd()
+            )
+        if skill_roots is None:
+            try:
+                from skillopt_sleep.skill_resolver import skill_search_roots
+
+                skill_roots = skill_search_roots(cfg)
+            except Exception:
+                skill_roots = ()
+        if target_skill_path is None:
+            explicit_target = getattr(cfg, "target_skill_path", None) or (
+                cfg.get("target_skill_path") if hasattr(cfg, "get") else None
+            )
+            if explicit_target:
+                if hasattr(cfg, "managed_skill_path"):
+                    target_skill_path = cfg.managed_skill_path()
+                elif isinstance(explicit_target, str) and explicit_target.strip():
+                    target_skill_path = explicit_target
+
+    caller_project = (
+        os.path.abspath(os.path.expanduser(str(project_root)))
+        if project_root and isinstance(project_root, str) and project_root.strip()
+        else None
+    )
+    caller_skill_roots = (
+        [
+            os.path.abspath(os.path.expanduser(str(r)))
+            for r in skill_roots
+            if isinstance(r, str) and str(r).strip()
+        ]
+        if skill_roots is not None
+        else None
+    )
+    caller_target_skill = (
+        os.path.abspath(os.path.expanduser(str(target_skill_path)))
+        if target_skill_path and isinstance(target_skill_path, str) and str(target_skill_path).strip()
+        else None
+    )
+
+    staged_roots: List[str] = []
     if "skill" in initial_rows:
-        skill_roots = staged_skill_roots(staging_dir)
-    project_root = ""
+        staged_roots = staged_skill_roots(staging_dir)
+    staged_project = ""
     if "memory" in initial_rows:
-        project_root = staged_project_root(staging_dir)
+        staged_project = staged_project_root(staging_dir)
+        if caller_project and _path_identity_key(staged_project) != _path_identity_key(caller_project):
+            raise StagingError(
+                f"staging manifest 'project_root' ({staged_project}) does not match "
+                f"the caller project root ({caller_project})"
+            )
     initial_paths: List[str] = []
     for row in initial_rows.values():
         live = _safe_live_path(row.get("live_path"))
@@ -3127,16 +3184,41 @@ def adopt(staging_dir: str) -> List[str]:
                     expected_realpath,
                     expected_basename=expected_basename,
                 )
-            allowed_roots = [project_root] if label == "memory" else skill_roots
-            if not _live_target_within_roots(live, allowed_roots):
-                if label == "memory":
+            if label == "memory":
+                allowed_memory = [caller_project] if caller_project else [staged_project]
+                if not _live_target_within_roots(live, allowed_memory):
                     raise StagingError(
                         f"live target for legacy memory is outside the project root: {live}"
                     )
-                raise StagingError(
-                    f"live target for legacy skill is outside the skills roots recorded "
-                    f"when this night was staged: {live}"
+                if staged_project and not _live_target_within_roots(live, [staged_project]):
+                    raise StagingError(
+                        f"live target for legacy memory is outside the project root recorded "
+                        f"when this night was staged: {live}"
+                    )
+            else:
+                has_caller_authority = (
+                    caller_project is not None
+                    or caller_skill_roots is not None
+                    or caller_target_skill is not None
                 )
+                if has_caller_authority:
+                    caller_destinations: List[str] = []
+                    if caller_project:
+                        caller_destinations.append(caller_project)
+                    if caller_skill_roots:
+                        caller_destinations.extend(caller_skill_roots)
+                    if caller_target_skill:
+                        caller_destinations.append(os.path.dirname(caller_target_skill))
+                        caller_destinations.append(caller_target_skill)
+                    if not _live_target_within_roots(live, caller_destinations):
+                        raise StagingError(
+                            f"live target for legacy skill is outside the allowed skill roots: {live}"
+                        )
+                if not _live_target_within_roots(live, staged_roots):
+                    raise StagingError(
+                        f"live target for legacy skill is outside the skills roots recorded "
+                        f"when this night was staged: {live}"
+                    )
             staged = os.path.join(staging_dir, expected_file)
             if _is_link_or_junction(staged) or not os.path.isfile(staged):
                 raise StagingError(f"legacy {label} proposal is missing or a symlink")

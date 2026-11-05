@@ -24,7 +24,6 @@ from skillopt_sleep.staging import (
     latest_staging,
     pending_staged_skills,
     staged_project_root,
-    staged_skill_roots,
     staged_skills,
     write_staging,
 )
@@ -313,10 +312,10 @@ class TestLegacyAdoptionIsConfinedToTheStagedRoots(unittest.TestCase):
             os.makedirs(os.path.dirname(skill), exist_ok=True)
             _write(skill, "# skill v1\n")
             _write(memory, "# memory v1\n")
-            
+
             # Explicit target_skill_path outside the passed native skill_roots
             native_root = os.path.join(live_root, "native")
-            
+
             staging = write_staging(
                 tmp,
                 report=SleepReport(night=1, project=tmp, accepted=True),
@@ -327,11 +326,106 @@ class TestLegacyAdoptionIsConfinedToTheStagedRoots(unittest.TestCase):
                 report_md="# report\n",
                 skill_roots=[native_root],
             )
-            
+
             # Adopt should succeed because the explicitly configured target is added
             # to the authoritative destination policy in write_staging.
             updated = adopt(staging)
             self.assertEqual(updated, [skill, memory])
+
+    def test_tampered_manifest_roots_cannot_escape_caller_destinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staging, skill, memory = self._legacy_night(tmp)
+            outside_root = tempfile.mkdtemp()
+            try:
+                outside_victim = os.path.join(outside_root, "victim", "SKILL.md")
+                os.makedirs(os.path.dirname(outside_victim), exist_ok=True)
+                _write(outside_victim, "# victim untouched\n")
+
+                # Attacker rewrites BOTH live_path AND manifest["skill_roots"] to point to outside_root
+                manifest_path = os.path.join(staging, "manifest.json")
+                with open(manifest_path, encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                manifest["legacy"]["skill"]["live_path"] = outside_victim
+                manifest["legacy"]["skill"]["live_realpath"] = outside_victim
+                manifest["legacy"]["skill"]["live_sha256"] = hashlib.sha256(b"# victim untouched\n").hexdigest()
+                manifest["live_skill_path"] = outside_victim
+                manifest["skill_roots"] = [outside_root]
+                with open(manifest_path, "w", encoding="utf-8") as handle:
+                    json.dump(manifest, handle)
+
+                # Caller enforces destinations based on project and native roots
+                caller_skill_roots = [os.path.join(tmp, "live", "skill")]
+                with self.assertRaises(StagingError) as ctx:
+                    adopt(staging, project_root=tmp, skill_roots=caller_skill_roots)
+                self.assertIn("outside the allowed skill roots", str(ctx.exception))
+                self.assertEqual(_read(outside_victim), "# victim untouched\n")
+            finally:
+                import shutil
+                shutil.rmtree(outside_root, ignore_errors=True)
+
+    def test_tampered_manifest_project_root_cannot_escape_caller_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staging, skill, memory = self._legacy_night(tmp)
+            outside_root = tempfile.mkdtemp()
+            try:
+                outside_memory = os.path.join(outside_root, "CLAUDE.md")
+                _write(outside_memory, "# victim memory untouched\n")
+
+                # Attacker rewrites BOTH live_memory_path AND manifest["project_root"]
+                manifest_path = os.path.join(staging, "manifest.json")
+                with open(manifest_path, encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                manifest["legacy"]["memory"]["live_path"] = outside_memory
+                manifest["legacy"]["memory"]["live_realpath"] = outside_memory
+                manifest["legacy"]["memory"]["live_sha256"] = hashlib.sha256(b"# victim memory untouched\n").hexdigest()
+                manifest["live_memory_path"] = outside_memory
+                manifest["project_root"] = outside_root
+                with open(manifest_path, "w", encoding="utf-8") as handle:
+                    json.dump(manifest, handle)
+
+                # Caller enforces project root
+                with self.assertRaises(StagingError) as ctx:
+                    adopt(staging, project_root=tmp)
+                self.assertTrue(
+                    "outside the project root" in str(ctx.exception)
+                    or "does not match the caller project root" in str(ctx.exception)
+                )
+                self.assertEqual(_read(outside_memory), "# victim memory untouched\n")
+            finally:
+                import shutil
+                shutil.rmtree(outside_root, ignore_errors=True)
+
+    def test_legacy_adoption_accepts_caller_explicit_target_outside_native_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live_root = os.path.join(_canonical(tmp), "live")
+            skill = os.path.join(live_root, "outside", "SKILL.md")
+            memory = os.path.join(live_root, "CLAUDE.md")
+            os.makedirs(os.path.dirname(skill), exist_ok=True)
+            _write(skill, "# skill v1\n")
+            _write(memory, "# memory v1\n")
+
+            native_root = os.path.join(live_root, "native")
+            staging = write_staging(
+                tmp,
+                report=SleepReport(night=1, project=tmp, accepted=True),
+                proposed_skill="# skill v2\n",
+                proposed_memory="# memory v2\n",
+                live_skill_path=skill,
+                live_memory_path=memory,
+                report_md="# report\n",
+                skill_roots=[native_root],
+            )
+
+            # Caller explicitly configures target_skill_path
+            updated = adopt(
+                staging,
+                project_root=tmp,
+                skill_roots=[native_root],
+                target_skill_path=skill,
+            )
+            self.assertEqual(updated, [skill, memory])
+            self.assertEqual(_read(skill), "# skill v2\n")
+            self.assertEqual(_read(memory), "# memory v2\n")
 
 
 class TestStagedSkills(unittest.TestCase):
@@ -1171,6 +1265,49 @@ class TestAdoptSkillCli(unittest.TestCase):
             self.assertEqual(rc, 0, out)
             self.assertEqual(_read(live), "# live v2\n")
             self.assertEqual(_read(memory), "# mem v2\n")
+
+    def test_cmd_adopt_refuses_tampered_manifest_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            live = os.path.join(tmp, "live", "SKILL.md")
+            memory = os.path.join(tmp, "live", "CLAUDE.md")
+            _write(live, "# live v1\n")
+            _write(memory, "# mem v1\n")
+            staging = write_staging(
+                tmp, report=SleepReport(night=1, project=tmp, accepted=True),
+                proposed_skill="# live v2\n", proposed_memory="# mem v2\n",
+                live_skill_path=live, live_memory_path=memory,
+                report_md="# report\n",
+            )
+            outside_root = tempfile.mkdtemp()
+            try:
+                outside_victim = os.path.join(outside_root, "victim", "SKILL.md")
+                os.makedirs(os.path.dirname(outside_victim), exist_ok=True)
+                _write(outside_victim, "# victim original\n")
+
+                manifest_path = os.path.join(staging, "manifest.json")
+                with open(manifest_path, encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+                manifest["legacy"]["skill"]["live_path"] = outside_victim
+                manifest["legacy"]["skill"]["live_realpath"] = outside_victim
+                manifest["legacy"]["skill"]["live_sha256"] = hashlib.sha256(b"# victim original\n").hexdigest()
+                manifest["live_skill_path"] = outside_victim
+                manifest["skill_roots"] = [outside_root]
+                with open(manifest_path, "w", encoding="utf-8") as handle:
+                    json.dump(manifest, handle)
+
+                claude_home = os.path.join(tmp, ".claude")
+                os.makedirs(claude_home, exist_ok=True)
+                rc, out = self._cli([
+                    "adopt", "--project", tmp, "--claude-home", claude_home, "--legacy", "--json",
+                ])
+                self.assertEqual(rc, 2, out)
+                payload = json.loads(out)
+                self.assertEqual(payload["error"], "adoption_refused")
+                self.assertIn("outside the allowed skill roots", payload["message"])
+                self.assertEqual(_read(outside_victim), "# victim original\n")
+            finally:
+                import shutil
+                shutil.rmtree(outside_root, ignore_errors=True)
 
     def test_mixed_night_legacy_and_per_skill_adoptions_are_independent(self):
         with tempfile.TemporaryDirectory() as tmp:

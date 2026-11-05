@@ -32,7 +32,6 @@ from skillopt_sleep.harvest import format_harvest_note
 from skillopt_sleep.harvest_sources import harvest_for_config, normalize_transcript_source
 from skillopt_sleep.memory import ensure_skill_scaffold
 from skillopt_sleep.mine import group_tasks_by_skill_hint, mine
-from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.multi_skill import (
     BUDGET_REACHED,
     SKIPPED,
@@ -42,6 +41,7 @@ from skillopt_sleep.multi_skill import (
     consolidate_groups,
     skill_group_reports,
 )
+from skillopt_sleep.replay import aggregate_scores, replay_batch
 from skillopt_sleep.skill_resolver import resolve_skill, skill_search_roots
 from skillopt_sleep.staging import (
     SkillProposal,
@@ -1200,7 +1200,7 @@ def run_sleep_cycle(
         state.set_last_model_key(_make_backend_key(backend))  # F16: track resolved model
         # ── 6. adopt (opt-in) ────────────────────────────────────────────
         if cfg.get("auto_adopt") and result.accepted:
-            adopted_paths = adopt_staging(staging_dir)
+            adopted_paths = adopt_staging(staging_dir, cfg=cfg)
             adopted = bool(adopted_paths)
         state.save()
 
