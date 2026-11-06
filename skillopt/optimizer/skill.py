@@ -41,19 +41,22 @@ def _earliest_protected_start(skill: str) -> int:
 
 
 def _is_in_protected_region(skill: str, target: str) -> bool:
-    """Check if *target* text falls within any protected region."""
+    """Check if *target* text overlaps any protected region, markers included."""
     if not target:
         return False
     target_idx = skill.find(target)
     if target_idx == -1:
         return False
+    target_end = target_idx + len(target)
     for start_marker, end_marker in _PROTECTED_REGIONS:
         start_idx = skill.find(start_marker)
         end_idx = skill.find(end_marker)
         if start_idx == -1 or end_idx == -1:
             continue
         region_end = end_idx + len(end_marker)
-        if start_idx <= target_idx < region_end:
+        # A target that starts in editable text but runs into the region would
+        # let replace/delete remove the start marker and expose its content.
+        if target_idx < region_end and target_end > start_idx:
             return True
     return False
 

@@ -135,6 +135,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   long-prompt handling (thanks @codeL1985, #98).
 - Preserve the scheduler's established annealing contract while expanding its
   endpoint and sequence coverage (thanks @nankingjing, #123; follow-up #133).
+- Skip step-level edits whose target runs into a protected slow-update or
+  appendix region, so a `replace` or `delete` can no longer remove the start
+  marker and expose the protected content (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

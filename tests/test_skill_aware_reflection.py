@@ -157,6 +157,38 @@ def test_coexistence_with_slow_update() -> None:
     print("PASS  test_coexistence_with_slow_update")
 
 
+def test_target_overlapping_protected_marker_is_skipped() -> None:
+    from skillopt.optimizer.appendix import append_to_appendix_field, inject_empty_appendix_field
+    from skillopt.optimizer.skill import apply_patch_with_report
+    from skillopt.optimizer.slow_update import inject_empty_slow_update_field, replace_slow_update_field
+
+    body = "# QA Skill\n\n## Rules\n- Answer briefly."
+    skills = {
+        "<!-- SLOW_UPDATE_START -->": replace_slow_update_field(
+            inject_empty_slow_update_field(body), "Prefer exact spans."
+        ),
+        "<!-- APPENDIX_START -->": append_to_appendix_field(
+            inject_empty_appendix_field(body), ["Check the sheet range."]
+        ),
+    }
+    for start_marker, skill in skills.items():
+        # Targets start in editable text and run into the protected start marker.
+        spanning = "- Answer briefly.\n\n" + start_marker
+        for e in (
+            {"op": "delete", "target": spanning},
+            {"op": "replace", "target": spanning, "content": "- Answer in one word."},
+            {"op": "insert_after", "target": spanning, "content": "- New rule."},
+        ):
+            new, rep = apply_patch_with_report(skill, {"edits": [e]})
+            assert new == skill, f"{e['op']} across {start_marker} must not change the skill"
+            assert rep[0]["status"] == "skipped_protected_region"
+        # A target that only touches editable text right before the region still applies.
+        new, rep = apply_patch_with_report(skill, {"edits": [{"op": "delete", "target": "- Answer briefly."}]})
+        assert rep[0]["status"] == "applied_delete" and "- Answer briefly." not in new
+        assert start_marker in new
+    print("PASS  test_target_overlapping_protected_marker_is_skipped")
+
+
 def test_reflect_parsing_and_augment() -> None:
     import inspect
     import skillopt.gradient.reflect as R
@@ -256,6 +288,7 @@ def main() -> int:
         test_appendix_module,
         test_appendix_protection,
         test_coexistence_with_slow_update,
+        test_target_overlapping_protected_marker_is_skipped,
         test_reflect_parsing_and_augment,
         test_global_switch_env_independent,
     ]
