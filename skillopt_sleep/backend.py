@@ -97,6 +97,11 @@ class Backend:
     def tokens_used(self) -> int:
         return 0
 
+    @property
+    def judge_model_name(self) -> str:
+        """Model identity used when this backend acts as an evaluator/judge."""
+        return getattr(self, "model", "") or getattr(self, "name", "")
+
 
 # ── Shared scoring helpers ────────────────────────────────────────────────────
 
@@ -2358,6 +2363,14 @@ class DualBackend(Backend):
         # cost is not silently replaced by a text-length estimate. The snapshot is
         # shared instance state, so this branch is sequential-only - see __init__.
         return max(0, self.target.tokens_used() - getattr(self, "_target_tokens_before", 0))
+
+    @property
+    def judge_model_name(self) -> str:
+        return (
+            getattr(self.optimizer, "judge_model_name", "")
+            or getattr(self.optimizer, "model", "")
+            or getattr(self.optimizer, "name", "")
+        )
 
 
 # ── Azure OpenAI backend (gpt-5.x via managed identity) ───────────────────────
