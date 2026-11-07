@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skillopt.types import Edit as EditType, Patch as PatchType
+    from skillopt.types import Edit as EditType
+    from skillopt.types import Patch as PatchType
 
 SLOW_UPDATE_START = "<!-- SLOW_UPDATE_START -->"
 SLOW_UPDATE_END = "<!-- SLOW_UPDATE_END -->"
@@ -76,16 +77,36 @@ def _strip_slow_update_markers(text: str) -> str:
     )
 
 
-def _edit_fields(edit: EditType | dict) -> tuple[str, str, str]:
-    op = edit.op if hasattr(edit, "op") else edit.get("op", "")
-    content = _strip_slow_update_markers(
-        (edit.content if hasattr(edit, "content") else edit.get("content", "")).strip()
+def _edit_fields(edit: EditType | dict | None) -> tuple[str, str, str]:
+    if edit is None:
+        return "", "", ""
+    op = edit.op if hasattr(edit, "op") else (edit.get("op", "") if isinstance(edit, dict) else "")
+    op = str(op or "")
+    raw_content = (
+        edit.content
+        if hasattr(edit, "content")
+        else (edit.get("content", "") if isinstance(edit, dict) else "")
     )
-    target = edit.target if hasattr(edit, "target") else edit.get("target", "")
+    content = _strip_slow_update_markers(str(raw_content or "").strip())
+    raw_target = (
+        edit.target
+        if hasattr(edit, "target")
+        else (edit.get("target", "") if isinstance(edit, dict) else "")
+    )
+    target = str(raw_target or "")
     return op, content, target
 
 
-def _apply_edit_with_report(skill: str, edit: EditType | dict) -> tuple[str, dict]:
+def _apply_edit_with_report(skill: str, edit: EditType | dict | None) -> tuple[str, dict]:
+    if edit is None:
+        report = {
+            "op": "",
+            "target": "",
+            "content_preview": "",
+            "status": "skipped_null_edit",
+        }
+        return skill, report
+
     op, content, target = _edit_fields(edit)
     report = {
         "op": op,
@@ -167,10 +188,17 @@ def apply_edit(skill: str, edit: EditType | dict) -> str:
 
 def apply_patch_with_report(
     skill: str,
-    patch: PatchType | dict,
+    patch: PatchType | dict | None,
 ) -> tuple[str, list[dict]]:
     """Apply a patch and return a per-edit report for observability."""
-    edits = patch.edits if hasattr(patch, "edits") else patch.get("edits", [])
+    if patch is None:
+        return skill, []
+    raw_edits = (
+        patch.edits
+        if hasattr(patch, "edits")
+        else (patch.get("edits", []) if isinstance(patch, dict) else [])
+    )
+    edits = raw_edits if isinstance(raw_edits, list) else []
     reports: list[dict] = []
     for idx, edit in enumerate(edits, 1):
         try:
