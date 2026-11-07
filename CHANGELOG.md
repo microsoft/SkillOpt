@@ -16,6 +16,16 @@ All notable changes to SkillOpt are documented here. This project adheres to
   setting. The MCP client ships in a new `parallel` extra
   (`pip install 'skillopt[parallel]'`) and is imported lazily, so OfficeQA
   runs and offline installs do not require `mcp`.
+- **OfficeQA Keenable search** as an opt-in `env.search_mode=keenable`
+  provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
+  config selects Keenable automatically. Selecting it sends the generated
+  search queries, one request per query, with an `X-Keenable-Title: SkillOpt`
+  header to Keenable's keyless search endpoint; if `KEENABLE_API_KEY` is set,
+  that key is sent in an `X-API-Key` header to the keyed endpoint instead. No
+  key, credential or account is bundled, and service errors fail the rollout
+  with no fallback. It uses the core `httpx` dependency, so it needs no
+  extra. Its scores are not directly comparable to the paper's Google-backed
+  search setting.
 - **SkillOpt-Sleep paired A/B evalkit** (`python -m skillopt_sleep.evalkit`):
   McNemar plus percentile-bootstrap CIs on a fixed task manifest, with
   task-cluster multi-seed inference and seeded null calibration for exact-test
