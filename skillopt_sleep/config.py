@@ -62,6 +62,7 @@ DEFAULTS: Dict[str, Any] = {
     "pi_path": "",                # "" => use `pi` on PATH
     "cursor_path": "",            # "" => auto-detect the Cursor Agent CLI
     "opencode_path": "",          # "" => SKILLOPT_SLEEP_OPENCODE_PATH, then `opencode` on PATH/PATHEXT
+    "kimi_path": "",              # "" => `kimi` on PATH, then ~/.kimi-code/bin/kimi
     "opencode_tool_replay": False,  # explicit opt-in for OpenCode tool-aware replay
     "edit_budget": 4,             # textual learning rate (max edits/night)
     "preferences": "",            # free-text house rules injected into reflect as a prior
