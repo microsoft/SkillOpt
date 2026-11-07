@@ -2739,6 +2739,70 @@ class AzureResponsesBackend(AzureOpenAIBackend):
         return ""
 
 
+_CUSTOM_BACKENDS: Dict[str, Any] = {}
+
+
+def register_backend(name: str, factory: Any) -> None:
+    """Register a custom backend in-memory (#314)."""
+    key = (name or "").strip().lower()
+    if not key:
+        raise ValueError("Backend name cannot be blank")
+    _CUSTOM_BACKENDS[key] = factory
+
+
+def unregister_backend(name: str) -> None:
+    """Unregister a custom backend."""
+    _CUSTOM_BACKENDS.pop((name or "").strip().lower(), None)
+
+
+def load_entry_point_backends() -> Dict[str, Any]:
+    """Discover backends registered via entry points (#314)."""
+    try:
+        from importlib.metadata import entry_points
+    except ImportError:
+        return {}
+    try:
+        eps = entry_points(group="skillopt_sleep.backends")
+    except TypeError:
+        eps = entry_points().get("skillopt_sleep.backends", [])
+    out: Dict[str, Any] = {}
+    for ep in eps:
+        out[ep.name.strip().lower()] = ep.load
+    return out
+
+
+def get_supported_backends() -> List[str]:
+    """Return all known backend names: built-ins, in-memory registered, and entry points."""
+    builtins = [
+        "azure",
+        "azure-responses",
+        "claude",
+        "codex",
+        "copilot",
+        "cursor",
+        "handoff",
+        "mock",
+        "opencode",
+        "pi",
+    ]
+    names = set(builtins)
+    names.update(_CUSTOM_BACKENDS.keys())
+    names.update(load_entry_point_backends().keys())
+    return sorted(names)
+
+
+def _invoke_backend_factory(factory: Any, **kwargs: Any) -> Backend:
+    """Instantiate a backend factory or class with compatible kwargs."""
+    try:
+        return factory(**kwargs)
+    except TypeError:
+        model = kwargs.get("model", "")
+        try:
+            return factory(model=model)
+        except TypeError:
+            return factory()
+
+
 def get_backend(
     name: str,
     *,
@@ -2751,7 +2815,44 @@ def get_backend(
     opencode_tool_replay: bool = False,
     azure_endpoint: str = "",
     project_dir: str = "",
+    backend_module: str = "",
+    **kwargs: Any,
 ) -> Backend:
+    from skillopt_sleep.harvest_sources import load_module_callable
+
+    if backend_module:
+        factory = load_module_callable(backend_module)
+        return _invoke_backend_factory(
+            factory,
+            model=model,
+            claude_path=claude_path,
+            codex_path=codex_path,
+            pi_path=pi_path,
+            cursor_path=cursor_path,
+            opencode_path=opencode_path,
+            opencode_tool_replay=opencode_tool_replay,
+            azure_endpoint=azure_endpoint,
+            project_dir=project_dir,
+            **kwargs,
+        )
+
+    raw_name = name or "mock"
+    if isinstance(raw_name, str) and ":" in raw_name:
+        factory = load_module_callable(raw_name)
+        return _invoke_backend_factory(
+            factory,
+            model=model,
+            claude_path=claude_path,
+            codex_path=codex_path,
+            pi_path=pi_path,
+            cursor_path=cursor_path,
+            opencode_path=opencode_path,
+            opencode_tool_replay=opencode_tool_replay,
+            azure_endpoint=azure_endpoint,
+            project_dir=project_dir,
+            **kwargs,
+        )
+
     n = (name or "mock").strip().lower()
     if n in {"pi", "pi_cli", "pi_coding_agent", "pi-coding-agent"}:
         return PiCliBackend(model=model, pi_path=pi_path or "pi")
@@ -2783,19 +2884,55 @@ def get_backend(
         return HandoffBackend(model=model, handoff_dir=hdir)
     if n in {"mock", ""}:
         return MockBackend()
+
+    if n in _CUSTOM_BACKENDS:
+        return _invoke_backend_factory(
+            _CUSTOM_BACKENDS[n],
+            model=model,
+            claude_path=claude_path,
+            codex_path=codex_path,
+            pi_path=pi_path,
+            cursor_path=cursor_path,
+            opencode_path=opencode_path,
+            opencode_tool_replay=opencode_tool_replay,
+            azure_endpoint=azure_endpoint,
+            project_dir=project_dir,
+            **kwargs,
+        )
+
+    ep_backends = load_entry_point_backends()
+    if n in ep_backends:
+        factory = ep_backends[n]()
+        return _invoke_backend_factory(
+            factory,
+            model=model,
+            claude_path=claude_path,
+            codex_path=codex_path,
+            pi_path=pi_path,
+            cursor_path=cursor_path,
+            opencode_path=opencode_path,
+            opencode_tool_replay=opencode_tool_replay,
+            azure_endpoint=azure_endpoint,
+            project_dir=project_dir,
+            **kwargs,
+        )
+
+    supported = ", ".join(repr(s) for s in get_supported_backends())
     raise ValueError(
-        f"Unknown backend: {name!r}. Supported backends are: 'azure', 'azure-responses', "
-        "'claude', 'codex', 'copilot', 'cursor', 'handoff', 'mock', 'opencode', 'pi'."
+        f"Unknown backend: {name!r}. Supported backends are: {supported}."
     )
 
 
 def build_backend(
     *,
     backend: str = "mock",
+    backend_module: str = "",
     model: str = "",
     optimizer_backend: str = "",
+    optimizer_backend_module: str = "",
     optimizer_model: str = "",
     target_backend: str = "",
+    target_backend_module: str = "",
     target_model: str = "",
     codex_path: str = "",
     pi_path: str = "",
@@ -2813,10 +2950,18 @@ def build_backend(
     from (backend, model). ``preferences`` (free text) is attached so reflect
     uses it as a prior (set on the optimizer for dual backends).
     """
-    has_split = any([optimizer_backend, optimizer_model, target_backend, target_model])
+    has_split = any([
+        optimizer_backend,
+        optimizer_backend_module,
+        optimizer_model,
+        target_backend,
+        target_backend_module,
+        target_model,
+    ])
     if not has_split:
         be = get_backend(
             backend,
+            backend_module=backend_module,
             model=model,
             codex_path=codex_path,
             pi_path=pi_path,
@@ -2828,16 +2973,30 @@ def build_backend(
         )
         be.preferences = preferences
         return be
-    tgt = get_backend(target_backend or backend, model=target_model or model,
-                      codex_path=codex_path, pi_path=pi_path, cursor_path=cursor_path,
-                      opencode_path=opencode_path, opencode_tool_replay=opencode_tool_replay,
-                      azure_endpoint=azure_endpoint,
-                      project_dir=project_dir)
-    opt = get_backend(optimizer_backend or backend, model=optimizer_model or model,
-                      codex_path=codex_path, pi_path=pi_path, cursor_path=cursor_path,
-                      opencode_path=opencode_path, opencode_tool_replay=opencode_tool_replay,
-                      azure_endpoint=azure_endpoint,
-                      project_dir=project_dir)
+    tgt = get_backend(
+        target_backend or backend,
+        backend_module=target_backend_module or backend_module,
+        model=target_model or model,
+        codex_path=codex_path,
+        pi_path=pi_path,
+        cursor_path=cursor_path,
+        opencode_path=opencode_path,
+        opencode_tool_replay=opencode_tool_replay,
+        azure_endpoint=azure_endpoint,
+        project_dir=project_dir,
+    )
+    opt = get_backend(
+        optimizer_backend or backend,
+        backend_module=optimizer_backend_module or backend_module,
+        model=optimizer_model or model,
+        codex_path=codex_path,
+        pi_path=pi_path,
+        cursor_path=cursor_path,
+        opencode_path=opencode_path,
+        opencode_tool_replay=opencode_tool_replay,
+        azure_endpoint=azure_endpoint,
+        project_dir=project_dir,
+    )
     opt.preferences = preferences  # reflect runs on the optimizer
     dual = DualBackend(target=tgt, optimizer=opt)
     dual.preferences = preferences
