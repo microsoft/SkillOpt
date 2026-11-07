@@ -138,6 +138,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Stop SearchQA `sub_em` from scoring an empty or article-only answer as a
   match, and from letting a gold answer that normalizes to empty match every
   prediction (thanks @Shizoqua).
+- Skip step-level edits whose target runs into a protected slow-update or
+  appendix region, so a `replace` or `delete` can no longer remove the start
+  marker and expose the protected content (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
