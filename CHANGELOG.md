@@ -147,6 +147,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip step-level edits whose target runs into a protected slow-update or
   appendix region, so a `replace` or `delete` can no longer remove the start
   marker and expose the protected content (thanks @Shizoqua).
+- Ignore sentence-ending periods when normalizing OfficeQA answers, so a
+  correct answer such as `42.` matches the gold `42` instead of scoring zero
+  exact match and F1 (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
