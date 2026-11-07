@@ -43,7 +43,7 @@ qwen = ["vllm>=0.4.0", "json_repair>=0.61.0"]
 # SearchQA data materialization
 searchqa = ["datasets>=2.18.0"]
 # OfficeQA `search_mode: parallel` web search over Parallel's hosted Search MCP
-parallel = ["mcp>=1.27.0,<2"]
+parallel = ["mcp>=1.27.0,<3"]
 # Documentation site
 docs = ["mkdocs-material>=9.5.0", "mkdocstrings[python]>=0.24.0"]
 # WebUI dashboard
