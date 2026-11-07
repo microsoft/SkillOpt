@@ -1,0 +1,32 @@
+# Example config for the REAL experiment (live harness).
+# Requires: POSIX host, `claude` CLI, ANTHROPIC_API_KEY (or
+# SKILLOPT_HOST_AUTH=1 for trusted candidates), network access to fetch the
+# pinned Superpowers SHA. Baseline = the skill installed in the pinned
+# checkout (no overlay); candidates are supplied as bounded-edit SKILL.md
+# files under `candidates:` (one per optimization step) and are staged into
+# the throwaway clone only - the installed tree is never modified.
+name: skillopt-eval-superpowers
+skill: verification-before-completion
+runner: superpowers
+model: claude-code-sonnet   # informational label; pinned harness decides
+model_settings:
+  superpowers_version: v6.1.1
+superpowers_sha: d884ae04edebef577e82ff7c4e143debd0bbec99
+seed: 0
+timeout_seconds: 120
+token_cap: 0
+
+train: 1
+validation: 2
+test: 2
+seeds_per_task: 2
+
+optimize_steps: 2
+learning_rate: 0.5
+
+# bounded-edit candidates, one per step (staged, never auto-adopted)
+candidates:
+  - candidates/step1_SKILL.md
+  - candidates/step2_SKILL.md
+
+output_dir: results-superpowers
