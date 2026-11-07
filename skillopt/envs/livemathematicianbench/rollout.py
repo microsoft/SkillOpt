@@ -11,6 +11,7 @@ from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target, get_target_backend, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
+from skillopt.utils.text_io import read_lines
 
 
 def _build_system(skill_content: str) -> str:
@@ -202,7 +203,7 @@ def process_one(
                 f"Exact Match: {eval_result['em']}"
             )
             conversation.append({"role": "system", "content": eval_detail})
-            with open(os.path.join(pred_dir, "conversation.json"), "w") as f:
+            with open(os.path.join(pred_dir, "conversation.json"), "w", encoding="utf-8") as f:
                 json.dump(conversation, f, ensure_ascii=False, indent=2)
             return result
 
@@ -280,7 +281,7 @@ def process_one(
         )
         conversation.append({"role": "system", "content": eval_detail})
 
-        with open(os.path.join(pred_dir, "conversation.json"), "w") as f:
+        with open(os.path.join(pred_dir, "conversation.json"), "w", encoding="utf-8") as f:
             json.dump(conversation, f, ensure_ascii=False, indent=2)
 
     except Exception as e:  # noqa: BLE001
@@ -317,14 +318,13 @@ def run_batch(
     done_ids: set[str] = set()
     existing: list[dict] = []
     if os.path.exists(results_path):
-        with open(results_path) as f:
-            for line in f:
-                try:
-                    r = json.loads(line)
-                    done_ids.add(str(r["id"]))
-                    existing.append(r)
-                except Exception:
-                    pass
+        for line in read_lines(results_path):
+            try:
+                r = json.loads(line)
+                done_ids.add(str(r["id"]))
+                existing.append(r)
+            except Exception:
+                pass
 
     pending = [it for it in items if str(it["id"]) not in done_ids]
     if not pending:
@@ -380,7 +380,7 @@ def run_batch(
         res["fail_reason"] = f"error: {type(exc).__name__}: {exc}"
         return res
 
-    with open(results_path, "a") as outf:
+    with open(results_path, "a", encoding="utf-8") as outf:
         ex = ThreadPoolExecutor(max_workers=workers)
         try:
             futs = {
