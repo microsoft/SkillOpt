@@ -64,6 +64,8 @@ _FLATTEN_MAP: dict[str, str] = {
     "model.claude_code_exec_use_sdk": "claude_code_exec_use_sdk",
     "model.claude_code_exec_effort": "claude_code_exec_effort",
     "model.claude_code_exec_max_thinking_tokens": "claude_code_exec_max_thinking_tokens",
+    "model.opencode_exec_path": "opencode_exec_path",
+    "model.opencode_exec_allow_shell": "opencode_exec_allow_shell",
     "model.cursor_exec_path": "cursor_exec_path",
     "model.cursor_exec_sandbox": "cursor_exec_sandbox",
     "model.copilot_exec_path": "copilot_exec_path",

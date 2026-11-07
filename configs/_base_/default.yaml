@@ -25,6 +25,10 @@ model:
   claude_code_exec_max_thinking_tokens: 16384
   cursor_exec_path: ""       # blank uses CURSOR_EXEC_PATH or cursor-agent
   cursor_exec_sandbox: ""    # blank uses CURSOR_EXEC_SANDBOX or enabled
+  opencode_exec_path: ""     # blank uses OPENCODE_EXEC_PATH or opencode (OpenCode 2.x)
+  # null preserves OPENCODE_EXEC_ALLOW_SHELL (default off). Shell for file-edit
+  # target rollouts only; OpenCode has no OS sandbox, so it runs on the host.
+  opencode_exec_allow_shell: null
   # GitHub Copilot CLI. `--backend copilot` selects copilot_chat for BOTH roles,
   # using CLI authentication rather than a separate provider API key.
   copilot_exec_path: ""              # blank uses COPILOT_EXEC_PATH or copilot
