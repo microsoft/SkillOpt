@@ -147,6 +147,8 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip step-level edits whose target runs into a protected slow-update or
   appendix region, so a `replace` or `delete` can no longer remove the start
   marker and expose the protected content (thanks @Shizoqua).
+- Score LiveMathematicianBench answers written as `(B)`, `[B]`, or `**B**` as
+  the choice they name instead of marking them wrong (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
