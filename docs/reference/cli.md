@@ -158,7 +158,7 @@ Common options for the nightly actions include:
 |---|---|
 | `--project PATH` | Project used for transcript scope, targets, state, and staging (default: current directory) |
 | `--scope invoked\|all` | Harvest this project or all projects |
-| `--source claude\|codex\|copilot\|cursor\|pi\|opencode\|auto` | Transcript source; `auto` keeps Codex-then-Claude precedence and does not select Copilot, Cursor, Pi, or OpenCode |
+| `--source claude\|codex\|copilot\|cursor\|pi\|opencode\|dsh\|auto` | Transcript source; `auto` keeps Codex-then-Claude precedence and does not select Copilot, Cursor, Pi, OpenCode, or DSH |
 | `--backend mock\|claude\|codex\|copilot\|cursor\|pi\|opencode\|handoff\|azure_openai` | Replay/optimizer backend |
 | `--model NAME` | Backend-specific model override |
 | `--cursor-home PATH` | Override `~/.cursor` for Cursor transcript harvesting |
@@ -168,6 +168,7 @@ Common options for the nightly actions include:
 | `--pi-path PATH` | Path to the installed Pi coding-agent CLI |
 | `--opencode-path PATH` | Path to the installed OpenCode CLI |
 | `--opencode-db PATH` | Path to the OpenCode SQLite history database |
+| `--dsh-session-root PATH` | Override the DSH JSONL session root for `--source dsh` (default: `$DSH_HOME/sessions`, or `~/.dsh/sessions`) |
 | `--opencode-tool-replay` | Enable OpenCode tool-aware replay for `tool_called` checks in rule judges |
 | `--preferences TEXT` | House rules supplied to reflection |
 | `--lookback-hours N` | Initial transcript lookback; `0` scans all history |
