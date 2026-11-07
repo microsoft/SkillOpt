@@ -179,6 +179,24 @@ def _make_backend_key(backend: Backend) -> str:
     return f"{name}::{model}"
 
 
+def _claude_isolation_modes(backend: Backend, *, reset: bool = False) -> dict[str, list[str]]:
+    """Keep per-night mode evidence for direct and split-role backends."""
+    roles = {
+        "backend": backend,
+        "optimizer": getattr(backend, "optimizer", None),
+        "target": getattr(backend, "target", None),
+    }
+    modes = {}
+    for role, resolved in roles.items():
+        used = getattr(resolved, "isolation_modes_used", None)
+        if used is not None:
+            if reset:
+                used.clear()
+            elif used:
+                modes[role] = sorted(used)
+    return modes
+
+
 def _check_model_change(
     cfg: SleepConfig, state: SleepState, backend: Backend | None = None
 ) -> None:
@@ -725,6 +743,7 @@ def run_sleep_cycle(
         project_dir=project,
     )
     _check_model_change(cfg, state, backend)  # F16: warn if model changed between nights
+    _claude_isolation_modes(backend, reset=True)
     night = state.begin_night(clock)
     started = _now_iso(clock)
     backend.preferences = cfg.get("preferences", "")
@@ -1101,6 +1120,11 @@ def run_sleep_cycle(
                 row.reason = str(redact_secrets(row.reason))
             report.skill_groups = group_rows
 
+    isolation_modes = _claude_isolation_modes(backend)
+    for role, modes in isolation_modes.items():
+        report.notes.append(
+            f"Claude replay isolation ({role}): " + ", ".join("--" + mode for mode in modes)
+        )
     report.tokens_used = backend.tokens_used()
     report.ended_at = _now_iso(clock)
     if budget_skipped:
@@ -1180,6 +1204,7 @@ def run_sleep_cycle(
                     json_safe({
                         "night": night,
                         "backend": cfg.get("backend"),
+                        "claude_isolation_modes": isolation_modes,
                         "opencode_tool_replay": (
                             cfg.get("opencode_tool_replay", False) is True
                         ),

@@ -543,7 +543,10 @@ class TokenBudgetProviderCallTest(unittest.TestCase):
         self._home = tempfile.TemporaryDirectory()
         self.addCleanup(self._proj.cleanup)
         self.addCleanup(self._home.cleanup)
-        patcher = mock.patch.dict(os.environ, {"SKILLOPT_SLEEP_WORKERS": "1"})
+        patcher = mock.patch.dict(os.environ, {
+            "SKILLOPT_SLEEP_WORKERS": "1",
+            "ANTHROPIC_API_KEY": "test-key",
+        })
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -633,7 +636,10 @@ class TokenBudgetFinalScoringTest(unittest.TestCase):
             # The budget runs out once the skill step's reflect call started.
             return ("train", "text") in process.calls
 
-        with mock.patch.dict(os.environ, {"SKILLOPT_SLEEP_WORKERS": "1"}), \
+        with mock.patch.dict(os.environ, {
+                "SKILLOPT_SLEEP_WORKERS": "1",
+                "ANTHROPIC_API_KEY": "test-key",
+        }), \
                 mock.patch("skillopt_sleep.backend.subprocess.run", side_effect=process):
             result = consolidate(
                 backend, tasks, "# skill\n", "", budget_exhausted=spent

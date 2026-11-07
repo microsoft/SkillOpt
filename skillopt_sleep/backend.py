@@ -802,6 +802,8 @@ class ClaudeCliBackend(CliBackend):
         # honors PATHEXT and returns the full claude.CMD path.
         import shutil as _shutil
         self.claude_path = _shutil.which(claude_path) or claude_path
+        self._safe_mode_supported: Optional[bool] = None
+        self.isolation_modes_used: set[str] = set()
 
     # Known CLI error prefixes that indicate auth or config failures.
     # When detected, we log a warning so the user doesn't mistake a
@@ -836,6 +838,37 @@ class ClaudeCliBackend(CliBackend):
                 self.last_call_error = combined[:500]
                 return
 
+    def _isolation_flag(self) -> str:
+        """Select an isolated mode; a failed capability probe never permits replay."""
+        if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+            mode = "bare"
+        else:
+            if self._safe_mode_supported is None:
+                self._safe_mode_supported = False
+                try:
+                    with tempfile.TemporaryDirectory(prefix="skillopt_claude_help_") as cwd:
+                        help_result = subprocess.run(
+                            [self.claude_path, "--help"], capture_output=True, text=True,
+                            creationflags=_NO_WINDOW, timeout=min(self.timeout, 10), cwd=cwd,
+                        )
+                    self._safe_mode_supported = help_result.returncode == 0 and bool(
+                        re.search(r"(?m)^\s*--safe-mode(?:\s|$)", help_result.stdout or "")
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if not self._safe_mode_supported:
+                from skillopt_sleep.staging import StagingError
+
+                raise StagingError(
+                    "Claude replay refused: isolated measurement requires ANTHROPIC_API_KEY "
+                    "for --bare or a CLI advertising --safe-mode. Without either, user-level "
+                    "instructions and hooks may contaminate scores. Upgrade Claude Code, "
+                    "configure an API key, or choose another backend."
+                )
+            mode = "safe-mode"
+        self.isolation_modes_used.add(mode)
+        return "--" + mode
+
     def _call(self, prompt: str, *, max_tokens: int = 1024) -> str:
         # Run ISOLATED so the ambient Claude Code environment does not leak into
         # the optimizer/target call. Critically, the user's GLOBAL skills
@@ -843,16 +876,17 @@ class ClaudeCliBackend(CliBackend):
         # them explicitly — without this, reflect/attempt sometimes reply with a
         # list of the user's installed skills instead of doing the task.
         #   --bare                    skip hooks, LSP, plugins (minimal mode)
-        #                             Only safe with ANTHROPIC_API_KEY auth;
-        #                             breaks subscription-token auth (#68).
+        #                             Requires ANTHROPIC_API_KEY (#68).
+        #   --safe-mode               skip user customizations with normal auth;
+        #                             admin-managed policy still applies.
         #   --disable-slash-commands  disable all skills
         #   --disallowedTools '*'     no tool use
         #   --exclude-dynamic-...     drop per-machine cwd/env/memory/git sections
         #   cwd=<clean temp>          no project CLAUDE.md
         import tempfile
+        isolation_flag = self._isolation_flag()
         cmd = [self.claude_path, "-p", "--output-format", "text"]
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            cmd.append("--bare")
+        cmd.append(isolation_flag)
         cmd += [
             "--disable-slash-commands",
             "--disallowedTools", "*",
@@ -923,8 +957,7 @@ class ClaudeCliBackend(CliBackend):
                 "Return ONLY the final answer text."
             )
             cmd = [self.claude_path, "-p", "--output-format", "text"]
-            if os.environ.get("ANTHROPIC_API_KEY"):
-                cmd.append("--bare")
+            cmd.append(self._isolation_flag())
             cmd += [
                 "--disable-slash-commands",
                 "--allowedTools", "Bash",

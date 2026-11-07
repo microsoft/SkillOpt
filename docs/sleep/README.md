@@ -201,6 +201,24 @@ An existing file that cannot be decoded, parsed, or read stops the command
 with a configuration error and exit code 2; it does not discard your settings
 and run with default budgets. Explicit CLI flags still override loaded values.
 
+#### Claude replay isolation
+
+The `claude` replay backend uses `--bare` when `ANTHROPIC_API_KEY` is set.
+Without an API key, including subscription/OAuth login, it uses `--safe-mode`
+only when the installed CLI advertises that option in a successful `--help`
+probe. The capability result is cached for that backend instance. A missing,
+failed or timed-out probe refuses replay; it never falls back to an unisolated
+call. Upgrade Claude Code, configure an API key or choose another backend if
+neither mode is available. SkillOpt does not inspect the user's Claude
+configuration or credentials to select a mode.
+
+Safe mode excludes user-level `CLAUDE.md`, skills, plugins, hooks and MCP
+customizations while preserving normal authentication and model selection.
+**Admin-managed (policy) settings still apply**; this is not an OS sandbox or a
+way to bypass organizational policy. The modes actually selected during each
+night appear in `diagnostics.json` (`claude_isolation_modes`) and report notes,
+including separate optimizer/target roles when configured.
+
 ### Harvest filters (environment)
 
 Harvest keeps what you typed and drops what a machine wrote. Four environment

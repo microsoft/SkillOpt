@@ -163,6 +163,19 @@ class TestConsolidateGroups(unittest.TestCase):
             )
         self.assertEqual(caught.exception.pending, pending)
 
+    def test_staging_refusal_propagates_instead_of_producing_a_score(self):
+        from skillopt_sleep.staging import StagingError
+
+        def _refuse(*args, **kwargs):
+            raise StagingError("Claude replay refused: OAuth context is uncontrolled")
+
+        with self.assertRaisesRegex(StagingError, "OAuth context is uncontrolled"):
+            consolidate_groups(
+                MockBackend(),
+                [SkillGroup("research-skill", "# research\n", _tasks(researcher_persona))],
+                consolidate_fn=_refuse,
+            )
+
     def test_fatal_cursor_error_propagates_instead_of_becoming_a_failed_row(self):
         from skillopt_sleep.backend import CursorBackendError
 
