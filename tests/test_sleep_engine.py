@@ -896,7 +896,10 @@ class TestHarvest(unittest.TestCase):
         report = SleepReport(
             night=1,
             project="/p",
-            edits=[EditRecord("skill", "add", "accepted rule")],
+            edits=[EditRecord(
+                "skill", "add", "accepted rule",
+                source_task_ids=["task-1"], source_session_ids=["session-1"],
+            )],
             rejected_edits=[EditRecord("skill", "add", "rejected rule")],
             skill_groups=[SkillGroupReport(
                 skill_name="research-skill",
@@ -911,6 +914,8 @@ class TestHarvest(unittest.TestCase):
 
         self.assertEqual(payload["n_accepted_edits"], 1)
         self.assertEqual(payload["n_rejected_edits"], 1)
+        self.assertEqual(payload["edits"][0]["source_task_ids"], ["task-1"])
+        self.assertEqual(payload["edits"][0]["source_session_ids"], ["session-1"])
         self.assertEqual(payload["rejected_edits"][0]["content"], "rejected rule")
         self.assertEqual(
             payload["skill_groups"][0]["skill_name"],

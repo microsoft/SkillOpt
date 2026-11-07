@@ -19,7 +19,12 @@ from skillopt_sleep.backend import Backend
 from skillopt_sleep.gate import evaluate_gate, select_gate_score
 from skillopt_sleep.memory import apply_edits_detailed
 from skillopt_sleep.replay import aggregate_scores, replay_batch
-from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
+from skillopt_sleep.types import (
+    EditRecord,
+    ReplayResult,
+    TaskRecord,
+    attach_edit_provenance,
+)
 
 _HAVE_REPO_GATE = True
 
@@ -386,10 +391,16 @@ def consolidate(
                     failures, successes, cand_skill, cand_memory,
                     edit_budget=edit_budget, evolve_skill=True, evolve_memory=False,
                 )
+                edits = attach_edit_provenance(
+                    edits, [task for task, _result in failures]
+                )
         else:
             edits = backend.reflect(
                 failures, successes, cand_skill, cand_memory,
                 edit_budget=edit_budget, evolve_skill=True, evolve_memory=False,
+            )
+            edits = attach_edit_provenance(
+                edits, [task for task, _result in failures]
             )
         cand_skill = _gate_apply(cand_skill, edits, "skill")
 
@@ -402,6 +413,9 @@ def consolidate(
         edits_m = backend.reflect(
             failures2, successes2, cand_skill, cand_memory,
             edit_budget=edit_budget, evolve_skill=False, evolve_memory=True,
+        )
+        edits_m = attach_edit_provenance(
+            edits_m, [task for task, _result in failures2]
         )
         cand_memory = _gate_apply(cand_memory, edits_m, "memory")
 

@@ -48,6 +48,7 @@ def dream_augment(real_tasks: List[TaskRecord], *, factor: int = 1) -> List[Task
                 judge=dict(t.judge), system=t.system,
                 tags=list(t.tags) + ["dream"], split="train",
                 origin="dream", derived_from=t.id,
+                source_sessions=list(t.source_sessions),
                 skill_hint=t.skill_hint,
             ))
     return out
@@ -109,6 +110,7 @@ def recall_similar(
             reference=h.reference, judge=dict(h.judge), system=h.system,
             tags=list(h.tags) + ["recall"], split="train", origin="real",
             derived_from=h.id,
+            source_sessions=list(h.source_sessions),
             skill_hint=h.skill_hint,
         ))
     return out

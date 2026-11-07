@@ -21,7 +21,12 @@ from typing import List, Optional, Tuple
 from skillopt_sleep.backend import Backend, _extract_json
 from skillopt_sleep.gate import select_gate_score
 from skillopt_sleep.replay import replay_one
-from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
+from skillopt_sleep.types import (
+    EditRecord,
+    ReplayResult,
+    TaskRecord,
+    attach_edit_provenance,
+)
 
 
 @dataclass
@@ -172,4 +177,8 @@ def contrastive_reflect(
                     content=str(e["content"]).strip(),
                     rationale=str(e.get("rationale", "")).strip(),
                 ))
-    return edits
+    # Only the informative sets that actually appeared in the reflection
+    # prompt are sources for these proposals.
+    return attach_edit_provenance(
+        edits, [rs.task for _, rs, _, _, _, _ in informative]
+    )
