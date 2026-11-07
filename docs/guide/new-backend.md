@@ -29,6 +29,7 @@ A single `base_url` + `api_key` pair lets you point SkillOpt at, for example:
 | OpenRouter / Fireworks / xAI / … | provider base URL | provider model id |
 | OrcaRouter | `https://api.orcarouter.ai/v1` | `openai/gpt-5.5` |
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini` |
+| API Route | `https://global.api-route.com/v1` | `gpt-6.1-sol` |
 
 [OrcaRouter](https://www.orcarouter.ai) exposes OpenAI, Anthropic, Google,
 DeepSeek and other models behind one OpenAI-compatible endpoint. Its model IDs
@@ -39,6 +40,23 @@ Cheaper Inference model IDs are not namespaced (e.g. `gpt-5.4-mini`), so pass
 the bare ID as the model. See its [API docs](https://www.cheaperinference.com/docs)
 for the base URL and its [model list](https://www.cheaperinference.com/markets)
 for the model IDs.
+
+For [API Route](https://www.api-route.com/), use the exact gateway model ID,
+such as `gpt-6.1-sol` or `claude-fable-5-1`, without adding an upstream-provider
+prefix. Both use `openai_compatible` here. Its authenticated `/models` catalog
+depends on the key's group and account permissions; choose a chat model visible
+to that key rather than assuming every model on the public pricing page is
+available. See the [API documentation](https://github.com/DennyHo0917/api-route/blob/main/API.md)
+for Bearer authentication and model discovery.
+
+```bash
+export OPENAI_COMPATIBLE_BASE_URL="https://global.api-route.com/v1"
+export OPENAI_COMPATIBLE_API_KEY="your_api_route_key"
+export OPENAI_COMPATIBLE_MODEL="gpt-6.1-sol"
+```
+
+Select `openai_compatible` for each role as described in the environment-variable
+section; these connection variables do not select the training script's backend.
 
 ### Python API
 
