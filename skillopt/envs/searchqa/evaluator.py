@@ -76,10 +76,18 @@ def f1_score(prediction: str, gold_answers: list[str]) -> float:
 
 
 def sub_em(prediction: str, gold_answers: list[str]) -> float:
-    """1.0 if any normalized gold is a substring of prediction, or vice versa."""
+    """1.0 if any normalized gold is a substring of prediction, or vice versa.
+
+    An empty normalized string is a substring of every string, so it only
+    matches another empty string, as in :func:`exact_match` and :func:`f1_score`.
+    """
     norm_pred = normalize_answer(prediction)
     for gold in gold_answers:
         norm_gold = normalize_answer(gold)
+        if not norm_pred or not norm_gold:
+            if norm_pred == norm_gold:
+                return 1.0
+            continue
         if norm_gold in norm_pred or norm_pred in norm_gold:
             return 1.0
     return 0.0
