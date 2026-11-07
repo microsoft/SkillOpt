@@ -35,7 +35,10 @@ def _render(index: int, query: str, results: list, max_num_results: int) -> str:
             raise RuntimeError("Keenable search returned an invalid result URL")
         if not isinstance(snippet, str):
             raise RuntimeError("Keenable search returned an invalid snippet")
-        blocks.append(f"[{len(blocks) + 1}] {item.get('title') or url}\nURL: {url}\n{snippet.strip()[:6000]}")
+        title = item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = url
+        blocks.append(f"[{len(blocks) + 1}] {title.strip()}\nURL: {url}\n{snippet.strip()[:6000]}")
     body = "\n\n".join(blocks) if blocks else "[no search results]"
     return f"## Query {index}\nQuery: {query}\n\n{body}"
 
@@ -68,8 +71,18 @@ def keenable_search(queries: list[str], *, max_num_results: int = 4, timeout: fl
                 )
             except httpx.TimeoutException as exc:
                 raise TimeoutError(f"Keenable search exceeded its {timeout}s deadline") from exc
+            # httpx applies `timeout` per phase, so a slow response can still end
+            # past the round deadline; check it again once the response is in.
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Keenable search exceeded its {timeout}s deadline")
             if response.status_code != 200:
-                raise RuntimeError(f"Keenable search HTTP {response.status_code}: {response.text[:1000]}")
+                # The error text reaches fail_reason, results.jsonl and the
+                # reflection prompt, so never let an echoed key travel with it.
+                # Redact before cutting, so a key straddling the cut can't leak a prefix.
+                detail = response.text
+                if api_key:
+                    detail = detail.replace(api_key, "[redacted]")
+                raise RuntimeError(f"Keenable search HTTP {response.status_code}: {detail[:1000]}")
             try:
                 payload = response.json()
             except ValueError as exc:
