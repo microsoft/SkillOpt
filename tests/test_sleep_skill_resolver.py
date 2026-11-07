@@ -105,6 +105,59 @@ class TestResolveSkill(unittest.TestCase):
             self.assertEqual(res.status, REJECTED)
             self.assertEqual(res.path, "")
 
+    def test_plugin_qualified_name_only_resolves_in_that_plugins_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            user = os.path.join(tmp, "claude", "skills")
+            wanted = os.path.join(
+                tmp, "claude", "plugins", "cache", "market", "toolbox", "0.6.4", "skills"
+            )
+            other = os.path.join(
+                tmp, "claude", "plugins", "cache", "market", "other", "0.6.4", "skills"
+            )
+            _write_skill(user, "doc-truth")
+            expected = _write_skill(wanted, "doc-truth")
+            _write_skill(other, "doc-truth")
+
+            result = resolve_skill("toolbox:doc-truth", [user, wanted, other])
+
+            self.assertEqual(result.status, FOUND)
+            self.assertEqual(result.name, "doc-truth")
+            self.assertEqual(result.path, os.path.realpath(expected))
+
+    def test_legacy_plugin_root_resolves_qualified_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(
+                tmp, "claude", "plugins", "cache", "market", "toolbox", "skills"
+            )
+            expected = _write_skill(root, "doc-truth")
+
+            result = resolve_skill("toolbox:doc-truth", [root])
+
+            self.assertEqual(result.status, FOUND)
+            self.assertEqual(result.path, os.path.realpath(expected))
+
+    def test_plugin_qualified_name_across_marketplaces_remains_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(
+                tmp, "claude", "plugins", "cache", "market-a", "toolbox", "1", "skills"
+            )
+            second = os.path.join(
+                tmp, "claude", "plugins", "cache", "market-b", "toolbox", "1", "skills"
+            )
+            _write_skill(first, "doc-truth")
+            _write_skill(second, "doc-truth")
+
+            result = resolve_skill("toolbox:doc-truth", [first, second])
+
+            self.assertEqual(result.status, AMBIGUOUS)
+            self.assertEqual(len(result.candidates), 2)
+
+    def test_malformed_plugin_qualified_names_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in (":doc-truth", "toolbox:", "toolbox:../outside", "toolbox:doc:truth"):
+                with self.subTest(name=name):
+                    self.assertEqual(resolve_skill(name, [tmp]).status, REJECTED)
+
     def test_symlinked_skill_dir_escaping_the_root_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = os.path.join(tmp, "roots")
