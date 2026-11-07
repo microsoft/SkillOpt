@@ -97,7 +97,7 @@ winner. Prefer `thinking_mode`; use `disabled` when you need the field sent.
 | `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, `thinking_mode`, and the legacy `enable_thinking` |
 | `model.qwen_chat_thinking_mode` | Wire policy for `chat_template_kwargs.enable_thinking`: `server_default` (default; omit the field), `enabled`, or `disabled`. See [Qwen thinking mode](#qwen-thinking-mode) |
 | `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides, including `*_qwen_chat_thinking_mode` |
-| `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
+| `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `timeout_seconds`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
 | `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
 | `model.codex_trace_to_optimizer` | When `true` (default) and target is `codex_exec`, inject the agent's codex trace steps into the reflection prompt |
