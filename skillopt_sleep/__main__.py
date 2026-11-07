@@ -682,7 +682,7 @@ def cmd_adopt(args) -> int:
         )
     if adopt_legacy:
         try:
-            updated = adopt_staging(target)
+            updated = adopt_staging(target, cfg=cfg)
         except StagingError as exc:
             return fail(2, "adoption_refused", f"[sleep] adopt refused: {exc}")
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
@@ -765,7 +765,7 @@ def cmd_adopt(args) -> int:
             )
         return 2
     try:
-        updated = adopt_staging(target)
+        updated = adopt_staging(target, cfg=cfg)
     except StagingError as exc:
         return fail(2, "adoption_refused", f"[sleep] adopt refused: {exc}")
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:

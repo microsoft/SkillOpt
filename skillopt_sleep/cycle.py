@@ -1184,7 +1184,7 @@ def run_sleep_cycle(
             report_md=report_md,
             out_dir=staging_dir_pre,
             skill_proposals=skill_proposals,
-            skill_roots=skill_search_roots(cfg) if skill_proposals else (),
+            skill_roots=skill_search_roots(cfg),
         )
         if ev is not None:
             ev.log("stage", "staged", staging_dir=staging_dir,
@@ -1251,7 +1251,7 @@ def run_sleep_cycle(
         state.set_last_model_key(_make_backend_key(backend))  # F16: track resolved model
         # ── 6. adopt (opt-in) ────────────────────────────────────────────
         if cfg.get("auto_adopt") and result.accepted:
-            adopted_paths = adopt_staging(staging_dir)
+            adopted_paths = adopt_staging(staging_dir, cfg=cfg)
             adopted = bool(adopted_paths)
         state.save()
 
