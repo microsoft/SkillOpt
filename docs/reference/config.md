@@ -22,9 +22,12 @@ selecting the generic OpenAI-compatible backend.
 | `cursor_exec` | — | ✓ |
 | `copilot_exec` | — | ✓ |
 
-MiniMax currently has one shared deployment. `model.minimax_model` is applied
-when MiniMax is the target; mixed-backend runs cannot independently choose a
-MiniMax optimizer model and a different target model.
+MiniMax defaults to `MiniMax-M3.1-Flash`, with `MiniMax-M3` available explicitly.
+`model.minimax_model` supplies the target default; explicit `model.target` and
+`model.optimizer` values take precedence for their respective roles.
+Flash always uses adaptive thinking and accepts reasoning effort `low`, `medium`,
+`high`, `xhigh`, or `max`; empty effort uses the API default (`max`). MiniMax-M3
+honors `model.minimax_enable_thinking` and ignores effort.
 `model.minimax_region` selects the service region: `global_en` (default)
 resolves to `https://api.minimax.io/v1` and `cn_zh` resolves to
 `https://api.minimaxi.com/v1`. `model.minimax_base_url` overrides it.
@@ -97,7 +100,7 @@ winner. Prefer `thinking_mode`; use `disabled` when you need the field sent.
 | `model.qwen_chat_*` | Shared `base_url`, `api_key`, `temperature`, `timeout_seconds`, `max_tokens`, `thinking_mode`, and the legacy `enable_thinking` |
 | `model.qwen_chat_thinking_mode` | Wire policy for `chat_template_kwargs.enable_thinking`: `server_default` (default; omit the field), `enabled`, or `disabled`. See [Qwen thinking mode](#qwen-thinking-mode) |
 | `model.optimizer_qwen_chat_*` / `model.target_qwen_chat_*` | Per-role Qwen overrides, including `*_qwen_chat_thinking_mode` |
-| `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
+| `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, default `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target and no explicit target model is set |
 | `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
 | `model.codex_trace_to_optimizer` | When `true` (default) and target is `codex_exec`, inject the agent's codex trace steps into the reflection prompt |
