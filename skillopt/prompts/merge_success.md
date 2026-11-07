@@ -13,16 +13,25 @@ Merge guidelines:
    <!-- SLOW_UPDATE_START --> and <!-- SLOW_UPDATE_END --> markers.
    Do NOT merge or produce any edits that target content within these markers.
 
+SOURCE EDIT PROVENANCE: Input edits may contain `_source_edit_ids`. For each
+output edit, include `_source_edit_ids` listing the input IDs whose changes it
+carries (use `[]` for a synthesized edit). List intentionally omitted IDs in
+top-level `_discarded_source_edit_ids`. Account for every input ID exactly
+once. Do not claim a replacement ID when its correction is absent from the
+resulting skill.
+
 Respond ONLY with a valid JSON object:
 {
   "reasoning": "<summary>",
+  "_discarded_source_edit_ids": [],
   "edits": [
     {
       "op": "append|insert_after|replace|delete",
       "target": "<if needed>",
       "content": "<markdown>",
       "support_count": <integer>,
-      "source_type": "success"
+      "source_type": "success",
+      "_source_edit_ids": []
     }
   ]
 }
