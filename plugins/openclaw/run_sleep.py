@@ -7,7 +7,7 @@ Runs one nightly sleep cycle:
   3. replay tasks with current skill (baseline) + candidate skill (with proposed edit)
   4. gate candidate vs baseline on held-out accuracy
   5. stage the proposal in ~/.skillopt-sleep/staging/<night>/
-  6. leave adoption to Ethan (auto_adopt=false)
+  6. leave adoption to the operator (auto_adopt=false)
 
 Usage:
   python3 run_sleep.py                  # one cycle, default config
@@ -22,8 +22,14 @@ import os
 import sys
 from pathlib import Path
 
+from openclaw_paths import apply_openclaw_defaults, openclaw_workspace_dir, resolve_openclaw_path
+
 # Ensure the skillopt_sleep package is importable (it lives in the cloned repo)
-REPO = Path("/home/ethanclaw/.openclaw/workspace/SkillOpt")
+PLUGIN_DIR = Path(__file__).resolve().parent
+REPO_ROOT = os.environ.get("SKILLOPT_REPO", PLUGIN_DIR.parents[1])
+REPO = resolve_openclaw_path(REPO_ROOT)
+INSTALLED_CONFIG = openclaw_workspace_dir() / "skills" / "skillopt-sleep" / "config.json"
+DEFAULT_CONFIG = INSTALLED_CONFIG if INSTALLED_CONFIG.is_file() else PLUGIN_DIR / "config.json"
 sys.path.insert(0, str(REPO))
 
 # Register our backend before importing cycle
@@ -72,7 +78,7 @@ from skillopt_sleep.config import load_config
 def main() -> int:
     ap = argparse.ArgumentParser(description="OpenClaw SkillOpt-Sleep nightly cycle")
     ap.add_argument("--dry-run", action="store_true", help="Compute but don't stage")
-    ap.add_argument("--config", default="/home/ethanclaw/.openclaw/workspace/skills/skillopt-sleep/config.json")
+    ap.add_argument("--config", default=str(DEFAULT_CONFIG))
     ap.add_argument("--tasks", default=None, help="Path to pre-built tasks JSON")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
@@ -83,6 +89,7 @@ def main() -> int:
         with open(args.config) as f:
             overrides.update(json.load(f))
     overrides.pop("_comment", None)
+    overrides = apply_openclaw_defaults(overrides)
 
     cfg = load_config(**overrides)
 
