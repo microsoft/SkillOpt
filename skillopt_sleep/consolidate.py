@@ -188,6 +188,46 @@ def _task_deltas(
     return out
 
 
+def _ablation_effect(
+    score_with: float | None,
+    score_without: float | None,
+    task_rows: List[dict],
+) -> str:
+    """Classify what one edit did to the gate score, by removing it.
+
+    ``positive`` means the candidate scores higher with the edit than without
+    it, ``negative`` the reverse, and ``none`` that the score is the same. A
+    comparison with a missing or non-finite score measures nothing, so it is
+    ``unmeasured`` instead of being read as an effect in either direction.
+    """
+    if score_with is None or score_without is None:
+        return "unmeasured"
+    if not (math.isfinite(score_with) and math.isfinite(score_without)):
+        return "unmeasured"
+    if any(not row.get("scores_are_finite", True) for row in task_rows):
+        return "unmeasured"
+    if score_with > score_without:
+        return "positive"
+    if score_with < score_without:
+        return "negative"
+    return "none"
+
+
+def _ablation_task_changes(task_rows: List[dict]) -> List[dict]:
+    """Keep the validation tasks whose score differs with and without an edit."""
+    return [
+        {
+            "task_id": row["task_id"],
+            "tags": row["tags"],
+            "score_without": row["baseline_score"],
+            "score_with": row["candidate_score"],
+            "status": row["status"],
+        }
+        for row in task_rows
+        if row["status"] != "unchanged"
+    ]
+
+
 def consolidate(
     backend: Backend,
     tasks: List[TaskRecord],
@@ -198,6 +238,7 @@ def consolidate(
     gate_metric: str = "mixed",
     gate_mixed_weight: float = 0.5,
     gate_no_regression: bool = False,
+    gate_edit_ablation: bool = False,
     gate_mode: str = "on",       # "on" (hard/soft per gate_metric) | "off" (greedy)
     rollouts_k: int = 1,         # >1 => multi-rollout contrastive reflection
     evolve_skill: bool = True,
@@ -221,6 +262,13 @@ def consolidate(
     still rests on complete evidence. When the final replay is skipped, the
     decision uses the validation replay that already scored the final skill
     and memory: the baseline replay, or the trial replay of the last kept edit.
+
+    ``gate_edit_ablation`` measures, for each edit of a skill or memory trial
+    that passed the gate, what the validation score is without that one edit.
+    The rows are recorded on the trial under ``edit_ablation``; no decision
+    reads them, so the accepted documents and edits are unchanged. It costs up
+    to one validation replay per edit of a multi-edit trial, and it is skipped
+    (and listed in ``budget_skipped``) once the token budget is spent.
     """
     from skillopt_sleep import evidence as evlog
     ev = evlog.get(backend)
@@ -289,6 +337,107 @@ def consolidate(
         return [{"op": e.op, "content": e.content, "anchor": e.anchor,
                  "rationale": e.rationale} for e in edits]
 
+    def _ablate_edits(
+        doc: str,
+        new_doc: str,
+        applied: List[EditRecord],
+        which: str,
+        with_pairs: List[Tuple[TaskRecord, ReplayResult]],
+        with_score: float,
+        prior_pairs: List[Tuple[TaskRecord, ReplayResult]],
+    ) -> List[dict]:
+        """Leave-one-out replay of a trial that passed the gate.
+
+        For each applied edit, rebuild the candidate from the pre-trial
+        document without that edit and score it on the same validation tasks.
+        Two cases need no replay: the document is the same without the edit
+        (another edit of the trial overrides it), and no edit is left once it
+        is removed, which is the pre-trial document ``prior_pairs`` scored.
+        """
+        rows: List[dict] = []
+        budget_spent: Optional[bool] = None
+        for index, edit in enumerate(applied):
+            remaining = [e for j, e in enumerate(applied) if j != index]
+            without_doc, still_applied, _unmatched = apply_edits_detailed(
+                doc, remaining
+            )
+            kept = {id(e) for e in still_applied}
+            # Edits that only matched because of the removed one (an anchor it
+            # added) drop out with it; name them so the row is not read as the
+            # effect of a single edit.
+            co_dropped = [
+                j for j, e in enumerate(applied)
+                if j != index and id(e) not in kept
+            ]
+            replayed = False
+            note = ""
+            without_pairs: Optional[List[Tuple[TaskRecord, ReplayResult]]]
+            if not still_applied:
+                without_pairs = prior_pairs
+                note = "scored by the replay that preceded this trial"
+            elif without_doc == new_doc:
+                without_pairs = with_pairs
+                note = "document is the same without this edit"
+            else:
+                if budget_spent is None:
+                    budget_spent = _budget_spent("edit ablation")
+                if budget_spent:
+                    without_pairs = None
+                    note = "not replayed: token budget spent"
+                else:
+                    evlog.set_phase(backend, f"gate_ablation:{which}")
+                    without_pairs = replay_batch(
+                        backend,
+                        val_tasks,
+                        without_doc if which == "skill" else cand_skill,
+                        without_doc if which == "memory" else cand_memory,
+                    )
+                    replayed = True
+            if without_pairs is None:
+                without_score = None
+                task_rows: List[dict] = []
+            else:
+                h, s = aggregate_scores(without_pairs)
+                without_score = select_gate_score(
+                    h, s, gate_metric, gate_mixed_weight
+                )
+                task_rows = _task_deltas(
+                    val_tasks, without_pairs, with_pairs,
+                    gate_metric, gate_mixed_weight,
+                )
+            effect = _ablation_effect(with_score, without_score, task_rows)
+            if effect == "unmeasured":
+                # A missing or non-finite score compares nothing. Report no
+                # score and no per-task direction for it, instead of a mean
+                # over an incomplete slice or the fail-closed "regressed"
+                # label the gate uses for the same condition.
+                without_score = None
+                task_rows = []
+                note = note or "a validation score was missing or non-finite"
+            rows.append({
+                "edit_index": index,
+                "target": which,
+                "op": edit.op,
+                "content": edit.content,
+                "anchor": edit.anchor,
+                "score_with": _finite_score(with_score),
+                "score_without": (
+                    None if without_score is None
+                    else _finite_score(without_score)
+                ),
+                "effect": effect,
+                "replayed": replayed,
+                "note": note,
+                "co_dropped": co_dropped,
+                "task_changes": _ablation_task_changes(task_rows),
+            })
+        if ev is not None:
+            ev.log("gate", "edit_ablation", target=which,
+                   n_edits=len(applied),
+                   n_replays=sum(1 for row in rows if row["replayed"]),
+                   rows=rows)
+        return rows
+
     def _gate_apply(doc: str, edits: List[EditRecord], which: str) -> str:
         nonlocal cand_skill, cand_memory, base_score, current_pairs
         nonlocal all_applied, all_rejected
@@ -344,6 +493,13 @@ def consolidate(
                    task_deltas=task_deltas,
                    n_edits=len(applied))
         if improved:
+            if gate_edit_ablation:
+                # Measured after the decision and never read by it: the rows
+                # describe the accepted trial, they do not change it.
+                gate_trials[-1]["edit_ablation"] = _ablate_edits(
+                    doc, new_doc, applied, which, pairs, cand_score,
+                    current_pairs,
+                )
             base_score = cand_score
             current_pairs = pairs
             all_applied.extend(applied)

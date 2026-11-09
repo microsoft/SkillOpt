@@ -35,6 +35,26 @@ candidate; an absent numeric score aborts evaluation. Task-level changes are
 included in `report.md`, `report.json`, `diagnostics.json`, the CLI's `--json`
 output, and the evidence log.
 
+The optional `gate_edit_ablation` config key measures which accepted edits the
+held-out score depends on. It defaults to `false`. When set to `true`, each
+skill or memory candidate that passes the gate is scored again on the same
+validation tasks once per edit, each time without that one edit. The result is
+recorded on that trial as an `edit_ablation` row per edit: the gate score with
+and without the edit, an `effect` of `positive`, `none`, `negative`, or
+`unmeasured`, and the validation tasks whose score differs. The rows are
+report-only. No gate decision reads them, so the accepted edits and documents
+are the same with the key on or off. A candidate with one edit needs no extra
+replay, because the trial already compared the document with and without it; a
+candidate with N edits costs up to N validation replays, which are skipped once
+`max_tokens_per_night` is spent. Every comparison is a single replay, so a
+nondeterministic backend or judge can move a row by noise: treat `none` and
+`negative` rows as edits to review, not as proof. With `gate_mode` set to
+`off` there is no validation replay to compare against, so the key has no
+effect. Rows are included in
+`report.md`, `report.json`, `diagnostics.json`, the CLI's `--json` output, and
+the evidence log; in multi-skill fan-out, each group's rows are in the evidence
+log.
+
 Rule-based heading checks are intentionally additive. `section_present` keeps
 its legacy strict behavior for existing task sets: an ATX heading cannot append
 text after the requested name. Use `section_contains` when a numbered,
@@ -504,8 +524,8 @@ This runs one additional consolidation per group (including a catch-all group wh
 hinted and unhinted evidence are mixed), so it multiplies backend calls and token
 use; configured dream rollouts and synthetic variants multiply the per-group work
 too. Each group inherits the configured edit budget, gate mode/metric,
-`gate_no_regression`, `dream_rollouts`, `dream_factor`, `recall_k`, and
-`evolve_skill`. Recalled archive tasks are restricted to that same skill hint;
+`gate_no_regression`, `gate_edit_ablation`, `dream_rollouts`, `dream_factor`,
+`recall_k`, and `evolve_skill`. Recalled archive tasks are restricted to that same skill hint;
 shared memory is read-only in fan-out runs. Setting `evolve_skill` to `false`
 therefore disables per-skill proposals as well as the managed skill proposal.
 

@@ -360,6 +360,61 @@ def _edit_sources_md(edit) -> str:
     )
 
 
+_ABLATION_EDIT_CHARS = 80
+
+
+def _edit_ablation_md(rows: object) -> List[str]:
+    """Render one trial's leave-one-out edit ablation as a Markdown table."""
+    if not isinstance(rows, list):
+        return []
+    rows = [row for row in rows if isinstance(row, dict)]
+    if not rows:
+        return []
+    lines = [
+        "#### Leave-one-out edit ablation",
+        "",
+        "_Each row scores this candidate again without one of its edits, on "
+        "the same validation tasks. Every comparison is a single replay, so a "
+        "nondeterministic backend or judge can move a row by noise._",
+        "",
+        "| Edit | With | Without | Effect | Task changes |",
+        "|---|---:|---:|---|---|",
+    ]
+    for position, row in enumerate(rows, start=1):
+        text = str(row.get("content") or row.get("anchor") or "")
+        if len(text) > _ABLATION_EDIT_CHARS:
+            text = text[:_ABLATION_EDIT_CHARS] + "…"
+        op = _markdown_table_text(row.get("op", ""))
+        edit = f"{position}. \\[{op}\\] {_markdown_table_text(text)}"
+        effect = _markdown_table_text(row.get("effect", "unmeasured"))
+        details = []
+        if row.get("note"):
+            details.append(_markdown_table_text(row["note"]))
+        co_dropped = [
+            str(index + 1)
+            for index in row.get("co_dropped", [])
+            if isinstance(index, int)
+        ]
+        if co_dropped:
+            details.append("also removes edit " + ", ".join(co_dropped))
+        if details:
+            effect += f" ({'; '.join(details)})"
+        changes = "; ".join(
+            f"`{_markdown_table_text(change.get('task_id', ''))}` "
+            f"{_report_score(change.get('score_without'))} → "
+            f"{_report_score(change.get('score_with'))}"
+            for change in row.get("task_changes", [])
+            if isinstance(change, dict)
+        ) or "—"
+        lines.append(
+            f"| {edit} | {_report_score(row.get('score_with'))} "
+            f"| {_report_score(row.get('score_without'))} "
+            f"| {effect} | {changes} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
     project = _markdown_text(report.project)
     backend = _markdown_text(cfg.get("backend"))
@@ -384,6 +439,9 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         f"- tokens used: {report.tokens_used}",
         "",
     ]
+    if cfg.get("gate_edit_ablation", False):
+        # Listed only when on, so the default report is byte-identical.
+        lines.insert(-2, "- edit ablation: enabled")
     gate_on = str(cfg.get("gate_mode", "on")).strip().lower() not in {
         "off", "none", "false", "greedy",
     }
@@ -433,6 +491,7 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
                     f"| {candidate_score} | {status} |"
                 )
             lines.append("")
+            lines.extend(_edit_ablation_md(trial.get("edit_ablation")))
     if any((report.edits, report.rejected_edits, report.unmatched_edits)):
         lines.append(
             "_Edit source IDs list the task evidence supplied to reflection; "
@@ -796,7 +855,8 @@ def run_sleep_cycle(
         cycle_config = {k: cfg.get(k) for k in (
             "backend", "model", "optimizer_backend", "optimizer_model",
             "target_backend", "target_model", "gate_mode", "gate_metric",
-            "gate_mixed_weight", "gate_no_regression", "edit_budget",
+            "gate_mixed_weight", "gate_no_regression",
+            "gate_edit_ablation", "edit_budget",
             "holdout_fraction", "val_fraction", "test_fraction",
             "dream_rollouts", "dream_factor", "recall_k",
             "max_tasks_per_night", "max_tokens_per_night",
@@ -976,6 +1036,7 @@ def run_sleep_cycle(
             gate_metric=cfg.get("gate_metric", "mixed"),
             gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
             gate_no_regression=cfg.get("gate_no_regression", False),
+            gate_edit_ablation=cfg.get("gate_edit_ablation", False),
             gate_mode=cfg.get("gate_mode", "on"),
             evolve_skill=cfg.get("evolve_skill", True),
             evolve_memory=cfg.get("evolve_memory", True),
@@ -1082,6 +1143,7 @@ def run_sleep_cycle(
                     gate_metric=cfg.get("gate_metric", "mixed"),
                     gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
                     gate_no_regression=cfg.get("gate_no_regression", False),
+                    gate_edit_ablation=cfg.get("gate_edit_ablation", False),
                     gate_mode=cfg.get("gate_mode", "on"),
                     evolve_skill=cfg.get("evolve_skill", True),
                     night=night,
@@ -1210,6 +1272,7 @@ def run_sleep_cycle(
                         ),
                         "gate_mode": cfg.get("gate_mode"),
                         "gate_no_regression": cfg.get("gate_no_regression", False),
+                        "gate_edit_ablation": cfg.get("gate_edit_ablation", False),
                         "n_tasks": len(tasks),
                         "baseline_score": (
                             result.baseline_score if scores_measured else None
