@@ -157,6 +157,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip step-level edits whose target runs into a protected slow-update or
   appendix region, so a `replace` or `delete` can no longer remove the start
   marker and expose the protected content (thanks @Shizoqua).
+- Skip Claude Code, Codex and Cursor transcript lines that are cut
+  mid-character or are valid JSON but not an object, instead of aborting the
+  whole Sleep harvest (thanks @1AbdullahButt).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
