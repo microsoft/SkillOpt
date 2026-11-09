@@ -29,6 +29,7 @@ A single `base_url` + `api_key` pair lets you point SkillOpt at, for example:
 | OpenRouter / Fireworks / xAI / … | provider base URL | provider model id |
 | OrcaRouter | `https://api.orcarouter.ai/v1` | `openai/gpt-5.5` |
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini` |
+| Standard Compute | `https://api.stdcmpt.com/v1` | `StandardCompute` |
 
 [OrcaRouter](https://www.orcarouter.ai) exposes OpenAI, Anthropic, Google,
 DeepSeek and other models behind one OpenAI-compatible endpoint. Its model IDs
@@ -39,6 +40,12 @@ Cheaper Inference model IDs are not namespaced (e.g. `gpt-5.4-mini`), so pass
 the bare ID as the model. See its [API docs](https://www.cheaperinference.com/docs)
 for the base URL and its [model list](https://www.cheaperinference.com/markets)
 for the model IDs.
+
+On [Standard Compute](https://standardcompute.com), the `StandardCompute`
+model sends each request to the cheapest enabled model that can handle it,
+with automatic fallback. To pin a model instead, pass an ID exactly as listed
+by `GET https://api.stdcmpt.com/v1/models`. See its
+[docs](https://docs.standardcompute.com) for setup.
 
 ### Python API
 
