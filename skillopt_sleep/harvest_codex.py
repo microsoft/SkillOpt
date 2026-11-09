@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from skillopt_sleep.harvest import (
     _detect_feedback,
+    _ended_before,
     _is_agent_session,
     _is_meta_prompt,
     _iter_jsonl,
@@ -252,7 +253,7 @@ def harvest_codex(
             continue
         if _is_agent_session(digest) or _is_codex_replay(digest):
             continue
-        if since_iso and digest.ended_at and digest.ended_at < since_iso:
+        if since_iso and digest.ended_at and _ended_before(digest.ended_at, since_iso):
             continue
         digests.append(digest)
         if limit and len(digests) >= limit:

@@ -157,6 +157,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip step-level edits whose target runs into a protected slow-update or
   appendix region, so a `replace` or `delete` can no longer remove the start
   marker and expose the protected content (thanks @Shizoqua).
+- Compare the Sleep harvest cutoff, stored in local time, with UTC Claude
+  Code, Codex and Pi transcript timestamps as instants rather than strings.
+  East of UTC, sessions that ended in the hours after a harvest were never
+  harvested (thanks @1AbdullahButt).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
