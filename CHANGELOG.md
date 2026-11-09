@@ -157,6 +157,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip step-level edits whose target runs into a protected slow-update or
   appendix region, so a `replace` or `delete` can no longer remove the start
   marker and expose the protected content (thanks @Shizoqua).
+- Score the last `<answer>` tag in an OfficeQA response, as SearchQA and
+  LiveMathematicianBench already do, so a model that revises its answer is
+  graded on the revision instead of the draft (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

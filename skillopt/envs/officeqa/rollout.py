@@ -212,9 +212,11 @@ def _build_user(
         parts.append("Use the model's built-in web search tool when needed. Return the final answer inside <answer>...</answer>.")
     return "\n\n".join(parts)
 def _extract_answer(text: str) -> str:
-    match = _FINAL_RE.search(text)
-    if match:
-        return match.group(1).strip()
+    # Score the last tagged answer, like SearchQA and LiveMathematicianBench, so a
+    # model that revises its answer within one response is graded on the revision.
+    matches = _FINAL_RE.findall(text)
+    if matches:
+        return matches[-1].strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return lines[-1] if lines else text.strip()
 def _extract_search_queries(text: str) -> list[str]:
