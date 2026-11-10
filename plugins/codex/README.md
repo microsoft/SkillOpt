@@ -80,7 +80,8 @@ mining, replay, and reflection can be slow and otherwise quiet. Use
 prefer tasks that match the target skill's path, headings, and content. The
 implemented main-CLI flags work the same across the shared integrations, and
 `--preferences "..."` is available for house rules. Advanced keys such as
-`gate_mode`, `gate_no_regression`, `dream_rollouts`, and `recall_k` belong in the Sleep config; the
+`gate_mode`, `gate_no_regression`, `gate_train_check`, `dream_rollouts`, and `recall_k` belong in
+the Sleep config; the
 nightly CLI does not expose `--gate`, `--rollouts-k`, token/time-budget, or
 optimizer/target-split flags. See the
 [shared CLI reference](../README.md#supported-cli-surface).

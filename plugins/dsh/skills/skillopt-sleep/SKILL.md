@@ -91,7 +91,7 @@ skillopt_schedule project=<dir> hour=3 minute=17 backend=<codex>
 
 Advanced engine keys go in `~/.skillopt-sleep/config.json`:
 `gate_mode` (on/off), `gate_metric` (hard/soft/mixed), `gate_no_regression`,
-`dream_rollouts`, `recall_k`, `evolve_memory` / `evolve_skill`.
+`gate_train_check`, `dream_rollouts`, `recall_k`, `evolve_memory` / `evolve_skill`.
 
 ## Hard rules
 

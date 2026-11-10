@@ -24,7 +24,11 @@ from skillopt_sleep import evidence
 from skillopt_sleep.backend import Backend, CursorBackendError, build_backend
 from skillopt_sleep.budget import Budget
 from skillopt_sleep.config import DEFAULTS, SleepConfig, load_config
-from skillopt_sleep.consolidate import BUDGET_EXHAUSTED
+from skillopt_sleep.consolidate import (
+    BUDGET_EXHAUSTED,
+    train_check_enabled,
+    train_check_margin,
+)
 from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.evidence import EvidenceLog
 from skillopt_sleep.handoff_backend import PendingCalls
@@ -116,6 +120,20 @@ def _night_token_budget(cfg: SleepConfig) -> Budget:
             f"max_tokens_per_night must be 0 (no cap) or a positive token count, got {raw!r}"
         )
     return Budget(max_tokens=limit or None)
+
+
+def _gate_train_check(cfg: SleepConfig) -> tuple[bool, float]:
+    """Return ``(gate_train_check, gate_train_margin)``.
+
+    Raises ``ValueError`` when ``gate_train_check`` is not a boolean, or when
+    it is enabled and the margin is not a finite number between 0 and 1. A
+    null margin means the default.
+    """
+    enabled = train_check_enabled(cfg.get("gate_train_check", False))
+    raw = cfg.get("gate_train_margin", 0.1)
+    if not enabled:
+        return False, 0.1
+    return True, train_check_margin(0.1 if raw is None else raw)
 
 
 # ── Model-swap detection (F16) ───────────────────────────────
@@ -384,6 +402,11 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
         f"- tokens used: {report.tokens_used}",
         "",
     ]
+    train_check, train_margin = _gate_train_check(cfg)
+    if train_check and str(cfg.get("gate_mode", "on")).strip().lower() not in {
+        "off", "none", "false", "greedy",
+    }:
+        lines.insert(-1, f"- training-side check: enabled (margin {train_margin})")
     gate_on = str(cfg.get("gate_mode", "on")).strip().lower() not in {
         "off", "none", "false", "greedy",
     }
@@ -411,6 +434,8 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
             decision = "accepted" if accepted else "rejected"
             if blocked:
                 decision += " (task regression)"
+            if trial.get("blocked_by_train_check", False):
+                decision += " (training-task regression)"
             baseline = _report_score(trial.get("baseline_score"))
             candidate = _report_score(trial.get("candidate_score"))
             lines.append(
@@ -433,6 +458,24 @@ def _render_report_md(report: SleepReport, cfg: SleepConfig) -> str:
                     f"| {candidate_score} | {status} |"
                 )
             lines.append("")
+            check = trial.get("train_check")
+            if isinstance(check, dict):
+                if check.get("blocked"):
+                    verdict = "regressed, candidate rejected"
+                elif check.get("regressed"):
+                    verdict = "lower, but not on enough tasks to reject"
+                else:
+                    verdict = "no regression"
+                lines.append(
+                    "Training-side check (these tasks are not held out) over "
+                    f"{check.get('n_tasks')} training tasks: "
+                    f"{_report_score(check.get('baseline_score'))} → "
+                    f"{_report_score(check.get('candidate_score'))} "
+                    f"(margin {check.get('margin')}; "
+                    f"{check.get('n_regressed')} worse, "
+                    f"{check.get('n_improved')} better): {verdict}."
+                )
+                lines.append("")
     if any((report.edits, report.rejected_edits, report.unmatched_edits)):
         lines.append(
             "_Edit source IDs list the task evidence supplied to reflection; "
@@ -723,6 +766,7 @@ def run_sleep_cycle(
     # Checked before the night writes anything (state, staging dir, evidence).
     harvest_source = normalize_transcript_source(cfg.get("transcript_source"))
     budget = _night_token_budget(cfg)
+    train_check, train_margin = _gate_train_check(cfg)
     state = SleepState.load(cfg.state_path)
     project = _project_paths(cfg)
 
@@ -805,6 +849,9 @@ def run_sleep_cycle(
         cycle_config["opencode_tool_replay"] = (
             cfg.get("opencode_tool_replay", False) is True
         )
+        if train_check:
+            cycle_config["gate_train_check"] = True
+            cycle_config["gate_train_margin"] = train_margin
         ev.log("cycle", "start", night=night, project=project,
                backend=backend.name, model=cfg.get("model", ""),
                config=cycle_config)
@@ -976,6 +1023,8 @@ def run_sleep_cycle(
             gate_metric=cfg.get("gate_metric", "mixed"),
             gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
             gate_no_regression=cfg.get("gate_no_regression", False),
+            gate_train_check=train_check,
+            gate_train_margin=train_margin,
             gate_mode=cfg.get("gate_mode", "on"),
             evolve_skill=cfg.get("evolve_skill", True),
             evolve_memory=cfg.get("evolve_memory", True),
@@ -1082,6 +1131,8 @@ def run_sleep_cycle(
                     gate_metric=cfg.get("gate_metric", "mixed"),
                     gate_mixed_weight=cfg.get("gate_mixed_weight", 0.5),
                     gate_no_regression=cfg.get("gate_no_regression", False),
+                    gate_train_check=train_check,
+                    gate_train_margin=train_margin,
                     gate_mode=cfg.get("gate_mode", "on"),
                     evolve_skill=cfg.get("evolve_skill", True),
                     night=night,
