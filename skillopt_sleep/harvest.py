@@ -80,6 +80,33 @@ def _safe_mtime(path: str) -> float:
         return 0.0
 
 
+def _iso_epoch(value: str) -> Optional[float]:
+    """Parse an ISO-8601 timestamp to epoch seconds, or None if unparseable.
+
+    A trailing ``Z`` is UTC. A value without an offset is read in the host
+    timezone: that is how state.py stores the harvest checkpoint.
+    """
+    try:
+        normalized = value[:-1] + "+00:00" if value[-1:] in {"Z", "z"} else value
+        return datetime.fromisoformat(normalized).timestamp()
+    except (OverflowError, OSError, TypeError, ValueError):
+        return None
+
+
+def _ended_before(ended_at: str, since_iso: str) -> bool:
+    """True if a session that ended at ``ended_at`` is older than the cutoff.
+
+    Transcripts record UTC (``...Z``) while the checkpoint is local time with
+    no offset, so the two are compared as instants, not as strings. A value
+    that cannot be parsed falls back to the old string comparison.
+    """
+    ended = _iso_epoch(ended_at)
+    since = _iso_epoch(since_iso)
+    if ended is not None and since is not None:
+        return ended < since
+    return ended_at < since_iso
+
+
 def _text_from_content(content: Any) -> str:
     """Flatten a message.content (str or list of blocks) into text."""
     if isinstance(content, str):
@@ -662,7 +689,7 @@ def harvest(
             return False  # skip other tools' sub-agent transcripts (claude-mem etc.)
         if not _project_matches(d.project or "", scope, invoked_project):
             return False
-        if since_iso and d.ended_at and d.ended_at < since_iso:
+        if since_iso and d.ended_at and _ended_before(d.ended_at, since_iso):
             # Note: files are sorted by mtime but we compare the embedded
             # ended_at timestamp — mtime can diverge (copy/touch), so we
             # cannot break here; we must continue to check all files.

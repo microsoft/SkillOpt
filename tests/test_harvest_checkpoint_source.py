@@ -27,12 +27,12 @@ PROJECT = "/work/proj"
 
 def _write_claude_session(transcripts_dir: str, session_id: str, project: str) -> None:
     """Two-turn interactive session, ended a few minutes ago (inside lookback)."""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     folder = os.path.join(transcripts_dir, "projects", "demo")
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, session_id + ".jsonl")
-    base = datetime.now() - timedelta(minutes=5)
+    base = datetime.now(timezone.utc) - timedelta(minutes=5)
     with open(path, "w", encoding="utf-8") as f:
         for i, (role, text) in enumerate((
             ("user", "Fix the failing date parser test in module B."),

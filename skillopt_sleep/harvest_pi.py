@@ -31,6 +31,7 @@ from typing import Any, Iterable, List, Optional
 
 from skillopt_sleep.harvest import (
     _detect_feedback,
+    _ended_before,
     _is_headless_replay,
     _is_meta_prompt,
     _project_matches,
@@ -303,7 +304,7 @@ def harvest_pi(
             continue
         if not _project_matches(digest.project or "", scope, invoked_project):
             continue
-        if since_iso and digest.ended_at and digest.ended_at < since_iso:
+        if since_iso and digest.ended_at and _ended_before(digest.ended_at, since_iso):
             continue
         digests.append(digest)
         if limit and len(digests) >= limit:

@@ -176,6 +176,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip Claude Code, Codex and Cursor transcript lines that are cut
   mid-character or are valid JSON but not an object, instead of aborting the
   whole Sleep harvest (thanks @1AbdullahButt).
+- Compare the Sleep harvest cutoff, stored in local time, with UTC Claude
+  Code, Codex and Pi transcript timestamps as instants rather than strings.
+  East of UTC, sessions that ended in the hours after a harvest were never
+  harvested (thanks @1AbdullahButt).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
