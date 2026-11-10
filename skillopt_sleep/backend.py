@@ -2781,10 +2781,13 @@ def get_backend(
             project_dir or os.getcwd(), ".skillopt-sleep-handoff"
         )
         return HandoffBackend(model=model, handoff_dir=hdir)
+    if n in {"agentic", "agentic_replay", "agentic-replay"}:
+        from skillopt_sleep.agentic_replay import AgenticReplayBackend
+        return AgenticReplayBackend()
     if n in {"mock", ""}:
         return MockBackend()
     raise ValueError(
-        f"Unknown backend: {name!r}. Supported backends are: 'azure', 'azure-responses', "
+        f"Unknown backend: {name!r}. Supported backends are: 'agentic', 'azure', 'azure-responses', "
         "'claude', 'codex', 'copilot', 'cursor', 'handoff', 'mock', 'opencode', 'pi'."
     )
 

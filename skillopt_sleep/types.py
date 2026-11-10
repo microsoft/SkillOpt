@@ -115,6 +115,16 @@ class ReplayResult:
     # evidence for audit/debugging; they may contain regexes or other grader
     # implementation details and must not be used as learning context.
     optimizer_feedback: str = ""
+    # Three-valued outcome: pass | fail | inconclusive (issue #155).
+    # Timeouts, budget exhaustion, or environment failures must not be counted
+    # as evidence that a candidate skill failed.
+    outcome: str = ""
+    inconclusive_reason: str = ""     # infra | timeout | budget_exhausted | fixture_failure | insufficient_evidence
+    diff: str = ""                    # unified diff produced in agentic replay
+
+    def __post_init__(self) -> None:
+        if not self.outcome:
+            self.outcome = "pass" if self.hard >= 1.0 else "fail"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

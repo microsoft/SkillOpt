@@ -68,7 +68,15 @@ DEFAULTS: Dict[str, Any] = {
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
     "gate_mixed_weight": 0.5,
     "gate_no_regression": False,    # reject any candidate that lowers a val-task score
-    "replay_mode": "mock",        # report label; fresh-worktree replay is not implemented
+    "replay_mode": "mock",        # report label; "mock" | "text" | "agentic" (issue #155)
+    # ── agentic replay tier (opt-in; issue #155) ───────────────────────────
+    "agentic_replay": False,      # opt-in tiered agentic replay in isolated workspace
+    "agentic_max_turns": 10,      # turn cap per agentic replay
+    "agentic_timeout_sec": 60.0,  # wall-clock timeout in seconds
+    "agentic_max_replays": 5,     # nightly budget cap on agentic replays
+    "agentic_isolate_network": True,  # disable external network by default
+    "agentic_isolate_env": True,  # scrub host credentials and user keys
+    "agentic_min_actions": 1,     # floor below which outcome is inconclusive (insufficient_evidence)
     # ── dream + recall (opt-in; defaults reproduce the prior single-shot loop) ─
     "dream_rollouts": 1,          # >1 => multi-rollout contrastive reflection per task
     "dream_factor": 0,            # >0 => add N synthetic variants of each task to the dream

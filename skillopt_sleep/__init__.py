@@ -16,5 +16,7 @@ Public entry points:
 """
 from __future__ import annotations
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "AgenticReplayBackend"]
 __version__ = "0.2.0"
+
+from skillopt_sleep.agentic_replay import AgenticReplayBackend

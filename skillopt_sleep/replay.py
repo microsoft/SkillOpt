@@ -32,6 +32,8 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     """``sample_id`` distinguishes repeated dream rollouts of the same
     (task, skill, memory) in the attempt cache — without it all K rollouts
     collapse to one cached response and the contrastive signal is always 0."""
+    if hasattr(backend, "replay_agentic_task"):
+        return backend.replay_agentic_task(task, skill, memory, sample_id=sample_id)
     import time
     tools = _required_tools(task)
     tools_called: List[str] = []
@@ -166,9 +168,20 @@ def replay_batch(
     return results
 
 
-def aggregate_scores(pairs: List[Tuple[TaskRecord, ReplayResult]]) -> Tuple[float, float]:
+def aggregate_scores(
+    pairs: List[Tuple[TaskRecord, ReplayResult]],
+    *,
+    exclude_inconclusive: bool = False,
+) -> Tuple[float, float]:
     if not pairs:
         return 0.0, 0.0
+    if exclude_inconclusive:
+        valid = [r for _t, r in pairs if getattr(r, "outcome", "") != "inconclusive"]
+        if not valid:
+            return 0.0, 0.0
+        hard = sum(r.hard for r in valid) / len(valid)
+        soft = sum(r.soft for r in valid) / len(valid)
+        return hard, soft
     hard = sum(r.hard for _t, r in pairs) / len(pairs)
     soft = sum(r.soft for _t, r in pairs) / len(pairs)
     return hard, soft
