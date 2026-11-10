@@ -282,6 +282,7 @@ def consolidate(
         base_pairs = replay_batch(backend, val_tasks, skill, memory)
         base_hard, base_soft = aggregate_scores(base_pairs)
         holdout_detail = _holdout_detail(base_pairs)
+    gate_metric = (gate_metric or "mixed").strip().lower()
     base_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
     if ev is not None:
         ev.log("gate", "baseline", gate_mode=("off" if gate_off else "on"),

@@ -24,14 +24,19 @@ class GateResult:
 def select_gate_score(hard: float, soft: float, metric: str = "hard",
                       mixed_weight: float = 0.5) -> float:
     """Project (hard, soft) onto a single comparison metric."""
-    if metric == "hard":
+    norm_metric = (
+        metric.strip().lower()
+        if isinstance(metric, str)
+        else ("hard" if metric is None else metric)
+    )
+    if norm_metric == "hard":
         return float(hard)
-    if metric == "soft":
+    if norm_metric == "soft":
         return float(soft)
-    if metric == "mixed":
+    if norm_metric == "mixed":
         w = max(0.0, min(1.0, float(mixed_weight)))
         return (1.0 - w) * float(hard) + w * float(soft)
-    raise ValueError(f"unknown gate metric {metric!r}; expected hard/soft/mixed")
+    raise ValueError(f"unknown gate metric {metric!r}; expected 'hard', 'soft', or 'mixed'")
 
 
 def evaluate_gate(candidate_skill: str, cand_hard: float, current_skill: str,
