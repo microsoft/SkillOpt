@@ -25,7 +25,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   key, credential or account is bundled, and service errors fail the rollout
   with no fallback. It uses the core `httpx` dependency, so it needs no
   extra. Its scores are not directly comparable to the paper's Google-backed
-  search setting.
+  search setting. An API key echoed in an error body is redacted before the
+  text reaches `fail_reason`, and the round deadline is checked again after
+  each response.
 - **SkillOpt-Sleep paired A/B evalkit** (`python -m skillopt_sleep.evalkit`):
   McNemar plus percentile-bootstrap CIs on a fixed task manifest, with
   task-cluster multi-seed inference and seeded null calibration for exact-test

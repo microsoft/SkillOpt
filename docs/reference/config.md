@@ -224,7 +224,7 @@ corpus and makes no network search call.
 | `env.search_mode: parallel` | Opt in to Parallel's hosted Search MCP. Requires `openai_chat` or `qwen_chat` and the `parallel` extra. |
 | `env.search_mode: keenable` | Opt in to Keenable's search API. Requires `openai_chat` or `qwen_chat`; no extra and no key needed. |
 | `env.search_timeout_seconds` | Whole MCP discovery/search deadline in seconds (default `20`); for `keenable`, the deadline for all queries of one round. |
-| `env.search_max_num_results` | Maximum number of Parallel evidence results per round, or Keenable results per query (default `4`). |
+| `env.search_max_num_results` | Maximum number of Parallel evidence results per round, or Keenable results per query (default `4`). For Keenable a round can therefore carry up to `max_queries_per_turn × search_max_num_results` results: 16 with the defaults, up to about 97k characters of evidence. |
 | `env.max_queries_per_turn` / `env.max_tool_turns` | Bound model-requested queries and model rounds. |
 
 #### Parallel Search MCP (opt-in)
@@ -276,7 +276,9 @@ query from the model's generated `<search_queries>` to Keenable, one HTTPS
 - only if you set `KEENABLE_API_KEY`: that key, in an `X-API-Key` header.
 
 SkillOpt does not send the task question, the OfficeQA corpus or any other
-credential, although a generated query can repeat words from the question.
+credential as such. A generated query is model output, though, so it can
+repeat text from the question, from the provided document context or from the
+skill.
 Without `KEENABLE_API_KEY` the requests go to the keyless endpoint
 `https://api.keenable.ai/v1/search/public`, which is limited to 10 requests per
 second and 1,000 requests per hour per IP address. With the key they go to

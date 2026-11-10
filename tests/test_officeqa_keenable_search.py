@@ -27,11 +27,13 @@ def isolated_search_config(monkeypatch):
 def transport(monkeypatch):
     """Record the HTTP requests the client sends and answer them from `behavior`."""
     requests = []
-    behavior = {"payload": PAYLOAD, "status": 200, "timeout": False}
+    behavior = {"payload": PAYLOAD, "status": 200, "timeout": False, "response": None}
     original_client = httpx.Client
 
     def handler(request):
         requests.append((request, json.loads(request.content)))
+        if behavior["response"] is not None:
+            return behavior["response"]
         if behavior["timeout"]:
             raise httpx.ReadTimeout("read timed out", request=request)
         if behavior["status"] != 200:
@@ -76,13 +78,17 @@ def test_keenable_requires_explicit_selection(mode):
 
 
 @pytest.mark.parametrize("mode", ["auto", "offline"])
-def test_fresh_config_never_calls_keenable(tmp_path, monkeypatch, mode):
+def test_fresh_config_never_calls_keenable(tmp_path, monkeypatch, transport, mode):
     docs = tmp_path / "docs"
     docs.mkdir()
-    monkeypatch.setattr(rollout, "chat_target_messages", lambda **kwargs: (SimpleNamespace(content="<answer>1776</answer>"), {}))
-    with mock.patch.object(rollout, "keenable_search", side_effect=AssertionError("keenable not selected")):
-        row = rollout.process_one(ITEM, str(tmp_path / "out"), "", search_mode=mode, use_local_tools=False, data_dirs=[str(docs)])
-    assert row["predicted_answer"] == "1776"
+    # The model asks for search; outside explicit keenable mode nothing may reach Keenable.
+    responses = iter(['<search_queries>["declaration treasury history"]</search_queries>'])
+    monkeypatch.setattr(
+        rollout, "chat_target_messages",
+        lambda **kwargs: (SimpleNamespace(content=next(responses, "<answer>1776</answer>")), {}),
+    )
+    rollout.process_one(ITEM, str(tmp_path / "out"), "", search_mode=mode, use_local_tools=False, data_dirs=[str(docs)])
+    assert transport[0] == []
 
 
 # ── Rollout through the keyless endpoint ─────────────────────────────────────
@@ -201,3 +207,63 @@ def test_invalid_arguments_are_refused_before_any_request(transport, queries, kw
     with pytest.raises(ValueError):
         keenable.keenable_search(queries, **kwargs)
     assert not transport[0]
+
+
+# ── Follow-ups from the #368 review ──────────────────────────────────────────
+
+def test_a_redirect_is_not_followed(monkeypatch, transport):
+    # Following it would forward X-API-Key to another origin.
+    monkeypatch.setenv("KEENABLE_API_KEY", "kn-test-key")
+    transport[1]["response"] = httpx.Response(302, headers={"Location": "https://elsewhere.example/steal"})
+    with pytest.raises(RuntimeError, match="Keenable search HTTP 302"):
+        keenable.keenable_search(["treasury"])
+    assert [str(request.url) for request, _ in transport[0]] == [keenable.KEYED_URL]
+
+
+def test_a_non_json_body_fails_instead_of_returning_no_results(transport):
+    transport[1]["response"] = httpx.Response(200, text="<html>maintenance</html>")
+    with pytest.raises(RuntimeError, match="invalid JSON"):
+        keenable.keenable_search(["treasury"])
+
+
+def test_a_key_echoed_in_an_error_body_is_redacted(tmp_path, monkeypatch, transport):
+    monkeypatch.setenv("KEENABLE_API_KEY", "kn-secret-key")
+    transport[1]["response"] = httpx.Response(401, text="invalid key kn-secret-key for this org")
+    scripted_model(monkeypatch)
+    row = rollout.process_one(ITEM, str(tmp_path), "", search_mode="keenable", max_tool_turns=2)
+    assert "Keenable search HTTP 401" in row["fail_reason"]
+    assert "[redacted]" in row["fail_reason"]
+    assert "kn-secret-key" not in row["fail_reason"]
+    assert "kn-secret-key" not in (tmp_path / "predictions" / ITEM["id"] / "conversation.json").read_text()
+
+
+def test_a_key_straddling_the_error_cut_leaks_no_prefix(monkeypatch, transport):
+    monkeypatch.setenv("KEENABLE_API_KEY", "kn-secret-key")
+    transport[1]["response"] = httpx.Response(401, text="x" * 995 + "kn-secret-key")
+    with pytest.raises(RuntimeError) as excinfo:
+        keenable.keenable_search(["treasury"])
+    assert "kn-se" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("backend", ["claude_exec", "codex_exec", "azure_openai_responses"])
+def test_keenable_refuses_a_non_chat_backend_before_any_request(tmp_path, monkeypatch, transport, backend):
+    monkeypatch.setattr(rollout, "get_target_backend", lambda: backend)
+    scripted_model(monkeypatch)
+    row = rollout.process_one(ITEM, str(tmp_path), "", search_mode="keenable", max_tool_turns=2)
+    assert "only supported with target_backend='openai_chat' or 'qwen_chat'" in row["fail_reason"]
+    assert transport[0] == []
+
+
+def test_a_response_that_ends_past_the_deadline_fails_the_round(monkeypatch, transport):
+    # One query: checked before the request at t=0, the response lands at t=25.
+    clock = iter([0.0, 0.0, 25.0])
+    monkeypatch.setattr(keenable.time, "monotonic", lambda: next(clock))
+    with pytest.raises(TimeoutError):
+        keenable.keenable_search(["treasury"], timeout=20)
+    assert len(transport[0]) == 1
+
+
+@pytest.mark.parametrize("title", [None, "", "   ", 42, ["Treasury"]])
+def test_a_missing_or_non_string_title_falls_back_to_the_url(transport, title):
+    transport[1]["payload"] = {"results": [{"url": "https://example.org/t", "title": title, "snippet": "s"}]}
+    assert "[1] https://example.org/t\nURL: https://example.org/t" in keenable.keenable_search(["treasury"])
