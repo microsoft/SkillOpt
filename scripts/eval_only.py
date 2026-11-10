@@ -280,6 +280,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--minimax_api_key", type=str)
     p.add_argument("--minimax_model", type=str)
     p.add_argument("--minimax_temperature", type=float)
+    p.add_argument("--minimax_timeout_seconds", type=float)
     p.add_argument("--minimax_max_tokens", type=int)
     p.add_argument("--minimax_enable_thinking", type=_BOOL)
     p.add_argument("--out_root", type=str)
@@ -408,6 +409,7 @@ def load_config(args: argparse.Namespace) -> dict:
                 "minimax_api_key": "model.minimax_api_key",
                 "minimax_model": "model.minimax_model",
                 "minimax_temperature": "model.minimax_temperature",
+                "minimax_timeout_seconds": "model.minimax_timeout_seconds",
                 "minimax_max_tokens": "model.minimax_max_tokens",
                 "minimax_enable_thinking": "model.minimax_enable_thinking",
                 "seed": "train.seed",
@@ -692,6 +694,7 @@ def main() -> None:
         base_url=cfg.get("minimax_base_url") or None,
         api_key=cfg.get("minimax_api_key") or None,
         temperature=cfg.get("minimax_temperature"),
+        timeout_seconds=cfg.get("minimax_timeout_seconds"),
         max_tokens=cfg.get("minimax_max_tokens"),
         enable_thinking=cfg.get("minimax_enable_thinking"),
     )

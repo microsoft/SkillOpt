@@ -200,6 +200,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--minimax_api_key", type=str)
     p.add_argument("--minimax_model", type=str)
     p.add_argument("--minimax_temperature", type=float)
+    p.add_argument("--minimax_timeout_seconds", type=float)
     p.add_argument("--minimax_max_tokens", type=int)
     p.add_argument("--minimax_enable_thinking", type=_BOOL)
     p.add_argument("--openai_compatible_base_url", type=str)
@@ -442,6 +443,7 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "minimax_api_key": "model.minimax_api_key",
     "minimax_model": "model.minimax_model",
     "minimax_temperature": "model.minimax_temperature",
+    "minimax_timeout_seconds": "model.minimax_timeout_seconds",
     "minimax_max_tokens": "model.minimax_max_tokens",
     "minimax_enable_thinking": "model.minimax_enable_thinking",
     "openai_compatible_base_url": "model.openai_compatible_base_url",
