@@ -58,7 +58,10 @@ def test_claude_tool_route_does_not_credit_a_self_reported_call() -> None:
         # shim's call log stays empty.
         return subprocess.CompletedProcess(cmd, 0, stdout=SELF_REPORT, stderr="")
 
-    with mock.patch("skillopt_sleep.backend.subprocess.run", side_effect=fake_run):
+    # Since #336 a Claude replay must be isolated; an API key selects --bare
+    # without probing the CLI, so the measured tool route is what is exercised.
+    with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
+            mock.patch("skillopt_sleep.backend.subprocess.run", side_effect=fake_run):
         result = replay_one(ClaudeCliBackend(claude_path="claude"), _tool_task(), "skill", "")
     assert result.tools_called == []
     assert result.hard == 0.0
