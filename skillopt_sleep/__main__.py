@@ -332,10 +332,42 @@ def _print_run_report(outcome, args, task_meta: Dict[str, Any]) -> None:
 
 
 def _handoff_dir_for(cfg) -> str:
+    import hashlib
+    import json
+    import re
+
     project = cfg.get("invoked_project") or os.getcwd()
-    return os.environ.get("SKILLOPT_SLEEP_HANDOFF_DIR", "") or os.path.join(
+    root = os.environ.get("SKILLOPT_SLEEP_HANDOFF_DIR", "") or os.path.join(
         project, ".skillopt-sleep-handoff"
     )
+    source = str(cfg.get("transcript_source", "") or "")
+    # Older versions stored task snapshots for every source at the root. If a
+    # snapshot identifies its source, keep resuming that matching handoff and
+    # don't let the default-source path reuse a snapshot from a different one.
+    legacy_source = ""
+    try:
+        with open(os.path.join(root, "tasks.json"), encoding="utf-8") as f:
+            snapshot = json.load(f)
+        if isinstance(snapshot, dict):
+            legacy_source = str(snapshot.get("transcript_source", "") or "")
+    except (OSError, ValueError):
+        pass
+    if source and legacy_source == source:
+        return root
+    if source == "claude" and not legacy_source:
+        # Preserve the historical default location for legacy snapshots whose
+        # source cannot be identified (including older empty-digest handoffs).
+        return root
+    # Claude is the historical default and keeps the original location so an
+    # in-progress default-source handoff resumes without moving its answers.
+    # Other sources need separate snapshots and answer caches: sharing a
+    # handoff directory lets one source's digests/tasks (or matching prompt
+    # answers) silently stand in for another source's data (#312).
+    if not source:
+        return root
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", source).strip("-") or "source"
+    source_key = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(root, "sources", f"{slug[:48]}-{source_key}")
 
 
 def _redact_deep(obj):

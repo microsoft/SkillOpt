@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from skillopt_sleep.backend import get_backend
@@ -157,6 +158,176 @@ class TestHandoffCycle(unittest.TestCase):
 
 
 class TestHandoffCli(unittest.TestCase):
+    def test_handoff_directory_resumes_identified_legacy_source_snapshot(self):
+        from skillopt_sleep.__main__ import _handoff_dir_for
+
+        with tempfile.TemporaryDirectory() as proj:
+            root = os.path.join(proj, ".skillopt-sleep-handoff")
+            os.makedirs(root)
+            with open(os.path.join(root, "tasks.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"transcript_source": "codex", "tasks": []}, f)
+
+            codex_dir = _handoff_dir_for({
+                "invoked_project": proj,
+                "transcript_source": "codex",
+            })
+            claude_dir = _handoff_dir_for({
+                "invoked_project": proj,
+                "transcript_source": "claude",
+            })
+
+            self.assertEqual(codex_dir, root)
+            self.assertNotEqual(claude_dir, root)
+
+    def test_handoff_snapshots_are_isolated_by_transcript_source(self):
+        from skillopt_sleep.__main__ import (
+            _handoff_dir_for,
+            _handoff_mine_and_pin,
+        )
+        from skillopt_sleep.types import SessionDigest
+
+        with tempfile.TemporaryDirectory() as proj, \
+                tempfile.TemporaryDirectory() as home:
+            root = os.path.join(proj, "handoff-root")
+            calls = []
+
+            def harvest(cfg, *, since_iso, limit):
+                source = cfg.get("transcript_source")
+                calls.append(source)
+                return [SessionDigest(
+                    session_id=f"session-{source}", project=proj,
+                )]
+
+            def mine(digests, **kwargs):
+                return [TaskRecord(
+                    id=f"task-{digests[0].session_id}",
+                    project=proj,
+                    intent="source-specific task",
+                )]
+
+            with mock.patch.dict(
+                os.environ, {"SKILLOPT_SLEEP_HANDOFF_DIR": root},
+            ), mock.patch(
+                "skillopt_sleep.__main__.harvest_for_config",
+                side_effect=harvest,
+            ), mock.patch(
+                "skillopt_sleep.__main__.mine", side_effect=mine,
+            ):
+                handoff_dirs = {}
+                for source in ("claude", "codex"):
+                    cfg = load_config(
+                        invoked_project=proj,
+                        projects="invoked",
+                        backend="handoff",
+                        claude_home=os.path.join(home, source, ".claude"),
+                        transcript_source=source,
+                        llm_mine=False,
+                    )
+                    handoff_dir = _handoff_dir_for(cfg)
+                    handoff_dirs[source] = handoff_dir
+                    backend = HandoffBackend(handoff_dir=handoff_dir)
+                    _handoff_mine_and_pin(
+                        cfg,
+                        SimpleNamespace(json=False),
+                        backend,
+                        os.path.join(handoff_dir, "tasks.json"),
+                        dry=True,
+                    )
+
+            self.assertEqual(calls, ["claude", "codex"])
+            self.assertEqual(handoff_dirs["claude"], root)
+            self.assertNotEqual(handoff_dirs["claude"], handoff_dirs["codex"])
+            self.assertNotEqual(
+                HandoffBackend(handoff_dir=handoff_dirs["claude"]).answer_path(
+                    "same-prompt-key"
+                ),
+                HandoffBackend(handoff_dir=handoff_dirs["codex"]).answer_path(
+                    "same-prompt-key"
+                ),
+            )
+            for source, handoff_dir in handoff_dirs.items():
+                with open(os.path.join(handoff_dir, "digests.json"),
+                          encoding="utf-8") as f:
+                    digests = json.load(f)
+                with open(os.path.join(handoff_dir, "tasks.json"),
+                          encoding="utf-8") as f:
+                    tasks = json.load(f)
+                self.assertEqual(digests[0]["session_id"], f"session-{source}")
+                self.assertEqual(tasks["transcript_source"], source)
+
+    def test_empty_handoff_digest_pin_does_not_hide_another_source(self):
+        from skillopt_sleep.__main__ import (
+            _handoff_dir_for,
+            _handoff_mine_and_pin,
+        )
+        from skillopt_sleep.types import SessionDigest
+
+        with tempfile.TemporaryDirectory() as proj, \
+                tempfile.TemporaryDirectory() as home:
+            root = os.path.join(proj, "handoff-root")
+            calls = []
+
+            def harvest(cfg, *, since_iso, limit):
+                source = cfg.get("transcript_source")
+                calls.append(source)
+                if source == "claude":
+                    return []
+                return [SessionDigest(
+                    session_id=f"session-{source}", project=proj,
+                )]
+
+            def mine(digests, **kwargs):
+                if not digests:
+                    return []
+                return [TaskRecord(
+                    id=f"task-{digests[0].session_id}",
+                    project=proj,
+                    intent="task from the later source",
+                )]
+
+            with mock.patch.dict(
+                os.environ, {"SKILLOPT_SLEEP_HANDOFF_DIR": root},
+            ), mock.patch(
+                "skillopt_sleep.__main__.harvest_for_config",
+                side_effect=harvest,
+            ), mock.patch(
+                "skillopt_sleep.__main__.mine", side_effect=mine,
+            ):
+                handoff_dirs = {}
+                for source in ("claude", "codex"):
+                    cfg = load_config(
+                        invoked_project=proj,
+                        projects="invoked",
+                        backend="handoff",
+                        claude_home=os.path.join(home, source, ".claude"),
+                        transcript_source=source,
+                        llm_mine=False,
+                    )
+                    handoff_dir = _handoff_dir_for(cfg)
+                    handoff_dirs[source] = handoff_dir
+                    _handoff_mine_and_pin(
+                        cfg,
+                        SimpleNamespace(json=False),
+                        HandoffBackend(handoff_dir=handoff_dir),
+                        os.path.join(handoff_dir, "tasks.json"),
+                        dry=True,
+                    )
+
+            self.assertEqual(calls, ["claude", "codex"])
+            self.assertEqual(handoff_dirs["claude"], root)
+            with open(os.path.join(handoff_dirs["claude"], "digests.json"),
+                      encoding="utf-8") as f:
+                self.assertEqual(json.load(f), [])
+            with open(os.path.join(handoff_dirs["codex"], "digests.json"),
+                      encoding="utf-8") as f:
+                codex_digests = json.load(f)
+            with open(os.path.join(handoff_dirs["codex"], "tasks.json"),
+                      encoding="utf-8") as f:
+                codex_tasks = json.load(f)
+            self.assertEqual(codex_digests[0]["session_id"], "session-codex")
+            self.assertEqual(codex_tasks["transcript_source"], "codex")
+
     def test_run_exits_3_and_stages_prompts(self):
         from skillopt_sleep.__main__ import main
         from skillopt_sleep.tasks_file import make_tasks_payload, write_tasks_file
