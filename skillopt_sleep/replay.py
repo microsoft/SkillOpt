@@ -10,6 +10,8 @@ self-reported tool call.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 from skillopt_sleep.backend import Backend
@@ -67,6 +69,9 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
             tokens = (len(skill) + len(memory) + len(task.intent) + len(response)) // 4
 
     # rule judges may need the detected tool calls; score locally when possible
+    judge_t0 = time.time()
+    judge_tokens = 0
+    judge_model = ""
     if task.reference_kind == "rule" and task.judge:
         from skillopt_sleep.judges import score_rule_judge_with_feedback
         # Tool tasks went through attempt_with_tools, which measured the calls
@@ -75,11 +80,33 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
         hard, soft, rationale, optimizer_feedback = score_rule_judge_with_feedback(
             task.judge, response, tools_called, verified_tools=bool(tools)
         )
+        judge_latency_ms = (time.time() - judge_t0) * 1000.0
+        judge_model = "rule"
     else:
+        eval_backend = getattr(backend, "optimizer", backend)
+        eval_token_delta_fn = getattr(eval_backend, "token_delta", None)
+        tokens_before_judge = (
+            None if eval_token_delta_fn is not None else eval_backend.tokens_used()
+        )
+
         hard, soft, rationale = backend.judge(task, response)
-        # Backend judge rationales are audit evidence and may contain provider
-        # or grader implementation details. Keep the optimizer channel generic
-        # for non-rule judges unless a future typed safe-feedback API exists.
+        judge_latency_ms = (time.time() - judge_t0) * 1000.0
+
+        if eval_token_delta_fn is not None:
+            judge_tokens = eval_token_delta_fn()
+        else:
+            judge_tokens = max(
+                0, eval_backend.tokens_used() - (tokens_before_judge or 0)
+            )
+            if judge_tokens == 0 and getattr(eval_backend, "name", "") != "mock":
+                ref_len = len(task.reference or "")
+                judge_tokens = (len(task.intent) + len(response) + ref_len) // 4
+
+        judge_model = (
+            getattr(backend, "judge_model_name", "")
+            or getattr(eval_backend, "model", "")
+            or getattr(eval_backend, "name", "")
+        )
         optimizer_feedback = (
             "The response did not satisfy the task's evaluation criteria."
             if hard < 1.0
@@ -96,7 +123,10 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
                reference_kind=task.reference_kind, sample_id=sample_id,
                hard=float(hard), soft=float(soft), why=rationale or "",
                response_head=(response or "")[:400], tools_called=tools_called,
-               tokens=int(tokens), latency_ms=round(latency_ms, 1))
+               tokens=int(tokens), latency_ms=round(latency_ms, 1),
+               judge_latency_ms=round(judge_latency_ms, 1),
+               judge_tokens=int(judge_tokens),
+               judge_model=str(judge_model))
 
     return ReplayResult(
         id=task.id,
@@ -109,12 +139,11 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
         tools_called=tools_called,
         tokens=int(tokens),
         latency_ms=round(latency_ms, 1),
+        judge_latency_ms=round(judge_latency_ms, 1),
+        judge_tokens=int(judge_tokens),
+        judge_model=str(judge_model),
         optimizer_feedback=(optimizer_feedback if hard < 1.0 else ""),
     )
-
-
-import os
-from concurrent.futures import ThreadPoolExecutor
 
 
 def replay_batch(
