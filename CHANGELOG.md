@@ -127,6 +127,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
+  no longer brings a content twin of tonight's held-out task into training,
+  a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
+  judge scores outside 0..1 (including NaN/Infinity) fail closed instead of
+  moving the gate, and learned items survive `apply_edits` round-trips
+  (thanks @bogdanbaciu21, #310).
 - Apply Codex executable and sandbox aliases consistently across inherited
   YAML, CLI overrides, training, and eval-only entry points. Codex CLI calls
   now use explicit sandbox and approval settings instead of the retired
