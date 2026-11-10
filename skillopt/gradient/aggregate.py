@@ -4,14 +4,17 @@ The Aggregate stage takes independently-generated patches from the Reflect
 stage and merges them into a single coherent patch via hierarchical LLM calls.
 Failure-driven patches take priority over success-driven ones.
 """
+
 from __future__ import annotations
 
 import json
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 
 from skillopt.model import chat_optimizer
 from skillopt.optimizer.meta_skill import format_meta_skill_context
+from skillopt.optimizer.skill import apply_patch
 from skillopt.optimizer.update_modes import (
     get_payload_items,
     is_full_rewrite_minibatch_mode,
@@ -23,7 +26,95 @@ from skillopt.optimizer.update_modes import (
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
 
+_SOURCE_EDIT_IDS = "_source_edit_ids"
+_DISCARDED_SOURCE_EDIT_IDS = "_discarded_source_edit_ids"
+
+
+def _tag_source_edits(patches: list[dict], prefix: str) -> list[dict]:
+    """Attach temporary provenance IDs so merge decisions can be checked."""
+    tagged = deepcopy(patches)
+    for patch_index, patch in enumerate(tagged):
+        for edit_index, edit in enumerate(get_payload_items(patch, "patch")):
+            edit[_SOURCE_EDIT_IDS] = [f"{prefix}:{patch_index}:{edit_index}"]
+    return tagged
+
+
+def _validate_patch_merge(
+    skill_content: str,
+    source_patches: list[dict],
+    merged: dict,
+) -> str | None:
+    """Return a reason when a claimed source replacement was lost in merging.
+
+    Source IDs must be accounted for as either carried by an output edit or
+    intentionally discarded. For carried replacements, applying the merge
+    must change the source target in place or retain the source replacement
+    within the merged edit that covers it. This is deliberately conservative:
+    a correction copied elsewhere does not count as replacing the old rule,
+    while a replacement that keeps a heading and adds guidance is allowed.
+    """
+    source_edits: dict[str, dict] = {}
+    for patch in source_patches:
+        for edit in get_payload_items(patch, "patch"):
+            ids = edit.get(_SOURCE_EDIT_IDS, [])
+            if isinstance(ids, list):
+                for source_id in ids:
+                    if isinstance(source_id, str):
+                        source_edits[source_id] = edit
+
+    output_edits = get_payload_items(merged, "patch")
+    carried: set[str] = set()
+    carried_ids: list[str] = []
+    for edit in output_edits:
+        ids = edit.get(_SOURCE_EDIT_IDS, [])
+        if not isinstance(ids, list) or any(not isinstance(source_id, str) for source_id in ids):
+            return "merged edits contain invalid source references"
+        carried.update(ids)
+        carried_ids.extend(ids)
+    discarded = merged.get(_DISCARDED_SOURCE_EDIT_IDS)
+    if not isinstance(discarded, list) or any(not isinstance(source_id, str) for source_id in discarded):
+        return "merge did not report intentionally discarded source edits"
+    if len(discarded) != len(set(discarded)):
+        return "merge reported duplicate discarded source references"
+    if (
+        len(carried_ids) != len(carried)
+        or carried.intersection(discarded)
+        or carried.union(discarded) != set(source_edits)
+    ):
+        return "merge did not account for every source edit exactly once"
+
+    result_skill = apply_patch(skill_content, {"edits": output_edits})
+    for edit in output_edits:
+        for source_id in edit.get(_SOURCE_EDIT_IDS, []):
+            source = source_edits[source_id]
+            if source.get("op") != "replace":
+                continue
+            target = str(source.get("target", ""))
+            content = str(source.get("content", ""))
+            if not target or target not in result_skill:
+                continue
+            source_start = skill_content.find(target)
+            source_end = source_start + len(target)
+            merged_target = str(edit.get("target", ""))
+            merged_start = skill_content.find(merged_target) if merged_target else -1
+            merged_end = merged_start + len(merged_target)
+            covers_source = merged_start >= 0 and merged_start <= source_start and merged_end >= source_end
+            if not covers_source or not content or content not in str(edit.get("content", "")):
+                return f"source replacement {source_id} was claimed but not preserved in place"
+    return None
+
+
+def _strip_source_metadata(patch: dict) -> dict:
+    """Remove merge-only provenance from the public patch payload."""
+    cleaned = deepcopy(patch)
+    cleaned.pop(_DISCARDED_SOURCE_EDIT_IDS, None)
+    for edit in get_payload_items(cleaned, "patch"):
+        edit.pop(_SOURCE_EDIT_IDS, None)
+    return cleaned
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
 
 def _merge_batch(
     skill_content: str,
@@ -42,6 +133,7 @@ def _merge_batch(
     optimizer_ctx = format_meta_skill_context(meta_skill_context)
     if optimizer_ctx:
         user = f"{optimizer_ctx}\n\n{user}"
+    provenance_failure = False
     try:
         response, _ = chat_optimizer(
             system=system_prompt,
@@ -54,19 +146,35 @@ def _merge_batch(
         key = payload_key(update_mode)
         items = merged.get(key) if isinstance(merged, dict) else None
         if isinstance(items, list) and all(isinstance(e, dict) for e in items):
-            for e in items:
-                e["merge_level"] = level
-            return merged
+            if update_mode == "patch" and any(
+                _SOURCE_EDIT_IDS in edit for patch in patches for edit in get_payload_items(patch, update_mode)
+            ):
+                reason = _validate_patch_merge(skill_content, patches, merged)
+                if reason is not None:
+                    provenance_failure = True
+                    warnings.warn(
+                        f"Patch merge failed provenance validation ({reason}); using fallback",
+                        stacklevel=2,
+                    )
+                    items = None
+            if items is not None:
+                for e in items:
+                    e["merge_level"] = level
+                return merged
     except Exception:  # noqa: BLE001 — optimizer/provider failures must fall back
         warnings.warn(
             "Optimizer call or parsing failed during batch merge; using fallback",
             stacklevel=2,
         )
     else:
-        warnings.warn(
-            "Optimizer returned unusable output during batch merge; using fallback",
-            stacklevel=2,
-        )
+        if provenance_failure:
+            # The specific provenance warning above is sufficient.
+            items = None
+        else:
+            warnings.warn(
+                "Optimizer returned unusable output during batch merge; using fallback",
+                stacklevel=2,
+            )
     # Fallback: concatenate all edits
     all_edits = []
     for p in patches:
@@ -129,8 +237,13 @@ def _hierarchical_merge(
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futs = {
                     ex.submit(
-                        _merge_batch, skill_content, batch, system_prompt, update_mode,
-                        meta_skill_context, level,
+                        _merge_batch,
+                        skill_content,
+                        batch,
+                        system_prompt,
+                        update_mode,
+                        meta_skill_context,
+                        level,
                     ): idx
                     for idx, batch in to_merge
                 }
@@ -142,7 +255,7 @@ def _hierarchical_merge(
                         n_edits = len(get_payload_items(next_level[idx], update_mode))
                         print(
                             f"      [aggregate {label}] level={level} "
-                            f"batch [{batch_i}:{batch_i+len(batch_data)}] "
+                            f"batch [{batch_i}:{batch_i + len(batch_data)}] "
                             f"→ 1 patch ({n_edits} {payload_label(update_mode)})"
                         )
 
@@ -152,6 +265,7 @@ def _hierarchical_merge(
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def merge_patches(
     skill_content: str,
@@ -192,15 +306,31 @@ def merge_patches(
         merge_success_prompt = load_prompt("merge_success")
         merge_final_prompt = load_prompt("merge_final")
 
+    if update_mode == "patch":
+        failure_patches = _tag_source_edits(failure_patches, "failure")
+        success_patches = _tag_source_edits(success_patches, "success")
+
     failure_merged = _hierarchical_merge(
-        skill_content, failure_patches, merge_failure_prompt, update_mode,
-        batch_size, verbose, label="failure", workers=workers,
+        skill_content,
+        failure_patches,
+        merge_failure_prompt,
+        update_mode,
+        batch_size,
+        verbose,
+        label="failure",
+        workers=workers,
         meta_skill_context=meta_skill_context,
     )
 
     success_merged = _hierarchical_merge(
-        skill_content, success_patches, merge_success_prompt, update_mode,
-        batch_size, verbose, label="success", workers=workers,
+        skill_content,
+        success_patches,
+        merge_success_prompt,
+        update_mode,
+        batch_size,
+        verbose,
+        label="success",
+        workers=workers,
         meta_skill_context=meta_skill_context,
     )
 
@@ -210,9 +340,9 @@ def merge_patches(
     if not f_edits and not s_edits:
         return {"reasoning": "no updates from either group", payload_key(update_mode): []}
     if not s_edits:
-        return failure_merged
+        return _strip_source_metadata(failure_merged) if update_mode == "patch" else failure_merged
     if not f_edits:
-        return success_merged
+        return _strip_source_metadata(success_merged) if update_mode == "patch" else success_merged
 
     combined_patches = [failure_merged, success_merged]
     combined_text = json.dumps(combined_patches, ensure_ascii=False, indent=2)
@@ -240,6 +370,7 @@ def merge_patches(
     optimizer_ctx = format_meta_skill_context(meta_skill_context)
     if optimizer_ctx:
         user = f"{optimizer_ctx}\n\n{user}"
+    provenance_failure = False
     try:
         response, _ = chat_optimizer(
             system=merge_final_prompt,
@@ -252,24 +383,36 @@ def merge_patches(
         key = payload_key(update_mode)
         items = final.get(key) if isinstance(final, dict) else None
         if isinstance(items, list) and all(isinstance(e, dict) for e in items):
-            if verbose:
-                print(
-                    f"    [aggregate final] "
-                    f"{len(f_edits)}+{len(s_edits)} → {len(items)} {payload_label(update_mode)}"
-                )
-            return final
+            if update_mode == "patch":
+                reason = _validate_patch_merge(skill_content, combined_patches, final)
+                if reason is not None:
+                    provenance_failure = True
+                    warnings.warn(
+                        f"Final patch merge failed provenance validation ({reason}); using fallback",
+                        stacklevel=2,
+                    )
+                    items = None
+            if items is not None:
+                if verbose:
+                    print(
+                        f"    [aggregate final] "
+                        f"{len(f_edits)}+{len(s_edits)} → {len(items)} {payload_label(update_mode)}"
+                    )
+                return _strip_source_metadata(final) if update_mode == "patch" else final
     except Exception:  # noqa: BLE001 — optimizer/provider failures must fall back
         warnings.warn(
             "Optimizer call or parsing failed during final merge; using fallback",
             stacklevel=2,
         )
     else:
-        warnings.warn(
-            "Optimizer returned unusable output during final merge; using fallback",
-            stacklevel=2,
-        )
+        if not provenance_failure:
+            warnings.warn(
+                "Optimizer returned unusable output during final merge; using fallback",
+                stacklevel=2,
+            )
 
-    return {
+    fallback = {
         "reasoning": "fallback: failure first, then success",
         payload_key(update_mode): f_edits + s_edits,
     }
+    return _strip_source_metadata(fallback) if update_mode == "patch" else fallback

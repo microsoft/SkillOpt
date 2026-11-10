@@ -1,8 +1,13 @@
+import json
 from unittest.mock import patch
 
 import pytest
 
-from skillopt.gradient.aggregate import _merge_batch, merge_patches
+from skillopt.gradient.aggregate import (
+    _merge_batch,
+    _tag_source_edits,
+    merge_patches,
+)
 
 
 def test_merge_batch_fallback_on_runtime_error():
@@ -142,3 +147,166 @@ def test_merge_patches_rejects_invalid_payload_shape(response):
 
     assert result["reasoning"] == "fallback: failure first, then success"
     assert [edit["id"] for edit in result["edits"]] == ["1", "2"]
+
+
+def test_batch_merge_falls_back_when_claimed_replacement_is_lost():
+    skill = "## Guidance\nOriginal instruction.\n"
+    source = _tag_source_edits(
+        [{"edits": [{"op": "replace", "target": "Original instruction.", "content": "Corrected instruction."}]}],
+        "failure",
+    )
+    response = {
+        "reasoning": "widened replacement",
+        "_discarded_source_edit_ids": [],
+        "edits": [
+            {
+                "op": "append",
+                # The replacement text appears elsewhere, but the source
+                # target itself remains unchanged.
+                "content": "Corrected instruction.",
+                "_source_edit_ids": ["failure:0:0"],
+            }
+        ],
+    }
+
+    with patch("skillopt.gradient.aggregate.chat_optimizer", return_value=(json.dumps(response), None)):
+        with pytest.warns(UserWarning, match="provenance validation"):
+            result = _merge_batch(skill, source, "merge", "patch")
+
+    assert result["reasoning"] == "fallback concatenation"
+    assert result["edits"][0]["content"] == "Corrected instruction."
+
+
+def test_batch_merge_allows_heading_replacement_that_adds_clarification():
+    skill = "## Guidance\nOriginal instruction.\n"
+    replacement = "## Guidance\n\nClarifying instruction."
+    source = _tag_source_edits(
+        [{"edits": [{"op": "replace", "target": "## Guidance", "content": replacement}]}],
+        "failure",
+    )
+    response = {
+        "reasoning": "retain heading and clarify",
+        "_discarded_source_edit_ids": [],
+        "edits": [
+            {
+                "op": "replace",
+                "target": "## Guidance",
+                "content": replacement,
+                "_source_edit_ids": ["failure:0:0"],
+            }
+        ],
+    }
+
+    with patch("skillopt.gradient.aggregate.chat_optimizer", return_value=(json.dumps(response), None)):
+        result = _merge_batch(skill, source, "merge", "patch")
+
+    assert result["edits"][0]["content"] == replacement
+
+
+def test_final_merge_falls_back_when_claimed_replacement_is_lost():
+    failure = [
+        {
+            "reasoning": "f",
+            "edits": [
+                {
+                    "op": "replace",
+                    "target": "Original instruction.",
+                    "content": "Corrected instruction.",
+                }
+            ],
+        }
+    ]
+    success = [
+        {
+            "reasoning": "s",
+            "edits": [
+                {
+                    "op": "append",
+                    "content": "Helpful note.",
+                }
+            ],
+        }
+    ]
+
+    def first_patch(_skill_content, patches, *args, **kwargs):
+        return patches[0]
+
+    response = {
+        "reasoning": "lost correction",
+        "_discarded_source_edit_ids": ["success:0:0"],
+        "edits": [
+            {
+                "op": "append",
+                "content": "Corrected instruction.",
+                "_source_edit_ids": ["failure:0:0"],
+            }
+        ],
+    }
+    with patch("skillopt.gradient.aggregate._hierarchical_merge", side_effect=first_patch):
+        with patch("skillopt.gradient.aggregate.chat_optimizer", return_value=(json.dumps(response), None)):
+            with pytest.warns(UserWarning, match="Final patch merge failed provenance validation"):
+                result = merge_patches(
+                    "Original instruction.\n",
+                    failure,
+                    success,
+                    verbose=False,
+                )
+
+    assert [edit["content"] for edit in result["edits"]] == [
+        "Corrected instruction.",
+        "Helpful note.",
+    ]
+    assert all("_source_edit_ids" not in edit for edit in result["edits"])
+
+
+def test_final_merge_allows_heading_replacement_that_adds_clarification():
+    skill = "## Guidance\nOriginal instruction.\n"
+    replacement = "## Guidance\n\nClarifying instruction."
+    failure = [
+        {
+            "reasoning": "f",
+            "edits": [
+                {
+                    "op": "replace",
+                    "target": "## Guidance",
+                    "content": replacement,
+                }
+            ],
+        }
+    ]
+    success = [
+        {
+            "reasoning": "s",
+            "edits": [
+                {
+                    "op": "append",
+                    "content": "Helpful note.",
+                }
+            ],
+        }
+    ]
+
+    def first_patch(_skill_content, patches, *args, **kwargs):
+        return patches[0]
+
+    response = {
+        "reasoning": "retain heading and clarify",
+        "_discarded_source_edit_ids": ["success:0:0"],
+        "edits": [
+            {
+                "op": "replace",
+                "target": "## Guidance",
+                "content": replacement,
+                "_source_edit_ids": ["failure:0:0"],
+            }
+        ],
+    }
+    with patch("skillopt.gradient.aggregate._hierarchical_merge", side_effect=first_patch):
+        with patch(
+            "skillopt.gradient.aggregate.chat_optimizer",
+            return_value=(json.dumps(response), None),
+        ):
+            result = merge_patches(skill, failure, success, verbose=False)
+
+    assert result["edits"][0]["content"] == replacement
+    assert all("_source_edit_ids" not in edit for edit in result["edits"])
