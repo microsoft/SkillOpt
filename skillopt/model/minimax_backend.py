@@ -77,12 +77,15 @@ OPTIMIZER_DEPLOYMENT = os.environ.get(
 # keeps thinking on regardless, so sending "disabled" there is a lie we would
 # then have to reason about downstream. Send the honest value instead.
 _ALWAYS_THINKING_PREFIXES: tuple[str, ...] = ("MiniMax-M2",)
+_FLASH_MODEL = "MiniMax-M3.1-Flash"
+_FLASH_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+REASONING_EFFORT: str | None = None
 
 
 def _thinking_is_forced(deployment: str) -> bool:
     """True when ``deployment`` cannot honor ``thinking: {"type": "disabled"}``."""
     name = str(deployment or "").strip()
-    return any(name.startswith(prefix) for prefix in _ALWAYS_THINKING_PREFIXES)
+    return name == _FLASH_MODEL or any(name.startswith(prefix) for prefix in _ALWAYS_THINKING_PREFIXES)
 
 
 def _resolve_thinking_type(deployment: str) -> str:
@@ -159,6 +162,7 @@ def _compat_message_from_payload(message: dict[str, Any], choice: dict[str, Any]
     return CompatAssistantMessage(
         content=content,
         tool_calls=tool_calls,
+        reasoning_content=message.get("reasoning_content"),
         metadata={
             "finish_reason": choice.get("finish_reason"),
             "choice0": _json_safe(choice),
@@ -203,14 +207,22 @@ def _chat_messages_impl(
     tool_choice: str | dict[str, Any] | None = None,
     return_message: bool = False,
     deployment: str | None = None,
+    reasoning_effort: str | None = None,
     timeout: float | None = None,
 ) -> tuple[Any, dict[str, int]]:
+    model = deployment or TARGET_DEPLOYMENT
     payload: dict[str, Any] = {
-        "model": deployment or TARGET_DEPLOYMENT,
+        "model": model,
         "messages": _json_safe(messages),
         "max_tokens": min(max_completion_tokens, MAX_TOKENS),
     }
-    payload["thinking"] = {"type": _resolve_thinking_type(deployment or TARGET_DEPLOYMENT)}
+    payload["thinking"] = {"type": _resolve_thinking_type(model)}
+    if model == _FLASH_MODEL:
+        effort = REASONING_EFFORT if reasoning_effort is None else reasoning_effort
+        if effort:
+            if effort not in _FLASH_EFFORTS:
+                raise ValueError(f"Unsupported MiniMax-M3.1-Flash reasoning effort: {effort!r}")
+            payload["reasoning_effort"] = effort
     if TEMPERATURE is not None:
         payload["temperature"] = TEMPERATURE
     if tools:
@@ -308,7 +320,6 @@ def chat_target(
     reasoning_effort: str | None = None,
     timeout: float | None = None,
 ) -> tuple[str, dict[str, int]]:
-    del reasoning_effort
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _chat_messages_impl(
         messages,
@@ -316,6 +327,7 @@ def chat_target(
         retries,
         stage,
         deployment=TARGET_DEPLOYMENT,
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -336,7 +348,6 @@ def chat_optimizer(
     (Azure) and produced "[skip] no usable patches" for any user running
     optimizer+target on `minimax_chat`.
     """
-    del reasoning_effort
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     return _chat_messages_impl(
         messages,
@@ -344,6 +355,7 @@ def chat_optimizer(
         retries,
         stage,
         deployment=OPTIMIZER_DEPLOYMENT,
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -360,7 +372,6 @@ def chat_target_messages(
     return_message: bool = False,
     timeout: float | None = None,
 ) -> tuple[Any, dict[str, int]]:
-    del reasoning_effort
     return _chat_messages_impl(
         messages,
         max_completion_tokens,
@@ -370,6 +381,7 @@ def chat_target_messages(
         tool_choice=tool_choice,
         return_message=return_message,
         deployment=TARGET_DEPLOYMENT,
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -386,7 +398,6 @@ def chat_optimizer_messages(
     return_message: bool = False,
     timeout: float | None = None,
 ) -> tuple[Any, dict[str, int]]:
-    del reasoning_effort
     return _chat_messages_impl(
         messages,
         max_completion_tokens,
@@ -396,6 +407,7 @@ def chat_optimizer_messages(
         tool_choice=tool_choice,
         return_message=return_message,
         deployment=OPTIMIZER_DEPLOYMENT,
+        reasoning_effort=reasoning_effort,
         timeout=timeout,
     )
 
@@ -409,7 +421,9 @@ def reset_token_tracker() -> None:
 
 
 def set_reasoning_effort(effort: str | None) -> None:
-    del effort
+    global REASONING_EFFORT
+    # Validate only when sending Flash: shared settings also reach other models.
+    REASONING_EFFORT = effort
 
 
 def set_target_deployment(deployment: str) -> None:
