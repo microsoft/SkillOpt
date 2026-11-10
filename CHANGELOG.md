@@ -173,6 +173,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Score the last `<answer>` tag in an OfficeQA response, as SearchQA and
   LiveMathematicianBench already do, so a model that revises its answer is
   graded on the revision instead of the draft (thanks @Shizoqua).
+- Skip Claude Code, Codex and Cursor transcript lines that are cut
+  mid-character or are valid JSON but not an object, instead of aborting the
+  whole Sleep harvest (thanks @1AbdullahButt).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
