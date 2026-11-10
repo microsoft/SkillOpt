@@ -160,7 +160,7 @@ def _write_file(path: str, content: str, work_dir: str) -> str:
         parent = os.path.dirname(full_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(full_path, "w") as f:
+        with open(full_path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"File written: {full_path} ({len(content)} chars)"
     except Exception as e:  # noqa: BLE001
@@ -176,7 +176,7 @@ def _auto_verify(work_dir: str) -> str:
     sol_path = os.path.join(work_dir, "solution.py")
     output_path = None
     if os.path.exists(sol_path):
-        with open(sol_path) as f:
+        with open(sol_path, encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped.startswith("OUTPUT_PATH"):

@@ -10,7 +10,7 @@ from skillopt.datasets.base import SplitDataLoader
 
 def _load_items(path: str) -> list[dict]:
     """Load items from JSON or JSONL file."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         content = f.read().strip()
     try:
         data = json.loads(content)

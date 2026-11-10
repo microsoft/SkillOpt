@@ -18,6 +18,7 @@ from skillopt.envs.alfworld.rollout import (
     TASKS,
 )
 from skillopt.utils import compute_score
+from skillopt.utils.text_io import read_lines
 
 
 @dataclass(frozen=True)
@@ -329,12 +330,11 @@ class ALFWorldAdapter(EnvAdapter):
         # Resume support
         if os.path.exists(results_path):
             existing: list[dict] = []
-            with open(results_path) as f:
-                for line in f:
-                    try:
-                        existing.append(json.loads(line))
-                    except Exception:
-                        pass
+            for line in read_lines(results_path):
+                try:
+                    existing.append(json.loads(line))
+                except Exception:
+                    pass
             if existing:
                 return existing
 
@@ -355,7 +355,7 @@ class ALFWorldAdapter(EnvAdapter):
                 result_ids=getattr(env_manager, "_skillopt_result_ids", None),
             )
 
-        with open(results_path, "w") as f:
+        with open(results_path, "w", encoding="utf-8") as f:
             for r in results:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
 

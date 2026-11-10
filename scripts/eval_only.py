@@ -48,6 +48,7 @@ from skillopt.model import (
 )
 from skillopt.model.common import default_model_for_backend, normalize_backend_name
 from skillopt.utils import compute_score
+from skillopt.utils.text_io import read_text
 
 _OPENAI_DEFAULT_MODEL_SENTINELS = {"gpt-5.4", "gpt-5.5"}
 _ROLE_BACKEND_DEFAULTS = (None, "", "openai_chat")
@@ -608,8 +609,7 @@ def main() -> None:
 
     # Load skill
     skill_path = os.path.abspath(args.skill)
-    with open(skill_path) as f:
-        skill_content = f.read()
+    skill_content = read_text(skill_path)
     print(f"  [skill] {skill_path} ({len(skill_content)} chars)")
 
     # Configure models
@@ -766,7 +766,7 @@ def main() -> None:
         "hard": hard,
         "soft": soft,
     }
-    with open(os.path.join(out_root, "eval_summary.json"), "w") as f:
+    with open(os.path.join(out_root, "eval_summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
     print(f"  Saved to: {out_root}")
