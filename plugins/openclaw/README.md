@@ -6,11 +6,10 @@ This directory is a contributed reference for connecting
 backend.
 
 > **Reference status.** This is not one of the shared, plug-and-play
-> `skillopt_sleep` wrappers. Several scripts and the sample config contain
-> environment-specific absolute paths and assumptions from the original setup,
-> and the contributed wrapper has unresolved Python 3.10 syntax and backend
-> factory-signature gaps. The current checkout is not directly runnable; treat
-> it as porting source material, not an installation.
+> `skillopt_sleep` wrappers. Paths now follow OpenClaw's home/state/profile
+> environment, but the contributed wrapper still has unresolved Python 3.10
+> behavior and backend factory-signature gaps. The current checkout is not
+> directly runnable; treat it as porting source material, not an installation.
 
 ## Included components
 
@@ -50,12 +49,19 @@ staged files before changing a live skill.
    cd SkillOpt/plugins/openclaw
    ```
 
-2. Inspect and replace the sample absolute paths in `run_sleep.py`,
-   `slash_sleep.py`, `run_sleep_cron.sh`, and `config.json`. Confirm the engine
-   checkout, OpenClaw workspace, state directory, skill directory, and task-file
-   paths all point to isolated test locations.
+2. Review the resolved locations before use. The scripts derive their own
+   plugin directory, the repository root, and task files from
+   `run_sleep_cron.sh`'s own path. OpenClaw locations follow
+   `OPENCLAW_HOME`, `OPENCLAW_STATE_DIR`, and `OPENCLAW_PROFILE`; the blank
+   `claude_home` and `invoked_project` values in `config.json` resolve to
+   `<OPENCLAW_STATE_DIR>/agents` and `<OPENCLAW_STATE_DIR>/workspace`.
+   Set `SKILLOPT_REPO` only when the SkillOpt package cannot be imported from
+   the checkout containing this plugin. `run_sleep.py` prefers an installed
+   config at `<OPENCLAW_STATE_DIR>/workspace/skills/skillopt-sleep/config.json`
+   and otherwise falls back to the sample beside the script.
 
-3. Review `config.json`. In particular, do not assume that values such as
+3. Review `config.json`. Replace blank path values only when the OpenClaw
+   defaults are not appropriate. In particular, do not assume that values such as
    `replay_mode` are enforced by this custom wrapper merely because they appear
    in the example config. `max_tokens_per_night` is applied by the shared cycle,
    but it is measured with the wrapper backend's rough `tokens_used()` estimate
