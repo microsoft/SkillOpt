@@ -180,6 +180,8 @@ _HOST_META_TAGS = (
     # (<environment_info>…</environment_info>); harvesting it leaks local
     # environment detail and was never a user prompt.
     "environment_info",
+    # Background-task completion notices arrive as user messages.
+    "task-notification",
 )
 
 
@@ -219,6 +221,9 @@ def _is_meta_prompt(text: str) -> bool:
     if t.startswith("/") and len(t.split()) <= 3:
         return True
     if t.startswith("[Pasted text") or t.startswith("Caveat:"):
+        return True
+    # After compaction the host replays a model-written summary as a user turn.
+    if t.startswith("This session is being continued from a previous conversation"):
         return True
     # Expanded slash-command prompts (Claude Code injects the full command
     # body as a user message, wrapped in <command-message>/<command-name>
@@ -477,6 +482,12 @@ def digest_transcript(path: str) -> Optional[SessionDigest]:
             snap = rec.get("snapshot") or rec.get("files") or {}
             if isinstance(snap, dict):
                 files.extend([str(k) for k in list(snap.keys())[:20]])
+        # Newer Claude Code versions also persist raw API payloads as
+        # ``api-request-blob`` records. They carry a ``message`` with role
+        # "user" but no ``isMeta`` flag, so a loaded skill's body, tool results
+        # and task notifications would otherwise read as things the user typed.
+        if rtype not in (None, "user", "assistant"):
+            continue
         msg = rec.get("message")
         if not isinstance(msg, dict):
             continue
