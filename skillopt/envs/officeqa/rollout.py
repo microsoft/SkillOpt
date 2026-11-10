@@ -7,6 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from skillopt.envs.officeqa.evaluator import evaluate
+from skillopt.envs.officeqa.keenable_search import keenable_search
 from skillopt.envs.officeqa.tool_runtime import (
     build_oracle_parsed_pages_context,
     custom_search,
@@ -70,6 +71,7 @@ _DEFAULT_SEARCH_MODE = "offline"
 _CUSTOM_SEARCH_MODE = "custom_search"
 _AZURE_SEARCH_MODE = "azure_search"
 _PARALLEL_SEARCH_MODE = "parallel"
+_KEENABLE_SEARCH_MODE = "keenable"
 def _normalize_search_mode(search_mode: str | None) -> str:
     normalized = str(search_mode or _DEFAULT_SEARCH_MODE).strip().lower()
     if normalized in {"custom", _CUSTOM_SEARCH_MODE}:
@@ -78,6 +80,8 @@ def _normalize_search_mode(search_mode: str | None) -> str:
         return _AZURE_SEARCH_MODE
     if normalized == _PARALLEL_SEARCH_MODE:
         return _PARALLEL_SEARCH_MODE
+    if normalized == _KEENABLE_SEARCH_MODE:
+        return _KEENABLE_SEARCH_MODE
     return _DEFAULT_SEARCH_MODE
 def _load_parallel_search():
     """Import the Parallel client only when `parallel` mode is actually selected.
@@ -113,7 +117,7 @@ def _build_system(
             "answer inside <answer>...</answer>.\n\n"
             + skill_section
         ).rstrip()
-    if normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE}:
+    if normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE, _KEENABLE_SEARCH_MODE}:
         protocol = (
             "You are an expert OfficeQA research assistant. Solve the question using the provided oracle parsed "
             "OfficeQA page(s) and evidence returned by the controller-managed custom search loop.\n\n"
@@ -187,7 +191,7 @@ def _build_user(
         parts.append("## File Hints\n" + "\n".join(f"- {hint}" for hint in item["source_files"]))
     if diagnostic_mode and diagnostic_instruction.strip():
         parts.append(f"## Training Readout\n{diagnostic_instruction.strip()}")
-    if normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE}:
+    if normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE, _KEENABLE_SEARCH_MODE}:
         parts.append(
             _build_round_instruction(
                 turn=turn,
@@ -437,6 +441,11 @@ def _run_custom_search_process(
                 queries, objective=item["question"], session_id=session_id,
                 max_num_results=search_max_num_results, timeout=search_timeout_seconds,
             )
+        elif search_mode == _KEENABLE_SEARCH_MODE:
+            # Same rule as Parallel: a failed explicit provider stays an error.
+            results_text = keenable_search(
+                queries, max_num_results=search_max_num_results, timeout=search_timeout_seconds,
+            )
         else:
             results_text = _execute_custom_search_round(
                 queries,
@@ -577,7 +586,7 @@ def process_one(
                 else "Treat it as primary document evidence for answering the question."
             ),
         )
-    elif normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE}:
+    elif normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE, _KEENABLE_SEARCH_MODE}:
         try:
             docs_roots = resolve_docs_roots(data_dirs)
         except FileNotFoundError:
@@ -616,7 +625,7 @@ def process_one(
     last_response_metadata: dict = {}
     allowed_files = [os.path.basename(path) for path in candidate_files]
     try:
-        if normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE}:
+        if normalized_search_mode in {_CUSTOM_SEARCH_MODE, _PARALLEL_SEARCH_MODE, _KEENABLE_SEARCH_MODE}:
             system, user, final_response, final_answer, conversation, fail_reason, last_response_metadata = _run_custom_search_process(
                 item,
                 skill_content,

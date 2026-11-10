@@ -44,10 +44,25 @@ def _strip_learned(doc: str) -> str:
     return doc.rstrip()
 
 
+def _learned_item(text: str) -> str:
+    """Normalize one learned item to the single bullet line it is stored as.
+
+    The block is read back one ``- `` line per item, so an item must not span
+    lines: internal whitespace (including newlines) collapses to single
+    spaces. Exactly one leading bullet marker is dropped, so ``- X`` and ``X``
+    are the same item while text such as ``--force`` keeps its dashes.
+    """
+    item = " ".join(str(text or "").split())
+    if item.startswith("- "):
+        item = item[2:].lstrip()
+    return item
+
+
 def set_learned(doc: str, learned_lines: List[str]) -> str:
     """Replace the protected learned region with the given bullet lines."""
     base = _strip_learned(doc)
-    body = "\n".join(f"- {ln.strip().lstrip('- ').strip()}" for ln in learned_lines if ln.strip())
+    items = (_learned_item(ln) for ln in learned_lines)
+    body = "\n".join(f"- {item}" for item in items if item)
     block = (
         f"\n\n{LEARNED_START}\n"
         f"## Learned preferences & procedures\n\n{_BANNER}\n\n{body}\n"
@@ -57,12 +72,21 @@ def set_learned(doc: str, learned_lines: List[str]) -> str:
 
 
 def current_learned_lines(doc: str) -> List[str]:
+    """Return the learned items, one per ``- `` bullet.
+
+    Blocks written before items were normalized to one line can contain an
+    item whose continuation lines do not start with ``- ``. Those lines are
+    joined onto the preceding item instead of being dropped, so adopted text
+    survives the next edit.
+    """
     inner = extract_learned(doc)
     lines: List[str] = []
     for ln in inner.splitlines():
         ln = ln.strip()
         if ln.startswith("- "):
-            lines.append(ln[2:].strip())
+            lines.append(_learned_item(ln))
+        elif ln and lines:
+            lines[-1] = _learned_item(f"{lines[-1]} {ln}")
     return lines
 
 
@@ -110,11 +134,12 @@ def apply_edits_detailed(
     for e in edits:
         op = (e.op or "add").lower()
         if op == "add":
-            if _norm(e.content) in norm_set or not e.content.strip():
+            item = _learned_item(e.content)
+            if not item or _norm(item) in norm_set:
                 unmatched.append(e)
                 continue
-            lines.append(e.content.strip())
-            norm_set.add(_norm(e.content))
+            lines.append(item)
+            norm_set.add(_norm(item))
             applied.append(e)
         elif op == "delete":
             anchor = _norm(e.anchor or e.content)
@@ -130,7 +155,7 @@ def apply_edits_detailed(
                 unmatched.append(e)
         elif op == "replace":
             anchor = _norm(e.anchor)
-            replacement = e.content.strip()
+            replacement = _learned_item(e.content)
             new_lines = []
             changed = False
             for line in lines:

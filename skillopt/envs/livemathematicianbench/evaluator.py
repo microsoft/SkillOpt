@@ -15,7 +15,8 @@ def extract_answer(text: str) -> str:
 
 
 def normalize_label(text: str) -> str:
-    return str(text).strip().upper().rstrip(".):")
+    """Normalize a choice label, accepting ``B``, ``B.``, ``(B)``, ``[B]`` and ``**B**``."""
+    return str(text).strip().strip("*").strip().lstrip("([").upper().rstrip(".):]")
 
 
 def parse_choice_label(prediction_text: str, choices: list[dict]) -> str:
