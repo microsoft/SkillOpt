@@ -100,8 +100,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--project", default="")
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
     p.add_argument("--backend", default="",
-                   choices=["", "mock", "claude", "codex", "copilot", "cursor", "pi",
-                            "opencode", "handoff", "azure_openai"])
+                   help="replay and reflection backend (built-in, registered, or entry point)")
+    p.add_argument("--backend-module", default="",
+                   help="custom backend class or factory as 'pkg.mod:Class'")
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--cursor-path", default="", help="path to the Cursor Agent CLI")
@@ -117,8 +118,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cursor-home", default="", help="override ~/.cursor for Cursor session harvest")
     p.add_argument("--pi-home", default="", help="override ~/.pi for Pi session harvest")
     p.add_argument("--source", default="",
-                   choices=["", "claude", "codex", "copilot", "copilot_cli", "cursor", "pi", "opencode", "auto"],
-                   help="session transcript source")
+                   help="session transcript source (built-in, registered, or entry point)")
+    p.add_argument("--source-module", default="",
+                   help="custom transcript source as 'pkg.mod:func'")
     p.add_argument("--vscode-workspace-storage", default="",
                    help="override VS Code User/workspaceStorage root for copilot source")
     p.add_argument("--copilot-cli-session-store", default="",
@@ -160,6 +162,8 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["projects"] = args.scope
     if args.backend:
         overrides["backend"] = args.backend
+    if getattr(args, "backend_module", ""):
+        overrides["backend_module"] = args.backend_module
     if args.model:
         overrides["model"] = args.model
     if getattr(args, "codex_path", ""):
@@ -182,6 +186,8 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["cursor_home"] = os.path.abspath(os.path.expanduser(args.cursor_home))
     if getattr(args, "source", ""):
         overrides["transcript_source"] = args.source
+    if getattr(args, "source_module", ""):
+        overrides["source_module"] = args.source_module
     if getattr(args, "vscode_workspace_storage", ""):
         overrides["vscode_workspace_storage"] = os.path.abspath(
             os.path.expanduser(args.vscode_workspace_storage)

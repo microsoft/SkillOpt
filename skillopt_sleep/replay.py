@@ -10,6 +10,8 @@ self-reported tool call.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 from skillopt_sleep.backend import Backend
@@ -111,10 +113,6 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
         latency_ms=round(latency_ms, 1),
         optimizer_feedback=(optimizer_feedback if hard < 1.0 else ""),
     )
-
-
-import os
-from concurrent.futures import ThreadPoolExecutor
 
 
 def replay_batch(
