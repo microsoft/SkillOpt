@@ -165,6 +165,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   marker and expose the protected content (thanks @Shizoqua).
 - Score LiveMathematicianBench answers written as `(B)`, `[B]`, or `**B**` as
   the choice they name instead of marking them wrong (thanks @Shizoqua).
+- Ignore sentence-ending periods when normalizing OfficeQA answers, so a
+  correct answer such as `42.` matches the gold `42` instead of scoring zero
+  exact match and F1 (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
