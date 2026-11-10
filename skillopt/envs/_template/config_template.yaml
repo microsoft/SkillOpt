@@ -51,5 +51,5 @@ evaluation:
 # Override only what differs from the inherited defaults.
 model:
   optimizer_backend: openai_chat  # openai_chat | claude_chat | qwen_chat | minimax_chat | codex_exec
-  target_backend: openai_chat     # chat backends plus codex_exec / claude_code_exec / cursor_exec
+  target_backend: openai_chat     # chat backends plus codex_exec / claude_code_exec / cursor_exec / opencode_exec
   reasoning_effort: medium

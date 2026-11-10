@@ -7,6 +7,18 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **OpenCode CLI backend** (`opencode_exec`, aliases `opencode`, `opencode_chat`)
+  for the optimizer and as an exec target, reusing the user's OpenCode login.
+  `--backend opencode` fills both roles; `--optimizer_backend opencode_exec` or
+  `--target_backend opencode_exec` selects one. Requires OpenCode 2.x. Every
+  call runs `opencode run --standalone` with a private config home that drops
+  the user's MCP servers, global rules and skills, sets `PWD` (OpenCode reads
+  its project directory from it), and keeps project `AGENTS.md` out. The
+  optimizer is text-only with every tool denied. The target runs in the task
+  workspace with read tools; file-edit rollouts add the edit tool, and a shell
+  only with `model.opencode_exec_allow_shell` because OpenCode has no OS
+  sandbox. Tool steps are written to `opencode_trace_steps.txt`. Live smoke
+  tests are opt-in with `SKILLOPT_TEST_REAL_OPENCODE_EXEC=1`.
 - **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
   provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
   config selects Parallel automatically. Selecting it sends the generated

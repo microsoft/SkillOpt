@@ -39,6 +39,7 @@ from skillopt.model import (
     configure_cursor_exec,
     configure_minimax_chat,
     configure_openai_compatible,
+    configure_opencode_exec,
     configure_qwen_chat,
     set_optimizer_backend,
     set_optimizer_deployment,
@@ -171,6 +172,8 @@ def parse_args() -> argparse.Namespace:
                        "claude_code_exec",
                        "cursor",
                        "cursor_exec",
+                       "opencode",
+                       "opencode_exec",
                        "copilot",
                        "copilot_chat",
                        "copilot_exec",
@@ -268,6 +271,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--claude_code_exec_effort", type=str)
     p.add_argument("--claude_code_exec_max_thinking_tokens", type=int)
     p.add_argument("--cursor_exec_path", type=str)
+    p.add_argument("--opencode_exec_path", type=str)
+    p.add_argument("--opencode_exec_allow_shell", type=_BOOL)
     p.add_argument("--cursor_exec_sandbox", type=str)
     p.add_argument("--copilot_exec_path", type=str)
     p.add_argument("--copilot_exec_home", type=str)
@@ -396,6 +401,8 @@ def load_config(args: argparse.Namespace) -> dict:
                 "claude_code_exec_effort": "model.claude_code_exec_effort",
                 "claude_code_exec_max_thinking_tokens": "model.claude_code_exec_max_thinking_tokens",
                 "cursor_exec_path": "model.cursor_exec_path",
+                "opencode_exec_path": "model.opencode_exec_path",
+                "opencode_exec_allow_shell": "model.opencode_exec_allow_shell",
                 "cursor_exec_sandbox": "model.cursor_exec_sandbox",
                 "copilot_exec_path": "model.copilot_exec_path",
                 "copilot_exec_home": "model.copilot_exec_home",
@@ -484,6 +491,9 @@ def load_config(args: argparse.Namespace) -> dict:
             # backend so an explicit --optimizer_backend is never clobbered.
             _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "claude_code_exec")
+        elif backend == "opencode_exec":
+            _set_role("optimizer_backend", "opencode_exec")
+            _set_role("target_backend", "opencode_exec")
         elif backend == "cursor_exec":
             _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "cursor_exec")
@@ -550,6 +560,13 @@ def load_config(args: argparse.Namespace) -> dict:
             and not _has_model_override("model.target", "target_model")
         ):
             cfg["target_model"] = default_model_for_backend("claude_chat")
+    if normalize_backend_name(cfg.get("target_backend")) == "opencode_exec":
+        cfg["target_backend"] = "opencode_exec"
+        if (
+            (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.target", "target_model")
+        ):
+            cfg["target_model"] = default_model_for_backend("opencode_exec")
     if cfg.get("target_backend") == "cursor_exec":
         if (
             (not cfg.get("target_model") or str(cfg.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
@@ -649,6 +666,10 @@ def main() -> None:
         use_sdk=cfg.get("claude_code_exec_use_sdk", None),
         effort=cfg.get("claude_code_exec_effort", cfg.get("reasoning_effort", "medium")),
         max_thinking_tokens=cfg.get("claude_code_exec_max_thinking_tokens", 16384),
+    )
+    configure_opencode_exec(
+        path=cfg.get("opencode_exec_path") or None,
+        allow_shell=cfg.get("opencode_exec_allow_shell"),
     )
     configure_cursor_exec(
         path=cfg.get("cursor_exec_path") or None,
