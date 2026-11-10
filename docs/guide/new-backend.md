@@ -29,6 +29,7 @@ A single `base_url` + `api_key` pair lets you point SkillOpt at, for example:
 | OpenRouter / Fireworks / xAI / … | provider base URL | provider model id |
 | OrcaRouter | `https://api.orcarouter.ai/v1` | `openai/gpt-5.5` |
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini` |
+| Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6` |
 
 [OrcaRouter](https://www.orcarouter.ai) exposes OpenAI, Anthropic, Google,
 DeepSeek and other models behind one OpenAI-compatible endpoint. Its model IDs
