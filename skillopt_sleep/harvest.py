@@ -50,16 +50,24 @@ _POSITIVE_FEEDBACK = _POSITIVE_FEEDBACK + _extra_phrases("SKILLOPT_SLEEP_POS_FEE
 
 
 def _iter_jsonl(path: str) -> Iterable[Dict[str, Any]]:
+    """Yield each line that is a JSON object; skip every other line.
+
+    Lines are decoded one at a time, so a line cut mid-character (a session
+    still being written) is skipped like any other malformed line instead of
+    aborting the whole harvest.
+    """
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, "rb") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    yield json.loads(line)
+                    record = json.loads(line.decode("utf-8"))
                 except Exception:
                     continue
+                if isinstance(record, dict):
+                    yield record
     except (FileNotFoundError, IsADirectoryError, PermissionError):
         return
 
@@ -199,6 +207,8 @@ _HOST_META_TAGS = (
     # (<environment_info>…</environment_info>); harvesting it leaks local
     # environment detail and was never a user prompt.
     "environment_info",
+    # Background-task completion notices arrive as user messages.
+    "task-notification",
 )
 
 
@@ -238,6 +248,9 @@ def _is_meta_prompt(text: str) -> bool:
     if t.startswith("/") and len(t.split()) <= 3:
         return True
     if t.startswith("[Pasted text") or t.startswith("Caveat:"):
+        return True
+    # After compaction the host replays a model-written summary as a user turn.
+    if t.startswith("This session is being continued from a previous conversation"):
         return True
     # Expanded slash-command prompts (Claude Code injects the full command
     # body as a user message, wrapped in <command-message>/<command-name>
@@ -496,6 +509,12 @@ def digest_transcript(path: str) -> Optional[SessionDigest]:
             snap = rec.get("snapshot") or rec.get("files") or {}
             if isinstance(snap, dict):
                 files.extend([str(k) for k in list(snap.keys())[:20]])
+        # Newer Claude Code versions also persist raw API payloads as
+        # ``api-request-blob`` records. They carry a ``message`` with role
+        # "user" but no ``isMeta`` flag, so a loaded skill's body, tool results
+        # and task notifications would otherwise read as things the user typed.
+        if rtype not in (None, "user", "assistant"):
+            continue
         msg = rec.get("message")
         if not isinstance(msg, dict):
             continue
