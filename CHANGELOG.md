@@ -177,6 +177,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   scores and gate actions (thanks @Tanmay9223, #96).
 - Add focused coverage for the validation-gate decision core and edit-budget
   schedulers (thanks @nankingjing, #122, #123).
+- Add focused coverage for the DocVQA ANLS evaluator, including the 0.5
+  threshold boundary, the maximum over gold answers, and the accepted gold
+  answer formats (thanks @Shizoqua).
 
 ### Acknowledgements 🙏
 Thank you to the contributors behind this unreleased work:
