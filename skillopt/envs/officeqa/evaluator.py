@@ -12,6 +12,8 @@ def normalize_answer(text: str) -> str:
     text = text.lower().strip()
     text = text.replace(",", "")
     text = "".join(ch for ch in text if ch not in string.punctuation or ch in _NUMERIC_CHARS or ch == "%")
+    # "." is kept for decimals; a period not followed by a digit is sentence punctuation.
+    text = re.sub(r"\.(?!\d)", "", text)
     text = re.sub(r"\b(million|millions|billion|billions|dollars|dollar|nominal)\b", " ", text)
     text = " ".join(text.split())
     return text

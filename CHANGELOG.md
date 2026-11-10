@@ -127,6 +127,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
+  no longer brings a content twin of tonight's held-out task into training,
+  a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
+  judge scores outside 0..1 (including NaN/Infinity) fail closed instead of
+  moving the gate, and learned items survive `apply_edits` round-trips
+  (thanks @bogdanbaciu21, #310).
 - Apply Codex executable and sandbox aliases consistently across inherited
   YAML, CLI overrides, training, and eval-only entry points. Codex CLI calls
   now use explicit sandbox and approval settings instead of the retired
@@ -157,6 +163,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Skip step-level edits whose target runs into a protected slow-update or
   appendix region, so a `replace` or `delete` can no longer remove the start
   marker and expose the protected content (thanks @Shizoqua).
+- Score LiveMathematicianBench answers written as `(B)`, `[B]`, or `**B**` as
+  the choice they name instead of marking them wrong (thanks @Shizoqua).
+- Ignore sentence-ending periods when normalizing OfficeQA answers, so a
+  correct answer such as `42.` matches the gold `42` instead of scoring zero
+  exact match and F1 (thanks @Shizoqua).
 - Score the last `<answer>` tag in an OfficeQA response, as SearchQA and
   LiveMathematicianBench already do, so a model that revises its answer is
   graded on the revision instead of the draft (thanks @Shizoqua).
@@ -174,6 +185,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   scores and gate actions (thanks @Tanmay9223, #96).
 - Add focused coverage for the validation-gate decision core and edit-budget
   schedulers (thanks @nankingjing, #122, #123).
+- Add focused coverage for the DocVQA ANLS evaluator, including the 0.5
+  threshold boundary, the maximum over gold answers, and the accepted gold
+  answer formats (thanks @Shizoqua).
 
 ### Acknowledgements 🙏
 Thank you to the contributors behind this unreleased work:
