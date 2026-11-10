@@ -168,6 +168,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Ignore sentence-ending periods when normalizing OfficeQA answers, so a
   correct answer such as `42.` matches the gold `42` instead of scoring zero
   exact match and F1 (thanks @Shizoqua).
+- Score the last `<answer>` tag in an OfficeQA response, as SearchQA and
+  LiveMathematicianBench already do, so a model that revises its answer is
+  graded on the revision instead of the draft (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
