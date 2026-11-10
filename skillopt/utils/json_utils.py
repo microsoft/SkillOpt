@@ -180,11 +180,13 @@ def _looks_json_like(span: str) -> bool:
     return after_brace[:1] in ('"', '}')
 
 
-def extract_json(text: str) -> dict | None:
+def extract_json(text: str | None) -> dict | None:
     """Extract a JSON object from LLM response text.
 
     Tries ```json fences first, then bare {...} patterns.
     """
+    if not text or not isinstance(text, str):
+        return None
     m = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
     if m:
         try:
@@ -245,8 +247,10 @@ def extract_json(text: str) -> dict | None:
     return None
 
 
-def extract_json_array(text: str) -> list | None:
+def extract_json_array(text: str | None) -> list | None:
     """Extract a JSON array from LLM response text."""
+    if not text or not isinstance(text, str):
+        return None
     m = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
     if m:
         try:
