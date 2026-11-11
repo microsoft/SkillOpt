@@ -535,6 +535,11 @@ correctness signal; the validation gate still governs what ships.
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
 
+Each of the K rollouts is a separate sample on both replay routes. A task whose
+rule judge requires a tool call takes the tool route; there the rollout index
+is forwarded as `sample_id`, so a backend without a real tool loop (Pi, Azure)
+is asked K times and no longer reuses its first answer for every rollout.
+
 The nightly cycle persists task split exposure separately from the capped recall
 archive. Once a task has entered training, re-mining it or a recorded derivative
 cannot move it into validation or test; validation exposure likewise prevents
