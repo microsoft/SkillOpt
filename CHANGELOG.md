@@ -230,6 +230,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Pass `--json-schema` instead of `--schema` in the `claude_chat` backend and
+  read the CLI's `structured_output` field. Structured calls (OfficeQA and
+  SpreadsheetBench rollouts) failed with `unknown option '--schema'`, and the
+  old `result` read would have returned the reply as raw JSON text with no
+  tool calls.
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

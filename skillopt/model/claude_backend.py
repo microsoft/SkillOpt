@@ -269,7 +269,7 @@ def _run_claude_print(*, system: str, prompt: str, model: str, tools: list[dict[
             cmd.extend(["--effort", effort])
         structured_output = bool(return_message)
         if structured_output:
-            cmd.extend(["--schema", _assistant_message_schema_wrapper()])
+            cmd.extend(["--json-schema", _assistant_message_schema_wrapper()])
         # Feed the prompt via stdin (and the system prompt via a file, above), not
         # argv: on Windows the whole command line is capped at ~32 KB and large
         # optimizer prompts / grown skills overflow it → [WinError 206]. Pin UTF-8
@@ -294,6 +294,15 @@ def _run_claude_print(*, system: str, prompt: str, model: str, tools: list[dict[
         return raw_text, result_event or {}, usage_info
 
 
+def _structured_payload(result_event: dict[str, Any]) -> Any:
+    # With --json-schema the CLI returns the validated object in
+    # `structured_output`; `result` only repeats it as JSON text.
+    structured = result_event.get("structured_output")
+    if isinstance(structured, dict):
+        return structured
+    return result_event.get("result", result_event)
+
+
 def _compat_message_from_payload(payload: Any) -> CompatAssistantMessage:
     if not isinstance(payload, dict):
         return CompatAssistantMessage(content=str(payload or ""), tool_calls=[])
@@ -316,7 +325,7 @@ def _call_messages(messages: list[dict[str, Any]], max_completion_tokens: int, r
             raw_text, payload, usage_info = _run_claude_print(system=system, prompt=prompt, model=model, tools=tools, tool_choice=tool_choice, return_message=return_message, timeout=timeout, attachments=attachments)
             tracker.record(stage, usage_info["prompt_tokens"], usage_info["completion_tokens"])
             if return_message:
-                return _compat_message_from_payload(payload.get("result", payload)), usage_info
+                return _compat_message_from_payload(_structured_payload(payload)), usage_info
             return raw_text, usage_info
         except Exception as e:  # noqa: BLE001
             last_err = e
