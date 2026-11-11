@@ -16,7 +16,10 @@ from skillopt.model.common import CompatAssistantMessage, CompatToolCall, Compat
 
 CLAUDE_BIN = os.environ.get("CLAUDE_CLI_BIN", "claude")
 CLAUDE_PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "dontAsk")
-CLAUDE_SETTING_SOURCES = os.environ.get("CLAUDE_SETTING_SOURCES", "user,project")
+# Settings sources the CLI loads (--setting-sources). Unset means user and
+# project settings; an empty value means none, so no user settings, hooks or
+# CLAUDE.md reach the model.
+CLAUDE_SETTING_SOURCES = os.environ.get("CLAUDE_SETTING_SOURCES", "user,project").strip()
 CLAUDE_ALLOW_ATTACHMENT_READ = os.environ.get("CLAUDE_ALLOW_ATTACHMENT_READ", "1").strip().lower() not in {"0", "false", "no"}
 
 OPTIMIZER_DEPLOYMENT = os.environ.get("OPTIMIZER_DEPLOYMENT", "claude-sonnet-4-6")
@@ -254,8 +257,9 @@ def _run_claude_print(*, system: str, prompt: str, model: str, tools: list[dict[
         cmd = [CLAUDE_BIN, "-p", "--output-format", "json", "--permission-mode", CLAUDE_PERMISSION_MODE, "--add-dir", temp_dir]
         if model:
             cmd.extend(["--model", model])
-        if CLAUDE_SETTING_SOURCES:
-            cmd.extend(["--setting-sources", CLAUDE_SETTING_SOURCES])
+        # Always pass the flag: without it the CLI loads every source, so an
+        # empty value would load the most settings instead of none.
+        cmd.extend(["--setting-sources", CLAUDE_SETTING_SOURCES])
         if system:
             # Write the system prompt to a file, not argv: here the skill being
             # optimized IS the system prompt, and SkillOpt grows it over training,

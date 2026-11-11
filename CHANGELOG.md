@@ -230,6 +230,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- An empty `CLAUDE_SETTING_SOURCES` now reaches the Claude CLI as
+  `--setting-sources ""`, which loads no settings. The `claude_chat` backend
+  used to drop the flag for an empty value, and the CLI then loaded every
+  source, so the user's hooks ran and their `CLAUDE.md` loaded in every
+  rollout, and there was no way to ask for none. The variable is now
+  documented.
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

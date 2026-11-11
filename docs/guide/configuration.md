@@ -201,6 +201,7 @@ Model credentials are loaded from environment variables:
 | `OPENAI_COMPATIBLE_MODEL` | `openai_compatible` | Shared provider model ID for direct library use; train/eval YAML role models take precedence |
 | `CLAUDE_CLI_BIN` | `claude_chat` | Optional path to the `claude` executable; defaults to `claude` |
 | `ANTHROPIC_API_KEY` | `claude_chat` | Optional authentication method understood by the Claude CLI, not a direct SkillOpt API client |
+| `CLAUDE_SETTING_SOURCES` | `claude_chat` | Settings sources the Claude CLI loads, a comma-separated list of `user`, `project` and `local`; defaults to `user,project`, and an empty value loads none, so no user settings, hooks or `CLAUDE.md` reach rollouts |
 | `CURSOR_EXEC_PATH` | `cursor_exec` | Optional path to `cursor-agent`; defaults to `cursor-agent` |
 | `CURSOR_EXEC_SANDBOX` | `cursor_exec` | Cursor sandbox mode: `enabled` (default) or `disabled` |
 | `CURSOR_API_KEY` | `cursor_exec` | Optional authentication method understood directly by Cursor Agent |
