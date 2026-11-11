@@ -15,10 +15,10 @@ from typing import Any
 from skillopt.model import codex_backend as _codex
 from skillopt.model.claude_backend import _build_prompt_from_messages
 from skillopt.model.codex_harness import run_claude_code_chat
-from skillopt.model.common import TokenTracker
+from skillopt.model.common import TokenTracker, default_model_for_backend
 
-OPTIMIZER_DEPLOYMENT = os.environ.get("OPTIMIZER_DEPLOYMENT", "claude-sonnet-4-6")
-TARGET_DEPLOYMENT = os.environ.get("TARGET_DEPLOYMENT", "claude-sonnet-4-6")
+OPTIMIZER_DEPLOYMENT = os.environ.get("OPTIMIZER_DEPLOYMENT", default_model_for_backend("claude_code_exec"))
+TARGET_DEPLOYMENT = os.environ.get("TARGET_DEPLOYMENT", default_model_for_backend("claude_code_exec"))
 REASONING_EFFORT: str | None = None
 tracker = TokenTracker()
 

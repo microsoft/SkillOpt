@@ -39,7 +39,7 @@ def test_train_claude_code_exec_defaults_target_only(monkeypatch) -> None:
     assert cfg["optimizer_backend"] == "openai_chat"
     assert cfg["optimizer_model"] == "gpt-5.5"
     assert cfg["target_backend"] == "claude_code_exec"
-    assert cfg["target_model"] == "claude-sonnet-4-6"
+    assert cfg["target_model"] == "sonnet"
 
 
 def test_train_claude_code_exec_optimizer_opt_in_normalizes_model(monkeypatch) -> None:
@@ -52,9 +52,9 @@ def test_train_claude_code_exec_optimizer_opt_in_normalizes_model(monkeypatch) -
     )
 
     assert cfg["optimizer_backend"] == "claude_code_exec"
-    assert cfg["optimizer_model"] == "claude-sonnet-4-6"
+    assert cfg["optimizer_model"] == "sonnet"
     assert cfg["target_backend"] == "claude_code_exec"
-    assert cfg["target_model"] == "claude-sonnet-4-6"
+    assert cfg["target_model"] == "sonnet"
 
 
 class _StopAfterResolution(Exception):
@@ -122,7 +122,7 @@ def test_eval_claude_code_exec_defaults_target_only(monkeypatch, tmp_path) -> No
         "optimizer_backend": "openai_chat",
         "target_backend": "claude_code_exec",
         "optimizer_model": "gpt-5.5",
-        "target_model": "claude-sonnet-4-6",
+        "target_model": "sonnet",
     }
 
 
@@ -136,6 +136,6 @@ def test_eval_claude_code_exec_optimizer_opt_in_normalizes_model(
     assert observed == {
         "optimizer_backend": "claude_code_exec",
         "target_backend": "claude_code_exec",
-        "optimizer_model": "claude-sonnet-4-6",
-        "target_model": "claude-sonnet-4-6",
+        "optimizer_model": "sonnet",
+        "target_model": "sonnet",
     }
