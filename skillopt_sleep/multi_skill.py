@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
 
 from skillopt_sleep.backend import Backend, CursorBackendError
-from skillopt_sleep.consolidate import ConsolidationResult, consolidate
+from skillopt_sleep.consolidate import (
+    ConsolidationResult,
+    consolidate,
+    run_edit_ablations,
+)
 from skillopt_sleep.handoff_backend import PendingCalls
 from skillopt_sleep.staging import StagingError
 from skillopt_sleep.types import SkillGroupReport, TaskRecord
@@ -82,6 +86,13 @@ def consolidate_groups(
     its ordinary failures are isolated to that group. ``PendingCalls`` and
     ``CursorBackendError`` from either the factory or consolidator propagate as
     cycle-level pause/fail-closed control flow rather than becoming report rows.
+
+    With ``gate_edit_ablation`` on, no group's edit ablation runs before the
+    last group has decided, so its replays cannot use budget a later group
+    still needs. A caller with further budget-dependent work passes its own
+    ``edit_ablation_queue`` and runs it afterwards; otherwise the ablations run
+    here, after the loop. Either way a skipped ablation never changes a
+    group's status or reason.
     """
     # This wrapper's contract is stricter than consolidate(): shared memory is
     # always read-only.  Override a caller-supplied value instead of passing a
@@ -90,6 +101,13 @@ def consolidate_groups(
     consolidate_kwargs["evolve_memory"] = False
     if budget_exhausted is not None:
         consolidate_kwargs["budget_exhausted"] = budget_exhausted
+    own_ablation_queue: Optional[List[Callable[[], bool]]] = None
+    if (
+        consolidate_kwargs.get("gate_edit_ablation")
+        and consolidate_kwargs.get("edit_ablation_queue") is None
+    ):
+        own_ablation_queue = []
+        consolidate_kwargs["edit_ablation_queue"] = own_ablation_queue
     out: Dict[str, GroupConsolidation] = {}
     for group in groups:
         name = (group.skill_name or "").strip()
@@ -145,6 +163,15 @@ def consolidate_groups(
             name, CONSOLIDATED, result=result, reason=reason,
             n_tasks=len(group.tasks),
         )
+    if own_ablation_queue:
+        try:
+            run_edit_ablations(own_ablation_queue)
+        except (PendingCalls, CursorBackendError, StagingError):
+            raise
+        except Exception:
+            # Report-only work on groups that have already decided: a failed
+            # ablation replay must not discard their outcomes.
+            pass
     return out
 
 

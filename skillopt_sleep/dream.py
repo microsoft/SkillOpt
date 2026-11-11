@@ -141,11 +141,13 @@ def dream_consolidate(
     gate_metric: str = "mixed",
     gate_mixed_weight: float = 0.5,
     gate_no_regression: bool = False,
+    gate_edit_ablation: bool = False,
     gate_mode: str = "on",
     evolve_skill: bool = True,
     evolve_memory: bool = True,
     night: int = 1,
     budget_exhausted: Optional[Callable[[], bool]] = None,
+    edit_ablation_queue: Optional[List[Callable[[], bool]]] = None,
 ) -> ConsolidationResult:
     """Recall similar past experience + dream synthetic variants, then run one
     gated consolidation epoch over the enlarged training pool.
@@ -154,7 +156,8 @@ def dream_consolidate(
     augmentation only enlarge the TRAIN split, so the val slice the gate scores
     on is never polluted. With ``recall_k=0`` and ``dream_rollouts=1`` (the
     defaults) this is exactly the previous single-shot ``consolidate``.
-    ``budget_exhausted`` is passed through to ``consolidate``.
+    ``budget_exhausted`` and ``edit_ablation_queue`` are passed through to
+    ``consolidate``.
     """
     train = [t for t in tasks if t.split == "train"]
     enlarged = list(tasks)
@@ -180,8 +183,10 @@ def dream_consolidate(
         backend, enlarged, skill, memory,
         edit_budget=edit_budget, gate_metric=gate_metric,
         gate_mixed_weight=gate_mixed_weight,
-        gate_no_regression=gate_no_regression, gate_mode=gate_mode,
+        gate_no_regression=gate_no_regression,
+        gate_edit_ablation=gate_edit_ablation, gate_mode=gate_mode,
         rollouts_k=dream_rollouts, evolve_skill=evolve_skill,
         evolve_memory=evolve_memory, night=night,
         budget_exhausted=budget_exhausted,
+        edit_ablation_queue=edit_ablation_queue,
     )
