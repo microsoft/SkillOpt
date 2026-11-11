@@ -32,6 +32,8 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     """``sample_id`` distinguishes repeated dream rollouts of the same
     (task, skill, memory) in the attempt cache — without it all K rollouts
     collapse to one cached response and the contrastive signal is always 0."""
+    if hasattr(backend, "replay_agentic_task"):
+        return backend.replay_agentic_task(task, skill, memory, sample_id=sample_id)
     import time
     tools = _required_tools(task)
     tools_called: List[str] = []
@@ -169,12 +171,59 @@ def replay_batch(
     return results
 
 
-def aggregate_scores(pairs: List[Tuple[TaskRecord, ReplayResult]]) -> Tuple[float, float]:
+def aggregate_scores(
+    pairs: List[Tuple[TaskRecord, ReplayResult]],
+    *,
+    exclude_inconclusive: bool = False,
+) -> Tuple[float, float]:
     if not pairs:
         return 0.0, 0.0
+    if exclude_inconclusive:
+        valid = [r for _t, r in pairs if getattr(r, "outcome", "") != "inconclusive"]
+        if not valid:
+            return 0.0, 0.0
+        hard = sum(r.hard for r in valid) / len(valid)
+        soft = sum(r.soft for r in valid) / len(valid)
+        return hard, soft
     hard = sum(r.hard for _t, r in pairs) / len(pairs)
     soft = sum(r.soft for _t, r in pairs) / len(pairs)
     return hard, soft
+
+
+def pairwise_aggregate_scores(
+    base_pairs: List[Tuple[TaskRecord, ReplayResult]],
+    cand_pairs: List[Tuple[TaskRecord, ReplayResult]],
+) -> Tuple[Tuple[float, float], Tuple[float, float], int, int, float]:
+    """Compare baseline and candidate over the exact intersection of decidable task IDs.
+
+    Tasks marked ``outcome == "inconclusive"`` (or missing) on either side are
+    excluded pairwise so budget exhaustion or infra failures never bias one side.
+    Returns ``((base_hard, base_soft), (cand_hard, cand_soft), n_decidable, n_total, coverage)``.
+    """
+    all_ids = list(dict.fromkeys([t.id for t, _r in base_pairs] + [t.id for t, _r in cand_pairs]))
+    n_total = len(all_ids)
+    if n_total == 0:
+        return (0.0, 0.0), (0.0, 0.0), 0, 0, 1.0
+
+    base_by_id = {t.id: r for t, r in base_pairs}
+    cand_by_id = {t.id: r for t, r in cand_pairs}
+    shared_ids = [
+        tid for tid in all_ids
+        if base_by_id.get(tid) is not None
+        and cand_by_id.get(tid) is not None
+        and getattr(base_by_id[tid], "outcome", "") != "inconclusive"
+        and getattr(cand_by_id[tid], "outcome", "") != "inconclusive"
+    ]
+    n_decidable = len(shared_ids)
+    coverage = n_decidable / n_total
+    if n_decidable == 0:
+        return (0.0, 0.0), (0.0, 0.0), 0, n_total, coverage
+
+    base_hard = sum(base_by_id[tid].hard for tid in shared_ids) / n_decidable
+    base_soft = sum(base_by_id[tid].soft for tid in shared_ids) / n_decidable
+    cand_hard = sum(cand_by_id[tid].hard for tid in shared_ids) / n_decidable
+    cand_soft = sum(cand_by_id[tid].soft for tid in shared_ids) / n_decidable
+    return (base_hard, base_soft), (cand_hard, cand_soft), n_decidable, n_total, coverage
 
 
 def aggregate_cost(pairs: List[Tuple[TaskRecord, ReplayResult]]) -> Tuple[float, float]:

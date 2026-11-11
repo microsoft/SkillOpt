@@ -146,6 +146,7 @@ def dream_consolidate(
     evolve_memory: bool = True,
     night: int = 1,
     budget_exhausted: Optional[Callable[[], bool]] = None,
+    min_decidable_coverage: float = 0.5,
 ) -> ConsolidationResult:
     """Recall similar past experience + dream synthetic variants, then run one
     gated consolidation epoch over the enlarged training pool.
@@ -184,4 +185,5 @@ def dream_consolidate(
         rollouts_k=dream_rollouts, evolve_skill=evolve_skill,
         evolve_memory=evolve_memory, night=night,
         budget_exhausted=budget_exhausted,
+        min_decidable_coverage=min_decidable_coverage,
     )

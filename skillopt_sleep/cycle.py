@@ -18,7 +18,7 @@ import sys
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from skillopt_sleep import evidence
 from skillopt_sleep.backend import Backend, CursorBackendError, build_backend
@@ -118,6 +118,22 @@ def _night_token_budget(cfg: SleepConfig) -> Budget:
     return Budget(max_tokens=limit or None)
 
 
+def _agentic_config_payload(cfg: SleepConfig) -> dict[str, Any]:
+    """Extract agentic replay configuration keys from SleepConfig."""
+    keys = (
+        "agentic_replay",
+        "agentic_max_turns",
+        "agentic_max_tokens",
+        "agentic_timeout_sec",
+        "agentic_max_replays",
+        "agentic_isolate_env",
+        "agentic_min_actions",
+        "agentic_fixture_root",
+        "agentic_min_coverage",
+    )
+    return {k: cfg.get(k) for k in keys if k in cfg.data}
+
+
 # ── Model-swap detection (F16) ───────────────────────────────
 def _make_model_key(cfg: SleepConfig) -> str:
     """Stable string identifying the backend object(s) actually used.
@@ -142,6 +158,7 @@ def _make_model_key(cfg: SleepConfig) -> str:
             opencode_tool_replay=cfg.get("opencode_tool_replay", False),
             azure_endpoint=cfg.get("azure_endpoint", ""),
             project_dir=cfg.get("invoked_project", "") or os.getcwd(),
+            agentic_config=_agentic_config_payload(cfg),
         )
     except Exception:
         backend = str(cfg.get("backend", "mock") or "mock")
@@ -177,6 +194,18 @@ def _make_backend_key(backend: Backend) -> str:
     name = str(getattr(backend, "name", backend.__class__.__name__) or "")
     model = str(getattr(backend, "model", "") or "")
     return f"{name}::{model}"
+
+
+def _reset_backend_run_budgets(backend: Backend) -> None:
+    """Reset per-night replay/token budgets on direct or split-role backends."""
+    for resolved in (
+        backend,
+        getattr(backend, "target", None),
+        getattr(backend, "optimizer", None),
+    ):
+        reset_fn = getattr(resolved, "reset_run_budget", None)
+        if callable(reset_fn):
+            reset_fn()
 
 
 def _claude_isolation_modes(backend: Backend, *, reset: bool = False) -> dict[str, list[str]]:
@@ -741,9 +770,11 @@ def run_sleep_cycle(
         azure_endpoint=cfg.get("azure_endpoint", ""),
         preferences=cfg.get("preferences", ""),
         project_dir=project,
+        agentic_config=_agentic_config_payload(cfg),
     )
     _check_model_change(cfg, state, backend)  # F16: warn if model changed between nights
     _claude_isolation_modes(backend, reset=True)
+    _reset_backend_run_budgets(backend)
     night = state.begin_night(clock)
     started = _now_iso(clock)
     backend.preferences = cfg.get("preferences", "")
@@ -804,6 +835,9 @@ def run_sleep_cycle(
             "evolve_skill", "evolve_memory")}
         cycle_config["opencode_tool_replay"] = (
             cfg.get("opencode_tool_replay", False) is True
+        )
+        cycle_config["agentic_replay"] = (
+            cfg.get("agentic_replay", False) is True
         )
         ev.log("cycle", "start", night=night, project=project,
                backend=backend.name, model=cfg.get("model", ""),
@@ -981,6 +1015,7 @@ def run_sleep_cycle(
             evolve_memory=cfg.get("evolve_memory", True),
             night=night,
             budget_exhausted=budget_exhausted,
+            min_decidable_coverage=float(cfg.get("agentic_min_coverage", 0.5) or 0.5),
         )
     except CursorBackendError:
         _discard_unstaged_evidence(staging_dir_pre)
@@ -1027,7 +1062,7 @@ def run_sleep_cycle(
         final_skill = result.new_skill if result.accepted else skill
         final_memory = result.new_memory if result.accepted else memory
         test_pairs = replay_batch(backend, test_tasks, final_skill, final_memory)
-        test_hard, test_soft = aggregate_scores(test_pairs)
+        test_hard, test_soft = aggregate_scores(test_pairs, exclude_inconclusive=True)
         ev.log("test", "held_out_score", night=night,
                n_test=len(test_tasks),
                hard=round(test_hard, 4), soft=round(test_soft, 4),
@@ -1086,6 +1121,9 @@ def run_sleep_cycle(
                     evolve_skill=cfg.get("evolve_skill", True),
                     night=night,
                     budget_exhausted=budget_exhausted,
+                    min_decidable_coverage=float(
+                        cfg.get("agentic_min_coverage", 0.5) or 0.5
+                    ),
                 )
             except CursorBackendError:
                 _discard_unstaged_evidence(staging_dir_pre)
