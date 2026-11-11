@@ -92,9 +92,11 @@ def _extract_answer_strings(raw: Any) -> list[str]:
 
 def extract_answer(text: str) -> str:
     lower = text.lower()
-    start = lower.rfind("<answer>")
+    # Pair the last </answer> with the last <answer> before it, so a stray
+    # "<answer>" after the final answer does not discard that answer.
     end = lower.rfind("</answer>")
-    if start != -1 and end != -1 and end > start:
+    start = lower.rfind("<answer>", 0, end) if end != -1 else -1
+    if start != -1:
         return text[start + len("<answer>"):end].strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return lines[-1] if lines else text.strip()
