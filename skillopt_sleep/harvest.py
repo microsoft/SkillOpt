@@ -293,6 +293,17 @@ _REPLAY_PROMPT_MARKERS = (
 )
 
 
+# Producer marker for the engine's own Claude replay sessions. The Claude
+# backend writes it as the first line of every prompt it sends (attempt, judge,
+# reflect, miner and tool attempts), after the prompt template is rendered, so
+# it does not depend on the wording of any template, default or overridden.
+# Same shape as ``harvest_codex.CODEX_REPLAY_SENTINEL``: versioned, and matched
+# only at the very start of the prompt. A session is recognized by who wrote
+# it, not by what its text says, so a user session that quotes an engine
+# prompt (or this marker) further down is kept.
+CLAUDE_REPLAY_SENTINEL = "[skillopt-sleep:claude-engine:v1]"
+
+
 # Sessions written by OTHER tools' sub-agents (memory observers, critic
 # sub-agents, plugin self-invocations). These are multi-turn, so the
 # single-turn heuristic in _is_headless_replay never catches them. If the
@@ -323,8 +334,10 @@ def _is_headless_replay(digest: "SessionDigest") -> bool:
 
     Heuristics (conservatively applied):
     1. Session has exactly 1 user turn AND
-    2. The sole prompt matches engine-generated patterns (grader/reflect),
-       OR the session lasted < 3 seconds (programmatic, not interactive).
+    2. The sole prompt starts with ``CLAUDE_REPLAY_SENTINEL`` (written by the
+       Claude backend), OR matches engine-generated patterns (grader/reflect)
+       from releases that predate the sentinel, OR the session lasted < 3
+       seconds (programmatic, not interactive).
     Multi-turn sessions are always kept (interactive by definition).
     """
     if digest.n_user_turns > 1:
@@ -337,6 +350,14 @@ def _is_headless_replay(digest: "SessionDigest") -> bool:
         # it now survives the filter as a user turn.
         return True
     prompt = digest.user_prompts[0] if digest.user_prompts else ""
+    # Provenance, not content: only a prompt that begins with the marker was
+    # sent by the engine. Quoting the marker later in a message does not count.
+    # The backend writes the marker and a blank line; a CLI on Windows may
+    # record that line break as CRLF.
+    if prompt.startswith(CLAUDE_REPLAY_SENTINEL) and prompt[
+        len(CLAUDE_REPLAY_SENTINEL):
+    ].startswith(("\n\n", "\r\n")):
+        return True
     for marker in _REPLAY_PROMPT_MARKERS:
         if marker in prompt:
             return True

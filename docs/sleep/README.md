@@ -187,6 +187,17 @@ sessions, including custom prompt templates. Ordinary user sessions that quote
 headings such as `## TASK` or `## CURRENT SKILL` remain eligible for harvesting.
 Legacy tool-replay sessions are recognized by their complete prompt structure.
 
+### Claude replay provenance
+
+Claude backend calls carry a `[skillopt-sleep:claude-engine:v1]` prefix, the
+same kind of marker as the Codex one above. The harvester drops a single-turn
+Claude session only when its prompt starts with that prefix, so engine-generated
+attempt, judge, reflection, miner, and tool sessions are excluded whatever
+prompt template produced them, including custom templates. An ordinary session
+that quotes an engine prompt, or the prefix itself, later in a message remains
+eligible for harvesting. Sessions written by releases that predate the prefix
+are still recognized only by the older fixed prompt markers.
+
 ### Configuration files
 
 Sleep reads `~/.skillopt-sleep/config.json`, falling back to `config.yaml` or
