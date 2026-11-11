@@ -173,9 +173,9 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
     if getattr(args, "opencode_tool_replay", False):
         overrides["opencode_tool_replay"] = True
     if getattr(args, "claude_home", ""):
-        overrides["claude_home"] = os.path.abspath(args.claude_home)
+        overrides["claude_home"] = os.path.abspath(os.path.expanduser(args.claude_home))
     if getattr(args, "codex_home", ""):
-        overrides["codex_home"] = os.path.abspath(args.codex_home)
+        overrides["codex_home"] = os.path.abspath(os.path.expanduser(args.codex_home))
     if getattr(args, "pi_home", ""):
         overrides["pi_home"] = os.path.abspath(os.path.expanduser(args.pi_home))
     if getattr(args, "cursor_home", ""):
