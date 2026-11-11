@@ -180,6 +180,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   Code, Codex and Pi transcript timestamps as instants rather than strings.
   East of UTC, sessions that ended in the hours after a harvest were never
   harvested (thanks @1AbdullahButt).
+- Keep an OfficeQA gold answer of numeric `0` when loading JSON splits instead
+  of treating it as missing, which left the item with an empty gold answer and
+  scored a correct `0` as wrong (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
