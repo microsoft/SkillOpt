@@ -95,7 +95,8 @@ def _list_win_tasks() -> List[str]:
                 continue
             parts = line.split(",")
             if len(parts) > 0:
-                name = parts[0].strip('"')
+                # schtasks prints the full task path, e.g. "\SkillOpt-Sleep-...".
+                name = parts[0].strip('"').lstrip("\\")
                 if name.startswith("SkillOpt-Sleep-"):
                     tasks.append(name)
         return tasks
