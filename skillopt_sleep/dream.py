@@ -138,6 +138,7 @@ def dream_consolidate(
     evolve_memory: bool = True,
     night: int = 1,
     budget_exhausted: Optional[Callable[[], bool]] = None,
+    edit_ablation_queue: Optional[List[Callable[[], bool]]] = None,
 ) -> ConsolidationResult:
     """Recall similar past experience + dream synthetic variants, then run one
     gated consolidation epoch over the enlarged training pool.
@@ -146,7 +147,8 @@ def dream_consolidate(
     augmentation only enlarge the TRAIN split, so the val slice the gate scores
     on is never polluted. With ``recall_k=0`` and ``dream_rollouts=1`` (the
     defaults) this is exactly the previous single-shot ``consolidate``.
-    ``budget_exhausted`` is passed through to ``consolidate``.
+    ``budget_exhausted`` and ``edit_ablation_queue`` are passed through to
+    ``consolidate``.
     """
     train = [t for t in tasks if t.split == "train"]
     enlarged = list(tasks)
@@ -172,4 +174,5 @@ def dream_consolidate(
         rollouts_k=dream_rollouts, evolve_skill=evolve_skill,
         evolve_memory=evolve_memory, night=night,
         budget_exhausted=budget_exhausted,
+        edit_ablation_queue=edit_ablation_queue,
     )

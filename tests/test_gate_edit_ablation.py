@@ -5,16 +5,19 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from dataclasses import replace
 
 import pytest
 
 from skillopt_sleep.__main__ import _report_payload
 from skillopt_sleep.backend import Backend, MockBackend
 from skillopt_sleep.config import DEFAULTS, load_config
+from skillopt_sleep.consolidate import run_edit_ablations
 from skillopt_sleep.cycle import _render_report_md, run_sleep_cycle
 from skillopt_sleep.experiments.personas import programmer_persona, researcher_persona
 from skillopt_sleep.memory import set_learned
 from skillopt_sleep.mine import assign_splits
+from skillopt_sleep.multi_skill import SkillGroup, consolidate_groups
 from skillopt_sleep.types import EditRecord, ReplayResult, SleepReport, TaskRecord
 
 RULE_A = "Rule A: answer the question that was asked."
@@ -172,7 +175,7 @@ def test_ablation_separates_the_edit_that_moved_the_score(monkeypatch) -> None:
     rows = _skill_trial(result)["edit_ablation"]
     assert [row["edit_index"] for row in rows] == [0, 1]
     assert [row["content"] for row in rows] == [RULE_A, RULE_B]
-    assert [row["effect"] for row in rows] == ["positive", "none"]
+    assert [row["observed_change"] for row in rows] == ["higher_with_edit", "no_change"]
     assert all(row["replayed"] is True for row in rows)
     assert all(row["co_dropped"] == [] for row in rows)
 
@@ -192,12 +195,18 @@ def test_ablation_separates_the_edit_that_moved_the_score(monkeypatch) -> None:
     assert rule_b["score_without"] == pytest.approx(0.9)
     assert rule_b["task_changes"] == []
 
-    # One extra validation replay per edit, each without exactly that edit.
+    # One extra validation replay per edit, each without exactly that edit,
+    # and only after the final replay the decision rests on.
     val_replays = _val_replays(calls)
     assert len(val_replays) == 5
-    ablation_skills = [call["skill"] for call in val_replays[2:4]]
+    final_replay = val_replays[2]
+    assert RULE_A in final_replay["skill"] and RULE_B in final_replay["skill"]
+    ablation_skills = [call["skill"] for call in val_replays[3:5]]
     assert RULE_A not in ablation_skills[0] and RULE_B in ablation_skills[0]
     assert RULE_A in ablation_skills[1] and RULE_B not in ablation_skills[1]
+    # Each row carries the provenance the edit already had (#365).
+    assert all(row["source_task_ids"] == ["train"] for row in rows)
+    assert all(row["source_session_ids"] == [] for row in rows)
 
 
 def test_ablation_names_the_edit_behind_a_hidden_regression(monkeypatch) -> None:
@@ -213,8 +222,8 @@ def test_ablation_names_the_edit_behind_a_hidden_regression(monkeypatch) -> None
         "regressed",
     ]
     rule_a, rule_b = trial["edit_ablation"]
-    assert rule_a["effect"] == "positive"
-    assert rule_b["effect"] == "negative"
+    assert rule_a["observed_change"] == "higher_with_edit"
+    assert rule_b["observed_change"] == "lower_with_edit"
     assert rule_b["score_with"] == pytest.approx(0.85)
     assert rule_b["score_without"] == pytest.approx(0.9)
     assert rule_b["task_changes"] == [
@@ -286,7 +295,7 @@ def test_single_edit_trial_reuses_the_trial_comparison(monkeypatch) -> None:
 
     assert result.accepted is True
     (row,) = _skill_trial(result)["edit_ablation"]
-    assert row["effect"] == "positive"
+    assert row["observed_change"] == "higher_with_edit"
     assert row["replayed"] is False
     assert row["note"] == "scored by the replay that preceded this trial"
     assert row["score_with"] == pytest.approx(0.9)
@@ -323,12 +332,12 @@ def test_edit_that_only_matched_through_another_is_listed(monkeypatch) -> None:
     # the pre-trial replay already scored that document.
     assert first["co_dropped"] == [1]
     assert first["replayed"] is False
-    assert first["effect"] == "positive"
+    assert first["observed_change"] == "higher_with_edit"
     assert first["score_without"] == pytest.approx(0.4)
     # Without the replace, the unrefined rule remains and is replayed.
     assert second["co_dropped"] == []
     assert second["replayed"] is True
-    assert second["effect"] == "positive"
+    assert second["observed_change"] == "higher_with_edit"
     assert len(_val_replays(calls)) == 4
 
 
@@ -357,11 +366,11 @@ def test_edit_overridden_inside_the_trial_needs_no_replay(monkeypatch) -> None:
     assert result.accepted is True
     replace_row, delete_row = _skill_trial(result)["edit_ablation"]
     # The delete removes the line whether or not the replace ran first.
-    assert replace_row["effect"] == "none"
+    assert replace_row["observed_change"] == "no_change"
     assert replace_row["replayed"] is False
     assert replace_row["note"] == "document is the same without this edit"
     assert replace_row["task_changes"] == []
-    assert delete_row["effect"] == "positive"
+    assert delete_row["observed_change"] == "higher_with_edit"
     assert delete_row["replayed"] is True
     assert len(_val_replays(calls)) == 4
 
@@ -384,7 +393,7 @@ def test_ablation_covers_memory_trials(monkeypatch) -> None:
     assert result.accepted is True
     trial = next(t for t in result.gate_trials if t["target"] == "memory")
     assert [row["target"] for row in trial["edit_ablation"]] == ["memory", "memory"]
-    assert [row["effect"] for row in trial["edit_ablation"]] == ["positive", "none"]
+    assert [row["observed_change"] for row in trial["edit_ablation"]] == ["higher_with_edit", "no_change"]
     assert RULE_A in result.new_memory and RULE_B in result.new_memory
 
 
@@ -394,7 +403,7 @@ def test_spent_budget_leaves_rows_unmeasured(monkeypatch) -> None:
 
     def budget_exhausted() -> bool:
         # Checked before consolidation and before the skill edits (both still
-        # within budget), then before ablation and the final replay.
+        # within budget), then before the final replay and before ablation.
         checks.append(1)
         return len(checks) > 2
 
@@ -406,13 +415,14 @@ def test_spent_budget_leaves_rows_unmeasured(monkeypatch) -> None:
 
     assert result.accepted is True
     rows = _skill_trial(result)["edit_ablation"]
-    assert [row["effect"] for row in rows] == ["unmeasured", "unmeasured"]
+    assert [row["observed_change"] for row in rows] == ["unmeasured", "unmeasured"]
     assert all(row["replayed"] is False for row in rows)
     assert all(row["score_without"] is None for row in rows)
     assert all(row["task_changes"] == [] for row in rows)
     assert all(row["note"] == "not replayed: token budget spent" for row in rows)
-    # The skipped step is listed once, not once per edit.
-    assert result.budget_skipped == ["edit ablation", "final validation replay"]
+    # The skipped step is listed once, not once per edit, and after the
+    # steps the decision needed.
+    assert result.budget_skipped == ["final validation replay", "edit ablation"]
     assert len(_val_replays(calls)) == 2
 
 
@@ -434,8 +444,8 @@ def test_malformed_ablation_score_is_unmeasured(monkeypatch, broken) -> None:
 
     assert result.accepted is True
     rule_a, rule_b = _skill_trial(result)["edit_ablation"]
-    assert rule_a["effect"] == "positive"
-    assert rule_b["effect"] == "unmeasured"
+    assert rule_a["observed_change"] == "higher_with_edit"
+    assert rule_b["observed_change"] == "unmeasured"
     assert rule_b["replayed"] is True
     assert rule_b["score_without"] is None
     assert rule_b["task_changes"] == []
@@ -473,7 +483,7 @@ def test_ablation_is_written_to_the_evidence_log(monkeypatch, tmp_path) -> None:
     assert events[0]["target"] == "skill"
     assert events[0]["n_edits"] == 2
     assert events[0]["n_replays"] == 2
-    assert [row["effect"] for row in events[0]["rows"]] == ["positive", "none"]
+    assert [row["observed_change"] for row in events[0]["rows"]] == ["higher_with_edit", "no_change"]
 
 
 def _report_with_ablation(content: str = RULE_B) -> SleepReport:
@@ -497,9 +507,11 @@ def _report_with_ablation(content: str = RULE_B) -> SleepReport:
                         "op": "add",
                         "content": RULE_A,
                         "anchor": "",
+                        "source_task_ids": ["train-task"],
+                        "source_session_ids": ["session-1"],
                         "score_with": 0.85,
                         "score_without": 0.35,
-                        "effect": "positive",
+                        "observed_change": "higher_with_edit",
                         "replayed": True,
                         "note": "",
                         "co_dropped": [],
@@ -519,9 +531,11 @@ def _report_with_ablation(content: str = RULE_B) -> SleepReport:
                         "op": "add",
                         "content": content,
                         "anchor": "",
+                        "source_task_ids": [],
+                        "source_session_ids": [],
                         "score_with": 0.85,
                         "score_without": None,
-                        "effect": "unmeasured",
+                        "observed_change": "unmeasured",
                         "replayed": False,
                         "note": "not replayed: token budget spent",
                         "co_dropped": [0],
@@ -541,9 +555,14 @@ def test_report_renders_ablation_rows() -> None:
 
     assert "- edit ablation: enabled" in markdown
     assert "#### Leave-one-out edit ablation" in markdown
-    assert "| Edit | With | Without | Effect | Task changes |" in markdown
     assert (
-        f"| 1. \\[add\\] {RULE_A} | 0.850 | 0.350 | positive "
+        "| Edit | With | Without | Observed (one replay) | Task changes |"
+    ) in markdown
+    # The caption says what a row is and is not before any row is read.
+    assert "_Observed change on one replay, not a causal attribution." in markdown
+    assert "selected for scoring high" in markdown
+    assert (
+        f"| 1. \\[add\\] {RULE_A} | 0.850 | 0.350 | higher with edit "
         "| `essay&#124;one` 0.000 → 1.000 |"
     ) in markdown
     # Long edit text is cut, and the cut text cannot break out of its cell.
@@ -573,7 +592,7 @@ def test_cli_json_payload_redacts_ablation_rows() -> None:
 
     serialized = json.dumps(payload)
     rows = payload["gate_trials"][0]["edit_ablation"]
-    assert [row["effect"] for row in rows] == ["positive", "unmeasured"]
+    assert [row["observed_change"] for row in rows] == ["higher_with_edit", "unmeasured"]
     assert synthetic_secret not in serialized
     assert "REDACTED" in serialized
 
@@ -609,10 +628,10 @@ def test_cycle_persists_ablation_setting_and_rows(tmp_path) -> None:
         if trial["target"] != "final" and trial["accepted"]:
             assert trial["edit_ablation"]
             for row in trial["edit_ablation"]:
-                assert row["effect"] in {
-                    "positive",
-                    "none",
-                    "negative",
+                assert row["observed_change"] in {
+                    "higher_with_edit",
+                    "no_change",
+                    "lower_with_edit",
                     "unmeasured",
                 }
     with open(
@@ -671,3 +690,512 @@ def test_fanout_groups_log_their_own_ablation_rows(tmp_path) -> None:
     for event in events:
         assert len(event["rows"]) == event["n_edits"]
 
+
+# ── ablation never moves a decision, including when the token budget binds ───
+
+MEMORY_RULE = "Memory rule: keep the router answer stable."
+RULE_C = "Rule C: cite the source of every number."
+RULE_D = "Rule D: keep answers under ten lines."
+
+_DECISION_FIELDS = (
+    "accepted",
+    "gate_action",
+    "baseline_score",
+    "candidate_score",
+    "new_skill",
+    "new_memory",
+    "applied_edits",
+    "rejected_edits",
+    "unmatched_edits",
+    "holdout_baseline",
+    "holdout_candidate",
+)
+
+
+def _assert_same_decisions(on, off) -> None:
+    for field in _DECISION_FIELDS:
+        assert getattr(on, field) == getattr(off, field), field
+    assert len(on.gate_trials) == len(off.gate_trials)
+    for on_trial, off_trial in zip(on.gate_trials, off.gate_trials):
+        without_rows = {
+            key: value for key, value in on_trial.items() if key != "edit_ablation"
+        }
+        assert without_rows == off_trial
+
+
+def _skill_and_memory_scores(task_id: str, skill: str, memory: str) -> float:
+    # Rule A fixes the essay task; the memory rule then lifts the router task.
+    if task_id == "essay":
+        return 1.0 if RULE_A in skill else 0.0
+    if task_id == "router":
+        return 0.9 if MEMORY_RULE in memory else 0.8
+    return 0.0
+
+
+def _run_with_token_budget(monkeypatch, *, ablation: bool, budget_replays: int):
+    """Two skill edits and one memory edit under a budget of whole replays."""
+    tokens_per_replay = 1000
+    calls = _patch_replay(monkeypatch, _skill_and_memory_scores)
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B), _add(MEMORY_RULE, target="memory")],
+        evolve_memory=True,
+        gate_edit_ablation=ablation,
+        budget_exhausted=lambda: (
+            len(calls) * tokens_per_replay >= budget_replays * tokens_per_replay
+        ),
+    )
+    return result, calls
+
+
+def test_memory_edit_survives_ablation_under_a_binding_budget(monkeypatch) -> None:
+    # A budget of four replays covers the baseline, the train replay, the
+    # skill trial and the post-skill train replay. Ablation used to run right
+    # after the skill trial and spend what the memory step needed.
+    off, off_calls = _run_with_token_budget(
+        monkeypatch, ablation=False, budget_replays=4
+    )
+    on, on_calls = _run_with_token_budget(
+        monkeypatch, ablation=True, budget_replays=4
+    )
+
+    assert off.accepted is True and MEMORY_RULE in off.new_memory
+    assert MEMORY_RULE in on.new_memory
+    _assert_same_decisions(on, off)
+    assert off.budget_skipped == ["final validation replay"]
+    assert on.budget_skipped == ["final validation replay", "edit ablation"]
+    # The budget was spent before any ablation replay could start.
+    assert on_calls == off_calls
+    skill_rows = _skill_trial(on)["edit_ablation"]
+    assert [row["observed_change"] for row in skill_rows] == [
+        "unmeasured",
+        "unmeasured",
+    ]
+    memory_trial = next(t for t in on.gate_trials if t["target"] == "memory")
+    (memory_row,) = memory_trial["edit_ablation"]
+    # A one-edit trial needs no replay, so its row survives the spent budget.
+    assert memory_row["replayed"] is False
+    assert memory_row["observed_change"] == "higher_with_edit"
+
+
+@pytest.mark.parametrize("budget_replays", range(0, 11))
+def test_decisions_match_at_every_token_budget(monkeypatch, budget_replays) -> None:
+    off, off_calls = _run_with_token_budget(
+        monkeypatch, ablation=False, budget_replays=budget_replays
+    )
+    on, on_calls = _run_with_token_budget(
+        monkeypatch, ablation=True, budget_replays=budget_replays
+    )
+
+    _assert_same_decisions(on, off)
+    assert [
+        step for step in on.budget_skipped if step != "edit ablation"
+    ] == off.budget_skipped
+    assert on.budget_skipped.count("edit ablation") <= 1
+    # Every replay a decision used ran first, in the same order; ablation
+    # replays can only follow them.
+    assert on_calls[: len(off_calls)] == off_calls
+
+
+def test_skill_ablation_replays_the_documents_of_its_own_trial(monkeypatch) -> None:
+    on, on_calls = _run_with_token_budget(
+        monkeypatch, ablation=True, budget_replays=1000
+    )
+
+    assert on.accepted is True and MEMORY_RULE in on.new_memory
+    ablation_replays = _val_replays(on_calls)[-2:]
+    # The skill trial was scored before the memory edit existed, so its
+    # ablation is replayed against that same memory, not the final one.
+    assert all(MEMORY_RULE not in call["memory"] for call in ablation_replays)
+    assert [RULE_A in call["skill"] for call in ablation_replays] == [False, True]
+    assert [row["observed_change"] for row in _skill_trial(on)["edit_ablation"]] == [
+        "higher_with_edit",
+        "no_change",
+    ]
+
+
+def test_budget_is_checked_before_each_ablation_replay(monkeypatch) -> None:
+    calls = _patch_replay(monkeypatch, _free_rider_scores)
+
+    # The baseline, train, trial and final replays fit, and so does exactly
+    # one ablation replay.
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B), _add(RULE_C), _add(RULE_D)],
+        gate_edit_ablation=True,
+        budget_exhausted=lambda: len(calls) * 1000 >= 5000,
+    )
+
+    assert result.accepted is True
+    rows = _skill_trial(result)["edit_ablation"]
+    assert [row["replayed"] for row in rows] == [True, False, False, False]
+    assert [row["observed_change"] for row in rows] == [
+        "higher_with_edit",
+        "unmeasured",
+        "unmeasured",
+        "unmeasured",
+    ]
+    assert len(calls) == 5
+    assert result.budget_skipped == ["edit ablation"]
+
+
+def test_rejected_epoch_is_not_ablated(monkeypatch) -> None:
+    seen = {"candidate": 0}
+
+    def scores(task_id: str, skill: str, memory: str) -> float:
+        if task_id == "essay":
+            if RULE_A in skill and RULE_B in skill:
+                seen["candidate"] += 1
+                # The trial replay passes; the fresh final replay does not.
+                return 1.0 if seen["candidate"] == 1 else 0.0
+            return 0.0
+        return 0.8 if task_id == "router" else 0.0
+
+    calls = _patch_replay(monkeypatch, scores)
+
+    result = _consolidate([_add(RULE_A), _add(RULE_B)], gate_edit_ablation=True)
+
+    assert result.accepted is False
+    trial = _skill_trial(result)
+    assert trial["accepted"] is True
+    # No edit was accepted, so there is nothing to describe and nothing is
+    # replayed for it.
+    assert "edit_ablation" not in trial
+    assert len(_val_replays(calls)) == 3
+    assert result.budget_skipped == []
+
+
+def test_queue_hands_the_ablation_to_the_caller(monkeypatch) -> None:
+    calls = _patch_replay(monkeypatch, _free_rider_scores)
+    queue: list = []
+
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B)],
+        gate_edit_ablation=True,
+        edit_ablation_queue=queue,
+    )
+
+    # Nothing is replayed or attached until the caller runs the queue.
+    assert result.accepted is True
+    assert len(queue) == 1
+    assert len(_val_replays(calls)) == 3
+    assert "edit_ablation" not in _skill_trial(result)
+
+    assert run_edit_ablations(queue) is False
+
+    assert queue == []
+    assert len(_val_replays(calls)) == 5
+    assert [
+        row["observed_change"] for row in _skill_trial(result)["edit_ablation"]
+    ] == ["higher_with_edit", "no_change"]
+    assert result.budget_skipped == []
+
+
+def test_queue_reports_a_spent_budget_to_the_caller(monkeypatch) -> None:
+    calls = _patch_replay(monkeypatch, _free_rider_scores)
+    queue: list = []
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B)],
+        gate_edit_ablation=True,
+        edit_ablation_queue=queue,
+        budget_exhausted=lambda: len(calls) >= 4,
+    )
+
+    assert run_edit_ablations(queue) is True
+
+    assert len(calls) == 4
+    assert [
+        row["observed_change"] for row in _skill_trial(result)["edit_ablation"]
+    ] == ["unmeasured", "unmeasured"]
+    # The caller owns the report of a deferred skip; the epoch's own list is
+    # what it was when its decision was made.
+    assert result.budget_skipped == []
+
+
+def _two_groups() -> list[SkillGroup]:
+    return [
+        SkillGroup("alpha", set_learned("# Alpha\n", []), _tasks()),
+        SkillGroup("beta", set_learned("# Beta\n", []), _tasks()),
+    ]
+
+
+def _is_ablation_replay(call: dict) -> bool:
+    if call["task_ids"] != ["essay", "router"]:
+        return False
+    return (RULE_A in call["skill"]) != (RULE_B in call["skill"])
+
+
+def _consolidate_two_groups(monkeypatch, *, ablation: bool, budget_replays=None):
+    calls = _patch_replay(monkeypatch, _free_rider_scores)
+    outcomes = consolidate_groups(
+        ScriptedBackend([_add(RULE_A), _add(RULE_B)]),
+        _two_groups(),
+        "",
+        gate_metric="hard",
+        gate_edit_ablation=ablation,
+        budget_exhausted=(
+            None if budget_replays is None
+            else lambda: len(calls) >= budget_replays
+        ),
+    )
+    return outcomes, calls
+
+
+def test_group_ablations_wait_for_every_group(monkeypatch) -> None:
+    outcomes, calls = _consolidate_two_groups(monkeypatch, ablation=True)
+
+    assert [outcome.accepted for outcome in outcomes.values()] == [True, True]
+    flags = [_is_ablation_replay(call) for call in calls]
+    assert sum(flags) == 4
+    # Once the first ablation replay starts, no group has anything left to
+    # decide: every later replay is an ablation replay too.
+    assert all(flags[flags.index(True):])
+    for outcome in outcomes.values():
+        rows = _skill_trial(outcome.result)["edit_ablation"]
+        assert [row["observed_change"] for row in rows] == [
+            "higher_with_edit",
+            "no_change",
+        ]
+
+
+def test_second_group_keeps_its_budget(monkeypatch) -> None:
+    # Seven replays: four for the first group, three for the second, whose
+    # final replay is then skipped. The first group's ablation used to take
+    # two of them, and the second group's skill edits were skipped.
+    off, off_calls = _consolidate_two_groups(
+        monkeypatch, ablation=False, budget_replays=7
+    )
+    on, on_calls = _consolidate_two_groups(
+        monkeypatch, ablation=True, budget_replays=7
+    )
+
+    assert [outcome.accepted for outcome in off.values()] == [True, True]
+    assert [outcome.accepted for outcome in on.values()] == [True, True]
+    assert on_calls == off_calls
+
+
+@pytest.mark.parametrize("budget_replays", range(0, 13))
+def test_group_outcomes_match_at_every_token_budget(
+    monkeypatch, budget_replays
+) -> None:
+    off, off_calls = _consolidate_two_groups(
+        monkeypatch, ablation=False, budget_replays=budget_replays
+    )
+    on, on_calls = _consolidate_two_groups(
+        monkeypatch, ablation=True, budget_replays=budget_replays
+    )
+
+    assert list(on) == list(off)
+    for name, expected in off.items():
+        outcome = on[name]
+        assert outcome.status == expected.status
+        # A skipped ablation never shows up as a group cut short on budget.
+        assert outcome.reason == expected.reason
+        assert outcome.accepted == expected.accepted
+        if expected.result is not None:
+            _assert_same_decisions(outcome.result, expected.result)
+            assert outcome.result.budget_skipped == expected.result.budget_skipped
+    assert on_calls[: len(off_calls)] == off_calls
+
+
+class TokenCountingMock(MockBackend):
+    """MockBackend that charges a fixed number of tokens per model call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.spent = 0
+
+    def attempt(self, *args, **kwargs):
+        self.spent += 100
+        return super().attempt(*args, **kwargs)
+
+    def judge(self, *args, **kwargs):
+        self.spent += 20
+        return super().judge(*args, **kwargs)
+
+    def reflect(self, *args, **kwargs):
+        self.spent += 300
+        return super().reflect(*args, **kwargs)
+
+    def tokens_used(self) -> int:
+        return self.spent
+
+
+def _fanout_night(tmp_path, name: str, *, ablation: bool, max_tokens: int):
+    root = tmp_path / name
+    project = root / "project"
+    project.mkdir(parents=True)
+    claude_home = root / ".claude"
+    for skill_name in ("research-skill", "programming-skill"):
+        skill_path = claude_home / "skills" / skill_name / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text(f"# {skill_name}\n", encoding="utf-8")
+    config = load_config(
+        invoked_project=str(project),
+        projects="invoked",
+        backend="mock",
+        state_dir=str(root / "state"),
+        claude_home=str(claude_home),
+        managed_skill_name="skillopt-sleep-learned",
+        multi_skill_fanout=True,
+        gate_edit_ablation=ablation,
+        max_tokens_per_night=max_tokens,
+        auto_adopt=False,
+    )
+    research = assign_splits(researcher_persona(), holdout_fraction=0.34, seed=42)
+    programming = assign_splits(programmer_persona(), holdout_fraction=0.34, seed=1)
+    tasks = [replace(task, skill_hint="research-skill") for task in research]
+    tasks += [
+        replace(task, id=f"prog-{task.id}", skill_hint="programming-skill")
+        for task in programming
+    ]
+    return run_sleep_cycle(config, seed_tasks=tasks, backend=TokenCountingMock())
+
+
+def _night_decisions(outcome) -> dict:
+    report = outcome.report
+    return {
+        "accepted": report.accepted,
+        "gate_action": report.gate_action,
+        "baseline_score": report.baseline_score,
+        "candidate_score": report.candidate_score,
+        "edits": [(edit.target, edit.op, edit.content) for edit in report.edits],
+        "rejected_edits": [
+            (edit.target, edit.op, edit.content) for edit in report.rejected_edits
+        ],
+        "gate_trials": [
+            {key: value for key, value in trial.items() if key != "edit_ablation"}
+            for trial in report.gate_trials
+        ],
+        "skill_groups": [
+            (
+                group.skill_name,
+                group.status,
+                group.accepted,
+                group.gate_action,
+                group.reason,
+                group.n_applied_edits,
+            )
+            for group in report.skill_groups
+        ],
+    }
+
+
+def _budget_notes(outcome) -> list[str]:
+    return [note for note in outcome.report.notes if "max_tokens_per_night" in note]
+
+
+def _skipped_steps(outcome) -> list[str]:
+    steps: list[str] = []
+    for note in _budget_notes(outcome):
+        steps += note.split("skipped: ", 1)[1].split(", ")
+    return steps
+
+
+def test_fanout_night_decides_the_same_when_the_budget_runs_out(tmp_path) -> None:
+    unlimited = _fanout_night(tmp_path, "unlimited", ablation=False, max_tokens=0)
+    spend = unlimited.report.tokens_used
+    assert spend > 0
+    assert [group.accepted for group in unlimited.report.skill_groups] == [True, True]
+
+    # A cap the night reaches only with its very last call: with ablation off
+    # every budget check still passes and both groups are accepted.
+    off = _fanout_night(tmp_path, "off", ablation=False, max_tokens=spend)
+    on = _fanout_night(tmp_path, "on", ablation=True, max_tokens=spend)
+
+    assert _night_decisions(off) == _night_decisions(unlimited)
+    assert _budget_notes(off) == []
+    assert _night_decisions(on) == _night_decisions(off)
+    # Every decision was final before ablation was considered, and by then
+    # the budget was spent, so no ablation replay ran.
+    assert on.report.tokens_used == spend
+    (note,) = _budget_notes(on)
+    assert note.endswith("skipped: edit ablation")
+    accepted_trial = next(
+        trial for trial in on.report.gate_trials
+        if trial["target"] != "final" and trial["accepted"]
+    )
+    assert accepted_trial["edit_ablation"]
+
+
+@pytest.mark.parametrize("fraction", [0.2, 0.4, 0.6, 0.8, 0.95])
+def test_fanout_night_decisions_match_under_a_tight_cap(tmp_path, fraction) -> None:
+    unlimited = _fanout_night(tmp_path, "unlimited", ablation=False, max_tokens=0)
+    cap = max(1, int(unlimited.report.tokens_used * fraction))
+
+    off = _fanout_night(tmp_path, "off", ablation=False, max_tokens=cap)
+    on = _fanout_night(tmp_path, "on", ablation=True, max_tokens=cap)
+
+    assert _night_decisions(on) == _night_decisions(off)
+    # Ablation is never the reason a decision step is skipped: apart from its
+    # own entry, both nights skip the same steps.
+    assert _skipped_steps(off)
+    assert [
+        step for step in _skipped_steps(on) if step != "edit ablation"
+    ] == _skipped_steps(off)
+    assert on.report.tokens_used >= off.report.tokens_used
+
+
+def test_ablation_spend_is_part_of_tokens_used(tmp_path) -> None:
+    off = _fanout_night(tmp_path, "off", ablation=False, max_tokens=0)
+    on = _fanout_night(tmp_path, "on", ablation=True, max_tokens=0)
+
+    assert _night_decisions(on) == _night_decisions(off)
+    assert _budget_notes(on) == []
+    # Ablation replays are ordinary model calls: the report's token count
+    # includes them, and it is the count max_tokens_per_night is checked on.
+    assert on.report.tokens_used > off.report.tokens_used
+
+
+def _night_with_test_split(tmp_path, name: str, *, ablation: bool, max_tokens: int):
+    root = tmp_path / name
+    project = root / "project"
+    project.mkdir(parents=True)
+    config = load_config(
+        invoked_project=str(project),
+        projects="invoked",
+        backend="mock",
+        state_dir=str(root / "state"),
+        claude_home=str(root / ".claude"),
+        gate_edit_ablation=ablation,
+        max_tokens_per_night=max_tokens,
+        auto_adopt=False,
+    )
+    tasks = assign_splits(
+        researcher_persona(), val_fraction=0.34, test_fraction=0.2, seed=42
+    )
+    assert any(task.split == "test" for task in tasks)
+    return run_sleep_cycle(config, seed_tasks=tasks, backend=TokenCountingMock())
+
+
+def _evidence_events(outcome) -> list[tuple[str, str]]:
+    from skillopt_sleep import evidence
+
+    return [
+        (event["stage"], event["event"])
+        for event in evidence.read_events(
+            os.path.join(outcome.staging_dir, "evidence.jsonl")
+        )
+    ]
+
+
+def test_held_out_test_replay_keeps_its_budget(tmp_path) -> None:
+    unlimited = _night_with_test_split(
+        tmp_path, "unlimited", ablation=False, max_tokens=0
+    )
+    spend = unlimited.report.tokens_used
+    assert ("test", "held_out_score") in _evidence_events(unlimited)
+
+    # The cap is reached by the held-out test replay itself, the night's last
+    # call. Ablation must not get to the budget before it.
+    on = _night_with_test_split(tmp_path, "on", ablation=True, max_tokens=spend)
+
+    events = _evidence_events(on)
+    assert ("test", "held_out_score") in events
+    assert _skipped_steps(on) == ["edit ablation"]
+    assert on.report.tokens_used == spend
+    # With room to spare, ablation still runs only after the test replay.
+    free = _night_with_test_split(tmp_path, "free", ablation=True, max_tokens=0)
+    free_events = _evidence_events(free)
+    assert free_events.index(("test", "held_out_score")) < free_events.index(
+        ("gate", "edit_ablation")
+    )
+    assert free.report.tokens_used > spend

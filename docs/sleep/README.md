@@ -35,25 +35,39 @@ candidate; an absent numeric score aborts evaluation. Task-level changes are
 included in `report.md`, `report.json`, `diagnostics.json`, the CLI's `--json`
 output, and the evidence log.
 
-The optional `gate_edit_ablation` config key measures which accepted edits the
-held-out score depends on. It defaults to `false`. When set to `true`, each
-skill or memory candidate that passes the gate is scored again on the same
-validation tasks once per edit, each time without that one edit. The result is
-recorded on that trial as an `edit_ablation` row per edit: the gate score with
-and without the edit, an `effect` of `positive`, `none`, `negative`, or
-`unmeasured`, and the validation tasks whose score differs. The rows are
-report-only. No gate decision reads them, so the accepted edits and documents
-are the same with the key on or off. A candidate with one edit needs no extra
-replay, because the trial already compared the document with and without it; a
-candidate with N edits costs up to N validation replays, which are skipped once
-`max_tokens_per_night` is spent. Every comparison is a single replay, so a
-nondeterministic backend or judge can move a row by noise: treat `none` and
-`negative` rows as edits to review, not as proof. With `gate_mode` set to
-`off` there is no validation replay to compare against, so the key has no
-effect. Rows are included in
-`report.md`, `report.json`, `diagnostics.json`, the CLI's `--json` output, and
-the evidence log; in multi-skill fan-out, each group's rows are in the evidence
-log.
+The optional `gate_edit_ablation` config key records, for each accepted edit,
+how the held-out score compares with and without it. It defaults to `false`.
+When set to `true`, each skill or memory candidate the night accepts is
+replayed on the same validation tasks once per edit, each time without that one
+edit. The result is an `edit_ablation` row per edit on that trial: the gate
+score with and without the edit, an `observed_change` of `higher_with_edit`,
+`no_change`, `lower_with_edit`, or `unmeasured`, the validation tasks whose
+score differs, and the edit's `source_task_ids` and `source_session_ids`.
+
+Read every row as an observed change on one replay, not a causal attribution.
+The "with" score is the replay that passed the gate, so it is selected for
+being high, while each "without" score is one further replay; rows therefore
+lean toward `higher_with_edit`. A nondeterministic backend or judge can move
+any row by noise, and where the response cache serves a replay, repeating the
+ablation returns the same result instead of a new sample. Leave-one-out also
+says nothing about interactions: two edits that are each redundant given the
+other both show `no_change`.
+
+The rows are report-only, and ablation runs last: after the final gate
+decision, the held-out test replay and every per-skill fan-out group. No
+decision reads the rows and no ablation replay can spend budget that a decision
+still needs, so the accepted edits and documents are the same with the key on
+or off. A candidate that the final decision rejects is not ablated. A candidate
+with one edit needs no extra replay, because the trial already compared the
+document with and without it; a candidate with N edits costs up to N validation
+replays. Those replays are ordinary model calls: their tokens are included in
+the report's `tokens used` and count toward `max_tokens_per_night`, which is
+checked before each of them. Replays that do not start leave their rows
+`unmeasured` and add one `edit ablation` entry to the budget note. With
+`gate_mode` set to `off` there is no validation replay to compare against, so
+the key has no effect. Rows are included in `report.md`, `report.json`,
+`diagnostics.json`, the CLI's `--json` output, and the evidence log; in
+multi-skill fan-out, each group's rows are in the evidence log.
 
 Rule-based heading checks are intentionally additive. `section_present` keeps
 its legacy strict behavior for existing task sets: an ATX heading cannot append
@@ -465,6 +479,9 @@ skill and memory edit steps, before its final validation replay, before the
 held-out test replay, and before each per-skill fan-out group. Steps that did
 not start are listed in a note in `report.md`, for example
 `max_tokens_per_night reached (431870 of 400000 tokens); skipped: memory edits, final validation replay`.
+With `gate_edit_ablation` on, the ablation replays run after all of these
+steps, are checked against the budget one replay at a time, and count toward
+the same spend.
 
 When the final validation replay is skipped, the gate decides from the
 validation replay that already scored the same skill and memory: the baseline

@@ -18,13 +18,13 @@ import sys
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from skillopt_sleep import evidence
 from skillopt_sleep.backend import Backend, CursorBackendError, build_backend
 from skillopt_sleep.budget import Budget
 from skillopt_sleep.config import DEFAULTS, SleepConfig, load_config
-from skillopt_sleep.consolidate import BUDGET_EXHAUSTED
+from skillopt_sleep.consolidate import BUDGET_EXHAUSTED, run_edit_ablations
 from skillopt_sleep.dream import dream_consolidate
 from skillopt_sleep.evidence import EvidenceLog
 from skillopt_sleep.handoff_backend import PendingCalls
@@ -373,11 +373,13 @@ def _edit_ablation_md(rows: object) -> List[str]:
     lines = [
         "#### Leave-one-out edit ablation",
         "",
-        "_Each row scores this candidate again without one of its edits, on "
-        "the same validation tasks. Every comparison is a single replay, so a "
-        "nondeterministic backend or judge can move a row by noise._",
+        "_Observed change on one replay, not a causal attribution. \"With\" is "
+        "the replay that passed the gate, so it is selected for scoring high; "
+        "\"Without\" is one further replay of the candidate minus that edit. "
+        "Rows therefore lean toward `higher with edit`, and a nondeterministic "
+        "backend or judge can move any row by noise._",
         "",
-        "| Edit | With | Without | Effect | Task changes |",
+        "| Edit | With | Without | Observed (one replay) | Task changes |",
         "|---|---:|---:|---|---|",
     ]
     for position, row in enumerate(rows, start=1):
@@ -386,7 +388,9 @@ def _edit_ablation_md(rows: object) -> List[str]:
             text = text[:_ABLATION_EDIT_CHARS] + "…"
         op = _markdown_table_text(row.get("op", ""))
         edit = f"{position}. \\[{op}\\] {_markdown_table_text(text)}"
-        effect = _markdown_table_text(row.get("effect", "unmeasured"))
+        observed = _markdown_table_text(
+            str(row.get("observed_change", "unmeasured")).replace("_", " ")
+        )
         details = []
         if row.get("note"):
             details.append(_markdown_table_text(row["note"]))
@@ -398,7 +402,7 @@ def _edit_ablation_md(rows: object) -> List[str]:
         if co_dropped:
             details.append("also removes edit " + ", ".join(co_dropped))
         if details:
-            effect += f" ({'; '.join(details)})"
+            observed += f" ({'; '.join(details)})"
         changes = "; ".join(
             f"`{_markdown_table_text(change.get('task_id', ''))}` "
             f"{_report_score(change.get('score_without'))} → "
@@ -409,7 +413,7 @@ def _edit_ablation_md(rows: object) -> List[str]:
         lines.append(
             f"| {edit} | {_report_score(row.get('score_with'))} "
             f"| {_report_score(row.get('score_without'))} "
-            f"| {effect} | {changes} |"
+            f"| {observed} | {changes} |"
         )
     lines.append("")
     return lines
@@ -1025,6 +1029,16 @@ def run_sleep_cycle(
     history_tasks = []
     if recall_k > 0:
         history_tasks = [TaskRecord.from_dict(d) for d in state.task_archive()]
+    # Edit ablation is report-only. Its replays are queued here and run only
+    # after every step that reads tonight's token budget (this consolidation,
+    # the held-out test replay and each fan-out group), so they can use
+    # leftover budget but never change what those steps decide.
+    ablation_queue: List[Callable[[], bool]] = []
+    ablation_kwargs: Dict[str, object] = (
+        {"edit_ablation_queue": ablation_queue}
+        if cfg.get("gate_edit_ablation", False)
+        else {}
+    )
     try:
         result = dream_consolidate(
             backend, tasks, skill, memory,
@@ -1042,6 +1056,7 @@ def run_sleep_cycle(
             evolve_memory=cfg.get("evolve_memory", True),
             night=night,
             budget_exhausted=budget_exhausted,
+            **ablation_kwargs,
         )
     except CursorBackendError:
         _discard_unstaged_evidence(staging_dir_pre)
@@ -1148,6 +1163,7 @@ def run_sleep_cycle(
                     evolve_skill=cfg.get("evolve_skill", True),
                     night=night,
                     budget_exhausted=budget_exhausted,
+                    **ablation_kwargs,
                 )
             except CursorBackendError:
                 _discard_unstaged_evidence(staging_dir_pre)
@@ -1181,6 +1197,20 @@ def run_sleep_cycle(
                 row.skill_name = str(redact_secrets(row.skill_name))
                 row.reason = str(redact_secrets(row.reason))
             report.skill_groups = group_rows
+
+    # ── 4c. deferred edit ablation (report-only) ─────────────────────────
+    # Every decision of the night is final here. The replays below are
+    # ordinary model calls: their tokens are part of "tokens used" and count
+    # toward max_tokens_per_night, which is checked before each of them.
+    if ablation_queue:
+        _progress(cfg, "edit ablation start")
+        try:
+            if run_edit_ablations(ablation_queue):
+                budget_skipped.append("edit ablation")
+        except CursorBackendError:
+            _discard_unstaged_evidence(staging_dir_pre)
+            raise
+        report.gate_trials = redact_secrets(getattr(result, "gate_trials", []))
 
     isolation_modes = _claude_isolation_modes(backend)
     for role, modes in isolation_modes.items():

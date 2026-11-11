@@ -8,14 +8,17 @@ All notable changes to SkillOpt are documented here. This project adheres to
 
 ### Added
 - **SkillOpt-Sleep leave-one-out edit ablation** (`gate_edit_ablation`, off by
-  default): each skill or memory candidate that passes the gate is scored again
-  without each of its edits, and the per-edit result (gate score with and
-  without the edit, effect, changed validation tasks) is recorded on the trial
-  in `report.md`, `report.json`, `diagnostics.json`, the CLI's `--json` output,
-  and the evidence log. The rows are report-only, so gate decisions and
-  accepted edits are unchanged. A single-edit candidate needs no extra replay;
-  an N-edit candidate costs up to N validation replays within the nightly
-  token budget. Follow-up to #174.
+  default): each skill or memory candidate the night accepts is replayed
+  without each of its edits, and the per-edit observation (gate score with and
+  without the edit, `observed_change`, changed validation tasks, source task
+  and session IDs) is recorded on the trial in `report.md`, `report.json`,
+  `diagnostics.json`, the CLI's `--json` output, and the evidence log. A row is
+  an observed change on one replay, not a causal attribution. Ablation runs
+  after every gate decision of the night, including all fan-out groups, so
+  decisions and accepted edits are unchanged even when the token budget binds.
+  A single-edit candidate needs no extra replay; an N-edit candidate costs up
+  to N validation replays, which are included in `tokens used` and checked
+  against `max_tokens_per_night` one replay at a time. Follow-up to #174.
 - **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
   provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
   config selects Parallel automatically. Selecting it sends the generated
