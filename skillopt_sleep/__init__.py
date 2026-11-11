@@ -16,7 +16,14 @@ Public entry points:
 """
 from __future__ import annotations
 
+from typing import Any
+
 __all__ = ["__version__", "AgenticReplayBackend"]
 __version__ = "0.2.0"
 
-from skillopt_sleep.agentic_replay import AgenticReplayBackend
+
+def __getattr__(name: str) -> Any:
+    if name == "AgenticReplayBackend":
+        from skillopt_sleep.agentic_replay import AgenticReplayBackend
+        return AgenticReplayBackend
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from skillopt_sleep.types import EditRecord, ReplayResult, TaskRecord
 
@@ -2751,6 +2751,7 @@ def get_backend(
     opencode_tool_replay: bool = False,
     azure_endpoint: str = "",
     project_dir: str = "",
+    agentic_config: Optional[Mapping[str, Any]] = None,
 ) -> Backend:
     n = (name or "mock").strip().lower()
     if n in {"pi", "pi_cli", "pi_coding_agent", "pi-coding-agent"}:
@@ -2782,8 +2783,18 @@ def get_backend(
         )
         return HandoffBackend(model=model, handoff_dir=hdir)
     if n in {"agentic", "agentic_replay", "agentic-replay"}:
-        from skillopt_sleep.agentic_replay import AgenticReplayBackend
-        return AgenticReplayBackend()
+        from skillopt_sleep.agentic_replay import (
+            AgenticReplayBackend,
+            AgenticReplayConfig,
+            agentic_config_from_sleep_config,
+        )
+        if isinstance(agentic_config, AgenticReplayConfig):
+            cfg_obj = agentic_config
+        elif agentic_config is not None:
+            cfg_obj = agentic_config_from_sleep_config(agentic_config)
+        else:
+            cfg_obj = AgenticReplayConfig()
+        return AgenticReplayBackend(cfg_obj)
     if n in {"mock", ""}:
         return MockBackend()
     raise ValueError(
@@ -2808,6 +2819,7 @@ def build_backend(
     azure_endpoint: str = "",
     preferences: str = "",
     project_dir: str = "",
+    agentic_config: Optional[Mapping[str, Any]] = None,
 ) -> Backend:
     """Build a single or dual backend.
 
@@ -2816,11 +2828,16 @@ def build_backend(
     from (backend, model). ``preferences`` (free text) is attached so reflect
     uses it as a prior (set on the optimizer for dual backends).
     """
-    has_split = any([optimizer_backend, optimizer_model, target_backend, target_model])
-    if not has_split:
-        be = get_backend(
-            backend,
-            model=model,
+    def _call_get(resolved_name: str, resolved_model: str) -> Backend:
+        extra: Dict[str, Any] = {}
+        if (
+            agentic_config is not None
+            and (resolved_name or "").strip().lower() in {"agentic", "agentic_replay", "agentic-replay"}
+        ):
+            extra["agentic_config"] = agentic_config
+        return get_backend(
+            resolved_name,
+            model=resolved_model,
             codex_path=codex_path,
             pi_path=pi_path,
             cursor_path=cursor_path,
@@ -2828,19 +2845,16 @@ def build_backend(
             opencode_tool_replay=opencode_tool_replay,
             azure_endpoint=azure_endpoint,
             project_dir=project_dir,
+            **extra,
         )
+
+    has_split = any([optimizer_backend, optimizer_model, target_backend, target_model])
+    if not has_split:
+        be = _call_get(backend, model)
         be.preferences = preferences
         return be
-    tgt = get_backend(target_backend or backend, model=target_model or model,
-                      codex_path=codex_path, pi_path=pi_path, cursor_path=cursor_path,
-                      opencode_path=opencode_path, opencode_tool_replay=opencode_tool_replay,
-                      azure_endpoint=azure_endpoint,
-                      project_dir=project_dir)
-    opt = get_backend(optimizer_backend or backend, model=optimizer_model or model,
-                      codex_path=codex_path, pi_path=pi_path, cursor_path=cursor_path,
-                      opencode_path=opencode_path, opencode_tool_replay=opencode_tool_replay,
-                      azure_endpoint=azure_endpoint,
-                      project_dir=project_dir)
+    tgt = _call_get(target_backend or backend, target_model or model)
+    opt = _call_get(optimizer_backend or backend, optimizer_model or model)
     opt.preferences = preferences  # reflect runs on the optimizer
     dual = DualBackend(target=tgt, optimizer=opt)
     dual.preferences = preferences

@@ -18,7 +18,7 @@ from skillopt_sleep.backend import Backend
 # research package, so this open-source tool stays decoupled from the paper code).
 from skillopt_sleep.gate import evaluate_gate, select_gate_score
 from skillopt_sleep.memory import apply_edits_detailed
-from skillopt_sleep.replay import aggregate_scores, replay_batch
+from skillopt_sleep.replay import aggregate_scores, pairwise_aggregate_scores, replay_batch
 from skillopt_sleep.types import (
     EditRecord,
     ReplayResult,
@@ -129,6 +129,35 @@ def _holdout_detail(pairs: List[Tuple[TaskRecord, ReplayResult]]) -> List[dict]:
     return out
 
 
+def _has_inconclusive(pairs: List[Tuple[TaskRecord, ReplayResult]]) -> bool:
+    return any(getattr(r, "outcome", "") == "inconclusive" for _t, r in pairs)
+
+
+def _score_val_comparison(
+    val_tasks: List[TaskRecord],
+    ref_pairs: List[Tuple[TaskRecord, ReplayResult]],
+    cand_pairs: List[Tuple[TaskRecord, ReplayResult]],
+    min_decidable_coverage: float,
+) -> Tuple[float, float, float, float, int, int, float, bool]:
+    """Compute baseline/candidate scores, excluding inconclusive pairs identically on both sides."""
+    if _has_inconclusive(ref_pairs) or _has_inconclusive(cand_pairs):
+        (b_h, b_s), (c_h, c_s), n_decidable, _n_tot, coverage = pairwise_aggregate_scores(
+            ref_pairs, cand_pairs
+        )
+        n_total = len(val_tasks) if val_tasks else _n_tot
+        if val_tasks and _n_tot:
+            coverage = n_decidable / len(val_tasks)
+        abstained = bool(val_tasks) and (
+            n_decidable == 0 or coverage < float(min_decidable_coverage)
+        )
+        return b_h, b_s, c_h, c_s, n_decidable, n_total, coverage, abstained
+
+    b_h, b_s = aggregate_scores(ref_pairs)
+    c_h, c_s = aggregate_scores(cand_pairs)
+    n_total = len(val_tasks)
+    return b_h, b_s, c_h, c_s, n_total, n_total, 1.0, False
+
+
 def _task_deltas(
     tasks: List[TaskRecord],
     baseline_pairs: List[Tuple[TaskRecord, ReplayResult]],
@@ -143,17 +172,17 @@ def _task_deltas(
     for task in tasks:
         baseline = baseline_by_id.get(task.id)
         candidate = candidate_by_id.get(task.id)
-        baseline_score = (
-            select_gate_score(baseline.hard, baseline.soft, metric, mixed_weight)
-            if baseline is not None
-            else None
-        )
-        candidate_score = (
-            select_gate_score(candidate.hard, candidate.soft, metric, mixed_weight)
-            if candidate is not None
-            else None
-        )
-        if baseline_score is None or candidate_score is None:
+        if baseline is None or candidate is None:
+            baseline_score = (
+                select_gate_score(baseline.hard, baseline.soft, metric, mixed_weight)
+                if baseline is not None
+                else None
+            )
+            candidate_score = (
+                select_gate_score(candidate.hard, candidate.soft, metric, mixed_weight)
+                if candidate is not None
+                else None
+            )
             out.append({
                 "task_id": task.id,
                 "tags": list(task.tags or []),
@@ -163,6 +192,28 @@ def _task_deltas(
                 "scores_are_finite": False,
             })
             continue
+
+        base_inc = getattr(baseline, "outcome", "") == "inconclusive"
+        cand_inc = getattr(candidate, "outcome", "") == "inconclusive"
+        if base_inc or cand_inc:
+            b_val = None if base_inc else _finite_score(
+                select_gate_score(baseline.hard, baseline.soft, metric, mixed_weight)
+            )
+            c_val = None if cand_inc else _finite_score(
+                select_gate_score(candidate.hard, candidate.soft, metric, mixed_weight)
+            )
+            out.append({
+                "task_id": task.id,
+                "tags": list(task.tags or []),
+                "baseline_score": b_val,
+                "candidate_score": c_val,
+                "status": "inconclusive",
+                "scores_are_finite": True,
+            })
+            continue
+
+        baseline_score = select_gate_score(baseline.hard, baseline.soft, metric, mixed_weight)
+        candidate_score = select_gate_score(candidate.hard, candidate.soft, metric, mixed_weight)
         scores_are_finite = math.isfinite(baseline_score) and math.isfinite(
             candidate_score
         )
@@ -204,6 +255,7 @@ def consolidate(
     evolve_memory: bool = True,
     night: int = 1,
     budget_exhausted: Optional[Callable[[], bool]] = None,
+    min_decidable_coverage: float = 0.5,
 ) -> ConsolidationResult:
     """Run one consolidation epoch: reflect -> bounded edit -> gate.
 
@@ -263,7 +315,7 @@ def consolidate(
     else:
         evlog.set_phase(backend, "baseline_val")
         base_pairs = replay_batch(backend, val_tasks, skill, memory)
-        base_hard, base_soft = aggregate_scores(base_pairs)
+        base_hard, base_soft = aggregate_scores(base_pairs, exclude_inconclusive=True)
         holdout_detail = _holdout_detail(base_pairs)
     base_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
     if ev is not None:
@@ -275,8 +327,14 @@ def consolidate(
     # ── reflect over TRAIN-split failures/successes ───────────────────────
     evlog.set_phase(backend, "train")
     train_pairs = replay_batch(backend, train_tasks, skill, memory)
-    failures = [(t, r) for (t, r) in train_pairs if r.hard < 1.0]
-    successes = [(t, r) for (t, r) in train_pairs if r.hard >= 1.0]
+    failures = [
+        (t, r) for (t, r) in train_pairs
+        if r.hard < 1.0 and getattr(r, "outcome", "") != "inconclusive"
+    ]
+    successes = [
+        (t, r) for (t, r) in train_pairs
+        if r.hard >= 1.0 and getattr(r, "outcome", "") != "inconclusive"
+    ]
 
     cand_skill, cand_memory = skill, memory
     all_applied: List[EditRecord] = []
@@ -317,7 +375,14 @@ def consolidate(
         trial_memory = new_doc if which == "memory" else cand_memory
         evlog.set_phase(backend, f"gate_trial:{which}")
         pairs = replay_batch(backend, val_tasks, trial_skill, trial_memory)
-        h, s = aggregate_scores(pairs)
+        b_h, b_s, h, s, n_decidable, _n_tot, coverage, below_floor = _score_val_comparison(
+            val_tasks, current_pairs, pairs, min_decidable_coverage
+        )
+        trial_base_score = (
+            select_gate_score(b_h, b_s, gate_metric, gate_mixed_weight)
+            if (_has_inconclusive(current_pairs) or _has_inconclusive(pairs))
+            else base_score
+        )
         cand_score = select_gate_score(h, s, gate_metric, gate_mixed_weight)
         task_deltas = _task_deltas(
             val_tasks, current_pairs, pairs, gate_metric, gate_mixed_weight
@@ -326,21 +391,27 @@ def consolidate(
             gate_no_regression
             and any(row["status"] == "regressed" for row in task_deltas)
         )
-        trial_base_score = base_score
-        improved = cand_score > base_score and not blocked_by_regression
-        gate_trials.append({
+        improved = (not below_floor) and cand_score > trial_base_score and not blocked_by_regression
+        trial_record: dict = {
             "target": which,
             "baseline_score": _finite_score(trial_base_score),
             "candidate_score": _finite_score(cand_score),
             "accepted": improved,
             "blocked_by_regression": blocked_by_regression,
             "task_deltas": task_deltas,
-        })
+        }
+        if below_floor or _has_inconclusive(current_pairs) or _has_inconclusive(pairs):
+            trial_record["abstained_inconclusive"] = below_floor
+            trial_record["decidable_coverage"] = coverage
+            trial_record["n_decidable"] = n_decidable
+        gate_trials.append(trial_record)
         if ev is not None:
             ev.log("gate", "trial", target=which, mode="gated",
                    baseline_score=trial_base_score, cand_hard=h, cand_soft=s,
                    cand_score=cand_score, accepted=improved,
                    blocked_by_regression=blocked_by_regression,
+                   abstained_inconclusive=below_floor,
+                   decidable_coverage=coverage,
                    task_deltas=task_deltas,
                    n_edits=len(applied))
         if improved:
@@ -441,7 +512,11 @@ def consolidate(
         else:
             evlog.set_phase(backend, "final_val")
             final_pairs = replay_batch(backend, val_tasks, cand_skill, cand_memory)
-        final_hard, final_soft = aggregate_scores(final_pairs)
+        base_hard_cmp, base_soft_cmp, final_hard, final_soft, n_decidable, _n_tot, coverage, abstain_inconclusive = _score_val_comparison(
+            val_tasks, base_pairs, final_pairs, min_decidable_coverage
+        )
+        base_hard = base_hard_cmp
+        base_soft = base_soft_cmp
         final_score = select_gate_score(final_hard, final_soft, gate_metric, gate_mixed_weight)
         base_gate_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
         final_task_deltas = _task_deltas(
@@ -451,65 +526,74 @@ def consolidate(
             gate_no_regression
             and any(row["status"] == "regressed" for row in final_task_deltas)
         )
-        if _HAVE_REPO_GATE:
-            gate = evaluate_gate(
-                candidate_skill=cand_skill,
-                cand_hard=final_hard,
-                current_skill=skill,
-                current_score=base_gate_score,
-                best_skill=skill,
-                best_score=base_gate_score,
-                best_step=night - 1,
-                global_step=night,
-                cand_soft=final_soft,
-                metric=gate_metric,
-                mixed_weight=gate_mixed_weight,
-            )
-            action = gate.action
-            accepted = (
-                bool(all_applied)
-                and final_score > base_gate_score
-                and not final_blocked_by_regression
-            )
-        else:
-            action = "accept" if final_score > base_gate_score else "reject"
-            accepted = (
-                bool(all_applied)
-                and final_score > base_gate_score
-                and not final_blocked_by_regression
-            )
-        # The gate scores documents, not edit bookkeeping: when every proposed
-        # edit was dropped during the per-target trials, `all_applied` is empty
-        # and nothing changed, yet the score comparison can still yield an
-        # accept-flavoured action. Reporting that as "accept_new_best" while
-        # `accepted` is False makes the headline contradict the outcome.
-        if not accepted and action in {"accept", "accept_new_best"}:
-            action = "reject"
-        # The gate cannot certify an improvement it measured on the same tasks
-        # the edits were derived from -- that comparison cannot detect
-        # overfitting, which is exactly how a reward hack scores 1.0. Abstain
-        # rather than report a verdict the evidence does not support. Edits are
-        # still staged, so a human can review them.
-        if accepted and holdout_leaked:
-            action = "reject_unverified"
+        if abstain_inconclusive:
+            action = "abstain_inconclusive"
             accepted = False
+        else:
+            if _HAVE_REPO_GATE:
+                gate = evaluate_gate(
+                    candidate_skill=cand_skill,
+                    cand_hard=final_hard,
+                    current_skill=skill,
+                    current_score=base_gate_score,
+                    best_skill=skill,
+                    best_score=base_gate_score,
+                    best_step=night - 1,
+                    global_step=night,
+                    cand_soft=final_soft,
+                    metric=gate_metric,
+                    mixed_weight=gate_mixed_weight,
+                )
+                action = gate.action
+                accepted = (
+                    bool(all_applied)
+                    and final_score > base_gate_score
+                    and not final_blocked_by_regression
+                )
+            else:
+                action = "accept" if final_score > base_gate_score else "reject"
+                accepted = (
+                    bool(all_applied)
+                    and final_score > base_gate_score
+                    and not final_blocked_by_regression
+                )
+            # The gate scores documents, not edit bookkeeping: when every proposed
+            # edit was dropped during the per-target trials, `all_applied` is empty
+            # and nothing changed, yet the score comparison can still yield an
+            # accept-flavoured action. Reporting that as "accept_new_best" while
+            # `accepted` is False makes the headline contradict the outcome.
+            if not accepted and action in {"accept", "accept_new_best"}:
+                action = "reject"
+            # The gate cannot certify an improvement it measured on the same tasks
+            # the edits were derived from -- that comparison cannot detect
+            # overfitting, which is exactly how a reward hack scores 1.0. Abstain
+            # rather than report a verdict the evidence does not support. Edits are
+            # still staged, so a human can review them.
+            if accepted and holdout_leaked:
+                action = "reject_unverified"
+                accepted = False
         # A per-target trial can improve and tentatively apply an edit, while a
-        # later fresh final replay regresses. The returned documents already
-        # roll back in that case; keep the edit bookkeeping/report consistent
-        # by moving those tentative edits into the rejected set as well.
+        # later fresh final replay regresses or becomes inconclusive. The returned
+        # documents already roll back in that case; keep the edit bookkeeping/report
+        # consistent by moving those tentative edits into the rejected set as well.
         if not accepted and all_applied:
             for edit in all_applied:
                 if edit not in all_rejected:
                     all_rejected.append(edit)
             all_applied = []
-        gate_trials.append({
+        final_trial_record: dict = {
             "target": "final",
             "baseline_score": _finite_score(base_gate_score),
             "candidate_score": _finite_score(final_score),
             "accepted": accepted,
             "blocked_by_regression": final_blocked_by_regression,
             "task_deltas": final_task_deltas,
-        })
+        }
+        if abstain_inconclusive or _has_inconclusive(base_pairs) or _has_inconclusive(final_pairs):
+            final_trial_record["abstained_inconclusive"] = abstain_inconclusive
+            final_trial_record["decidable_coverage"] = coverage
+            final_trial_record["n_decidable"] = n_decidable
+        gate_trials.append(final_trial_record)
 
     if ev is not None:
         w = max(0.0, min(1.0, float(gate_mixed_weight)))
