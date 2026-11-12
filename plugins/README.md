@@ -249,10 +249,11 @@ python -m skillopt_sleep run --project "$(pwd)" \
 ### Advanced config
 
 The JSON/YAML config under `~/.skillopt-sleep/` supports additional engine keys,
-including `gate_mode`, `gate_metric`, `gate_no_regression`, `dream_rollouts`,
-`dream_factor`, `recall_k`, `evolve_memory`, and `evolve_skill`. These are config
-keys, not aliases for the unsupported CLI flags listed above. Shipping defaults
-are conservative: `gate_mode="on"`, `gate_no_regression=false`,
+including `gate_mode`, `gate_metric`, `gate_no_regression`, `gate_train_check`,
+`gate_train_margin`, `dream_rollouts`, `dream_factor`, `recall_k`,
+`evolve_memory`, and `evolve_skill`. These are config keys, not aliases for the
+unsupported CLI flags listed above. Shipping defaults are conservative:
+`gate_mode="on"`, `gate_no_regression=false`, `gate_train_check=false`,
 `dream_rollouts=1`, `dream_factor=0`, and `recall_k=0`.
 
 The managed `schedule` command stores only the project, backend, time, and

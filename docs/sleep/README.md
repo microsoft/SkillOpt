@@ -35,6 +35,43 @@ candidate; an absent numeric score aborts evaluation. Task-level changes are
 included in `report.md`, `report.json`, `diagnostics.json`, the CLI's `--json`
 output, and the evidence log.
 
+The optional `gate_train_check` config key adds a condition to an accept. It
+defaults to `false`. A night's validation slice is a fraction of that night's
+tasks and can be a handful, so a rule that damages the agent can still come out
+ahead on it. When the check is on, a candidate the validation gate would accept
+is also replayed on tonight's real training tasks (recalled tasks included,
+dream variants not). It is rejected when two things hold: its mean score there,
+under the configured `gate_metric`, is lower than the current documents' by
+more than `gate_train_margin` (default `0.1`, a number between 0 and 1), and at
+least two more of those tasks got worse than got better, so one task flipping
+can never decide a night.
+
+These tasks are not held out, since reflection drew on tonight's failures, so
+scoring higher on them proves nothing and the check never accepts anything the
+validation gate rejected. Scoring clearly lower on them, in particular breaking
+tasks the current documents already handle, is not explained by overfitting,
+which is why the comparison is used only to reject. Each candidate is compared
+with the documents it would replace: a skill candidate with the night's
+training replay, a memory candidate with the replay that follows an accepted
+skill. The margin therefore applies per candidate, not per night. The added
+cost is one replay of the training tasks for each candidate that passes
+validation.
+
+A task with a missing or malformed score counts as worse, and a non-finite
+mean rejects the candidate. The check is skipped when `gate_mode` is `off` and
+when the validation slice is not disjoint from training. The gate records
+(`train_check`, in `report.json`, `diagnostics.json`, and the CLI's `--json`
+output) and the evidence log (`gate` / `train_check`) keep both arms and every
+task-level change; `report.md` shows the two means and the counts. These
+records are written only when the check is enabled. `gate_train_check` must be
+a boolean and, when it is `true`, an invalid margin raises before consolidation
+makes any model call.
+
+To measure the gate with and without this key on a public benchmark, run
+`python -m skillopt_sleep.experiments.gate_study` (fault injection of fixed rules
+and the multi-night recipe, both through `dream_consolidate`). `--offline` runs it
+on a committed fixture with no key and no network; live runs need `--live`.
+
 Rule-based heading checks are intentionally additive. `section_present` keeps
 its legacy strict behavior for existing task sets: an ATX heading cannot append
 text after the requested name. Use `section_contains` when a numbered,
@@ -466,8 +503,9 @@ This is not a hard cap. A step that has started always finishes, so a night
 can end above the budget by the cost of one step: the first replay of the
 validation and training tasks, one edit step (a training replay, a reflect
 call and a validation replay of the candidate; with `dream_rollouts` set to K,
-K attempts per training task), the final validation replay, or the held-out
-test replay. Each fan-out group that starts runs its own first replay.
+K attempts per training task; with `gate_train_check`, a replay of the
+training tasks for a candidate that passes validation), the final validation
+replay, or the held-out test replay. Each fan-out group that starts runs its own first replay.
 
 Spend comes from the backend's token counter, the one the report header prints
 as `tokens used`. The header shows the backend's running total and the note
@@ -504,8 +542,8 @@ This runs one additional consolidation per group (including a catch-all group wh
 hinted and unhinted evidence are mixed), so it multiplies backend calls and token
 use; configured dream rollouts and synthetic variants multiply the per-group work
 too. Each group inherits the configured edit budget, gate mode/metric,
-`gate_no_regression`, `dream_rollouts`, `dream_factor`, `recall_k`, and
-`evolve_skill`. Recalled archive tasks are restricted to that same skill hint;
+`gate_no_regression`, `gate_train_check`, `gate_train_margin`,
+`dream_rollouts`, `dream_factor`, `recall_k`, and `evolve_skill`. Recalled archive tasks are restricted to that same skill hint;
 shared memory is read-only in fan-out runs. Setting `evolve_skill` to `false`
 therefore disables per-skill proposals as well as the managed skill proposal.
 

@@ -107,7 +107,7 @@ ask the agent: "Use skillopt_status to check the sleep cycle state."
 | `timeoutMs` | `600000` | per-call engine timeout in milliseconds |
 
 Advanced engine keys (`gate_mode`, `gate_metric`, `gate_no_regression`,
-`dream_rollouts`, `recall_k`, `evolve_memory`/`evolve_skill`) go in
+`gate_train_check`, `dream_rollouts`, `recall_k`, `evolve_memory`/`evolve_skill`) go in
 `~/.skillopt-sleep/config.json` — the same file shared by all integrations.
 
 ## Data boundary
