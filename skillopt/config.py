@@ -397,6 +397,14 @@ def apply_overrides(cfg: dict, overrides: list[str]) -> None:
             if structured and dotted:
                 section, subkey = dotted.split(".", 1)
                 cfg.setdefault(section, {})[subkey] = val
+            elif (
+                structured
+                and isinstance(cfg.get("env"), dict)
+                and canonical in cfg["env"]
+            ):
+                # flatten_config copies env keys over top-level ones, so a
+                # top-level copy of an env setting would be ignored.
+                cfg["env"][canonical] = val
             else:
                 cfg[canonical] = val
 

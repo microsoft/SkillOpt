@@ -129,6 +129,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- A flat `--cfg-options` key for an `env` setting (for example `workers=4`)
+  now overrides the YAML value with a structured config instead of being
+  silently replaced by it (#409).
 - Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
   no longer brings a content twin of tonight's held-out task into training,
   a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
