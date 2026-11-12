@@ -103,7 +103,10 @@ def _list_win_tasks() -> List[str]:
         return []
 
 
-def _runner_cmd(project: str, backend: str, extra: str, python: str) -> str:
+def _runner_cmd(project: str, backend: str, extra: str, python: str,
+                scope: str = "invoked") -> str:
+    if scope not in ("invoked", "all"):
+        raise ValueError(f"scope must be 'invoked' or 'all', got {scope!r}")
     _validate_scheduler_text("project", project)
     _validate_scheduler_text("python", python)
     _validate_scheduler_text("repository", _repo_root())
@@ -120,7 +123,7 @@ def _runner_cmd(project: str, backend: str, extra: str, python: str) -> str:
         "--project",
         project,
         "--scope",
-        "invoked",
+        scope,
         "--backend",
         backend,
         *shlex.split(extra),
@@ -184,7 +187,8 @@ def _project_marker(project: str) -> str:
 
 
 def schedule(project: str, *, backend: str = "mock", hour: int = 3, minute: int = 17,
-             extra: str = "", python: Optional[str] = None) -> Tuple[bool, str]:
+             extra: str = "", python: Optional[str] = None,
+             scope: str = "invoked") -> Tuple[bool, str]:
     """Install (or replace) the nightly entry for ``project``.
 
     Returns (installed, message). If the scheduler backend is unavailable, installed=False and
@@ -197,7 +201,7 @@ def schedule(project: str, *, backend: str = "mock", hour: int = 3, minute: int 
     project = os.path.abspath(project)
     python = python or sys.executable or "python3"
     try:
-        runner_cmd = _runner_cmd(project, backend, extra, python)
+        runner_cmd = _runner_cmd(project, backend, extra, python, scope)
     except (ValueError, OSError) as exc:
         return False, f"Refusing unsafe scheduler configuration: {exc}"
 
