@@ -67,6 +67,11 @@ records are written only when the check is enabled. `gate_train_check` must be
 a boolean and, when it is `true`, an invalid margin raises before consolidation
 makes any model call.
 
+To measure the gate with and without this key on a public benchmark, run
+`python -m skillopt_sleep.experiments.gate_study` (fault injection of fixed rules
+and the multi-night recipe, both through `dream_consolidate`). `--offline` runs it
+on a committed fixture with no key and no network; live runs need `--live`.
+
 Rule-based heading checks are intentionally additive. `section_present` keeps
 its legacy strict behavior for existing task sets: an ATX heading cannot append
 text after the requested name. Use `section_contains` when a numbered,
