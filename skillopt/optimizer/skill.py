@@ -119,8 +119,13 @@ def _apply_edit_with_report(skill: str, edit: EditType | dict) -> tuple[str, dic
             report["status"] = "applied_insert_after_fallback_append"
             return skill.rstrip() + "\n\n" + content + "\n", report
         idx = skill.index(target) + len(target)
-        newline = skill.find("\n", idx)
-        insert_at = newline + 1 if newline != -1 else len(skill)
+        if target.endswith("\n"):
+            # The target already ends its line: insert right here, not after
+            # the line that follows it.
+            insert_at = idx
+        else:
+            newline = skill.find("\n", idx)
+            insert_at = newline + 1 if newline != -1 else len(skill)
         report["status"] = "applied_insert_after"
         return skill[:insert_at] + "\n" + content + "\n" + skill[insert_at:], report
 
