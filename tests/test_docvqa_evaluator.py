@@ -98,9 +98,25 @@ def test_extract_answer_strings_accepts_dataset_shapes(raw, expected):
     [
         ("reasoning\n<ANSWER>Foo</ANSWER>", "Foo"),
         ("<answer>x</answer> then <answer>y</answer>", "y"),
+        ("<answer>x<answer>y</answer>", "y"),
         ("first line\n\nlast line  ", "last line"),
         ("", ""),
     ],
 )
 def test_extract_answer(text, expected):
     assert extract_answer(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<answer>42</answer> (formatted with the <answer> tag as asked)",
+        "The total is <answer>42</answer>\nNote: only one <answer> block.",
+        "<answer>42</answer>\n<answer>",
+        "<answer>42</answer> (wrapped in </answer> as asked)",
+        "<answer>42</answer>\n</answer>",
+    ],
+)
+def test_stray_answer_tag_after_the_last_complete_answer_is_ignored(text):
+    assert extract_answer(text) == "42"
+    assert evaluate(text, ["42"])["anls"] == 1.0
