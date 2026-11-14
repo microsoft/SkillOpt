@@ -180,9 +180,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   Code, Codex and Pi transcript timestamps as instants rather than strings.
   East of UTC, sessions that ended in the hours after a harvest were never
   harvested (thanks @1AbdullahButt).
-- Keep the DocVQA answer when a stray `<answer>` appears after the last
-  `</answer>`, instead of falling back to the last line and scoring a correct
-  answer as ANLS 0 (thanks @Shizoqua).
+- Keep the DocVQA answer when a stray `<answer>` or `</answer>` follows the
+  final answer, instead of scoring the wrong text and giving a correct answer
+  ANLS 0 (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

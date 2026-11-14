@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from collections.abc import Iterable
 from typing import Any
 
 DEFAULT_ANLS_THRESHOLD = 0.5
+
+# A complete <answer>...</answer> pair whose body contains no other "<answer>",
+# so nested input keeps the innermost answer and stray tags elsewhere are ignored.
+_ANSWER_RE = re.compile(r"<answer>((?:(?!<answer>).)*?)</answer>", re.DOTALL | re.IGNORECASE)
 
 
 def _normalize_text(value: Any) -> str:
@@ -91,13 +96,9 @@ def _extract_answer_strings(raw: Any) -> list[str]:
 
 
 def extract_answer(text: str) -> str:
-    lower = text.lower()
-    # Pair the last </answer> with the last <answer> before it, so a stray
-    # "<answer>" after the final answer does not discard that answer.
-    end = lower.rfind("</answer>")
-    start = lower.rfind("<answer>", 0, end) if end != -1 else -1
-    if start != -1:
-        return text[start + len("<answer>"):end].strip()
+    matches = _ANSWER_RE.findall(text)
+    if matches:
+        return matches[-1].strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return lines[-1] if lines else text.strip()
 

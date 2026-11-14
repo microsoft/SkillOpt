@@ -113,6 +113,8 @@ def test_extract_answer(text, expected):
         "<answer>42</answer> (formatted with the <answer> tag as asked)",
         "The total is <answer>42</answer>\nNote: only one <answer> block.",
         "<answer>42</answer>\n<answer>",
+        "<answer>42</answer> (wrapped in </answer> as asked)",
+        "<answer>42</answer>\n</answer>",
     ],
 )
 def test_stray_answer_tag_after_the_last_complete_answer_is_ignored(text):
