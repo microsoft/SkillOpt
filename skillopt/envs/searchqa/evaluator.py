@@ -93,11 +93,16 @@ def sub_em(prediction: str, gold_answers: list[str]) -> float:
     return 0.0
 
 
-def evaluate(prediction_text: str, gold_answers: list[str]) -> dict:
+def evaluate(prediction_text: str, gold_answers: list[str] | str) -> dict:
     """Evaluate a single QA prediction against gold answers.
+
+    A single string gold answer is treated as a one-item list, so it is not
+    iterated character by character.
 
     Returns dict with: em, f1, sub_em, predicted_answer, gold_answers.
     """
+    if isinstance(gold_answers, str):
+        gold_answers = [gold_answers]
     answer = extract_answer(prediction_text)
     return {
         "em": exact_match(answer, gold_answers),

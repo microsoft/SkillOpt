@@ -180,6 +180,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
   Code, Codex and Pi transcript timestamps as instants rather than strings.
   East of UTC, sessions that ended in the hours after a harvest were never
   harvested (thanks @1AbdullahButt).
+- Treat a SearchQA gold answer given as a single string as one answer instead
+  of a sequence of characters, in scoring and in the gold answers recorded on
+  rollout rows. The correct answer was scored as wrong and a one-letter answer
+  as correct (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
