@@ -112,3 +112,39 @@ def test_gate_accepts_a_good_edit_on_a_skill_with_a_legacy_multi_line_item() -> 
     assert result.baseline_score == 0.5
     assert result.candidate_score == 1.0
     assert units in result.new_skill
+
+
+def test_orphan_start_marker_does_not_discard_the_rest_of_the_document() -> None:
+    """A START marker without END must not truncate the user's document.
+
+    A missing END marker (a hand edit or a merge conflict) used to make
+    ``_strip_learned`` cut the document at the orphan START: the next sleep edit
+    deleted the user's own sections and the learned items already present, and
+    the proposal that ``consolidate`` wrote back had lost them (#412).
+    """
+    doc = (
+        "# Project notes\n\n"
+        + LEARNED_START + "\n## Learned preferences & procedures\n\n- Run tests with -q\n\n"
+        "## My own section\n\n- Never push to main\n"
+    )
+    new_doc, applied, unmatched = apply_edits_detailed(doc, [_add("Use ruff")])
+    assert len(applied) == 1 and unmatched == []
+    assert "## My own section" in new_doc
+    assert "- Never push to main" in new_doc
+    assert "- Run tests with -q" in new_doc
+    assert new_doc.count(LEARNED_START) == 1
+    assert new_doc.count(LEARNED_END) == 1
+    assert "Use ruff" in extract_learned(new_doc)
+
+
+def test_set_learned_keeps_content_after_an_orphan_start_marker() -> None:
+    doc = (
+        "# Project notes\n\n"
+        + LEARNED_START + "\n- Run tests with -q\n\n"
+        "## My own section\n\n- Never push to main\n"
+    )
+    out = set_learned(doc, ["Use ruff"])
+    assert "## My own section" in out
+    assert "- Never push to main" in out
+    assert "- Run tests with -q" in out
+    assert current_learned_lines(out) == ["Use ruff"]

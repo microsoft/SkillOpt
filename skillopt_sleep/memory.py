@@ -36,7 +36,11 @@ def _strip_learned(doc: str) -> str:
             break
         e = doc.find(LEARNED_END, s)
         if e == -1:
-            doc = doc[:s]
+            # Orphan start marker: drop the marker only. Everything after it is
+            # the user's document (they may have lost the END marker in a merge
+            # conflict); truncating here would delete it (see #412). This mirrors
+            # _strip_all_slow_update_fields in skillopt/optimizer/slow_update.py.
+            doc = doc[:s] + doc[s + len(LEARNED_START):]
             break
         doc = doc[:s] + doc[e + len(LEARNED_END):]
     while "\n\n\n" in doc:
