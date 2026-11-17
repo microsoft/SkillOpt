@@ -955,6 +955,9 @@ class ClaudeCliBackend(CliBackend):
         #   --exclude-dynamic-...     drop per-machine cwd/env/memory/git sections
         #   cwd=<clean temp>          no project CLAUDE.md
         import tempfile
+
+        from skillopt_sleep.harvest import CLAUDE_REPLAY_SENTINEL
+
         isolation_flag = self._isolation_flag()
         cmd = [self.claude_path, "-p", "--output-format", "text"]
         cmd.append(isolation_flag)
@@ -972,7 +975,11 @@ class ClaudeCliBackend(CliBackend):
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=clean_cwd,
-                input=prompt,
+                # Stamped here, on the text handed to the CLI, so the session
+                # it writes is recognizable to the harvester whatever template
+                # rendered the prompt. Cache keys and cost accounting are
+                # computed by the caller from the unstamped prompt.
+                input=CLAUDE_REPLAY_SENTINEL + "\n\n" + prompt,
             )
         except Exception as exc:
             import logging
@@ -1001,6 +1008,7 @@ class ClaudeCliBackend(CliBackend):
         # validated honestly: we detect the call from the shim's log, not from
         # a self-reported marker. Other tools are stubbed the same way.
         import tempfile, shutil, stat
+        from skillopt_sleep.harvest import CLAUDE_REPLAY_SENTINEL
         work = tempfile.mkdtemp(prefix="skillopt_sleep_tools_")
         calllog = os.path.join(work, "_tool_calls.log")
         try:
@@ -1042,7 +1050,7 @@ class ClaudeCliBackend(CliBackend):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=work,
-                    input=prompt,
+                    input=CLAUDE_REPLAY_SENTINEL + "\n\n" + prompt,
                 )
                 resp = (proc.stdout or "").strip()
                 self._detect_cli_error(resp, proc.stderr or "")

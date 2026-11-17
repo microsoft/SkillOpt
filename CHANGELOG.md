@@ -135,6 +135,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   loop (Pi, Azure, mock) was answered once and that answer was reused for
   every rollout. `attempt_with_tools` now accepts `sample_id` on every shipped
   backend; custom overrides without that parameter keep working.
+- SkillOpt-Sleep no longer harvests its own Claude replay sessions as user
+  tasks. The Claude backend now starts every prompt it sends with a
+  `[skillopt-sleep:claude-engine:v1]` producer marker, the same kind of marker
+  the Codex backend uses, and the harvester drops a single-turn session only
+  when its prompt starts with it. This covers custom prompt templates, and a
+  user session that quotes an engine prompt is kept (#310).
 - Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
   no longer brings a content twin of tonight's held-out task into training,
   a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
