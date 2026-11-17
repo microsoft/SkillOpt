@@ -123,22 +123,26 @@ class SleepConfig:
         explicit = self.data.get("state_dir")
         if explicit:
             return explicit
-        ch = self.data.get("claude_home", CLAUDE_HOME)
-        if os.path.abspath(ch) != os.path.abspath(CLAUDE_HOME):
-            return os.path.join(os.path.dirname(os.path.abspath(ch)), ".skillopt-sleep")
+        ch = self._home_dir("claude_home")
+        if ch != os.path.abspath(CLAUDE_HOME):
+            return os.path.join(os.path.dirname(ch), ".skillopt-sleep")
         return HOME_STATE_DIR
 
     @property
     def state_path(self) -> str:
         return os.path.join(self.state_dir, "state.json")
 
+    def _home_dir(self, key: str) -> str:
+        # Config files are not shell-expanded, so "~/.claude" arrives verbatim.
+        return os.path.abspath(os.path.expanduser(str(self.data.get(key) or DEFAULTS[key])))
+
     @property
     def transcripts_dir(self) -> str:
-        return os.path.join(self.data["claude_home"], "projects")
+        return os.path.join(self._home_dir("claude_home"), "projects")
 
     @property
     def codex_archived_sessions_dir(self) -> str:
-        return os.path.join(self.data["codex_home"], "archived_sessions")
+        return os.path.join(self._home_dir("codex_home"), "archived_sessions")
 
     @property
     def pi_sessions_dir(self) -> str:
@@ -175,11 +179,11 @@ class SleepConfig:
 
     @property
     def history_path(self) -> str:
-        return os.path.join(self.data["claude_home"], "history.jsonl")
+        return os.path.join(self._home_dir("claude_home"), "history.jsonl")
 
     @property
     def skills_dir(self) -> str:
-        return os.path.join(self.data["claude_home"], "skills")
+        return os.path.join(self._home_dir("claude_home"), "skills")
 
     def managed_skill_path(self) -> str:
         target = self.data.get("target_skill_path") or ""
