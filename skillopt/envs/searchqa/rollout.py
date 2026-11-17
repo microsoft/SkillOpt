@@ -27,6 +27,12 @@ from skillopt.prompts import load_prompt
 _MAX_CONTEXT_CHARS = 6000
 
 
+def _gold_answers(item: dict) -> list:
+    """Return the item's gold answers as a list; a single string is one answer."""
+    answers = item.get("answers", [])
+    return [answers] if isinstance(answers, str) else answers
+
+
 def _raise_on_systemic_failure(results: list[dict]) -> None:
     """Abort when all rollout rows failed before any agent response."""
     if not results or not all(row.get("agent_ok") is False for row in results):
@@ -184,7 +190,7 @@ def process_one(
     pred_dir = confined_task_output_dir(out_root, item_id)
     question = item["question"]
     context = item.get("context", "")
-    gold_answers = item.get("answers", [])
+    gold_answers = _gold_answers(item)
 
     result = {
         "id": item_id,
@@ -415,7 +421,7 @@ def run_batch(
             "fail_reason": f"task-timeout-{task_timeout}s",
             "agent_ok": False,
             "n_turns": 0,
-            "gold_answer": item.get("answers", []),
+            "gold_answer": _gold_answers(item),
             "phase": "timeout",
         }
 
