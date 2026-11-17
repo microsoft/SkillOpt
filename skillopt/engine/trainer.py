@@ -36,6 +36,7 @@ from skillopt.model import (
     configure_cursor_exec,
     configure_minimax_chat,
     configure_openai_compatible,
+    configure_opencode_exec,
     configure_qwen_chat,
     get_qwen_thinking_modes,
     get_token_summary,
@@ -511,6 +512,12 @@ def _resolve_role_backends(
         optimizer_backend = optimizer_backend or "openai_chat"
         if target_backend in _ROLE_BACKEND_DEFAULTS:
             target_backend = "claude_code_exec"
+    elif backend == "opencode_exec":
+        # One CLI login fills both roles, like codex_exec.
+        if optimizer_backend in _ROLE_BACKEND_DEFAULTS:
+            optimizer_backend = "opencode_exec"
+        if target_backend in _ROLE_BACKEND_DEFAULTS:
+            target_backend = "opencode_exec"
     elif backend == "cursor_exec":
         optimizer_backend = optimizer_backend or "openai_chat"
         if target_backend in _ROLE_BACKEND_DEFAULTS:
@@ -790,6 +797,10 @@ class ReflACTTrainer:
             use_sdk=cfg.get("claude_code_exec_use_sdk", None),
             effort=cfg.get("claude_code_exec_effort", cfg.get("reasoning_effort", "medium")),
             max_thinking_tokens=cfg.get("claude_code_exec_max_thinking_tokens", 16384),
+        )
+        configure_opencode_exec(
+            path=cfg.get("opencode_exec_path") or None,
+            allow_shell=cfg.get("opencode_exec_allow_shell"),
         )
         configure_cursor_exec(
             path=cfg.get("cursor_exec_path") or None,

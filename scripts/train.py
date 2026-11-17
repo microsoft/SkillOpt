@@ -144,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     # Legacy flat CLI overrides (still work, prefer --cfg-options for new usage)
     p.add_argument("--env", type=str)
     p.add_argument("--backend", type=str,
-                   choices=["azure_openai", "codex", "codex_exec", "claude", "claude_chat", "claude_code_exec", "cursor", "cursor_exec", "copilot", "copilot_chat", "copilot_exec", "qwen", "qwen_chat", "minimax", "minimax_chat", "openai_compatible"])
+                   choices=["azure_openai", "codex", "codex_exec", "claude", "claude_chat", "claude_code_exec", "cursor", "cursor_exec", "opencode", "opencode_exec", "copilot", "copilot_chat", "copilot_exec", "qwen", "qwen_chat", "minimax", "minimax_chat", "openai_compatible"])
     p.add_argument("--optimizer_model", type=str)
     p.add_argument("--target_model", type=str)
     p.add_argument("--optimizer_backend", type=str)
@@ -241,6 +241,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--claude_code_exec_use_sdk", type=str)
     p.add_argument("--claude_code_exec_effort", type=str)
     p.add_argument("--claude_code_exec_max_thinking_tokens", type=int)
+    p.add_argument("--opencode_exec_path", type=str)
+    p.add_argument("--opencode_exec_allow_shell", type=_BOOL)
     p.add_argument("--cursor_exec_path", type=str)
     p.add_argument("--cursor_exec_sandbox", type=str)
     p.add_argument("--copilot_exec_path", type=str)
@@ -476,6 +478,8 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "claude_code_exec_use_sdk": "model.claude_code_exec_use_sdk",
     "claude_code_exec_effort": "model.claude_code_exec_effort",
     "claude_code_exec_max_thinking_tokens": "model.claude_code_exec_max_thinking_tokens",
+    "opencode_exec_path": "model.opencode_exec_path",
+    "opencode_exec_allow_shell": "model.opencode_exec_allow_shell",
     "cursor_exec_path": "model.cursor_exec_path",
     "cursor_exec_sandbox": "model.cursor_exec_sandbox",
     "copilot_exec_path": "model.copilot_exec_path",
@@ -702,6 +706,9 @@ def load_config(args: argparse.Namespace) -> dict:
             # backend so an explicit --optimizer_backend is never clobbered.
             _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "claude_code_exec")
+        elif backend == "opencode_exec":
+            _set_role("optimizer_backend", "opencode_exec")
+            _set_role("target_backend", "opencode_exec")
         elif backend == "cursor_exec":
             _set_role("optimizer_backend", "openai_chat")
             _set_role("target_backend", "cursor_exec")
@@ -739,6 +746,13 @@ def load_config(args: argparse.Namespace) -> dict:
             and not _has_model_override("model.optimizer", "optimizer_model")
         ):
             flat["optimizer_model"] = default_model_for_backend("claude_code_exec")
+    if normalize_backend_name(flat.get("optimizer_backend")) == "opencode_exec":
+        flat["optimizer_backend"] = "opencode_exec"
+        if (
+            (not flat.get("optimizer_model") or str(flat.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.optimizer", "optimizer_model")
+        ):
+            flat["optimizer_model"] = default_model_for_backend("opencode_exec")
     if flat.get("optimizer_backend") == "qwen_chat":
         if (
             (not flat.get("optimizer_model") or str(flat.get("optimizer_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
@@ -767,6 +781,13 @@ def load_config(args: argparse.Namespace) -> dict:
             and not _has_model_override("model.target", "target_model")
         ):
             flat["target_model"] = default_model_for_backend("claude_chat")
+    if normalize_backend_name(flat.get("target_backend")) == "opencode_exec":
+        flat["target_backend"] = "opencode_exec"
+        if (
+            (not flat.get("target_model") or str(flat.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)
+            and not _has_model_override("model.target", "target_model")
+        ):
+            flat["target_model"] = default_model_for_backend("opencode_exec")
     if flat.get("target_backend") == "cursor_exec":
         if (
             (not flat.get("target_model") or str(flat.get("target_model", "") or "").strip() in _OPENAI_DEFAULT_MODEL_SENTINELS)

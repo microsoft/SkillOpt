@@ -24,6 +24,8 @@ _BACKEND_DEFAULT_MODELS = {
     "claude_chat": "claude-sonnet-4-6",
     "claude_code_exec": "claude-sonnet-4-6",
     "cursor_exec": "composer-2.5",
+    # OpenCode model ids are namespaced by provider.
+    "opencode_exec": "openai/gpt-5.5",
     # copilot_chat / copilot_exec deliberately use the Azure default fallback
     # from default_model_for_backend(). That fallback configures shared role
     # deployments (not the CLI model, which uses the copilot_chat model keys)
@@ -47,6 +49,11 @@ _BACKEND_ALIASES = {
     "cursor": "cursor_exec",
     "cursor_agent": "cursor_exec",
     "cursor_exec": "cursor_exec",
+    "opencode": "opencode_exec",
+    "opencode_exec": "opencode_exec",
+    "opencode_chat": "opencode_exec",
+    "opencode_cli": "opencode_exec",
+    "opencode-cli": "opencode_exec",
     "copilot": "copilot_chat",
     "copilot_cli": "copilot_chat",
     "github_copilot": "copilot_chat",

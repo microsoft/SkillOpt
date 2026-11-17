@@ -11,6 +11,7 @@ from skillopt.model import codex_backend as _codex
 from skillopt.model import copilot_backend as _copilot
 from skillopt.model import minimax_backend as _minimax
 from skillopt.model import openai_compatible_backend as _openai_compat
+from skillopt.model import opencode_backend as _opencode
 from skillopt.model import qwen_backend as _qwen
 from skillopt.model.backend_config import (  # noqa: F401
     configure_claude_code_exec,
@@ -19,11 +20,13 @@ from skillopt.model.backend_config import (  # noqa: F401
     configure_copilot_chat,
     configure_copilot_exec,
     configure_cursor_exec,
+    configure_opencode_exec,
     get_claude_code_exec_config,
     get_codex_exec_config,
     get_copilot_chat_config,
     get_copilot_exec_config,
     get_cursor_exec_config,
+    get_opencode_exec_config,
     get_optimizer_backend,
     get_target_backend,
     is_optimizer_chat_backend,
@@ -66,6 +69,11 @@ def set_backend(name: str | None) -> str:
         set_optimizer_backend("openai_chat")
         set_target_backend("cursor_exec")
         return "cursor_exec"
+    if normalized == "opencode_exec":
+        # One CLI login fills both roles, like codex_exec.
+        set_optimizer_backend("opencode_exec")
+        set_target_backend("opencode_exec")
+        return "opencode_exec"
     if normalized == "copilot_chat":
         # The CLI-authenticated backend drives both roles without a separate
         # provider API key; inference still uses the Copilot cloud service.
@@ -105,6 +113,8 @@ def get_backend_name() -> str:
         return "azure_openai"
     if optimizer == "codex_exec" and target == "codex_exec":
         return "codex"
+    if optimizer == "opencode_exec" and target == "opencode_exec":
+        return "opencode_exec"
     if optimizer == "openai_chat" and target == "qwen_chat":
         return "qwen_chat"
     if optimizer == "openai_chat" and target == "minimax_chat":
@@ -194,6 +204,15 @@ def chat_optimizer(
             stage=stage,
             timeout=timeout,
             reasoning_effort=reasoning_effort,
+        )
+    if get_optimizer_backend() == "opencode_exec":
+        return _opencode.chat_optimizer(
+            system=system,
+            user=user,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            timeout=timeout,
         )
     return _openai.chat_optimizer(
         system=system,
@@ -372,6 +391,17 @@ def chat_optimizer_messages(
             return_message=return_message,
             timeout=timeout,
             reasoning_effort=reasoning_effort,
+        )
+    if get_optimizer_backend() == "opencode_exec":
+        return _opencode.chat_optimizer_messages(
+            messages=messages,
+            max_completion_tokens=max_completion_tokens,
+            retries=retries,
+            stage=stage,
+            tools=tools,
+            tool_choice=tool_choice,
+            return_message=return_message,
+            timeout=timeout,
         )
     return _openai.chat_optimizer_messages(
         messages=messages,
@@ -591,6 +621,17 @@ def get_token_summary() -> dict:
         summary[stage]["prompt_tokens"] += values["prompt_tokens"]
         summary[stage]["completion_tokens"] += values["completion_tokens"]
         summary[stage]["total_tokens"] += values["total_tokens"]
+    opencode_summary = _opencode.get_token_summary()
+    for stage, values in opencode_summary.items():
+        if stage == "_total":
+            continue
+        if stage not in summary:
+            summary[stage] = values
+            continue
+        summary[stage]["calls"] += values["calls"]
+        summary[stage]["prompt_tokens"] += values["prompt_tokens"]
+        summary[stage]["completion_tokens"] += values["completion_tokens"]
+        summary[stage]["total_tokens"] += values["total_tokens"]
     copilot_summary = _copilot.get_token_summary()
     for stage, values in copilot_summary.items():
         if stage == "_total":
@@ -627,6 +668,7 @@ def reset_token_tracker() -> None:
     _minimax.reset_token_tracker()
     _openai_compat.reset_token_tracker()
     _codex.reset_token_tracker()
+    _opencode.reset_token_tracker()
     _copilot.reset_token_tracker()
 
 
@@ -805,6 +847,7 @@ def set_reasoning_effort(effort: str | None) -> None:
     _minimax.set_reasoning_effort(effort)
     _openai_compat.set_reasoning_effort(effort)
     _codex.set_reasoning_effort(effort)
+    _opencode.set_reasoning_effort(effort)
 
 
 def set_target_deployment(deployment: str) -> None:
@@ -815,6 +858,7 @@ def set_target_deployment(deployment: str) -> None:
     _minimax.set_target_deployment(deployment)
     _openai_compat.set_target_deployment(deployment)
     _codex.set_target_deployment(deployment)
+    _opencode.set_target_deployment(deployment)
 
 
 def set_optimizer_deployment(deployment: str) -> None:
@@ -825,3 +869,4 @@ def set_optimizer_deployment(deployment: str) -> None:
     _minimax.set_optimizer_deployment(deployment)
     _openai_compat.set_optimizer_deployment(deployment)
     _codex.set_optimizer_deployment(deployment)
+    _opencode.set_optimizer_deployment(deployment)

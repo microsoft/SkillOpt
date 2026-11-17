@@ -19,6 +19,7 @@ selecting the generic OpenAI-compatible backend.
 | `copilot_chat` | ✓ | ✓ |
 | `codex_exec` | ✓ | ✓ |
 | `claude_code_exec` | ✓ | ✓ |
+| `opencode_exec` | ✓ | ✓ |
 | `cursor_exec` | — | ✓ |
 | `copilot_exec` | — | ✓ |
 
@@ -34,7 +35,7 @@ resolves to `https://api.minimax.io/v1` and `cn_zh` resolves to
 | `model.backend` | str | `azure_openai` | Backward-compatible high-level run label |
 | `model.optimizer` | str | `gpt-5.5` | Optimizer deployment/model |
 | `model.target` | str | `gpt-5.5` | Target deployment/model |
-| `model.optimizer_backend` | str | `openai_chat` | Optimizer client path; chat backends plus `codex_exec` and `claude_code_exec` |
+| `model.optimizer_backend` | str | `openai_chat` | Optimizer client path; chat backends plus `codex_exec`, `claude_code_exec`, and `opencode_exec` |
 | `model.target_backend` | str | `openai_chat` | Target client path; chat or exec backend |
 | `model.reasoning_effort` | str | `medium` | Shared reasoning effort |
 | `model.rewrite_reasoning_effort` | str | empty | Optional full-rewrite effort override |
@@ -100,6 +101,8 @@ winner. Prefer `thinking_mode`; use `disabled` when you need the field sent.
 | `model.minimax_*` | MiniMax `region`, `base_url`, `api_key`, shared `minimax_model`, `temperature`, `max_tokens`, and `enable_thinking`; `minimax_model` applies when MiniMax is the target |
 | `model.codex_exec_*` | Codex path, sandbox, profile, SDK mode, reasoning, network/search, and approval policy; see compatibility notes below |
 | `model.claude_code_exec_*` | Claude path, profile, SDK mode, effort, and thinking-token cap |
+| `model.opencode_exec_path` | OpenCode CLI path (env `OPENCODE_EXEC_PATH`, default `opencode`); models are `model.optimizer` / `model.target` as `provider/model` |
+| `model.opencode_exec_allow_shell` | Grant the target a shell in file-edit rollouts (env `OPENCODE_EXEC_ALLOW_SHELL`, default `false`). OpenCode has no OS sandbox, so the shell runs on the host |
 | `model.codex_trace_to_optimizer` | When `true` (default) and target is `codex_exec`, inject the agent's codex trace steps into the reflection prompt |
 | `model.claude_trace_to_optimizer` | When `true` (default) and target is `claude_code_exec`, inject the agent's claude trace steps into the reflection prompt |
 | `model.cursor_exec_path` | Cursor Agent executable path; default `cursor-agent` |
@@ -128,6 +131,12 @@ Blank or `null` Codex values in the shipped base config leave the corresponding
 `CODEX_EXEC_*` environment variable in control. The effective precedence is an
 explicit command-line/YAML value, then the environment, then the built-in safe
 default (`codex`, `workspace-write`, and approval policy `never`).
+
+Blank `model.opencode_exec_path` and `null` `model.opencode_exec_allow_shell`
+in the shipped base config likewise leave `OPENCODE_EXEC_PATH` and
+`OPENCODE_EXEC_ALLOW_SHELL` in control: an explicit command-line/YAML value
+wins, then the environment, then the built-in default (`opencode`, shell off).
+`opencode_exec` requires OpenCode 2.x and refuses an older CLI before any call.
 
 `model.codex_exec_network_access` controls outbound network access only while
 the Codex sandbox is `workspace-write`; it cannot restrict

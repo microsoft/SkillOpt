@@ -46,6 +46,7 @@ model:
 | `copilot_chat` | ✓ | ✓ | GitHub Copilot CLI (`copilot -p`); alias `copilot` |
 | `codex_exec` | ✓ | ✓ | Codex CLI execution harness |
 | `claude_code_exec` | ✓ | ✓ | Claude Code CLI execution harness |
+| `opencode_exec` | ✓ | ✓ | OpenCode CLI (`opencode run --standalone`): text-only optimizer and exec target; aliases `opencode`, `opencode_chat` |
 | `cursor_exec` | — | ✓ | Cursor Agent CLI execution harness |
 | `copilot_exec` | — | ✓ | GitHub Copilot CLI execution harness |
 

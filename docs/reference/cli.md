@@ -138,6 +138,32 @@ results into structured trace steps (`claude_trace_steps.txt`). When
 steps are injected into the reflection prompt so the optimizer can inspect the
 agent's intermediate actions.
 
+To run through the OpenCode CLI (`opencode_exec`, OpenCode 2.x), reusing your
+existing OpenCode login, for both roles or for one of them:
+
+```bash
+python scripts/train.py --config configs/searchqa/default.yaml \
+  --backend opencode \
+  --optimizer_model openai/gpt-6.1-sol --target_model openai/gpt-6.1-sol
+# or one role: --optimizer_backend opencode_exec / --target_backend opencode_exec
+```
+
+Every call runs `opencode run --standalone --format json` with a private
+config home: none of your MCP servers, global rules or skills, and the
+`OPENCODE_DISABLE_*` switches keep project `AGENTS.md` and Claude Code files
+out. Only `XDG_CONFIG_HOME` is redirected, so the stored credentials still
+apply. The global permission list starts with deny-all and is the only gate;
+the agent entry carries no permission rules of its own.
+
+- **Optimizer**: text only, in an empty directory, every tool denied. Tool
+  calls (`chat_optimizer_messages(..., tools=...)`) raise `NotImplementedError`.
+- **Target**: runs in the task workspace (`PWD` is set to it; OpenCode reads
+  its project directory from `PWD`). Read tools only by default.
+  `allow_file_edits` rollouts add the edit tool; a shell is added only with
+  `model.opencode_exec_allow_shell: true`, because OpenCode has no OS sandbox.
+  Outside the workspace only `data_dirs` and image directories are readable.
+  Tool steps are written to `opencode_trace_steps.txt` next to the workspace.
+
 
 ## SkillOpt-Sleep
 

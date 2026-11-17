@@ -199,6 +199,7 @@ not via a base class subclass. Supported values (as of this writing):
 | `openai_compatible` | ✓ | ✓ |
 | `codex_exec` | ✓ | ✓ |
 | `claude_code_exec` | — | ✓ |
+| `opencode_exec` | ✓ | ✓ |
 | `cursor_exec` | — | ✓ |
 | `copilot_exec` | — | ✓ |
 

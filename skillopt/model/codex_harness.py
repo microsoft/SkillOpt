@@ -14,12 +14,14 @@ import traceback
 import warnings
 from typing import Any
 
+from skillopt.model import opencode_backend as _opencode
 from skillopt.model.backend_config import (
     build_codex_exec_cli_config_overrides,
     get_claude_code_exec_config,
     get_codex_exec_config,
     get_copilot_exec_config,
     get_cursor_exec_config,
+    get_opencode_exec_config,
     get_target_backend,
     validate_exec_sandbox,
 )
@@ -1974,6 +1976,132 @@ def run_copilot_exec(
     raise RuntimeError(f"{last_error}\n{detail}" if detail else last_error)
 
 
+def _opencode_steps_from_raw(raw: str) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for chunk in (raw or "").split("===== OPENCODE CLI ATTEMPT"):
+        _text, _usage, _error, chunk_steps = _opencode.parse_events(
+            "\n".join(line for line in chunk.splitlines() if line.startswith("{")),
+            allow_tools=True,
+        )
+        steps.extend(chunk_steps)
+    return steps
+
+
+def format_opencode_trace_steps(raw: str, *, max_chars: int = 4000) -> str:
+    """One line per tool call: tool, status, input, and the head of its output."""
+    lines = []
+    for index, step in enumerate(_opencode_steps_from_raw(raw), 1):
+        detail = json.dumps(step.get("input"), ensure_ascii=False) if step.get("input") is not None else ""
+        output = str(step.get("output") or "").replace("\n", " ")[:300]
+        lines.append(f"{index}. {step.get('tool')} [{step.get('status')}] {detail} -> {output}")
+    text = "\n".join(lines)
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+
+
+def _build_opencode_trace_summary(raw: str, response: str) -> str:
+    steps = _opencode_steps_from_raw(raw)
+    failed = sum(1 for step in steps if step.get("status") == "error")
+    return "\n".join(
+        [
+            "OpenCode Trace Summary",
+            f"- tool calls: {len(steps)}",
+            f"- failed tool calls: {failed}",
+            f"- final response chars: {len(response or '')}",
+        ]
+    )
+
+
+def _persist_opencode_artifacts(work_dir: str, raw: str, response: str) -> None:
+    combined_raw = _persist_artifacts(
+        work_dir=work_dir,
+        raw=raw,
+        response=response,
+        prefix="opencode",
+        summary_builder=_build_opencode_trace_summary,
+    )
+    pred_dir = os.path.dirname(work_dir.rstrip(os.sep))
+    with open(os.path.join(pred_dir, "opencode_trace_steps.txt"), "w", encoding="utf-8") as f:
+        f.write(format_opencode_trace_steps(combined_raw))
+
+
+def run_opencode_exec(
+    *,
+    work_dir: str,
+    prompt: str,
+    model: str,
+    timeout: int,
+    images: list[str] | None = None,
+    data_dirs: list[str] | None = None,
+    allow_file_edits: bool = False,
+) -> tuple[str, str]:
+    """Run OpenCode headlessly as a benchmark target, in ``work_dir``.
+
+    Read tools only by default. ``allow_file_edits`` adds the edit tool; the
+    shell is added only when ``opencode_exec_allow_shell`` is also on, since
+    OpenCode has no OS sandbox. Outside the workspace only ``data_dirs`` and
+    image directories are reachable. Each attempt gets a fresh private config.
+    """
+    config = get_opencode_exec_config()
+    _opencode.require_supported_cli(str(config["path"]))
+    retries = int(config.get("empty_response_retries", 0) or 0)
+    add_dirs = _validated_add_dirs(work_dir, data_dirs, images)
+    permissions = _opencode.permission_rules(
+        read=True,
+        edit=allow_file_edits,
+        shell=allow_file_edits and bool(config.get("allow_shell")),
+        external_dirs=add_dirs[1:],
+    )
+    all_raw: list[str] = []
+    last_error = "OpenCode returned no response"
+
+    for attempt in range(retries + 1):
+        attempt_prompt = _exec_prompt(_retry_prompt(prompt, attempt), allow_file_edits=allow_file_edits)
+        agent = _opencode.new_agent_name("target")
+        with tempfile.TemporaryDirectory(prefix="skillopt_opencode_target_") as root:
+            config_home = _opencode.write_private_config(root, agent=agent, permissions=permissions)
+            cmd = [str(config["path"]), "run", "--standalone", "--format", "json", "--agent", agent]
+            if model:
+                cmd.extend(["-m", model])
+            for image in images or []:
+                cmd.extend(["--file", os.path.realpath(image)])
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=work_dir,
+                    env=_opencode.child_env(config_home, work_dir),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                    input=attempt_prompt,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
+                all_raw.append(f"===== OPENCODE CLI ATTEMPT {attempt + 1} =====\n{stdout}")
+                _persist_opencode_artifacts(work_dir, "\n\n".join(all_raw), "")
+                raise
+            except OSError as exc:
+                raise RuntimeError(f"OpenCode could not be executed: {exc.strerror or exc}") from exc
+
+        stdout = proc.stdout or ""
+        all_raw.append(f"===== OPENCODE CLI ATTEMPT {attempt + 1} =====\n{stdout}")
+        combined = "\n\n".join(all_raw)
+        response, _usage, error, _steps = _opencode.parse_events(stdout, allow_tools=True)
+        if error or proc.returncode != 0:
+            _persist_opencode_artifacts(work_dir, combined, "")
+            tail = (proc.stderr or "").strip()[-4000:]
+            raise RuntimeError(error or f"OpenCode exited {proc.returncode}" + (f": {tail}" if tail else ""))
+        if response:
+            _persist_opencode_artifacts(work_dir, combined, response)
+            return response, combined
+        last_error = "OpenCode returned an empty final message"
+
+    combined = "\n\n".join(all_raw)
+    _persist_opencode_artifacts(work_dir, combined, "")
+    raise RuntimeError(last_error)
+
+
 def run_target_exec(
     *,
     work_dir: str,
@@ -2025,6 +2153,16 @@ def run_target_exec(
         )
     if backend == "copilot_exec":
         return run_copilot_exec(
+            work_dir=work_dir,
+            prompt=prompt,
+            model=model,
+            timeout=timeout,
+            images=images,
+            data_dirs=data_dirs,
+            allow_file_edits=allow_file_edits,
+        )
+    if backend == "opencode_exec":
+        return run_opencode_exec(
             work_dir=work_dir,
             prompt=prompt,
             model=model,

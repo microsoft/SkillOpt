@@ -148,11 +148,12 @@ def set_optimizer_backend(backend: str) -> None:
         "copilot_chat",
         "codex_exec",
         "claude_code_exec",
+        "opencode_exec",
     }:
         raise ValueError(
             f"Unsupported optimizer backend: {OPTIMIZER_BACKEND!r}. "
             "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', "
-            "'openai_compatible', 'copilot_chat', 'codex_exec', and 'claude_code_exec'."
+            "'openai_compatible', 'copilot_chat', 'codex_exec', 'claude_code_exec', and 'opencode_exec'."
         )
     os.environ["OPTIMIZER_BACKEND"] = OPTIMIZER_BACKEND
 
@@ -164,12 +165,12 @@ def get_optimizer_backend() -> str:
 def set_target_backend(backend: str) -> None:
     global TARGET_BACKEND
     TARGET_BACKEND = normalize_backend_name(backend or "openai_chat")
-    if TARGET_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "openai_compatible", "copilot_chat", "codex_exec", "claude_code_exec", "cursor_exec", "copilot_exec"}:
+    if TARGET_BACKEND not in {"openai_chat", "claude_chat", "qwen_chat", "minimax_chat", "openai_compatible", "copilot_chat", "codex_exec", "claude_code_exec", "cursor_exec", "copilot_exec", "opencode_exec"}:
         raise ValueError(
             f"Unsupported target backend: {TARGET_BACKEND!r}. "
             "Supported values are 'openai_chat', 'claude_chat', 'qwen_chat', 'minimax_chat', "
             "'openai_compatible', 'copilot_chat', 'codex_exec', 'claude_code_exec', "
-            "'cursor_exec', and 'copilot_exec'."
+            "'cursor_exec', 'copilot_exec', and 'opencode_exec'."
         )
     os.environ["TARGET_BACKEND"] = TARGET_BACKEND
 
@@ -179,7 +180,7 @@ def get_target_backend() -> str:
 
 
 def is_target_exec_backend() -> bool:
-    return TARGET_BACKEND in {"codex_exec", "claude_code_exec", "cursor_exec", "copilot_exec"}
+    return TARGET_BACKEND in {"codex_exec", "claude_code_exec", "cursor_exec", "copilot_exec", "opencode_exec"}
 
 
 def is_optimizer_chat_backend() -> bool:
@@ -192,6 +193,7 @@ def is_optimizer_chat_backend() -> bool:
         "copilot_chat",
         "codex_exec",
         "claude_code_exec",
+        "opencode_exec",
     }
 
 
@@ -401,6 +403,30 @@ def get_claude_code_exec_config() -> dict[str, str | int]:
         "use_sdk": CLAUDE_CODE_EXEC_USE_SDK,
         "effort": CLAUDE_CODE_EXEC_EFFORT,
         "max_thinking_tokens": CLAUDE_CODE_EXEC_MAX_THINKING_TOKENS,
+        "empty_response_retries": EXEC_EMPTY_RESPONSE_RETRIES,
+    }
+
+
+OPENCODE_EXEC_PATH = _resolve_cli_path(os.environ.get("OPENCODE_EXEC_PATH", "opencode"))
+# OpenCode has no OS sandbox: a shell tool runs on the host. Off unless asked,
+# and only ever granted together with file edits.
+OPENCODE_EXEC_ALLOW_SHELL = _parse_bool(os.environ.get("OPENCODE_EXEC_ALLOW_SHELL"), False)
+
+
+def configure_opencode_exec(*, path: str | None = None, allow_shell: bool | str | None = None) -> None:
+    global OPENCODE_EXEC_PATH, OPENCODE_EXEC_ALLOW_SHELL
+    if path is not None:
+        OPENCODE_EXEC_PATH = _resolve_cli_path(str(path).strip() or "opencode")
+        os.environ["OPENCODE_EXEC_PATH"] = OPENCODE_EXEC_PATH
+    if allow_shell is not None:
+        OPENCODE_EXEC_ALLOW_SHELL = _coerce_bool_setting(allow_shell, name="opencode_exec_allow_shell")
+        os.environ["OPENCODE_EXEC_ALLOW_SHELL"] = "1" if OPENCODE_EXEC_ALLOW_SHELL else "0"
+
+
+def get_opencode_exec_config() -> dict[str, str | bool | int]:
+    return {
+        "path": OPENCODE_EXEC_PATH,
+        "allow_shell": OPENCODE_EXEC_ALLOW_SHELL,
         "empty_response_retries": EXEC_EMPTY_RESPONSE_RETRIES,
     }
 
