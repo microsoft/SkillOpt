@@ -141,6 +141,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   the Codex backend uses, and the harvester drops a single-turn session only
   when its prompt starts with it. This covers custom prompt templates, and a
   user session that quotes an engine prompt is kept (#310).
+- `insert_after` with a target that ends in a newline now inserts right
+  after that line instead of after the next one, which could file the new
+  text under the following heading or inside a protected region (#407).
 - Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
   no longer brings a content twin of tonight's held-out task into training,
   a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
