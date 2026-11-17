@@ -196,6 +196,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   of a sequence of characters, in scoring and in the gold answers recorded on
   rollout rows. The correct answer was scored as wrong and a one-letter answer
   as correct (thanks @Shizoqua).
+- Keep the DocVQA answer when a stray `<answer>` or `</answer>` follows the
+  final answer, instead of scoring the wrong text and giving a correct answer
+  ANLS 0 (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
