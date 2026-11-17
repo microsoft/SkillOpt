@@ -728,10 +728,13 @@ def run_sleep_cycle(
 
     backend = backend or build_backend(
         backend=cfg.get("backend", "mock"),
+        backend_module=cfg.get("backend_module", ""),
         model=cfg.get("model", ""),
         optimizer_backend=cfg.get("optimizer_backend", ""),
+        optimizer_backend_module=cfg.get("optimizer_backend_module", ""),
         optimizer_model=cfg.get("optimizer_model", ""),
         target_backend=cfg.get("target_backend", ""),
+        target_backend_module=cfg.get("target_backend_module", ""),
         target_model=cfg.get("target_model", ""),
         codex_path=cfg.get("codex_path", ""),
         pi_path=cfg.get("pi_path", ""),
