@@ -209,6 +209,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Treat an optimizer rewrite whose `new_skill` is `null`, a list, or another
+  non-string value as no usable rewrite, in both `rewrite_from_suggestions`
+  and `full_rewrite_minibatch` modes, instead of writing `None` or the value's
+  Python repr as the new skill (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

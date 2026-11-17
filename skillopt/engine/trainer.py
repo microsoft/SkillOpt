@@ -57,7 +57,7 @@ from skillopt.optimizer.appendix import (
 from skillopt.optimizer.clip import rank_and_select
 from skillopt.optimizer.lr_autonomous import decide_autonomous_learning_rate
 from skillopt.optimizer.meta_skill import run_meta_skill
-from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions
+from skillopt.optimizer.rewrite import rewrite_skill_from_suggestions, usable_new_skill
 from skillopt.optimizer.scheduler import build_scheduler
 from skillopt.optimizer.skill import apply_patch_with_report
 from skillopt.optimizer.skill_aware import (
@@ -1474,12 +1474,12 @@ class ReflACTTrainer:
                     selected_candidate = next(
                         (
                             item for item in skill_candidates
-                            if isinstance(item, dict) and str(item.get("new_skill", "")).strip()
+                            if isinstance(item, dict) and usable_new_skill(item.get("new_skill"))
                         ),
                         None,
                     )
                     if selected_candidate:
-                        candidate_skill = str(selected_candidate["new_skill"]).rstrip() + "\n"
+                        candidate_skill = usable_new_skill(selected_candidate["new_skill"])
                         apply_report = []
                         rewrite_result = {
                             "reasoning": ranked_patch.get("reasoning", ""),
