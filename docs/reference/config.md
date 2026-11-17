@@ -172,7 +172,7 @@ forwarded consistently to both SDK and CLI execution paths.
 | `optimizer.skill_update_mode` | str | `patch` | `patch`, `rewrite_from_suggestions`, or `full_rewrite_minibatch` |
 | `optimizer.use_slow_update` | bool | `true` | Epoch-boundary longitudinal update |
 | `optimizer.slow_update_samples` | int | `20` | Longitudinal evaluation samples |
-| `optimizer.slow_update_gate_with_selection` | bool | `false` | Gate slow-update guidance on the selection split |
+| `optimizer.slow_update_gate_with_selection` | bool | `false` | Gate slow-update guidance on the selection split (paper setting: `true`); `false` writes it unconditionally and re-measures the current skill with one selection rollout per epoch boundary |
 | `optimizer.longitudinal_pair_policy` | str | `mixed` | `mixed`, `changed`, or `unchanged` |
 | `optimizer.use_meta_skill` | bool | `true` | Cross-epoch optimizer memory |
 | `optimizer.use_skill_aware_reflection` | bool | `false` | Enable skill-defect vs execution-lapse routing |
