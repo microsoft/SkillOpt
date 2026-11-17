@@ -28,6 +28,16 @@ All notable changes to SkillOpt are documented here. This project adheres to
   search setting. An API key echoed in an error body is redacted before the
   text reaches `fail_reason`, and the round deadline is checked again after
   each response.
+- **SkillOpt-Sleep `gate_train_check`** config key (default `false`) with
+  `gate_train_margin` (default `0.1`): a candidate the validation gate would
+  accept is also replayed on tonight's real training tasks and is rejected
+  when its mean gate score there is lower than the current documents' by more
+  than the margin and at least two more of those tasks got worse than got
+  better. The check only rejects; it never accepts what validation rejected.
+  It is skipped with the gate off or a non-disjoint validation slice. Both
+  arms and every task-level change are kept in the gate records (`train_check`)
+  and a `gate`/`train_check` evidence event, and `report.md` shows the two
+  means and the counts. With the key unset, records and reports are unchanged.
 - **SkillOpt-Sleep paired A/B evalkit** (`python -m skillopt_sleep.evalkit`):
   McNemar plus percentile-bootstrap CIs on a fixed task manifest, with
   task-cluster multi-seed inference and seeded null calibration for exact-test

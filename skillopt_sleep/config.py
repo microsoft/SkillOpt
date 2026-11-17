@@ -68,6 +68,8 @@ DEFAULTS: Dict[str, Any] = {
     "gate_metric": "mixed",       # hard | soft | mixed (mixed best for tiny holdouts)
     "gate_mixed_weight": 0.5,
     "gate_no_regression": False,    # reject any candidate that lowers a val-task score
+    "gate_train_check": False,    # reject a candidate that is worse on tonight's training tasks
+    "gate_train_margin": 0.1,     # drop in mean training-task score the check tolerates (0..1)
     "replay_mode": "mock",        # report label; fresh-worktree replay is not implemented
     # ── dream + recall (opt-in; defaults reproduce the prior single-shot loop) ─
     "dream_rollouts": 1,          # >1 => multi-rollout contrastive reflection per task

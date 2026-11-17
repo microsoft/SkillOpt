@@ -32,6 +32,11 @@ _HAVE_REPO_GATE = True
 # Its scores were not measured, so callers must not report them as results.
 BUDGET_EXHAUSTED = "budget_exhausted"
 
+# The training-side check rejects only when at least this many more training
+# tasks got worse than got better. One task flipping, in either direction, can
+# therefore never decide a night on its own.
+TRAIN_CHECK_MIN_NET_REGRESSED = 2
+
 
 def _finite_score(value: float) -> float | None:
     """Return a JSON-safe score, preserving finite values only."""
@@ -205,6 +210,82 @@ def _task_deltas(
     return out
 
 
+def train_check_enabled(value: object) -> bool:
+    """Validate ``gate_train_check``: ``True``, ``False`` or ``None`` (off)."""
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"gate_train_check must be true or false, got {value!r}")
+    return value
+
+
+def train_check_margin(value: object) -> float:
+    """Validate ``gate_train_margin``: a finite number in ``[0, 1]``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"gate_train_margin must be a number between 0 and 1, got {value!r}"
+        )
+    margin = float(value)
+    if not math.isfinite(margin) or not 0.0 <= margin <= 1.0:
+        raise ValueError(
+            f"gate_train_margin must be a number between 0 and 1, got {value!r}"
+        )
+    return margin
+
+
+def _training_check(
+    tasks: List[TaskRecord],
+    baseline_pairs: List[Tuple[TaskRecord, ReplayResult]],
+    candidate_pairs: List[Tuple[TaskRecord, ReplayResult]],
+    metric: str,
+    mixed_weight: float,
+    margin: float,
+) -> dict:
+    """Compare a candidate with the current documents on tonight's training tasks.
+
+    These tasks are not held out: reflection drew on tonight's failures, so a
+    higher score here cannot rule out overfitting and is never used to accept
+    anything. A lower score is different. The tasks include the ones the
+    current documents already handle, and a candidate that breaks those, or
+    does clearly worse on the failures it was written to fix, is not explained
+    by overfitting. So the comparison is used only to reject.
+
+    It is baseline-relative and aggregate, and it takes two things to reject:
+    the candidate's mean gate score on these tasks is lower than the current
+    documents' by more than ``margin``, and at least
+    ``TRAIN_CHECK_MIN_NET_REGRESSED`` more tasks got worse than got better.
+    Both arms and every task-level change are returned so the decision can be
+    audited. A task with a missing or malformed score counts as regressed, and
+    a non-finite aggregate rejects.
+    """
+    base_hard, base_soft = aggregate_scores(baseline_pairs)
+    cand_hard, cand_soft = aggregate_scores(candidate_pairs)
+    baseline = select_gate_score(base_hard, base_soft, metric, mixed_weight)
+    candidate = select_gate_score(cand_hard, cand_soft, metric, mixed_weight)
+    task_deltas = _task_deltas(
+        tasks, baseline_pairs, candidate_pairs, metric, mixed_weight
+    )
+    n_regressed = sum(1 for row in task_deltas if row["status"] == "regressed")
+    n_improved = sum(1 for row in task_deltas if row["status"] == "improved")
+    finite = math.isfinite(baseline) and math.isfinite(candidate)
+    # The tolerance keeps a drop of exactly the margin on the tolerated side:
+    # 0.8 - 0.1 is 0.7000000000000001 in floating point.
+    lower = (not finite) or (baseline - candidate) > margin + 1e-9
+    broad = n_regressed - n_improved >= TRAIN_CHECK_MIN_NET_REGRESSED
+    return {
+        "n_tasks": len(tasks),
+        "n_regressed": n_regressed,
+        "n_improved": n_improved,
+        "min_net_regressed": TRAIN_CHECK_MIN_NET_REGRESSED,
+        "margin": margin,
+        "baseline_score": _finite_score(baseline),
+        "candidate_score": _finite_score(candidate),
+        "regressed": lower,
+        "blocked": bool((not finite) or (lower and broad)),
+        "task_deltas": task_deltas,
+    }
+
+
 def consolidate(
     backend: Backend,
     tasks: List[TaskRecord],
@@ -215,6 +296,8 @@ def consolidate(
     gate_metric: str = "mixed",
     gate_mixed_weight: float = 0.5,
     gate_no_regression: bool = False,
+    gate_train_check: bool = False,   # also reject a candidate that is worse on tonight's training tasks
+    gate_train_margin: float = 0.1,   # drop in mean training-task score that is tolerated
     gate_mode: str = "on",       # "on" (hard/soft per gate_metric) | "off" (greedy)
     rollouts_k: int = 1,         # >1 => multi-rollout contrastive reflection
     evolve_skill: bool = True,
@@ -231,6 +314,17 @@ def consolidate(
 
     Skill and memory are evolved in sequence (skill first if both enabled).
 
+    ``gate_train_check`` adds a condition to an accept. A candidate the
+    validation gate would accept is also replayed on tonight's real training
+    tasks (recalled tasks included, dream variants not), and is rejected when
+    its mean gate score there is lower than the current documents' by more
+    than ``gate_train_margin`` and at least two more of those tasks got worse
+    than got better. It never accepts anything the validation gate rejected.
+    Each candidate is compared with the documents it would replace, so a
+    memory candidate is compared with the skill accepted earlier that night.
+    It is skipped when the gate is off and when the validation slice is not
+    disjoint from training.
+
     ``budget_exhausted`` is checked before the epoch starts, before each
     evolve target and before the final validation replay. Once it returns
     True, the steps that have not started are skipped and listed in
@@ -243,6 +337,8 @@ def consolidate(
     ev = evlog.get(backend)
     train_tasks, val_tasks, holdout_leaked = _split(tasks)
     gate_off = str(gate_mode).strip().lower() in {"off", "none", "false", "greedy"}
+    train_check_on = train_check_enabled(gate_train_check)
+    train_margin = train_check_margin(gate_train_margin) if train_check_on else 0.0
     holdout_detail: List[dict] = []
     budget_skipped: List[str] = []
 
@@ -301,6 +397,14 @@ def consolidate(
     all_unmatched: List[EditRecord] = []
     gate_trials: List[dict] = []
     current_pairs = base_pairs
+    # Training-side check: tonight's real training tasks (recalled ones
+    # included). Dream variants restate them and are left out. The current
+    # documents' scores on these tasks are the replay that just ran.
+    check_tasks: List[TaskRecord] = []
+    current_train_pairs: List[Tuple[TaskRecord, ReplayResult]] = []
+    if train_check_on and not gate_off and not holdout_leaked:
+        check_tasks = [t for t in train_tasks if t.origin != "dream"]
+        current_train_pairs = [(t, r) for (t, r) in train_pairs if t.origin != "dream"]
 
     def _edits_payload(edits: List[EditRecord]) -> List[dict]:
         return [{"op": e.op, "content": e.content, "anchor": e.anchor,
@@ -308,7 +412,7 @@ def consolidate(
 
     def _gate_apply(doc: str, edits: List[EditRecord], which: str) -> str:
         nonlocal cand_skill, cand_memory, base_score, current_pairs
-        nonlocal all_applied, all_rejected
+        nonlocal all_applied, all_rejected, current_train_pairs
         if ev is not None:
             ev.log("reflect", "edits_returned", target=which,
                    n_edits=len(edits), edits=_edits_payload(edits))
@@ -345,24 +449,52 @@ def consolidate(
         )
         trial_base_score = base_score
         improved = cand_score > base_score and not blocked_by_regression
-        gate_trials.append({
+        # Only a candidate the validation gate would accept is worth the extra
+        # replay, and the check can only turn that accept into a reject.
+        train_check: Optional[dict] = None
+        train_cand_pairs: List[Tuple[TaskRecord, ReplayResult]] = []
+        if improved and check_tasks:
+            evlog.set_phase(backend, f"gate_train_check:{which}")
+            train_cand_pairs = replay_batch(
+                backend, check_tasks, trial_skill, trial_memory
+            )
+            train_check = _training_check(
+                check_tasks, current_train_pairs, train_cand_pairs,
+                gate_metric, gate_mixed_weight, train_margin,
+            )
+            if ev is not None:
+                ev.log("gate", "train_check", target=which, **train_check)
+            if train_check["blocked"]:
+                improved = False
+        blocked_by_train_check = bool(train_check and train_check["blocked"])
+        trial_record = {
             "target": which,
             "baseline_score": _finite_score(trial_base_score),
             "candidate_score": _finite_score(cand_score),
             "accepted": improved,
             "blocked_by_regression": blocked_by_regression,
             "task_deltas": task_deltas,
-        })
+        }
+        trial_event = {}
+        if train_check_on:
+            # Present only when the check is enabled, so a night without it
+            # writes the records it always wrote.
+            trial_record["blocked_by_train_check"] = blocked_by_train_check
+            trial_record["train_check"] = train_check
+            trial_event["blocked_by_train_check"] = blocked_by_train_check
+        gate_trials.append(trial_record)
         if ev is not None:
             ev.log("gate", "trial", target=which, mode="gated",
                    baseline_score=trial_base_score, cand_hard=h, cand_soft=s,
                    cand_score=cand_score, accepted=improved,
                    blocked_by_regression=blocked_by_regression,
                    task_deltas=task_deltas,
-                   n_edits=len(applied))
+                   n_edits=len(applied), **trial_event)
         if improved:
             base_score = cand_score
             current_pairs = pairs
+            if train_check is not None:
+                current_train_pairs = train_cand_pairs
             all_applied.extend(applied)
             return new_doc
         all_rejected.extend(applied)
@@ -425,6 +557,12 @@ def consolidate(
         # re-evaluate failures under the (possibly improved) skill
         evlog.set_phase(backend, "train_post_skill")
         train_pairs2 = replay_batch(backend, train_tasks, cand_skill, cand_memory)
+        if check_tasks:
+            # The memory candidate is compared with this replay of the current
+            # documents, not with the draw that passed the skill's own check.
+            current_train_pairs = [
+                (t, r) for (t, r) in train_pairs2 if t.origin != "dream"
+            ]
         failures2 = [(t, r) for (t, r) in train_pairs2 if r.hard < 1.0]
         successes2 = [(t, r) for (t, r) in train_pairs2 if r.hard >= 1.0]
         edits_m = backend.reflect(
@@ -519,14 +657,19 @@ def consolidate(
                 if edit not in all_rejected:
                     all_rejected.append(edit)
             all_applied = []
-        gate_trials.append({
+        final_record = {
             "target": "final",
             "baseline_score": _finite_score(base_gate_score),
             "candidate_score": _finite_score(final_score),
             "accepted": accepted,
             "blocked_by_regression": final_blocked_by_regression,
             "task_deltas": final_task_deltas,
-        })
+        }
+        if train_check_on:
+            # The training-side check belongs to the candidate trials above.
+            final_record["blocked_by_train_check"] = False
+            final_record["train_check"] = None
+        gate_trials.append(final_record)
 
     if ev is not None:
         w = max(0.0, min(1.0, float(gate_mixed_weight)))
