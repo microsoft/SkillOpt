@@ -209,6 +209,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Keep slow-update guidance and optimizer meta-skill memory as text when the
+  optimizer returns them as a list of strings, instead of writing the list's
+  Python repr into the skill. Non-text or blank content is treated as no
+  update (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

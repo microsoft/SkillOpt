@@ -39,6 +39,20 @@ SLOW_UPDATE_END = "<!-- SLOW_UPDATE_END -->"
 # ── Field manipulation helpers ──────────────────────────────────────────────
 
 
+def content_text(value: object) -> str:
+    """Return a model-provided text field as stripped text, or ``""`` if unusable.
+
+    A list of strings (a common model deviation for bullet-style guidance) is
+    joined one item per line. Anything else that is not a string, such as
+    ``None``, a dict or a number, is unusable rather than written as its repr.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return "\n".join(item.strip() for item in value if item.strip())
+    return ""
+
+
 def has_slow_update_field(skill: str) -> bool:
     return SLOW_UPDATE_START in skill and SLOW_UPDATE_END in skill
 
@@ -432,10 +446,11 @@ def run_slow_update(
             stage="slow_update",
         )
         result = extract_json(response)
-        if result and result.get("slow_update_content"):
+        content = content_text(result.get("slow_update_content")) if result else ""
+        if content:
             return {
-                "reasoning": str(result.get("reasoning", "")).strip(),
-                "slow_update_content": str(result["slow_update_content"]).strip(),
+                "reasoning": content_text(result.get("reasoning")),
+                "slow_update_content": content,
             }
     except Exception:  # noqa: BLE001
         traceback.print_exc()

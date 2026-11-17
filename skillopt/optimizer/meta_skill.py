@@ -10,7 +10,7 @@ from __future__ import annotations
 import traceback
 
 from skillopt.model import chat_optimizer
-from skillopt.optimizer.slow_update import format_comparison_text
+from skillopt.optimizer.slow_update import content_text, format_comparison_text
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
 
@@ -68,10 +68,11 @@ def run_meta_skill(
             stage="meta_skill",
         )
         result = extract_json(response)
-        if result and result.get("meta_skill_content"):
+        content = content_text(result.get("meta_skill_content")) if result else ""
+        if content:
             return {
-                "reasoning": str(result.get("reasoning", "")).strip(),
-                "meta_skill_content": str(result["meta_skill_content"]).strip(),
+                "reasoning": content_text(result.get("reasoning")),
+                "meta_skill_content": content,
             }
     except Exception:  # noqa: BLE001
         traceback.print_exc()
