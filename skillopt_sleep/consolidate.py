@@ -205,6 +205,63 @@ def _task_deltas(
     return out
 
 
+def _ablation_observed_change(
+    score_with: float | None,
+    score_without: float | None,
+    task_rows: List[dict],
+) -> str:
+    """Name how the gate score with one edit compares to the score without it.
+
+    ``higher_with_edit`` means the candidate scored higher with the edit than
+    without it, ``lower_with_edit`` the reverse, and ``no_change`` that the two
+    scores are equal. This is one observation, not a causal attribution: the
+    "with" score is the replay that passed the gate, the "without" score is a
+    single further replay. A comparison with a missing or non-finite score
+    observes nothing, so it is ``unmeasured``.
+    """
+    if score_with is None or score_without is None:
+        return "unmeasured"
+    if not (math.isfinite(score_with) and math.isfinite(score_without)):
+        return "unmeasured"
+    if any(not row.get("scores_are_finite", True) for row in task_rows):
+        return "unmeasured"
+    if score_with > score_without:
+        return "higher_with_edit"
+    if score_with < score_without:
+        return "lower_with_edit"
+    return "no_change"
+
+
+def _ablation_task_changes(task_rows: List[dict]) -> List[dict]:
+    """Keep the validation tasks whose score differs with and without an edit."""
+    return [
+        {
+            "task_id": row["task_id"],
+            "tags": row["tags"],
+            "score_without": row["baseline_score"],
+            "score_with": row["candidate_score"],
+            "status": row["status"],
+        }
+        for row in task_rows
+        if row["status"] != "unchanged"
+    ]
+
+
+def run_edit_ablations(queue: List[Callable[[], bool]]) -> bool:
+    """Run edit ablations that ``consolidate`` deferred, then empty the queue.
+
+    A caller that runs several consolidations under one token budget passes
+    the same list to each as ``edit_ablation_queue`` and calls this once every
+    decision that reads the budget has been made. Returns True when at least
+    one ablation replay was skipped because the budget was spent.
+    """
+    budget_skipped = False
+    while queue:
+        run = queue.pop(0)
+        budget_skipped = run() or budget_skipped
+    return budget_skipped
+
+
 def consolidate(
     backend: Backend,
     tasks: List[TaskRecord],
@@ -215,12 +272,14 @@ def consolidate(
     gate_metric: str = "mixed",
     gate_mixed_weight: float = 0.5,
     gate_no_regression: bool = False,
+    gate_edit_ablation: bool = False,
     gate_mode: str = "on",       # "on" (hard/soft per gate_metric) | "off" (greedy)
     rollouts_k: int = 1,         # >1 => multi-rollout contrastive reflection
     evolve_skill: bool = True,
     evolve_memory: bool = True,
     night: int = 1,
     budget_exhausted: Optional[Callable[[], bool]] = None,
+    edit_ablation_queue: Optional[List[Callable[[], bool]]] = None,
 ) -> ConsolidationResult:
     """Run one consolidation epoch: reflect -> bounded edit -> gate.
 
@@ -238,6 +297,22 @@ def consolidate(
     still rests on complete evidence. When the final replay is skipped, the
     decision uses the validation replay that already scored the final skill
     and memory: the baseline replay, or the trial replay of the last kept edit.
+
+    ``gate_edit_ablation`` replays, for each edit of an accepted skill or
+    memory trial, the candidate without that one edit, and records the
+    observed score difference on the trial under ``edit_ablation``. It runs
+    only after the final decision of an accepted epoch, so no decision reads
+    its rows and none of its replays spends budget a decision still needs. It
+    costs up to one validation replay per edit of a multi-edit trial; the
+    budget is checked before each replay, and replays that do not start are
+    reported as ``unmeasured`` under a single ``edit ablation`` entry in
+    ``budget_skipped``.
+
+    One budget often spans several consolidations (the nightly aggregate run,
+    then each fan-out group). Such a caller passes one list as
+    ``edit_ablation_queue``: this epoch's ablation is appended to it instead
+    of being run here, and the caller runs it with
+    :func:`run_edit_ablations` once every consolidation has decided.
     """
     from skillopt_sleep import evidence as evlog
     ev = evlog.get(backend)
@@ -306,6 +381,129 @@ def consolidate(
         return [{"op": e.op, "content": e.content, "anchor": e.anchor,
                  "rationale": e.rationale} for e in edits]
 
+    # Accepted trials waiting for their edit ablation. Only bookkeeping happens
+    # while the epoch is still deciding: every ablation replay is deferred
+    # until after the final decision, so it cannot spend budget that the
+    # memory step, the final validation replay or a later epoch still checks.
+    pending_ablations: List[dict] = []
+
+    def _ablate_edits(plan: dict, budget_spent: bool) -> Tuple[List[dict], bool]:
+        """Leave-one-out replay of one accepted trial.
+
+        For each applied edit, rebuild the candidate from the pre-trial
+        document without that edit and score it on the same validation tasks.
+        Two cases need no replay: the document is the same without the edit
+        (another edit of the trial overrides it), and no edit is left once it
+        is removed, which is the pre-trial document ``prior_pairs`` scored.
+
+        The budget is checked before every replay. Returns the rows and
+        whether the budget is spent, so a later trial does not start a replay
+        the budget no longer covers.
+        """
+        which = plan["which"]
+        doc, new_doc, applied = plan["doc"], plan["new_doc"], plan["applied"]
+        with_pairs, with_score = plan["with_pairs"], plan["with_score"]
+        rows: List[dict] = []
+        for index, edit in enumerate(applied):
+            remaining = [e for j, e in enumerate(applied) if j != index]
+            without_doc, still_applied, _unmatched = apply_edits_detailed(
+                doc, remaining
+            )
+            kept = {id(e) for e in still_applied}
+            # Edits that only matched because of the removed one (an anchor it
+            # added) drop out with it; name them so the row is not read as an
+            # observation about a single edit.
+            co_dropped = [
+                j for j, e in enumerate(applied)
+                if j != index and id(e) not in kept
+            ]
+            replayed = False
+            note = ""
+            without_pairs: Optional[List[Tuple[TaskRecord, ReplayResult]]]
+            if not still_applied:
+                without_pairs = plan["prior_pairs"]
+                note = "scored by the replay that preceded this trial"
+            elif without_doc == new_doc:
+                without_pairs = with_pairs
+                note = "document is the same without this edit"
+            else:
+                if not budget_spent and budget_exhausted is not None:
+                    budget_spent = bool(budget_exhausted())
+                    if budget_spent and ev is not None:
+                        ev.log("budget", "skip", step="edit ablation",
+                               night=night)
+                if budget_spent:
+                    without_pairs = None
+                    note = "not replayed: token budget spent"
+                else:
+                    evlog.set_phase(backend, f"gate_ablation:{which}")
+                    without_pairs = replay_batch(
+                        backend,
+                        val_tasks,
+                        without_doc if which == "skill" else plan["skill"],
+                        without_doc if which == "memory" else plan["memory"],
+                    )
+                    replayed = True
+            if without_pairs is None:
+                without_score = None
+                task_rows: List[dict] = []
+            else:
+                h, s = aggregate_scores(without_pairs)
+                without_score = select_gate_score(
+                    h, s, gate_metric, gate_mixed_weight
+                )
+                task_rows = _task_deltas(
+                    val_tasks, without_pairs, with_pairs,
+                    gate_metric, gate_mixed_weight,
+                )
+            observed = _ablation_observed_change(
+                with_score, without_score, task_rows
+            )
+            if observed == "unmeasured":
+                # A missing or non-finite score compares nothing. Report no
+                # score and no per-task direction for it, instead of a mean
+                # over an incomplete slice or the fail-closed "regressed"
+                # label the gate uses for the same condition.
+                without_score = None
+                task_rows = []
+                note = note or "a validation score was missing or non-finite"
+            rows.append({
+                "edit_index": index,
+                "target": which,
+                "op": edit.op,
+                "content": edit.content,
+                "anchor": edit.anchor,
+                "source_task_ids": list(edit.source_task_ids),
+                "source_session_ids": list(edit.source_session_ids),
+                "score_with": _finite_score(with_score),
+                "score_without": (
+                    None if without_score is None
+                    else _finite_score(without_score)
+                ),
+                "observed_change": observed,
+                "replayed": replayed,
+                "note": note,
+                "co_dropped": co_dropped,
+                "task_changes": _ablation_task_changes(task_rows),
+            })
+        if ev is not None:
+            ev.log("gate", "edit_ablation", target=which,
+                   n_edits=len(applied),
+                   n_replays=sum(1 for row in rows if row["replayed"]),
+                   rows=rows)
+        return rows, budget_spent
+
+    def _run_pending_ablations() -> bool:
+        """Ablate every accepted trial of this epoch, in trial order.
+
+        Returns True when a replay was skipped because the budget was spent.
+        """
+        budget_spent = False
+        for plan in pending_ablations:
+            rows, budget_spent = _ablate_edits(plan, budget_spent)
+            plan["trial"]["edit_ablation"] = rows
+        return budget_spent
+
     def _gate_apply(doc: str, edits: List[EditRecord], which: str) -> str:
         nonlocal cand_skill, cand_memory, base_score, current_pairs
         nonlocal all_applied, all_rejected
@@ -361,6 +559,21 @@ def consolidate(
                    task_deltas=task_deltas,
                    n_edits=len(applied))
         if improved:
+            if gate_edit_ablation:
+                # Bookkeeping only. The other target's document is captured
+                # now because it can change before the ablation runs.
+                pending_ablations.append({
+                    "trial": gate_trials[-1],
+                    "which": which,
+                    "doc": doc,
+                    "new_doc": new_doc,
+                    "applied": list(applied),
+                    "with_pairs": pairs,
+                    "with_score": cand_score,
+                    "prior_pairs": current_pairs,
+                    "skill": cand_skill,
+                    "memory": cand_memory,
+                })
             base_score = cand_score
             current_pairs = pairs
             all_applied.extend(applied)
@@ -554,6 +767,20 @@ def consolidate(
                n_rejected=len(all_rejected),
                n_unmatched=len(all_unmatched), night=night)
 
+    # Read the backend's diagnostics before ablation can add calls of its own.
+    reflect_raw = getattr(backend, "last_reflect_raw", "") or ""
+    call_error = getattr(backend, "last_call_error", "") or ""
+
+    # ── edit ablation (report-only, after every decision of this epoch) ───
+    # A rejected epoch has no accepted edit to describe, so nothing is replayed.
+    if gate_edit_ablation and accepted and pending_ablations:
+        if edit_ablation_queue is not None:
+            # The caller still has budget-dependent decisions to make (later
+            # fan-out groups, the held-out test replay) and runs this itself.
+            edit_ablation_queue.append(_run_pending_ablations)
+        elif _run_pending_ablations():
+            budget_skipped.append("edit ablation")
+
     return ConsolidationResult(
         accepted=accepted,
         gate_action=action,
@@ -568,8 +795,8 @@ def consolidate(
         holdout_candidate=final_hard,
         holdout_detail=holdout_detail,
         gate_trials=gate_trials,
-        reflect_raw=getattr(backend, "last_reflect_raw", "") or "",
-        call_error=getattr(backend, "last_call_error", "") or "",
+        reflect_raw=reflect_raw,
+        call_error=call_error,
         holdout_leaked=holdout_leaked,
         budget_skipped=budget_skipped,
     )
