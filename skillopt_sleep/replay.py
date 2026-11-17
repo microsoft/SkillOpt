@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from skillopt_sleep.backend import Backend
+from skillopt_sleep.backend import Backend, call_attempt_with_tools
 from skillopt_sleep.types import ReplayResult, TaskRecord
 
 
@@ -31,7 +31,8 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
                sample_id: int = 0) -> ReplayResult:
     """``sample_id`` distinguishes repeated dream rollouts of the same
     (task, skill, memory) in the attempt cache — without it all K rollouts
-    collapse to one cached response and the contrastive signal is always 0."""
+    collapse to one cached response and the contrastive signal is always 0.
+    It is forwarded on both the text route and the tool route."""
     import time
     tools = _required_tools(task)
     tools_called: List[str] = []
@@ -42,7 +43,9 @@ def replay_one(backend: Backend, task: TaskRecord, skill: str, memory: str,
     token_delta_fn = getattr(backend, "token_delta", None)
     tokens_before = None if token_delta_fn is not None else backend.tokens_used()
     if tools:
-        response, tools_called = backend.attempt_with_tools(task, skill, memory, tools)
+        response, tools_called = call_attempt_with_tools(
+            backend, task, skill, memory, tools, sample_id=sample_id
+        )
     else:
         response = backend.attempt(task, skill, memory, sample_id=sample_id)
     latency_ms = (time.time() - t0) * 1000.0

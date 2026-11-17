@@ -129,6 +129,18 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
+  `replay_one` forwarded `sample_id` on the text route only, so with
+  `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
+  loop (Pi, Azure, mock) was answered once and that answer was reused for
+  every rollout. `attempt_with_tools` now accepts `sample_id` on every shipped
+  backend; custom overrides without that parameter keep working.
+- SkillOpt-Sleep no longer harvests its own Claude replay sessions as user
+  tasks. The Claude backend now starts every prompt it sends with a
+  `[skillopt-sleep:claude-engine:v1]` producer marker, the same kind of marker
+  the Codex backend uses, and the harvester drops a single-turn session only
+  when its prompt starts with it. This covers custom prompt templates, and a
+  user session that quotes an engine prompt is kept (#310).
 - Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
   no longer brings a content twin of tonight's held-out task into training,
   a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
@@ -180,6 +192,13 @@ All notable changes to SkillOpt are documented here. This project adheres to
   Code, Codex and Pi transcript timestamps as instants rather than strings.
   East of UTC, sessions that ended in the hours after a harvest were never
   harvested (thanks @1AbdullahButt).
+- Treat a SearchQA gold answer given as a single string as one answer instead
+  of a sequence of characters, in scoring and in the gold answers recorded on
+  rollout rows. The correct answer was scored as wrong and a one-letter answer
+  as correct (thanks @Shizoqua).
+- Keep the DocVQA answer when a stray `<answer>` or `</answer>` follows the
+  final answer, instead of scoring the wrong text and giving a correct answer
+  ANLS 0 (thanks @Shizoqua).
 - Keep numeric `0` gold answers and ids when loading OfficeQA JSON splits
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
