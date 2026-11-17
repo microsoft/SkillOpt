@@ -129,6 +129,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
+  `replay_one` forwarded `sample_id` on the text route only, so with
+  `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
+  loop (Pi, Azure, mock) was answered once and that answer was reused for
+  every rollout. `attempt_with_tools` now accepts `sample_id` on every shipped
+  backend; custom overrides without that parameter keep working.
 - SkillOpt-Sleep no longer harvests its own Claude replay sessions as user
   tasks. The Claude backend now starts every prompt it sends with a
   `[skillopt-sleep:claude-engine:v1]` producer marker, the same kind of marker
