@@ -129,6 +129,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
+  `replay_one` forwarded `sample_id` on the text route only, so with
+  `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
+  loop (Pi, Azure, mock) was answered once and that answer was reused for
+  every rollout. `attempt_with_tools` now accepts `sample_id` on every shipped
+  backend; custom overrides without that parameter keep working.
 - Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
   no longer brings a content twin of tonight's held-out task into training,
   a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
