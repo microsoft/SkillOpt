@@ -226,6 +226,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Add focused coverage for the DocVQA ANLS evaluator, including the 0.5
   threshold boundary, the maximum over gold answers, and the accepted gold
   answer formats (thanks @Shizoqua).
+- Add focused coverage for the optimizer update-mode helpers: mode aliases and
+  the patch fallback, payload keys and labels, edit-budget truncation, and the
+  item descriptions shown to the optimizer (thanks @Shizoqua).
 
 ### Acknowledgements 🙏
 Thank you to the contributors behind this unreleased work:
