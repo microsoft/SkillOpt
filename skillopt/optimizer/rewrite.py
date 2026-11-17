@@ -9,6 +9,17 @@ from skillopt.optimizer.update_modes import get_payload_items
 from skillopt.utils import extract_json
 
 
+def usable_new_skill(value: object) -> str:
+    """Return a model-provided ``new_skill`` as skill text, or ``""`` if unusable.
+
+    Only a non-blank string is a skill document. ``str()`` of ``None``, a list or
+    a dict would otherwise become the literal skill text (for example ``"None"``).
+    """
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return value.rstrip() + "\n"
+
+
 def rewrite_skill_from_suggestions(
     skill_content: str,
     patch: dict,
@@ -49,8 +60,9 @@ def rewrite_skill_from_suggestions(
             reasoning_effort=reasoning_effort,
         )
         result = extract_json(response)
-        if result and str(result.get("new_skill", "")).strip():
-            result["new_skill"] = str(result["new_skill"]).rstrip() + "\n"
+        new_skill = usable_new_skill(result.get("new_skill")) if result else ""
+        if new_skill:
+            result["new_skill"] = new_skill
             if "change_summary" not in result or not isinstance(result["change_summary"], list):
                 result["change_summary"] = []
             return result
