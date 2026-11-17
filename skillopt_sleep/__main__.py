@@ -838,7 +838,8 @@ def cmd_schedule(args) -> int:
     project = cfg.get("invoked_project") or os.getcwd()
     ok, msg = schedule(project, backend=cfg.get("backend", "mock"),
                        hour=args.hour, minute=args.minute,
-                       extra=("--auto-adopt" if getattr(args, "auto_adopt", False) else ""))
+                       extra=("--auto-adopt" if getattr(args, "auto_adopt", False) else ""),
+                       scope=args.scope or "invoked")
     print("[sleep] " + _display_value(msg))
     cur = list_scheduled()
     if cur:

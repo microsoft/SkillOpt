@@ -25,6 +25,24 @@ class TestSleepSchedulerSafety(unittest.TestCase):
             self.assertIn(shlex.quote("/tmp/python with spaces"), command)
             self.assertNotIn("$(", command)
 
+    @unittest.skipIf(os.name == "nt", "POSIX runner quoting is not used on Windows")
+    def test_scheduled_run_uses_the_requested_scope(self):
+        with tempfile.TemporaryDirectory() as project:
+            default = scheduler._runner_cmd(project, "mock", "", "python3")
+            invoked = scheduler._runner_cmd(project, "mock", "", "python3", "invoked")
+            everything = scheduler._runner_cmd(project, "mock", "", "python3", "all")
+        self.assertEqual(default, invoked)
+        for command, expected in ((default, "invoked"), (everything, "all")):
+            tokens = shlex.split(command)
+            self.assertEqual(tokens[tokens.index("--scope") + 1], expected)
+
+    def test_unknown_scope_is_refused_before_crontab_write(self):
+        with mock.patch.object(scheduler, "_write_crontab") as write:
+            ok, message = scheduler.schedule("/tmp/project", scope="everything")
+        self.assertFalse(ok)
+        self.assertIn("scope must be", message)
+        write.assert_not_called()
+
     def test_control_characters_are_refused_before_crontab_write(self):
         with mock.patch.object(scheduler, "_write_crontab") as write:
             ok, message = scheduler.schedule("/tmp/project\n* * * * * injected")
