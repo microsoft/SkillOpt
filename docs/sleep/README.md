@@ -187,6 +187,17 @@ sessions, including custom prompt templates. Ordinary user sessions that quote
 headings such as `## TASK` or `## CURRENT SKILL` remain eligible for harvesting.
 Legacy tool-replay sessions are recognized by their complete prompt structure.
 
+### Claude replay provenance
+
+Claude backend calls carry a `[skillopt-sleep:claude-engine:v1]` prefix, the
+same kind of marker as the Codex one above. The harvester drops a single-turn
+Claude session only when its prompt starts with that prefix, so engine-generated
+attempt, judge, reflection, miner, and tool sessions are excluded whatever
+prompt template produced them, including custom templates. An ordinary session
+that quotes an engine prompt, or the prefix itself, later in a message remains
+eligible for harvesting. Sessions written by releases that predate the prefix
+are still recognized only by the older fixed prompt markers.
+
 ### Configuration files
 
 Sleep reads `~/.skillopt-sleep/config.json`, falling back to `config.yaml` or
@@ -534,6 +545,11 @@ correctness signal; the validation gate still governs what ships.
 | `dream_rollouts` | `1` | Run each task K times → learn from the good-vs-bad contrast (contrastive reflection). |
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
+
+Each of the K rollouts is a separate sample on both replay routes. A task whose
+rule judge requires a tool call takes the tool route; there the rollout index
+is forwarded as `sample_id`, so a backend without a real tool loop (Pi, Azure)
+is asked K times and no longer reuses its first answer for every rollout.
 
 The nightly cycle persists task split exposure separately from the capped recall
 archive. Once a task has entered training, re-mining it or a recorded derivative
