@@ -1809,6 +1809,18 @@ class ReflACTTrainer:
                             current_skill = replace_slow_update_field(
                                 current_skill, slow_saved["slow_update_content"],
                             )
+                            # Resuming exactly at this boundary: take the
+                            # injected skill's measured score from
+                            # slow_result.json (no rollout). runtime_state.json
+                            # normally holds the same value, but it is written
+                            # after slow_result.json (an interruption in between
+                            # leaves it stale), and a history-only resume only
+                            # has the pre-injection score.
+                            if (
+                                global_step == resume_from - 1
+                                and slow_saved.get("current_score") is not None
+                            ):
+                                current_score = float(slow_saved["current_score"])
                 elif epoch == 1:
                     # Epoch 1: inject empty placeholder
                     os.makedirs(slow_dir, exist_ok=True)
@@ -2049,10 +2061,56 @@ class ReflACTTrainer:
                             current_skill = replace_slow_update_field(
                                 current_skill, slow_content,
                             )
-                            # Update caches so downstream steps use the
-                            # slow-update-injected skill for hashing.
+                            # The injection is not gated, but later step gates
+                            # compare against current_score, so measure the
+                            # injected skill once on the selection set (or
+                            # reuse a real cache entry) instead of keeping the
+                            # pre-injection score. best_* stay untouched; the
+                            # final-skill validation after training handles
+                            # promotion.
                             slow_candidate_hash = skill_hash(current_skill)
-                            sel_cache[slow_candidate_hash] = (current_score, 0.0)
+                            if slow_candidate_hash in sel_cache:
+                                slow_sel_hard, slow_sel_soft = sel_cache[
+                                    slow_candidate_hash
+                                ]
+                                print(
+                                    f"    [slow update] selection cache hit: "
+                                    f"hard={slow_sel_hard:.4f}"
+                                )
+                            else:
+                                sel_env, sel_n = _build_eval_env(
+                                    split="valid_seen",
+                                    env_num=cfg["sel_env_num"],
+                                    seed=seed,
+                                )
+                                print(
+                                    f"    [slow update] re-measuring injected "
+                                    f"skill, selection items={sel_n}"
+                                )
+                                slow_eval_dir = os.path.join(
+                                    slow_dir, "selection_eval_injected",
+                                )
+                                slow_eval_results = adapter.rollout(
+                                    sel_env, current_skill, slow_eval_dir,
+                                )
+                                slow_sel_hard, slow_sel_soft = compute_score(
+                                    slow_eval_results
+                                )
+                                sel_cache[slow_candidate_hash] = (
+                                    slow_sel_hard, slow_sel_soft,
+                                )
+                            prev_current = current_score
+                            current_score = select_gate_score(
+                                slow_sel_hard, slow_sel_soft,
+                                gate_metric, gate_mixed_weight,
+                                skill_content=current_skill,
+                                use_semantic_density=use_semantic_density,
+                                semantic_density_weight=semantic_density_weight,
+                                leading_words=leading_words,
+                            )
+                            slow_result["selection_hard"] = slow_sel_hard
+                            slow_result["selection_soft"] = slow_sel_soft
+                            slow_result["current_score"] = current_score
 
                             slow_result["action"] = "force_accept"
                             current_origin = f"slow_update_epoch_{epoch:02d}"
@@ -2061,7 +2119,8 @@ class ReflACTTrainer:
                                 f"    [slow update] force-injected into "
                                 f"current only "
                                 f"({len(slow_content)} chars), "
-                                f"{slow_time}s"
+                                f"{slow_time}s; current score "
+                                f"{prev_current:.4f} -> {current_score:.4f}"
                             )
                     else:
                         slow_result = slow_result or {}

@@ -106,6 +106,17 @@ improved/regressed/persistent-fail/stable-success, then generates high-level
 the selection split or applied unconditionally. Its purpose is to counter
 cross-epoch forgetting.
 
+The paper's numbers and the released `ckpt/` skills used the gated mode
+(`slow_update_gate_with_selection: true`): the guidance is a candidate that is
+scored on the selection split and accepted or rejected like a step edit. The
+current default (`false`) writes the guidance into the current skill without a
+gate, then measures that skill once on the selection split, so later step gates
+compare candidates against a score it actually achieved. That costs one
+selection rollout per epoch boundary (none when the exact skill text was
+already scored). The injection itself never replaces the validation-best
+skill; only the final-skill validation at the end of training (run when
+`evaluation.eval_test` is on) can promote the final skill.
+
 ### Meta Skill
 
 A **meta-skill memory** accumulates high-level strategy notes across the training

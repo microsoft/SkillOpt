@@ -159,6 +159,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - A flat `--cfg-options` key for an `env` setting (for example `workers=4`)
   now overrides the YAML value with a structured config instead of being
   silently replaced by it (#409).
+- In the default force-write slow-update mode
+  (`optimizer.slow_update_gate_with_selection: false`), the skill that receives
+  the epoch-end guidance is now measured once on the selection split, and later
+  step gates compare candidates against that score. Before, the current score
+  stayed at the pre-injection value, and the selection cache stored that gate
+  score with a soft score of `0.0` for the new skill, so a byte-identical later
+  candidate reused both numbers. This adds one selection rollout per epoch
+  boundary in force-write mode (none when the exact skill text is already
+  cached). The validation-best skill and gated mode are unchanged (#404).
 - Close four ways invalid evidence could reach the SkillOpt-Sleep gate: recall
   no longer brings a content twin of tonight's held-out task into training,
   a measured tool route no longer credits a self-reported `TOOL_CALL:` marker,
