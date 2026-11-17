@@ -199,6 +199,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Keep the DocVQA answer when a stray `<answer>` or `</answer>` follows the
   final answer, instead of scoring the wrong text and giving a correct answer
   ANLS 0 (thanks @Shizoqua).
+- Keep numeric `0` gold answers and ids when loading OfficeQA JSON splits
+  instead of treating them as missing, and load integral floats such as
+  `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
+  (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
