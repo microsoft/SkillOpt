@@ -209,6 +209,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Fail a SpreadsheetBench test case when its answer position is empty instead
+  of passing it with no cells compared, which gave any output workbook,
+  including a wrong one, a full score (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

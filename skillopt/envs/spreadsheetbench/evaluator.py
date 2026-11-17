@@ -125,10 +125,12 @@ def compare_workbooks(gt_file: str, proc_file: str, answer_position: str) -> tup
     try:
         ok_all = True
         msg_first = ""
+        n_compared = 0
         for scr in (answer_position or "").split(","):
             scr = scr.strip()
             if not scr:
                 continue
+            n_compared += 1
             if "!" in scr:
                 sheet_name, cell_range = scr.split("!", 1)
                 sheet_name = sheet_name.strip().strip("'\"")
@@ -141,6 +143,9 @@ def compare_workbooks(gt_file: str, proc_file: str, answer_position: str) -> tup
                 ok_all = False
                 if not msg_first:
                     msg_first = msg
+        if not n_compared:
+            # Nothing was compared, so there is no evidence the output is right.
+            return False, "no answer position to compare"
         return ok_all, msg_first
     finally:
         wb_gt.close()
