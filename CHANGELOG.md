@@ -7,6 +7,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **SkillOpt-Sleep judge observability** (#283): track judge-side latency,
+  request counts, tokens used, and model identity separately in task replay,
+  consolidation, and nightly sleep reports (`report.json` and `report.md`).
+  Enables visibility into rubric evaluation overhead without conflating judge
+  costs with task generation attempts.
 - **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
   provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
   config selects Parallel automatically. Selecting it sends the generated
