@@ -69,6 +69,21 @@ the key has no effect. Rows are included in `report.md`, `report.json`,
 `diagnostics.json`, the CLI's `--json` output, and the evidence log; in
 multi-skill fan-out, each group's rows are in the evidence log.
 
+An ablation replay that fails does not fail the night, because every decision
+is already final when it runs. Its row is `unmeasured` with the error in its
+note, the ablation replays still to come in that consolidation do not start
+and say so in their notes, and a `gate` / `edit_ablation_failed` event is
+written to the evidence log. The night is staged as it would be with the key
+off. Errors that pause or stop the whole cycle (pending handoff calls, the
+Cursor backend's fail-closed errors, staging errors) still do.
+
+Ablation events are written after every decision, so in multi-skill fan-out
+they sit together at the end of the evidence log instead of next to their
+group's other events. Each `edit_ablation` and `edit_ablation_failed` event
+therefore carries `skill` (the fan-out group's skill name, empty for the
+night's aggregate run), `night`, and `trial_index` (the position of its trial
+among that run's gate trials).
+
 Rule-based heading checks are intentionally additive. `section_present` keeps
 its legacy strict behavior for existing task sets: an ATX heading cannot append
 text after the requested name. Use `section_contains` when a numbered,

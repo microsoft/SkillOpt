@@ -18,7 +18,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   decisions and accepted edits are unchanged even when the token budget binds.
   A single-edit candidate needs no extra replay; an N-edit candidate costs up
   to N validation replays, which are included in `tokens used` and checked
-  against `max_tokens_per_night` one replay at a time. Follow-up to #174.
+  against `max_tokens_per_night` one replay at a time. An ablation replay that
+  fails leaves its rows `unmeasured` and is logged as an
+  `edit_ablation_failed` event instead of failing the night, and each ablation
+  event names its fan-out group (`skill`), `night` and `trial_index`.
+  Follow-up to #174.
 - **OfficeQA Parallel Search MCP** as an opt-in `env.search_mode=parallel`
   provider for `openai_chat`/`qwen_chat`. The default stays `offline` and no
   config selects Parallel automatically. Selecting it sends the generated
