@@ -34,6 +34,7 @@ from skillopt.envs.task_output import (
     confined_task_output_dir as _confined_task_out_dir,
     is_safe_task_id as _is_safe_task_id,
 )
+from skillopt.utils.text_io import read_lines
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -42,13 +43,13 @@ from skillopt.envs.task_output import (
 def load_items(path: str) -> list[dict]:
     """Load a benchmark file. Supports both .jsonl and .json (list of dicts)."""
     if path.endswith(".json"):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             data = data.get("data") or list(data.values())
         return list(data)
     items = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -324,10 +325,10 @@ def process_one(
         except Exception:
             target_system_prompt = ""
         if target_system_prompt:
-            with open(os.path.join(task_out_dir, "target_system_prompt.txt"), "w") as f:
+            with open(os.path.join(task_out_dir, "target_system_prompt.txt"), "w", encoding="utf-8") as f:
                 f.write(target_system_prompt)
             result["target_system_prompt"] = target_system_prompt
-        with open(os.path.join(task_out_dir, "target_user_prompt.txt"), "w") as f:
+        with open(os.path.join(task_out_dir, "target_user_prompt.txt"), "w", encoding="utf-8") as f:
             f.write(target_user_prompt)
         result["target_user_prompt"] = target_user_prompt
 
@@ -359,16 +360,16 @@ def process_one(
             )
             result["n_turns"] = agent_result.get("n_turns", 0)
             if agent_result.get("target_system_prompt"):
-                with open(os.path.join(task_out_dir, "target_system_prompt.txt"), "w") as f:
+                with open(os.path.join(task_out_dir, "target_system_prompt.txt"), "w", encoding="utf-8") as f:
                     f.write(agent_result["target_system_prompt"])
                 result["target_system_prompt"] = agent_result["target_system_prompt"]
             if agent_result.get("target_user_prompt"):
-                with open(os.path.join(task_out_dir, "target_user_prompt.txt"), "w") as f:
+                with open(os.path.join(task_out_dir, "target_user_prompt.txt"), "w", encoding="utf-8") as f:
                     f.write(agent_result["target_user_prompt"])
                 result["target_user_prompt"] = agent_result["target_user_prompt"]
 
             # Save conversation log
-            with open(os.path.join(task_out_dir, "conversation.json"), "w") as f:
+            with open(os.path.join(task_out_dir, "conversation.json"), "w", encoding="utf-8") as f:
                 json.dump(
                     agent_result.get("conversation", []),
                     f, ensure_ascii=False, indent=2,
@@ -408,7 +409,7 @@ def process_one(
                         result["fail_reason"] = "no-solution-py-for-other-cases"
                     continue
 
-                with open(solution_path) as f:
+                with open(solution_path, encoding="utf-8") as f:
                     code = f.read()
 
                 # Prepend new INPUT_PATH / OUTPUT_PATH
@@ -497,14 +498,13 @@ def run_spreadsheet_batch(
     done_ids: set[str] = set()
     existing: list[dict] = []
     if os.path.exists(results_path):
-        with open(results_path) as f:
-            for line in f:
-                try:
-                    r = json.loads(line)
-                    done_ids.add(str(r["id"]))
-                    existing.append(r)
-                except (ValueError, RecursionError, KeyError, TypeError):
-                    pass
+        for line in read_lines(results_path):
+            try:
+                r = json.loads(line)
+                done_ids.add(str(r["id"]))
+                existing.append(r)
+            except (ValueError, RecursionError, KeyError, TypeError):
+                pass
 
     pending = [it for it in items if str(it["id"]) not in done_ids]
     print(
@@ -713,11 +713,11 @@ def process_one_codegen(
             diagnostic_trace_context=diagnostic_trace_context,
         )
 
-        with open(os.path.join(task_out_dir, "spreadsheet_preview.txt"), "w") as f:
+        with open(os.path.join(task_out_dir, "spreadsheet_preview.txt"), "w", encoding="utf-8") as f:
             f.write(preview_text)
-        with open(os.path.join(task_out_dir, "target_system_prompt.txt"), "w") as f:
+        with open(os.path.join(task_out_dir, "target_system_prompt.txt"), "w", encoding="utf-8") as f:
             f.write(target_system)
-        with open(os.path.join(task_out_dir, "target_user_prompt.txt"), "w") as f:
+        with open(os.path.join(task_out_dir, "target_user_prompt.txt"), "w", encoding="utf-8") as f:
             f.write(target_user)
 
         result["spreadsheet_preview"] = preview_text
@@ -772,12 +772,12 @@ def process_one_codegen(
         raw = agent_result.get("raw", "")
 
         # Save artifacts
-        with open(os.path.join(task_out_dir, "code.py"), "w") as f:
+        with open(os.path.join(task_out_dir, "code.py"), "w", encoding="utf-8") as f:
             f.write(code)
-        with open(os.path.join(task_out_dir, "raw.txt"), "w") as f:
+        with open(os.path.join(task_out_dir, "raw.txt"), "w", encoding="utf-8") as f:
             f.write(raw)
         if agent_result.get("conversation"):
-            with open(os.path.join(task_out_dir, "conversation.json"), "w") as f:
+            with open(os.path.join(task_out_dir, "conversation.json"), "w", encoding="utf-8") as f:
                 json.dump(agent_result["conversation"], f, ensure_ascii=False, indent=2)
 
         if not code.strip():
@@ -854,7 +854,7 @@ def process_one_codegen(
                 "content": f"[POST-EXECUTION VERIFICATION]\n\n{enrichment_msg}",
             })
             # Re-save the enriched conversation
-            with open(os.path.join(task_out_dir, "conversation.json"), "w") as f:
+            with open(os.path.join(task_out_dir, "conversation.json"), "w", encoding="utf-8") as f:
                 json.dump(conversation, f, ensure_ascii=False, indent=2)
         n_cases = result["n_cases"]
         n_pass = result["n_pass"]
@@ -905,14 +905,13 @@ def run_spreadsheet_batch_codegen(
     done_ids: set[str] = set()
     existing: list[dict] = []
     if os.path.exists(results_path):
-        with open(results_path) as f:
-            for line in f:
-                try:
-                    r = json.loads(line)
-                    done_ids.add(str(r["id"]))
-                    existing.append(r)
-                except (ValueError, RecursionError, KeyError, TypeError):
-                    pass
+        for line in read_lines(results_path):
+            try:
+                r = json.loads(line)
+                done_ids.add(str(r["id"]))
+                existing.append(r)
+            except (ValueError, RecursionError, KeyError, TypeError):
+                pass
 
     pending = [it for it in items if str(it["id"]) not in done_ids]
     print(

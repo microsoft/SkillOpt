@@ -17,6 +17,7 @@ from skillopt.envs.spreadsheetbench.rollout import (
     run_spreadsheet_batch_codegen,
 )
 from skillopt.model import get_target_backend, is_target_exec_backend
+from skillopt.utils.text_io import read_lines
 
 
 # Task types used for per-category breakdowns
@@ -109,12 +110,11 @@ class SpreadsheetBenchAdapter(EnvAdapter):
         # Resume support
         if os.path.exists(results_path):
             existing: list[dict] = []
-            with open(results_path) as f:
-                for line in f:
-                    try:
-                        existing.append(json.loads(line))
-                    except (ValueError, RecursionError, TypeError):
-                        pass
+            for line in read_lines(results_path):
+                try:
+                    existing.append(json.loads(line))
+                except (ValueError, RecursionError, TypeError):
+                    pass
             if existing:
                 return existing
 
@@ -149,7 +149,7 @@ class SpreadsheetBenchAdapter(EnvAdapter):
                 diagnostic_trace_context_by_id=kwargs.get("diagnostic_trace_context_by_id"),
             )
 
-        with open(results_path, "w") as f:
+        with open(results_path, "w", encoding="utf-8") as f:
             for r in results:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
 

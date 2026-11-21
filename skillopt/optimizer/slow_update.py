@@ -30,6 +30,7 @@ from skillopt.envs.task_output import (
 from skillopt.model import chat_optimizer
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
+from skillopt.utils.text_io import read_text
 
 # ── Protected field markers ─────────────────────────────────────────────────
 
@@ -129,8 +130,7 @@ def _read_trajectory(rollout_dir: str, task_id: str) -> str:
     if not os.path.exists(conv_path):
         return "(trajectory not available)"
     try:
-        with open(conv_path) as f:
-            conversation = json.load(f)
+        conversation = json.loads(read_text(conv_path))
     except Exception:
         return "(trajectory read error)"
     if not conversation:
@@ -280,7 +280,7 @@ def save_comparison_pairs(pairs: list[dict], out_path: str) -> None:
             "prev": p["prev"],
             "curr": p["curr"],
         })
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(slim, f, ensure_ascii=False, indent=2)
 
 
