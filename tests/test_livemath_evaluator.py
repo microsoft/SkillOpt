@@ -31,3 +31,14 @@ def test_wrapped_choice_label_is_scored_correct(response):
 @pytest.mark.parametrize("response", ["<answer>(A)</answer>", "<answer>Option B</answer>", "<answer></answer>"])
 def test_wrong_or_unparseable_label_is_not_scored_correct(response):
     assert evaluate(response, CHOICES[1], CHOICES)["em"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "response",
+    ["Use the <answer> tag format.\n<answer>B</answer>", "<answer>A, no wait<answer>B</answer>"],
+)
+def test_opening_tag_before_the_answer_is_not_part_of_it(response):
+    result = evaluate(response, CHOICES[1], CHOICES)
+
+    assert result["predicted_label"] == "B"
+    assert result["em"] == 1.0

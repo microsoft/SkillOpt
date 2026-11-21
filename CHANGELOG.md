@@ -233,6 +233,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Detect SkillOpt-Sleep refusals written with a typographic apostrophe, such as
   `I can’t help with that.`, so the `no_refusal` rule check no longer gives a
   bare refusal full credit (thanks @Shizoqua).
+- Ignore an `<answer>` opening tag mentioned in the reasoning before the real
+  answer in SearchQA, LiveMathematicianBench and OfficeQA, as DocVQA already
+  does, instead of scoring the text between them and marking a correct answer
+  wrong (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
