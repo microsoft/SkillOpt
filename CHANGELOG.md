@@ -247,6 +247,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Add focused coverage for the DocVQA ANLS evaluator, including the 0.5
   threshold boundary, the maximum over gold answers, and the accepted gold
   answer formats (thanks @Shizoqua).
+- Add focused coverage for LiveMathematicianBench choice shuffling: the
+  correct answer keeps its text after relabeling, evaluation batches are
+  deterministic for a seed, loaded items are not mutated, and an epoch covers
+  each training item once (thanks @Shizoqua).
 
 ### Acknowledgements 🙏
 Thank you to the contributors behind this unreleased work:
