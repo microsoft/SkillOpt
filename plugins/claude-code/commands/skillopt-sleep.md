@@ -1,6 +1,6 @@
 ---
 description: Run or manage the SkillOpt-Sleep self-evolution cycle (review past sessions, replay tasks through a selected backend, consolidate validated memory + skills, or schedule nightly runs)
-argument-hint: "[run | dry-run | status | adopt | harvest | schedule | unschedule] (default: status)"
+argument-hint: "[natural-language request | run | dry-run | status | adopt | harvest | schedule | unschedule]"
 allowed-tools: Bash, Read
 ---
 
@@ -17,16 +17,71 @@ user explicitly requests `--auto-adopt`.
 
 (If `$ARGUMENTS` is empty, treat it as `status`.)
 
+## Natural-language requests
+
+`$ARGUMENTS` may be either an explicit SkillOpt-Sleep action or a natural-language request.
+
+When the request is natural language, infer the intended SkillOpt-Sleep action and translate only the constraints explicitly stated by the user.
+
+Use these mappings:
+
+* Requests to improve, optimize, or learn from recent sessions → `run`
+* Requests to preview or see what could be improved without applying changes → `dry-run`
+* Requests to inspect recent-session tasks → `harvest`
+* Requests to see the current optimization state or pending proposal → `status`
+* Requests to apply an already-reviewed proposal → `adopt`
+* Requests to repeat optimization on a schedule → `schedule`
+* Requests to stop scheduled optimization → `unschedule`
+
+Examples:
+
+* `improve my skill using mistakes from my recent sessions`
+  → `run`
+
+* `show me what could be improved from this week's sessions`
+  → `dry-run` with the appropriate lookback constraint
+
+* `optimize my Python skill`
+  → `run` with the appropriate target skill/path when it can be identified safely
+
+* `what did SkillOpt learn from my sessions?`
+  → `harvest`
+
+* `show me the latest optimization proposal`
+  → `status`
+
+* `apply the changes from the last optimization`
+  → `adopt`
+
+* `optimize my skills every night`
+  → `schedule`
+
+Do not invent paths, skill names, backends, time ranges, or other configuration values that the user did not provide. Preserve configured defaults when the request does not specify a value.
+
+For ambiguous optimization requests, prefer `dry-run` so the user can review the proposed changes before staging.
+
+Natural-language interpretation must not bypass the existing validation gate, staging mechanism, backup behavior, or explicit adoption requirement.
+
+
 ## How to run it
 
-The engine is the `skillopt_sleep` Python package in this repo. Split
-`$ARGUMENTS` into the first action token and its remaining options, then use the
-**plugin's bundled runner** so the right interpreter and repo are on the path.
-Preserve the user's remaining options (for example `--preferences`, `--backend`,
-or `--target-skill-path`) instead of silently dropping them:
+Interpret `$ARGUMENTS` first.
+
+If it begins with an explicit action (`run`, `dry-run`, `status`, `adopt`,
+`harvest`, `schedule`, or `unschedule`), preserve the existing behavior and pass
+the remaining options unchanged.
+
+Otherwise, treat `$ARGUMENTS` as a natural-language request. Select the
+appropriate SkillOpt-Sleep action using the mappings in **Natural-language
+requests** above. Translate only constraints explicitly stated by the user into
+supported CLI options. Do not invent paths, skill names, backends, time ranges,
+or other configuration values.
+
+Always use the plugin's bundled runner so the correct interpreter and repository
+are resolved:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/sleep.sh" <action> --project "$(pwd)" --scope invoked <remaining options>
+"${CLAUDE_PLUGIN_ROOT}/scripts/sleep.sh" <action> --project "$(pwd)" --scope invoked <translated options>
 ```
 
 `<action>` is one of:
