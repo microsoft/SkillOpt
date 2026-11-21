@@ -5,7 +5,9 @@ import re
 
 
 def extract_answer(text: str) -> str:
-    matches = re.findall(r"<answer>(.*?)</answer>", text, re.DOTALL | re.IGNORECASE)
+    # The body may not contain another "<answer>", so an opening tag mentioned in the
+    # reasoning before the real answer is not captured (as in the DocVQA evaluator).
+    matches = re.findall(r"<answer>((?:(?!<answer>).)*?)</answer>", text, re.DOTALL | re.IGNORECASE)
     if matches:
         return matches[-1].strip()
     lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
