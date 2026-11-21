@@ -65,7 +65,9 @@ _TOOL_SCHEMAS = [
         },
     },
 ]
-_FINAL_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
+# The body may not contain another "<answer>", so an opening tag mentioned in the
+# reasoning before the real answer is not captured (as in the DocVQA evaluator).
+_FINAL_RE = re.compile(r"<answer>((?:(?!<answer>).)*?)</answer>", re.IGNORECASE | re.DOTALL)
 _SEARCH_RE = re.compile(r"<search_queries>(.*?)</search_queries>", re.IGNORECASE | re.DOTALL)
 _DEFAULT_SEARCH_MODE = "offline"
 _CUSTOM_SEARCH_MODE = "custom_search"

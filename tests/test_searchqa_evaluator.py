@@ -40,3 +40,14 @@ def test_single_string_gold_matches_the_full_answer():
 
     assert result["em"] == result["f1"] == result["sub_em"] == 1.0
     assert result["gold_answers"] == ["Paris"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    ["I will wrap the final answer in <answer> tags.\n<answer>Paris</answer>", "<answer>draft<answer>Paris</answer>"],
+)
+def test_opening_tag_before_the_answer_is_not_part_of_it(response):
+    result = evaluate(response, ["Paris"])
+
+    assert result["predicted_answer"] == "Paris"
+    assert result["em"] == 1.0

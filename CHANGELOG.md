@@ -230,6 +230,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Ignore an `<answer>` opening tag mentioned in the reasoning before the real
+  answer in SearchQA, LiveMathematicianBench and OfficeQA, as DocVQA already
+  does, instead of scoring the text between them and marking a correct answer
+  wrong (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

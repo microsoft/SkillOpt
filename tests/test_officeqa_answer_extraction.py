@@ -48,6 +48,8 @@ def test_draft_answer_is_not_credited_when_the_revision_is_wrong(tmp_path, monke
         ("<ANSWER> 42 </ANSWER>", "42"),
         ("<answer>\n12.5%\n</answer>", "12.5%"),
         ("draft <answer>1</answer> final <answer>2</answer>", "2"),
+        ("I will wrap the final answer in <answer> tags.\n<answer>1776</answer>", "1776"),
+        ("<answer>draft<answer>1776</answer>", "1776"),
         ("no tags\nlast line", "last line"),
     ],
 )
