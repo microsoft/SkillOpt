@@ -189,8 +189,11 @@ def _load_json_or_jsonl(path: str) -> list[dict]:
     return items
 
 
-def _parse_split_ratio(text: str) -> tuple[int, int, int]:
-    parts = [part.strip() for part in str(text or "").split(":") if part.strip()]
+def _parse_split_ratio(text: str | list | tuple) -> tuple[int, int, int]:
+    if isinstance(text, (list, tuple)):
+        parts = [str(x).strip() for x in text]
+    else:
+        parts = [part.strip() for part in str(text or "").split(":") if part.strip()]
     if len(parts) != 3:
         raise ValueError(
             f"split_ratio must be in train:val:test form, got {text!r}"
@@ -207,8 +210,11 @@ def _parse_split_ratio(text: str) -> tuple[int, int, int]:
 
 
 def _compute_split_counts(total: int, ratio: tuple[int, int, int]) -> tuple[int, int, int]:
+    total = max(0, int(total))
     weights = list(ratio)
     denom = sum(weights)
+    if denom <= 0:
+        return 0, 0, 0
     raw = [total * weight / denom for weight in weights]
     counts = [int(value) for value in raw]
     remaining = total - sum(counts)

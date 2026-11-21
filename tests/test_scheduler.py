@@ -22,14 +22,13 @@ from __future__ import annotations
 import pytest
 
 from skillopt.optimizer.scheduler import (
-    LRScheduler,
-    ConstantScheduler,
-    LinearScheduler,
-    CosineScheduler,
     AutonomousScheduler,
+    ConstantScheduler,
+    CosineScheduler,
+    LinearScheduler,
+    LRScheduler,
     build_scheduler,
 )
-
 
 # ── ConstantScheduler ────────────────────────────────────────────────────────
 
@@ -327,6 +326,20 @@ class TestBuildScheduler:
     def test_default_mode_is_constant(self) -> None:
         s = build_scheduler(max_lr=8, min_lr=2, total_steps=10)
         assert isinstance(s, ConstantScheduler)
+
+    def test_case_insensitive_and_whitespace_mode(self) -> None:
+        s1 = build_scheduler(" Linear ", max_lr=8, min_lr=2, total_steps=10)
+        assert isinstance(s1, LinearScheduler)
+        s2 = build_scheduler("CONSTANT", max_lr=8, min_lr=2, total_steps=10)
+        assert isinstance(s2, ConstantScheduler)
+        s3 = build_scheduler(None, max_lr=8, min_lr=2, total_steps=10)
+        assert isinstance(s3, ConstantScheduler)
+
+    def test_negative_step_bounded_to_max_lr(self) -> None:
+        s_lin = LinearScheduler(max_lr=8, min_lr=2, total_steps=10)
+        assert s_lin.get_lr(-1) == 8
+        s_cos = CosineScheduler(max_lr=8, min_lr=2, total_steps=10)
+        assert s_cos.get_lr(-1) == 8
 
 
 # ── Abstract base class ──────────────────────────────────────────────────────

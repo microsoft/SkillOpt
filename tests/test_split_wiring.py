@@ -199,3 +199,12 @@ class TestHeldOutScoreEvidence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_parse_split_ratio_list_and_tuple() -> None:
+    from skillopt.datasets.base import _compute_split_counts, _parse_split_ratio
+    assert _parse_split_ratio([2, 1, 7]) == (2, 1, 7)
+    assert _parse_split_ratio((1, 1, 1)) == (1, 1, 1)
+    assert _parse_split_ratio("2:1:7") == (2, 1, 7)
+    assert _compute_split_counts(0, (2, 1, 7)) == (0, 0, 0)
+    assert _compute_split_counts(-5, (2, 1, 7)) == (0, 0, 0)

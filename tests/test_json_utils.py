@@ -50,6 +50,10 @@ class TestExtractJson:
     def test_empty_string_returns_none(self) -> None:
         assert extract_json("") is None
 
+    def test_none_input_returns_none(self) -> None:
+        assert extract_json(None) is None
+        assert extract_json_array(None) is None
+
     def test_malformed_json_returns_none(self) -> None:
         assert extract_json("{broken") is None
 
