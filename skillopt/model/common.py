@@ -29,7 +29,7 @@ _BACKEND_DEFAULT_MODELS = {
     # deployments (not the CLI model, which uses the copilot_chat model keys)
     # and keeps the openai_chat optimizer for copilot_exec non-empty.
     "qwen_chat": "Qwen/Qwen3.5-4B",
-    "minimax_chat": "MiniMax-M3",
+    "minimax_chat": "MiniMax-M3.1-Flash",
     "openai_compatible": "gpt-4o-mini",
 }
 
@@ -167,10 +167,13 @@ class CompatAssistantMessage:
     content: str
     tool_calls: list[CompatToolCall] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    reasoning_content: str | None = None
 
     def model_dump(self, mode: str = "json") -> dict[str, Any]:
         del mode
         data: dict[str, Any] = {"role": "assistant", "content": self.content}
+        if self.reasoning_content is not None:
+            data["reasoning_content"] = self.reasoning_content
         if self.tool_calls:
             data["tool_calls"] = [tool_call.model_dump() for tool_call in self.tool_calls]
         return data
