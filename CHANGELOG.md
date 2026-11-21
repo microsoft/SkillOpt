@@ -143,6 +143,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
   normalized name also keys the harvest checkpoint and the tasks document, so
   `"Codex"` no longer reads a different checkpoint than `"codex"`. A non-string
   value is rejected with a clear error.
+- The `claude_chat` backend sends a single user request to the Claude CLI as
+  written. It used to wrap it as `History: - User: ...` with every line after
+  the first indented by two spaces, followed by `Answer the latest user
+  request.`, so the target saw altered text in a transcript frame instead of
+  the plain request it gets in deployment. Multi-turn, tool and
+  structured-output calls keep the transcript form, as does a request that
+  starts with `/`, which `claude -p` could run as a slash command. The
+  `claude_code_exec` chat path shares this prompt builder. Scores from earlier
+  `claude_chat` runs are not directly comparable.
 
 ### Fixed
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
