@@ -53,6 +53,21 @@ def test_no_refusal_fails_on_bare_refusals(response: str) -> None:
     assert score_rule_judge(judge, response)[0] == 0.0
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        "I can\u2019t help with that.",
+        "I\u2019m unable to do this.",
+        "Sorry, I can\u2019t do that.",
+        "**Sorry, I can\u2018t** do this.",
+    ],
+)
+def test_no_refusal_fails_on_refusals_with_typographic_apostrophes(response: str) -> None:
+    # Models often write a curly apostrophe; the prefixes use a straight one.
+    judge = {"kind": "rule", "checks": [{"op": "no_refusal"}]}
+    assert score_rule_judge(judge, response)[0] == 0.0
+
+
 def test_no_refusal_passes_on_substantive_answer() -> None:
     judge = {"kind": "rule", "checks": [{"op": "no_refusal"}]}
     assert score_rule_judge(judge, "Here is the context you asked for: ...")[0] == 1.0

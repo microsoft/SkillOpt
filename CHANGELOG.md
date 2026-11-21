@@ -230,6 +230,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Detect SkillOpt-Sleep refusals written with a typographic apostrophe, such as
+  `I can’t help with that.`, so the `no_refusal` rule check no longer gives a
+  bare refusal full credit (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
