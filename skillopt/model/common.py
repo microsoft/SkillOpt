@@ -20,9 +20,11 @@ _BACKEND_DEFAULT_MODELS = {
     "openai_chat": "gpt-4o",
     "codex": "gpt-4o",
     "codex_exec": "gpt-4o",
-    "claude": "claude-sonnet-4-6",
-    "claude_chat": "claude-sonnet-4-6",
-    "claude_code_exec": "claude-sonnet-4-6",
+    # The Claude CLI resolves `sonnet` to the latest Sonnet the account can
+    # use, so this default cannot go stale the way a dated model ID does.
+    "claude": "sonnet",
+    "claude_chat": "sonnet",
+    "claude_code_exec": "sonnet",
     "cursor_exec": "composer-2.5",
     # copilot_chat / copilot_exec deliberately use the Azure default fallback
     # from default_model_for_backend(). That fallback configures shared role
