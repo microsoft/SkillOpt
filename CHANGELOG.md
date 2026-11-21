@@ -230,6 +230,9 @@ All notable changes to SkillOpt are documented here. This project adheres to
   instead of treating them as missing, and load integral floats such as
   `1776.0` as `1776`, so a correct integer answer is no longer scored wrong
   (thanks @Shizoqua).
+- Detect SkillOpt-Sleep refusals written with a typographic apostrophe, such as
+  `I can’t help with that.`, so the `no_refusal` rule check no longer gives a
+  bare refusal full credit (thanks @Shizoqua).
 - Ignore an `<answer>` opening tag mentioned in the reasoning before the real
   answer in SearchQA, LiveMathematicianBench and OfficeQA, as DocVQA already
   does, instead of scoring the text between them and marking a correct answer
@@ -251,6 +254,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - Add focused coverage for the DocVQA ANLS evaluator, including the 0.5
   threshold boundary, the maximum over gold answers, and the accepted gold
   answer formats (thanks @Shizoqua).
+- Add focused coverage for LiveMathematicianBench choice shuffling: the
+  correct answer keeps its text after relabeling, evaluation batches are
+  deterministic for a seed, loaded items are not mutated, and an epoch covers
+  each training item once (thanks @Shizoqua).
 
 ### Acknowledgements 🙏
 Thank you to the contributors behind this unreleased work:
