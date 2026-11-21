@@ -130,7 +130,7 @@ def get_adapter(cfg: dict):
 _BOOL = lambda x: x.lower() in ("true", "1", "yes")  # noqa: E731
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="SkillOpt: Executive Strategy for Self-Evolving Agent Skills",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -270,6 +270,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--test_env_num", type=int)
     p.add_argument("--eval_test", type=_BOOL)
     p.add_argument("--use_gate", type=_BOOL)
+    p.add_argument("--gate_metric", type=str, choices=["hard", "soft", "mixed"])
+    p.add_argument("--gate_mixed_weight", type=float)
+    p.add_argument("--use_semantic_density", type=_BOOL)
+    p.add_argument("--semantic_density_weight", type=float)
     p.add_argument("--max_steps", type=int)
     p.add_argument("--max_api_workers", type=int)
     p.add_argument("--analyst_workers", type=int)
@@ -315,7 +319,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out_root", type=str)
     p.add_argument("--mode", type=str)
 
-    return p.parse_args()
+    return p.parse_args(args)
 
 
 # ── Retired CLI options ──────────────────────────────────────────────────────
@@ -508,6 +512,10 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "skill_aware_appendix_source": "optimizer.skill_aware_appendix_source",
     "skill_aware_consolidate_threshold": "optimizer.skill_aware_consolidate_threshold",
     "use_gate": "evaluation.use_gate",
+    "gate_metric": "evaluation.gate_metric",
+    "gate_mixed_weight": "evaluation.gate_mixed_weight",
+    "use_semantic_density": "evaluation.use_semantic_density",
+    "semantic_density_weight": "evaluation.semantic_density_weight",
     "sel_env_num": "evaluation.sel_env_num",
     "test_env_num": "evaluation.test_env_num",
     "eval_test": "evaluation.eval_test",

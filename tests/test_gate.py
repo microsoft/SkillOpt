@@ -59,6 +59,18 @@ class TestSelectGateScore:
         with pytest.raises(ValueError, match="unknown gate metric"):
             select_gate_score(0.5, 0.5, "rouge")  # type: ignore[arg-type]
 
+    def test_metric_case_insensitive(self) -> None:
+        assert select_gate_score(0.8, 0.3, "Hard") == 0.8
+        assert select_gate_score(0.8, 0.3, "SOFT") == 0.3
+        assert select_gate_score(1.0, 0.0, "Mixed") == pytest.approx(0.5)
+
+    def test_metric_whitespace_tolerant(self) -> None:
+        assert select_gate_score(0.8, 0.3, "  hard  ") == 0.8
+        assert select_gate_score(0.8, 0.3, "\tmixed\n") == pytest.approx(0.55)
+
+    def test_none_metric_defaults_to_hard(self) -> None:
+        assert select_gate_score(0.8, 0.3, None) == 0.8
+
 
 class TestEvaluateGateAcceptNewBest:
     """evaluate_gate — candidate beats both current and best."""
@@ -219,6 +231,23 @@ class TestEvaluateGateMetrics:
         assert result.action == "accept_new_best"
         assert result.current_score == pytest.approx(0.9)
 
+    def test_case_insensitive_and_whitespace_metric(self) -> None:
+        result = evaluate_gate(
+            candidate_skill="CAND",
+            cand_hard=0.6,
+            current_skill="CURR",
+            current_score=0.7,
+            best_skill="BEST",
+            best_score=0.7,
+            best_step=0,
+            global_step=1,
+            cand_soft=0.9,
+            metric="  Mixed  ",
+            mixed_weight=0.5,
+        )
+        assert result.action == "accept_new_best"
+        assert result.current_score == pytest.approx(0.75)
+
 
 class TestGateResult:
     """GateResult — immutable outcome dataclass."""
@@ -284,3 +313,28 @@ class TestGateInvariants:
             assert current_skill == best_skill
         assert best_score == pytest.approx(0.7)
         assert best_step == 4
+
+
+class TestTrainCliGateOptions:
+    """CLI argument parsing and configuration mapping for gate options."""
+
+    def test_train_cli_maps_gate_arguments(self) -> None:
+        import scripts.train as train_script
+
+        args = train_script.parse_args([
+            "--config", "configs/searchqa/default.yaml",
+            "--gate_metric", "mixed",
+            "--gate_mixed_weight", "0.75",
+            "--use_semantic_density", "true",
+            "--semantic_density_weight", "0.1",
+        ])
+        assert args.gate_metric == "mixed"
+        assert args.gate_mixed_weight == 0.75
+        assert args.use_semantic_density is True
+        assert args.semantic_density_weight == 0.1
+
+        cfg = train_script.load_config(args)
+        assert cfg["gate_metric"] == "mixed"
+        assert cfg["gate_mixed_weight"] == 0.75
+        assert cfg["use_semantic_density"] is True
+        assert cfg["semantic_density_weight"] == 0.1
