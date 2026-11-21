@@ -99,8 +99,8 @@ class TokenTracker:
                 }
             entry = self._data[stage]
             entry["calls"] += 1
-            entry["prompt_tokens"] += prompt_tokens
-            entry["completion_tokens"] += completion_tokens
+            entry["prompt_tokens"] += int(prompt_tokens or 0)
+            entry["completion_tokens"] += int(completion_tokens or 0)
 
     def summary(self) -> dict[str, dict[str, int]]:
         with self._lock:
@@ -179,9 +179,14 @@ class CompatAssistantMessage:
 def usage_from_openai_usage(usage: Any) -> dict[str, int]:
     if not usage:
         return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    total_tokens = getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+    if isinstance(usage, dict):
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+    else:
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens))
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -192,46 +197,80 @@ def usage_from_openai_usage(usage: Any) -> dict[str, int]:
 def usage_from_responses_usage(usage: Any) -> dict[str, int]:
     if not usage:
         return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    prompt_tokens = getattr(usage, "input_tokens", 0) or 0
-    completion_tokens = getattr(usage, "output_tokens", 0) or 0
+    if isinstance(usage, dict):
+        prompt_tokens = int(usage.get("input_tokens") or 0)
+        completion_tokens = int(usage.get("output_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+    else:
+        prompt_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens))
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
+        "total_tokens": total_tokens,
     }
 
 
 def compat_message_from_chat_message(message: Any) -> CompatAssistantMessage:
-    content = getattr(message, "content", "") or ""
+    if isinstance(message, dict):
+        content = message.get("content", "") or ""
+        raw_tools = message.get("tool_calls", None) or []
+    else:
+        content = getattr(message, "content", "") or ""
+        raw_tools = getattr(message, "tool_calls", None) or []
     tool_calls = []
-    for tool_call in getattr(message, "tool_calls", None) or []:
-        function = getattr(tool_call, "function", None)
-        tool_calls.append(
-            CompatToolCall(
-                id=getattr(tool_call, "id", "") or "",
-                function=CompatToolFunction(
-                    name=getattr(function, "name", "") or "",
-                    arguments=getattr(function, "arguments", "") or "{}",
-                ),
+    for tool_call in raw_tools:
+        if isinstance(tool_call, dict):
+            fn = tool_call.get("function") or {}
+            fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") or "")
+            fn_args = fn.get("arguments", "{}") if isinstance(fn, dict) else (getattr(fn, "arguments", "{}") or "{}")
+            tool_calls.append(
+                CompatToolCall(
+                    id=tool_call.get("id", "") or "",
+                    function=CompatToolFunction(
+                        name=fn_name,
+                        arguments=fn_args,
+                    ),
+                )
             )
-        )
+        else:
+            function = getattr(tool_call, "function", None)
+            tool_calls.append(
+                CompatToolCall(
+                    id=getattr(tool_call, "id", "") or "",
+                    function=CompatToolFunction(
+                        name=getattr(function, "name", "") or "",
+                        arguments=getattr(function, "arguments", "") or "{}",
+                    ),
+                )
+            )
     return CompatAssistantMessage(content=content, tool_calls=tool_calls)
 
 
 def compat_message_from_responses_output(output: list[Any]) -> CompatAssistantMessage:
+    if not output or not isinstance(output, list):
+        return CompatAssistantMessage(content="", tool_calls=[])
     text_parts: list[str] = []
     tool_calls: list[CompatToolCall] = []
     for item in output:
-        item_type = getattr(item, "type", "") or ""
+        item_type = item.get("type", "") if isinstance(item, dict) else (getattr(item, "type", "") or "")
         if item_type == "function_call":
-            raw_arguments = getattr(item, "arguments", None)
+            raw_arguments = item.get("arguments") if isinstance(item, dict) else getattr(item, "arguments", None)
             if raw_arguments is None:
-                raw_arguments = json.dumps(getattr(item, "input", {}) or {})
+                item_input = item.get("input", {}) if isinstance(item, dict) else getattr(item, "input", {})
+                raw_arguments = json.dumps(item_input or {})
+            call_id = (
+                (item.get("call_id") or item.get("id") or "")
+                if isinstance(item, dict)
+                else (getattr(item, "call_id", "") or getattr(item, "id", "") or "")
+            )
+            fn_name = item.get("name", "") if isinstance(item, dict) else (getattr(item, "name", "") or "")
             tool_calls.append(
                 CompatToolCall(
-                    id=getattr(item, "call_id", "") or getattr(item, "id", "") or "",
+                    id=call_id,
                     function=CompatToolFunction(
-                        name=getattr(item, "name", "") or "",
+                        name=fn_name,
                         arguments=str(raw_arguments or "{}"),
                     ),
                 )
@@ -239,8 +278,10 @@ def compat_message_from_responses_output(output: list[Any]) -> CompatAssistantMe
             continue
         if item_type != "message":
             continue
-        for part in getattr(item, "content", []) or []:
-            part_type = getattr(part, "type", "") or ""
+        item_content = item.get("content", []) if isinstance(item, dict) else (getattr(item, "content", []) or [])
+        for part in item_content or []:
+            part_type = part.get("type", "") if isinstance(part, dict) else (getattr(part, "type", "") or "")
             if part_type in {"output_text", "text"}:
-                text_parts.append(getattr(part, "text", "") or "")
+                part_text = part.get("text", "") if isinstance(part, dict) else (getattr(part, "text", "") or "")
+                text_parts.append(part_text or "")
     return CompatAssistantMessage(content="".join(text_parts), tool_calls=tool_calls)
