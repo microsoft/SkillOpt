@@ -237,6 +237,10 @@ All notable changes to SkillOpt are documented here. This project adheres to
   answer in SearchQA, LiveMathematicianBench and OfficeQA, as DocVQA already
   does, instead of scoring the text between them and marking a correct answer
   wrong (thanks @Shizoqua).
+- Report hard selection accuracy in the run summary's `best_selection_hard`
+  and reused `final_selection_hard` instead of the gate-metric score, which
+  differs under the `soft` and `mixed` gate metrics or the semantic-density
+  bonus (thanks @Shizoqua).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
