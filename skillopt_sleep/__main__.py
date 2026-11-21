@@ -101,12 +101,13 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--scope", default="", choices=["", "all", "invoked"])
     p.add_argument("--backend", default="",
                    choices=["", "mock", "claude", "codex", "copilot", "cursor", "pi",
-                            "opencode", "handoff", "azure_openai"])
+                            "opencode", "kimicode", "handoff", "azure_openai"])
     p.add_argument("--model", default="")
     p.add_argument("--codex-path", default="", help="path to the real @openai/codex binary")
     p.add_argument("--cursor-path", default="", help="path to the Cursor Agent CLI")
     p.add_argument("--pi-path", default="", help="path to the Pi coding-agent CLI")
     p.add_argument("--opencode-path", default="", help="path to the OpenCode CLI")
+    p.add_argument("--kimi-path", default="", help="path to the Kimi Code CLI (`kimi`)")
     p.add_argument(
         "--opencode-tool-replay",
         action="store_true",
@@ -170,6 +171,8 @@ def _cfg_from_args(args, task_meta: Dict[str, Any] | None = None) -> Any:
         overrides["cursor_path"] = os.path.abspath(os.path.expanduser(args.cursor_path))
     if getattr(args, "opencode_path", ""):
         overrides["opencode_path"] = os.path.abspath(os.path.expanduser(args.opencode_path))
+    if getattr(args, "kimi_path", ""):
+        overrides["kimi_path"] = os.path.abspath(os.path.expanduser(args.kimi_path))
     if getattr(args, "opencode_tool_replay", False):
         overrides["opencode_tool_replay"] = True
     if getattr(args, "claude_home", ""):
