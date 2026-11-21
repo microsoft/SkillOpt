@@ -93,7 +93,9 @@ def _is_refusal(response: str) -> bool:
     # numbered items (1. / 1)), emphasis and headings -- BEFORE bounding the
     # head, so a refusal cannot hide behind >160 marker characters.
     content = re.sub(r"^(?:[>\-*_#\s]|\d+[.)])+", "", text)
-    head = content[:160].lower()
+    # Fold typographic apostrophes (U+2018/U+2019) to "'" so "I can’t" matches
+    # the "i can't" prefix; models often emit the curly form.
+    head = content[:160].lower().replace("\u2019", "'").replace("\u2018", "'")
     if not any(head.startswith(p) for p in _REFUSAL_PREFIXES):
         return False
     # A long response that opens with an abstention still did the work of
