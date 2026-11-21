@@ -121,6 +121,7 @@ _FLATTEN_MAP: dict[str, str] = {
     "model.minimax_api_key": "minimax_api_key",
     "model.minimax_model": "minimax_model",
     "model.minimax_temperature": "minimax_temperature",
+    "model.minimax_timeout_seconds": "minimax_timeout_seconds",
     "model.minimax_max_tokens": "minimax_max_tokens",
     "model.minimax_enable_thinking": "minimax_enable_thinking",
     "model.openai_compatible_base_url": "openai_compatible_base_url",

@@ -833,6 +833,7 @@ class ReflACTTrainer:
             base_url=cfg.get("minimax_base_url") or None,
             api_key=cfg.get("minimax_api_key") or None,
             temperature=cfg.get("minimax_temperature"),
+            timeout_seconds=cfg.get("minimax_timeout_seconds"),
             max_tokens=cfg.get("minimax_max_tokens"),
             enable_thinking=cfg.get("minimax_enable_thinking"),
         )
