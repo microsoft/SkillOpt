@@ -12,13 +12,15 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
-from skillopt_sleep.backend import Backend
+from skillopt_sleep.backend import Backend, CursorBackendError
 
 # Self-contained validation gate (vendored from SkillOpt; zero dependency on the
 # research package, so this open-source tool stays decoupled from the paper code).
 from skillopt_sleep.gate import evaluate_gate, select_gate_score
+from skillopt_sleep.handoff_backend import PendingCalls
 from skillopt_sleep.memory import apply_edits_detailed
 from skillopt_sleep.replay import aggregate_scores, replay_batch
+from skillopt_sleep.staging import StagingError
 from skillopt_sleep.types import (
     EditRecord,
     ReplayResult,
@@ -280,6 +282,7 @@ def consolidate(
     night: int = 1,
     budget_exhausted: Optional[Callable[[], bool]] = None,
     edit_ablation_queue: Optional[List[Callable[[], bool]]] = None,
+    skill_name: str = "",
 ) -> ConsolidationResult:
     """Run one consolidation epoch: reflect -> bounded edit -> gate.
 
@@ -313,6 +316,20 @@ def consolidate(
     ``edit_ablation_queue``: this epoch's ablation is appended to it instead
     of being run here, and the caller runs it with
     :func:`run_edit_ablations` once every consolidation has decided.
+
+    An ablation that raises does not cost the epoch its result, on either
+    path: the decision is already made. The row being measured is
+    ``unmeasured`` with a note, a ``gate`` / ``edit_ablation_failed`` event is
+    logged, and no further ablation replay of this epoch starts. Only
+    ``PendingCalls``, ``CursorBackendError`` and ``StagingError`` propagate,
+    as they do from a group in ``consolidate_groups``.
+
+    ``skill_name`` labels this epoch's ablation events. They are logged after
+    every decision, so in fan-out they sit at the end of the evidence log,
+    away from their group's other events. Each one carries ``skill``,
+    ``night`` and ``trial_index`` (the trial's position in ``gate_trials``),
+    so it can be matched to its trial without comparing edit content. Leave
+    ``skill_name`` empty for a run that is not a per-skill group.
     """
     from skillopt_sleep import evidence as evlog
     ev = evlog.get(backend)
@@ -387,7 +404,9 @@ def consolidate(
     # memory step, the final validation replay or a later epoch still checks.
     pending_ablations: List[dict] = []
 
-    def _ablate_edits(plan: dict, budget_spent: bool) -> Tuple[List[dict], bool]:
+    def _ablate_edits(
+        plan: dict, budget_spent: bool, failure: str
+    ) -> Tuple[List[dict], bool, str]:
         """Leave-one-out replay of one accepted trial.
 
         For each applied edit, rebuild the candidate from the pre-trial
@@ -399,10 +418,24 @@ def consolidate(
         The budget is checked before every replay. Returns the rows and
         whether the budget is spent, so a later trial does not start a replay
         the budget no longer covers.
+
+        The epoch has already decided, so an error here must not cost it its
+        result. A row whose replay or scoring raises is ``unmeasured``, the
+        error is logged, and no further replay starts: ``failure`` carries the
+        error to the rows and trials that follow and is returned with the
+        rows. ``PendingCalls``, ``CursorBackendError`` and ``StagingError``
+        still propagate, as the cycle-level control flow they are.
         """
         which = plan["which"]
         doc, new_doc, applied = plan["doc"], plan["new_doc"], plan["applied"]
         with_pairs, with_score = plan["with_pairs"], plan["with_score"]
+        # Where this trial sits in the epoch's gate_trials. Ablation events are
+        # logged after every decision (in fan-out, after every group), so they
+        # name their trial instead of relying on their place in the log.
+        trial_index = next(
+            (i for i, trial in enumerate(gate_trials) if trial is plan["trial"]),
+            None,
+        )
         rows: List[dict] = []
         for index, edit in enumerate(applied):
             remaining = [e for j, e in enumerate(applied) if j != index]
@@ -419,43 +452,60 @@ def consolidate(
             ]
             replayed = False
             note = ""
-            without_pairs: Optional[List[Tuple[TaskRecord, ReplayResult]]]
-            if not still_applied:
-                without_pairs = plan["prior_pairs"]
-                note = "scored by the replay that preceded this trial"
-            elif without_doc == new_doc:
-                without_pairs = with_pairs
-                note = "document is the same without this edit"
-            else:
-                if not budget_spent and budget_exhausted is not None:
-                    budget_spent = bool(budget_exhausted())
-                    if budget_spent and ev is not None:
-                        ev.log("budget", "skip", step="edit ablation",
-                               night=night)
-                if budget_spent:
+            without_score: Optional[float] = None
+            task_rows: List[dict] = []
+            try:
+                without_pairs: Optional[List[Tuple[TaskRecord, ReplayResult]]]
+                if not still_applied:
+                    without_pairs = plan["prior_pairs"]
+                    note = "scored by the replay that preceded this trial"
+                elif without_doc == new_doc:
+                    without_pairs = with_pairs
+                    note = "document is the same without this edit"
+                elif failure:
                     without_pairs = None
-                    note = "not replayed: token budget spent"
+                    note = "not replayed: ablation stopped after a failure"
                 else:
-                    evlog.set_phase(backend, f"gate_ablation:{which}")
-                    without_pairs = replay_batch(
-                        backend,
-                        val_tasks,
-                        without_doc if which == "skill" else plan["skill"],
-                        without_doc if which == "memory" else plan["memory"],
+                    if not budget_spent and budget_exhausted is not None:
+                        budget_spent = bool(budget_exhausted())
+                        if budget_spent and ev is not None:
+                            ev.log("budget", "skip", step="edit ablation",
+                                   night=night)
+                    if budget_spent:
+                        without_pairs = None
+                        note = "not replayed: token budget spent"
+                    else:
+                        evlog.set_phase(backend, f"gate_ablation:{which}")
+                        without_pairs = replay_batch(
+                            backend,
+                            val_tasks,
+                            without_doc if which == "skill" else plan["skill"],
+                            without_doc if which == "memory" else plan["memory"],
+                        )
+                        replayed = True
+                if without_pairs is not None:
+                    task_rows = _task_deltas(
+                        val_tasks, without_pairs, with_pairs,
+                        gate_metric, gate_mixed_weight,
                     )
-                    replayed = True
-            if without_pairs is None:
-                without_score = None
-                task_rows: List[dict] = []
-            else:
-                h, s = aggregate_scores(without_pairs)
-                without_score = select_gate_score(
-                    h, s, gate_metric, gate_mixed_weight
-                )
-                task_rows = _task_deltas(
-                    val_tasks, without_pairs, with_pairs,
-                    gate_metric, gate_mixed_weight,
-                )
+                    # Assigned last: a row whose scoring raised has no score,
+                    # which is what reports it as unmeasured below.
+                    h, s = aggregate_scores(without_pairs)
+                    without_score = select_gate_score(
+                        h, s, gate_metric, gate_mixed_weight
+                    )
+            except (PendingCalls, CursorBackendError, StagingError):
+                # Cycle-level control flow (a paused handoff night, Cursor's
+                # fail-closed path), not evidence about one edit.
+                raise
+            except Exception as exc:
+                failure = f"{type(exc).__name__}: {exc}"[:300]
+                note = f"ablation failed: {failure}"
+                if ev is not None:
+                    ev.log("gate", "edit_ablation_failed", target=which,
+                           skill=skill_name, night=night,
+                           trial_index=trial_index, edit_index=index,
+                           error=failure)
             observed = _ablation_observed_change(
                 with_score, without_score, task_rows
             )
@@ -488,19 +538,25 @@ def consolidate(
             })
         if ev is not None:
             ev.log("gate", "edit_ablation", target=which,
+                   skill=skill_name, night=night, trial_index=trial_index,
                    n_edits=len(applied),
                    n_replays=sum(1 for row in rows if row["replayed"]),
                    rows=rows)
-        return rows, budget_spent
+        return rows, budget_spent, failure
 
     def _run_pending_ablations() -> bool:
         """Ablate every accepted trial of this epoch, in trial order.
 
         Returns True when a replay was skipped because the budget was spent.
+        A failed ablation is not a budget skip and is not raised: it is
+        reported on its rows and in the evidence log.
         """
         budget_spent = False
+        failure = ""
         for plan in pending_ablations:
-            rows, budget_spent = _ablate_edits(plan, budget_spent)
+            rows, budget_spent, failure = _ablate_edits(
+                plan, budget_spent, failure
+            )
             plan["trial"]["edit_ablation"] = rows
         return budget_spent
 

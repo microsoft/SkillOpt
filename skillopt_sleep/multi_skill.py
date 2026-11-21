@@ -91,8 +91,10 @@ def consolidate_groups(
     last group has decided, so its replays cannot use budget a later group
     still needs. A caller with further budget-dependent work passes its own
     ``edit_ablation_queue`` and runs it afterwards; otherwise the ablations run
-    here, after the loop. Either way a skipped ablation never changes a
-    group's status or reason.
+    here, after the loop. Either way a skipped or failed ablation never changes
+    a group's status or reason. Each group's name is passed to
+    ``consolidate_fn`` as ``skill_name``, so its ablation events can be told
+    apart from the other groups'.
     """
     # This wrapper's contract is stricter than consolidate(): shared memory is
     # always read-only.  Override a caller-supplied value instead of passing a
@@ -134,6 +136,11 @@ def consolidate_groups(
             continue
         try:
             group_kwargs = dict(consolidate_kwargs)
+            if consolidate_kwargs.get("gate_edit_ablation"):
+                # Ablation events are logged once every group has decided, at
+                # the end of the evidence log; the name ties each one back to
+                # its group.
+                group_kwargs["skill_name"] = name
             if group_kwargs_fn is not None:
                 group_kwargs.update(group_kwargs_fn(group))
                 # A per-group factory cannot weaken the shared-memory invariant.

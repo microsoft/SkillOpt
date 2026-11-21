@@ -1202,6 +1202,9 @@ def run_sleep_cycle(
     # Every decision of the night is final here. The replays below are
     # ordinary model calls: their tokens are part of "tokens used" and count
     # toward max_tokens_per_night, which is checked before each of them.
+    # A replay that fails is contained by the queued run itself: its rows are
+    # unmeasured and the night is staged as decided. Only cycle-level errors
+    # reach this handler.
     if ablation_queue:
         _progress(cfg, "edit ablation start")
         try:

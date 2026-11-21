@@ -9,15 +9,18 @@ from dataclasses import replace
 
 import pytest
 
+from skillopt_sleep import evidence as evidence_log
 from skillopt_sleep.__main__ import _report_payload
-from skillopt_sleep.backend import Backend, MockBackend
+from skillopt_sleep.backend import Backend, CursorBackendError, MockBackend
 from skillopt_sleep.config import DEFAULTS, load_config
 from skillopt_sleep.consolidate import run_edit_ablations
 from skillopt_sleep.cycle import _render_report_md, run_sleep_cycle
 from skillopt_sleep.experiments.personas import programmer_persona, researcher_persona
+from skillopt_sleep.handoff_backend import PendingCalls
 from skillopt_sleep.memory import set_learned
 from skillopt_sleep.mine import assign_splits
-from skillopt_sleep.multi_skill import SkillGroup, consolidate_groups
+from skillopt_sleep.multi_skill import CONSOLIDATED, SkillGroup, consolidate_groups
+from skillopt_sleep.staging import StagingError
 from skillopt_sleep.types import EditRecord, ReplayResult, SleepReport, TaskRecord
 
 RULE_A = "Rule A: answer the question that was asked."
@@ -1199,3 +1202,533 @@ def test_held_out_test_replay_keeps_its_budget(tmp_path) -> None:
         ("gate", "edit_ablation")
     )
     assert free.report.tokens_used > spend
+
+
+# ── a failed ablation never costs a decided night its result ─────────────────
+
+FAILED_NOTE = "ablation failed: RuntimeError: backend down"
+STOPPED_NOTE = "not replayed: ablation stopped after a failure"
+
+
+def _ablation_replays_raise(error: BaseException, scorer=_free_rider_scores):
+    """Score like ``scorer``, but raise ``error`` in every ablation replay.
+
+    An ablation replay is the only validation replay that scores a skill with
+    exactly one of Rule A and Rule B: the baseline has neither, and the trial
+    and final replays have both.
+    """
+
+    def scores(task_id: str, skill: str, memory: str) -> float:
+        if task_id != "train" and (RULE_A in skill) != (RULE_B in skill):
+            raise error
+        return scorer(task_id, skill, memory)
+
+    return scores
+
+
+def test_failed_ablation_replay_leaves_the_decision_and_marks_the_rows(
+    monkeypatch,
+) -> None:
+    _patch_replay(monkeypatch, _free_rider_scores)
+    off = _consolidate([_add(RULE_A), _add(RULE_B)], gate_edit_ablation=False)
+    calls = _patch_replay(
+        monkeypatch, _ablation_replays_raise(RuntimeError("backend down"))
+    )
+
+    # No queue: the epoch runs its own ablation, after its decision.
+    on = _consolidate([_add(RULE_A), _add(RULE_B)], gate_edit_ablation=True)
+
+    assert on.accepted is True
+    _assert_same_decisions(on, off)
+    failed, stopped = _skill_trial(on)["edit_ablation"]
+    assert failed["note"] == FAILED_NOTE
+    assert stopped["note"] == STOPPED_NOTE
+    for row in (failed, stopped):
+        assert row["observed_change"] == "unmeasured"
+        assert row["replayed"] is False
+        assert row["score_without"] is None
+        assert row["task_changes"] == []
+    # Baseline, trial, final, and the one ablation replay that raised: the
+    # second ablation replay never started.
+    assert len(_val_replays(calls)) == 4
+    # A failure is not a budget skip.
+    assert on.budget_skipped == []
+    json.dumps(on.gate_trials, allow_nan=False)
+
+
+def test_queued_ablation_failure_is_not_raised_to_the_caller(monkeypatch) -> None:
+    _patch_replay(monkeypatch, _ablation_replays_raise(RuntimeError("backend down")))
+    queue: list = []
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B)],
+        gate_edit_ablation=True,
+        edit_ablation_queue=queue,
+    )
+
+    # The caller's queue run neither raises nor reports a budget skip.
+    assert run_edit_ablations(queue) is False
+
+    assert queue == []
+    assert result.accepted is True
+    assert [row["note"] for row in _skill_trial(result)["edit_ablation"]] == [
+        FAILED_NOTE,
+        STOPPED_NOTE,
+    ]
+
+
+def test_rows_that_need_no_replay_are_still_measured_after_a_failure(
+    monkeypatch,
+) -> None:
+    _patch_replay(
+        monkeypatch,
+        _ablation_replays_raise(
+            RuntimeError("backend down"), scorer=_skill_and_memory_scores
+        ),
+    )
+
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B), _add(MEMORY_RULE, target="memory")],
+        evolve_memory=True,
+        gate_edit_ablation=True,
+    )
+
+    assert result.accepted is True and MEMORY_RULE in result.new_memory
+    assert [row["note"] for row in _skill_trial(result)["edit_ablation"]] == [
+        FAILED_NOTE,
+        STOPPED_NOTE,
+    ]
+    memory_trial = next(t for t in result.gate_trials if t["target"] == "memory")
+    (memory_row,) = memory_trial["edit_ablation"]
+    # The failure stops further replays, not the rows that never needed one.
+    assert memory_row["replayed"] is False
+    assert memory_row["observed_change"] == "higher_with_edit"
+
+
+def test_failure_in_one_trial_stops_the_replays_of_the_next(monkeypatch) -> None:
+    second_memory_rule = "Memory rule: note which sources were checked."
+
+    def scores(task_id: str, skill: str, memory: str) -> float:
+        if task_id == "essay":
+            return 1.0 if RULE_A in skill else 0.0
+        if task_id == "router":
+            return 0.9 if MEMORY_RULE in memory else 0.8
+        return 0.0
+
+    calls = _patch_replay(
+        monkeypatch,
+        _ablation_replays_raise(RuntimeError("backend down"), scorer=scores),
+    )
+
+    result = _consolidate(
+        [
+            _add(RULE_A),
+            _add(RULE_B),
+            _add(MEMORY_RULE, target="memory"),
+            _add(second_memory_rule, target="memory"),
+        ],
+        evolve_memory=True,
+        gate_edit_ablation=True,
+    )
+
+    assert result.accepted is True
+    assert [row["note"] for row in _skill_trial(result)["edit_ablation"]] == [
+        FAILED_NOTE,
+        STOPPED_NOTE,
+    ]
+    memory_trial = next(t for t in result.gate_trials if t["target"] == "memory")
+    memory_rows = memory_trial["edit_ablation"]
+    # The memory trial is ablated after the skill trial, whose replay failed:
+    # neither of its two replays starts.
+    assert [row["note"] for row in memory_rows] == [STOPPED_NOTE, STOPPED_NOTE]
+    assert all(row["replayed"] is False for row in memory_rows)
+    assert not [
+        call for call in calls
+        if (MEMORY_RULE in call["memory"]) != (second_memory_rule in call["memory"])
+    ]
+
+
+def test_failed_ablation_note_is_bounded(monkeypatch) -> None:
+    _patch_replay(monkeypatch, _ablation_replays_raise(RuntimeError("x" * 5000)))
+
+    result = _consolidate([_add(RULE_A), _add(RULE_B)], gate_edit_ablation=True)
+
+    failed = _skill_trial(result)["edit_ablation"][0]
+    assert failed["note"].startswith("ablation failed: RuntimeError: xxx")
+    assert len(failed["note"]) < 400
+
+
+def test_failure_stops_the_ablation_replays_that_follow(monkeypatch) -> None:
+    ablation_replays = {"count": 0}
+
+    def scores(task_id: str, skill: str, memory: str) -> float:
+        rules = [rule in skill for rule in (RULE_A, RULE_B, RULE_C, RULE_D)]
+        if task_id == "essay" and any(rules) and not all(rules):
+            ablation_replays["count"] += 1
+            if ablation_replays["count"] == 2:
+                raise RuntimeError("backend down")
+        return _free_rider_scores(task_id, skill, memory)
+
+    calls = _patch_replay(monkeypatch, scores)
+
+    result = _consolidate(
+        [_add(RULE_A), _add(RULE_B), _add(RULE_C), _add(RULE_D)],
+        gate_edit_ablation=True,
+    )
+
+    assert result.accepted is True
+    rows = _skill_trial(result)["edit_ablation"]
+    # The first replay finished and keeps its row; the second raised; the
+    # third and fourth never started.
+    assert [row["replayed"] for row in rows] == [True, False, False, False]
+    assert [row["observed_change"] for row in rows] == [
+        "higher_with_edit",
+        "unmeasured",
+        "unmeasured",
+        "unmeasured",
+    ]
+    assert [row["note"] for row in rows] == ["", FAILED_NOTE, STOPPED_NOTE, STOPPED_NOTE]
+    assert len(_val_replays(calls)) == 5
+
+
+@pytest.mark.parametrize("missing", ["hard", "soft"])
+def test_ablation_result_without_a_numeric_score_is_unmeasured(
+    monkeypatch, missing
+) -> None:
+    consolidate_module = importlib.import_module("skillopt_sleep.consolidate")
+
+    def fake_replay_batch(backend, tasks, skill, memory):
+        ablation = (RULE_A in skill) != (RULE_B in skill)
+        pairs = []
+        for task in tasks:
+            score = _free_rider_scores(task.id, skill, memory)
+            result = ReplayResult(id=task.id, hard=score, soft=score, response="r")
+            if ablation and task.id == "router":
+                # Before a decision, an absent numeric score aborts the
+                # evaluation. After it, the row is all it can cost. A missing
+                # hard score fails the per-task comparison, a missing soft
+                # score the aggregate that follows it.
+                setattr(result, missing, None)
+            pairs.append((task, result))
+        return pairs
+
+    monkeypatch.setattr(consolidate_module, "replay_batch", fake_replay_batch)
+
+    result = _consolidate([_add(RULE_A), _add(RULE_B)], gate_edit_ablation=True)
+
+    assert result.accepted is True
+    failed, stopped = _skill_trial(result)["edit_ablation"]
+    # The replay itself finished; scoring its result is what raised.
+    assert failed["replayed"] is True
+    assert failed["observed_change"] == "unmeasured"
+    assert failed["score_without"] is None
+    assert failed["task_changes"] == []
+    assert failed["note"].startswith("ablation failed: TypeError")
+    assert stopped["note"] == STOPPED_NOTE
+    json.dumps(result.gate_trials, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PendingCalls({"call-1": {"prompt": "replay"}}),
+        CursorBackendError("cursor refused"),
+        StagingError("staging refused"),
+        KeyboardInterrupt(),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_control_flow_errors_still_leave_the_ablation(monkeypatch, error) -> None:
+    _patch_replay(monkeypatch, _ablation_replays_raise(error))
+
+    with pytest.raises(type(error)):
+        _consolidate([_add(RULE_A), _add(RULE_B)], gate_edit_ablation=True)
+
+
+def test_one_group_failing_its_ablation_leaves_every_group_decided(
+    monkeypatch,
+) -> None:
+    off, _off_calls = _consolidate_two_groups(monkeypatch, ablation=False)
+    calls = _patch_replay(
+        monkeypatch, _ablation_replays_raise(RuntimeError("backend down"))
+    )
+
+    on = consolidate_groups(
+        ScriptedBackend([_add(RULE_A), _add(RULE_B)]),
+        _two_groups(),
+        "",
+        gate_metric="hard",
+        gate_edit_ablation=True,
+    )
+
+    assert list(on) == list(off)
+    for name, expected in off.items():
+        outcome = on[name]
+        assert outcome.status == expected.status == CONSOLIDATED
+        assert outcome.reason == expected.reason == ""
+        _assert_same_decisions(outcome.result, expected.result)
+        assert [
+            row["note"] for row in _skill_trial(outcome.result)["edit_ablation"]
+        ] == [FAILED_NOTE, STOPPED_NOTE]
+    # Each group stops at its own first failure: one attempt per group.
+    assert sum(_is_ablation_replay(call) for call in calls) == 2
+
+
+class AblationFailingMock(MockBackend):
+    """MockBackend whose model calls raise during edit-ablation replays only."""
+
+    def attempt(self, *args, **kwargs):
+        if evidence_log.phase(self).startswith("gate_ablation:"):
+            raise RuntimeError("backend down")
+        return super().attempt(*args, **kwargs)
+
+
+def _failing_night(tmp_path, name: str, *, ablation: bool, fanout: bool = False):
+    root = tmp_path / name
+    project = root / "project"
+    project.mkdir(parents=True)
+    claude_home = root / ".claude"
+    tasks = assign_splits(researcher_persona(), holdout_fraction=0.34, seed=42)
+    fanout_config = {}
+    if fanout:
+        for skill_name in ("research-skill", "programming-skill"):
+            skill_path = claude_home / "skills" / skill_name / "SKILL.md"
+            skill_path.parent.mkdir(parents=True)
+            skill_path.write_text(f"# {skill_name}\n", encoding="utf-8")
+        programming = assign_splits(
+            programmer_persona(), holdout_fraction=0.34, seed=1
+        )
+        tasks = [replace(task, skill_hint="research-skill") for task in tasks]
+        tasks += [
+            replace(task, id=f"prog-{task.id}", skill_hint="programming-skill")
+            for task in programming
+        ]
+        fanout_config = {
+            "managed_skill_name": "skillopt-sleep-learned",
+            "multi_skill_fanout": True,
+        }
+    config = load_config(
+        invoked_project=str(project),
+        projects="invoked",
+        backend="mock",
+        state_dir=str(root / "state"),
+        claude_home=str(claude_home),
+        gate_edit_ablation=ablation,
+        auto_adopt=False,
+        **fanout_config,
+    )
+    return run_sleep_cycle(config, seed_tasks=tasks, backend=AblationFailingMock())
+
+
+def _staged_proposals(outcome) -> dict:
+    proposals = {}
+    for file_name in sorted(os.listdir(outcome.staging_dir)):
+        if file_name.startswith("proposed_"):
+            with open(
+                os.path.join(outcome.staging_dir, file_name), encoding="utf-8"
+            ) as handle:
+                proposals[file_name] = handle.read()
+    return proposals
+
+
+def _events(outcome, name: str) -> list[dict]:
+    return [
+        event
+        for event in evidence_log.read_events(
+            os.path.join(outcome.staging_dir, "evidence.jsonl")
+        )
+        if event["event"] == name
+    ]
+
+
+def test_night_is_staged_when_an_ablation_replay_fails(tmp_path) -> None:
+    off = _failing_night(tmp_path, "off", ablation=False)
+    on = _failing_night(tmp_path, "on", ablation=True)
+
+    # The night used to raise here and stage nothing but its evidence log.
+    assert off.report.accepted is True
+    assert _night_decisions(on) == _night_decisions(off)
+    assert _staged_proposals(off)
+    assert _staged_proposals(on) == _staged_proposals(off)
+    assert ("stage", "staged") in _evidence_events(on)
+    accepted_trial = next(
+        trial for trial in on.report.gate_trials
+        if trial["target"] != "final" and trial["accepted"]
+    )
+    notes = [row["note"] for row in accepted_trial["edit_ablation"]]
+    assert notes[0] == FAILED_NOTE
+    assert notes[1:] and set(notes[1:]) == {STOPPED_NOTE}
+    (failure,) = _events(on, "edit_ablation_failed")
+    assert failure["stage"] == "gate"
+    assert failure["error"] == "RuntimeError: backend down"
+    assert failure["edit_index"] == 0
+    # A failure is reported on its rows and in the evidence log, never as a
+    # step the token budget skipped.
+    assert _budget_notes(on) == []
+    with open(os.path.join(on.staging_dir, "report.md"), encoding="utf-8") as handle:
+        assert FAILED_NOTE in handle.read()
+
+
+def test_fanout_night_is_staged_when_ablation_replays_fail(tmp_path) -> None:
+    off = _failing_night(tmp_path, "off", ablation=False, fanout=True)
+    on = _failing_night(tmp_path, "on", ablation=True, fanout=True)
+
+    assert [group.accepted for group in off.report.skill_groups] == [True, True]
+    assert _night_decisions(on) == _night_decisions(off)
+    assert len(_staged_proposals(off)) == 3
+    assert _staged_proposals(on) == _staged_proposals(off)
+    # One failure per consolidation that had a replay to run, each named.
+    failures = _events(on, "edit_ablation_failed")
+    assert failures
+    assert failures[0]["skill"] == ""
+    group_names = {group.skill_name for group in on.report.skill_groups}
+    assert {failure["skill"] for failure in failures[1:]} <= group_names
+    assert all(
+        failure["error"] == "RuntimeError: backend down" for failure in failures
+    )
+
+
+# ── ablation events name the trial they describe ─────────────────────────────
+
+
+def test_ablation_event_names_its_skill_night_and_trial(monkeypatch, tmp_path) -> None:
+    from skillopt_sleep.evidence import EvidenceLog
+
+    consolidate_module = importlib.import_module("skillopt_sleep.consolidate")
+    _patch_replay(monkeypatch, _skill_and_memory_scores)
+    backend = ScriptedBackend(
+        [_add(RULE_A), _add(RULE_B), _add(MEMORY_RULE, target="memory")]
+    )
+    log_path = tmp_path / "evidence.jsonl"
+    evidence_log.attach(backend, EvidenceLog(str(log_path)))
+
+    result = consolidate_module.consolidate(
+        backend,
+        _tasks(),
+        set_learned("# Skill\n", []),
+        set_learned("# Memory\n", []),
+        gate_metric="hard",
+        gate_edit_ablation=True,
+        night=7,
+        skill_name="alpha",
+    )
+
+    events = [
+        event
+        for event in evidence_log.read_events(str(log_path))
+        if event["event"] == "edit_ablation"
+    ]
+    assert [event["target"] for event in events] == ["skill", "memory"]
+    for event in events:
+        assert event["skill"] == "alpha"
+        assert event["night"] == 7
+        # trial_index points at the trial that holds these rows.
+        trial = result.gate_trials[event["trial_index"]]
+        assert trial["target"] == event["target"]
+        assert [row["content"] for row in trial["edit_ablation"]] == [
+            row["content"] for row in event["rows"]
+        ]
+
+
+def test_ablation_event_of_an_unnamed_run_has_an_empty_skill(
+    monkeypatch, tmp_path
+) -> None:
+    from skillopt_sleep.evidence import EvidenceLog
+
+    consolidate_module = importlib.import_module("skillopt_sleep.consolidate")
+    _patch_replay(monkeypatch, _free_rider_scores)
+    backend = ScriptedBackend([_add(RULE_A), _add(RULE_B)])
+    log_path = tmp_path / "evidence.jsonl"
+    evidence_log.attach(backend, EvidenceLog(str(log_path)))
+
+    consolidate_module.consolidate(
+        backend,
+        _tasks(),
+        set_learned("# Skill\n", []),
+        "",
+        gate_metric="hard",
+        evolve_memory=False,
+        gate_edit_ablation=True,
+    )
+
+    (event,) = [
+        event
+        for event in evidence_log.read_events(str(log_path))
+        if event["event"] == "edit_ablation"
+    ]
+    assert event["skill"] == ""
+    assert event["night"] == 1
+    assert event["trial_index"] == 0
+
+
+def test_failed_ablation_event_names_its_trial_and_edit(monkeypatch, tmp_path) -> None:
+    from skillopt_sleep.evidence import EvidenceLog
+
+    consolidate_module = importlib.import_module("skillopt_sleep.consolidate")
+    _patch_replay(monkeypatch, _ablation_replays_raise(RuntimeError("backend down")))
+    backend = ScriptedBackend([_add(RULE_A), _add(RULE_B)])
+    log_path = tmp_path / "evidence.jsonl"
+    evidence_log.attach(backend, EvidenceLog(str(log_path)))
+
+    consolidate_module.consolidate(
+        backend,
+        _tasks(),
+        set_learned("# Skill\n", []),
+        "",
+        gate_metric="hard",
+        evolve_memory=False,
+        gate_edit_ablation=True,
+        night=3,
+        skill_name="alpha",
+    )
+
+    events = evidence_log.read_events(str(log_path))
+    (failure,) = [e for e in events if e["event"] == "edit_ablation_failed"]
+    assert failure["stage"] == "gate"
+    assert failure["target"] == "skill"
+    assert failure["skill"] == "alpha"
+    assert failure["night"] == 3
+    assert failure["trial_index"] == 0
+    assert failure["edit_index"] == 0
+    assert failure["error"] == "RuntimeError: backend down"
+    # The trial still gets its one edit_ablation event, with every row.
+    (rows_event,) = [e for e in events if e["event"] == "edit_ablation"]
+    assert rows_event["n_replays"] == 0
+    assert [row["note"] for row in rows_event["rows"]] == [FAILED_NOTE, STOPPED_NOTE]
+
+
+def test_groups_pass_their_name_only_with_ablation_on() -> None:
+    seen: list[dict] = []
+
+    def record(backend, tasks, skill, memory, **kwargs):
+        seen.append(kwargs)
+        raise RuntimeError("stop after recording")
+
+    for ablation in (False, True):
+        consolidate_groups(
+            ScriptedBackend([]),
+            _two_groups(),
+            "",
+            consolidate_fn=record,
+            gate_edit_ablation=ablation,
+        )
+
+    off_alpha, off_beta, on_alpha, on_beta = seen
+    # Off by default: a custom consolidate_fn sees the arguments it always saw.
+    assert "skill_name" not in off_alpha and "skill_name" not in off_beta
+    assert on_alpha["skill_name"] == "alpha"
+    assert on_beta["skill_name"] == "beta"
+
+
+def test_fanout_ablation_events_name_their_group(tmp_path) -> None:
+    outcome = _fanout_night(tmp_path, "night", ablation=True, max_tokens=0)
+
+    accepted_groups = [
+        group.skill_name for group in outcome.report.skill_groups if group.accepted
+    ]
+    assert len(accepted_groups) == 2
+    events = _events(outcome, "edit_ablation")
+    # The aggregate run is not a per-skill group; each group's event carries
+    # the group's name, so it no longer has to be matched by edit content.
+    assert [event["skill"] for event in events] == ["", *accepted_groups]
+    assert all(event["night"] == outcome.report.night for event in events)
+    assert all(isinstance(event["trial_index"], int) for event in events)
