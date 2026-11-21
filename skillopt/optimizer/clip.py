@@ -19,7 +19,6 @@ from skillopt.optimizer.update_modes import (
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
 
-
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def rank_and_select(
@@ -49,8 +48,20 @@ def rank_and_select(
         :class:`~skillopt.types.Patch` dict with selected edits and
         optional ``ranking_details``.
     """
+    if patch is None:
+        patch = {}
+    elif hasattr(patch, "to_dict"):
+        patch = patch.to_dict()
+
     update_mode = normalize_update_mode(update_mode)
     edits = get_payload_items(patch, update_mode)
+    if max_edits <= 0:
+        return {
+            "reasoning": (patch.get("reasoning", "") if isinstance(patch, dict) else "")
+            + f" [budget={max_edits}: truncated {len(edits)}->0 {payload_label(update_mode)}]",
+            payload_key(update_mode): [],
+        }
+
     if len(edits) <= max_edits:
         return patch
 
@@ -84,6 +95,7 @@ def rank_and_select(
             for idx in indices:
                 if (
                     isinstance(idx, int)
+                    and not isinstance(idx, bool)
                     and 0 <= idx < len(edits)
                     and idx not in seen
                 ):
@@ -102,8 +114,9 @@ def rank_and_select(
         pass
 
     # Fallback: simple truncation
+    safe_budget = max(0, max_edits)
     return {
         "reasoning": patch.get("reasoning", "")
-        + f" [fallback truncated {len(edits)}->{max_edits} {payload_label(update_mode)}]",
-        payload_key(update_mode): edits[:max_edits],
+        + f" [fallback truncated {len(edits)}->{safe_budget} {payload_label(update_mode)}]",
+        payload_key(update_mode): edits[:safe_budget],
     }
