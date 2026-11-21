@@ -2289,10 +2289,14 @@ class ReflACTTrainer:
             # When final == best, reuse the existing val score (no rollout).
             try:
                 if skill_hash(current_skill) == skill_hash(best_skill):
-                    final_selection_hard, final_selection_soft = best_score, None
+                    # Reuse the cached (hard, soft) selection scores; best_score is
+                    # the gate-metric score. Fall back to it only when uncached.
+                    final_selection_hard, final_selection_soft = sel_cache.get(
+                        skill_hash(best_skill), (best_score, None),
+                    )
                     print(
                         "\n  [final skill == best skill] "
-                        f"final_selection_hard={best_score:.4f} (reused)"
+                        f"final_selection_hard={final_selection_hard:.4f} (reused)"
                     )
                 else:
                     fval_env, fval_n = _build_eval_env(
@@ -2303,6 +2307,7 @@ class ReflACTTrainer:
                     fval_dir = os.path.join(out_root, "final_selection_eval")
                     fval_results = adapter.rollout(fval_env, current_skill, fval_dir)
                     final_selection_hard, final_selection_soft = compute_score(fval_results)
+                    sel_cache[skill_hash(current_skill)] = (final_selection_hard, final_selection_soft)
                     final_gate_score = select_gate_score(
                         final_selection_hard, final_selection_soft,
                         gate_metric, gate_mixed_weight,
@@ -2521,7 +2526,9 @@ class ReflACTTrainer:
             "baseline_selection_hard": sel_cache.get(
                 skill_hash(skill_init), (None, None),
             )[0],
-            "best_selection_hard": best_score,
+            "best_selection_hard": sel_cache.get(
+                skill_hash(best_skill), (best_score, None),
+            )[0],
             "final_selection_hard": final_selection_hard,
             "final_selection_soft": final_selection_soft,
             "best_step": best_step,
