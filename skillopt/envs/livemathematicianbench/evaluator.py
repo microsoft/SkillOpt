@@ -16,13 +16,23 @@ def extract_answer(text: str) -> str:
     return text.strip()
 
 
+# LaTeX \boxed{...} with no nested braces, as math-tuned models often write the final choice.
+_BOXED_RE = re.compile(r"\\boxed\{([^{}]*)\}")
+
+
+def _unbox(answer: str) -> str:
+    """Return the content of the last ``\\boxed{...}`` in ``answer``, or ``answer`` unchanged."""
+    matches = _BOXED_RE.findall(answer)
+    return matches[-1].strip() if matches else answer
+
+
 def normalize_label(text: str) -> str:
     """Normalize a choice label, accepting ``B``, ``B.``, ``(B)``, ``[B]`` and ``**B**``."""
     return str(text).strip().strip("*").strip().lstrip("([").upper().rstrip(".):]")
 
 
 def parse_choice_label(prediction_text: str, choices: list[dict]) -> str:
-    answer = extract_answer(prediction_text)
+    answer = _unbox(extract_answer(prediction_text))
     label = normalize_label(answer)
     valid_labels = {normalize_label(choice.get("label", "")) for choice in choices}
     if label in valid_labels:
