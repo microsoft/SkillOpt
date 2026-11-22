@@ -145,6 +145,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SkillOpt-Sleep's local `exact` scorer matches the reference as whole tokens.
+  `exact_score` tested `ref in resp` on normalized text, so a reference of
+  `42` scored hard=1.0 against `420`, and `arXiv:1706.0376` against
+  `arXiv:1706.03762`. `keyword_soft_score` had the same substring check, so
+  `form` counted as found in `information`. Both now compare on token
+  boundaries (thanks @Shizoqua).
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
