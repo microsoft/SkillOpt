@@ -145,6 +145,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- A SkillOpt-Sleep `replace` edit no longer writes the same learned item twice.
+  `apply_edits_detailed` skips an `add` that is already in the learned block,
+  but `replace` wrote its replacement once per line the anchor matched and
+  did not check the other lines, so the block could hold duplicate bullets.
+  The replacement now goes in once, at the first matching line, and is
+  dropped when another line already holds it (thanks @Shizoqua).
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
