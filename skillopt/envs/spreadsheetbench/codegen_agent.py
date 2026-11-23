@@ -34,7 +34,7 @@ from skillopt.model.azure_openai import (
     _needs_responses_api,
     tracker,
 )
-from skillopt.model import get_codex_exec_config, get_target_backend, is_target_exec_backend
+from skillopt.model import chat_target_messages, get_codex_exec_config, get_target_backend, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
 from skillopt.envs.spreadsheetbench.executor import run_generated_code
@@ -377,13 +377,25 @@ def _run_exec_backend(
 # ── Chat (no tools) ────────────────────────────────────────────────────────
 
 def _chat_call(
-    client,
     deployment: str,
     messages: list[dict],
     max_output_tokens: int,
     llm_timeout: int | None = 120,
 ) -> str:
     """Single LLM call, no tools. Returns raw text."""
+    if get_target_backend() != "openai_chat":
+        # Other chat targets (openai_compatible, claude_chat, qwen_chat, ...)
+        # go through the shared router so the configured provider and its
+        # settings are used. openai_chat keeps the direct Azure call below.
+        text, _ = chat_target_messages(
+            messages,
+            max_completion_tokens=max_output_tokens,
+            retries=5,
+            stage="rollout",
+            timeout=llm_timeout,
+        )
+        return text or ""
+    client = get_target_client()
     reasoning_effort = get_reasoning_effort()
     if _needs_responses_api(deployment):
         # Responses API
@@ -504,7 +516,6 @@ def run_single(
         }
 
     deadline = None if no_task_timeout else time.time() + task_timeout
-    client = get_target_client()
     deployment = _get_deployment()
     system = _build_system(skill_content)
     user = _build_user(
@@ -527,7 +538,7 @@ def run_single(
     else:
         remaining = max(10, int(deadline - time.time()))
         effective_timeout = min(llm_timeout or remaining, remaining)
-    raw = _chat_call(client, deployment, messages, max_output_tokens, llm_timeout=effective_timeout)
+    raw = _chat_call(deployment, messages, max_output_tokens, llm_timeout=effective_timeout)
     time.sleep(3)  # Rate-limit cooldown after successful LLM call
     code = extract_code(raw)
 
@@ -679,7 +690,6 @@ def run_multi(
         }
 
     deadline = None if no_task_timeout else time.time() + task_timeout
-    client = get_target_client()
     deployment = _get_deployment()
     system = _build_system(skill_content)
     user = _build_user(
@@ -709,7 +719,7 @@ def run_multi(
                 # Not enough time for another round
                 break
             effective_timeout = min(llm_timeout or int(remaining), int(remaining))
-        raw = _chat_call(client, deployment, messages, max_output_tokens, llm_timeout=effective_timeout)
+        raw = _chat_call(deployment, messages, max_output_tokens, llm_timeout=effective_timeout)
         time.sleep(3)  # Rate-limit cooldown after successful LLM call
         code = extract_code(raw)
         conversation.append({"role": "assistant", "content": raw})
