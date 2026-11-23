@@ -16,7 +16,7 @@ import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from skillopt.envs.searchqa.evaluator import evaluate
+from skillopt.envs.searchqa.evaluator import evaluate, gold_answer_list
 from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target, is_target_exec_backend
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
@@ -27,10 +27,9 @@ from skillopt.prompts import load_prompt
 _MAX_CONTEXT_CHARS = 6000
 
 
-def _gold_answers(item: dict) -> list:
-    """Return the item's gold answers as a list; a single string is one answer."""
-    answers = item.get("answers", [])
-    return [answers] if isinstance(answers, str) else answers
+def _gold_answers(item: dict) -> list[str]:
+    """Return the item's gold answers as a list of strings; a single answer is one item."""
+    return gold_answer_list(item.get("answers", []))
 
 
 def _raise_on_systemic_failure(results: list[dict]) -> None:
