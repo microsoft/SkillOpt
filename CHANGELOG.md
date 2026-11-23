@@ -151,6 +151,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   recorded with hard=0 and an `'int' object has no attribute 'lower'` error.
   Gold answers are now compared as text, in the evaluator and in the rollout
   rows (thanks @Shizoqua).
+- LiveMathematicianBench scores a `\boxed{B}` answer as the choice it names.
+  Math-tuned models often box the final choice, inside `<answer>` or on the
+  last line, and `parse_choice_label` read it as the label `\BOXED{B}`, so a
+  correct answer scored 0. The last `\boxed{...}` is now unwrapped before the
+  label is matched (thanks @Shizoqua).
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
