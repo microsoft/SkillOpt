@@ -160,11 +160,20 @@ def apply_edits_detailed(
         elif op == "replace":
             anchor = _norm(e.anchor)
             replacement = _learned_item(e.content)
+            # Like ``add``, never write an item that is already in the block:
+            # the replacement goes in once, at the first matching line, and is
+            # dropped when an unmatched line already holds it.
+            kept = {_norm(line) for line in lines if not (anchor and anchor in _norm(line))}
+            placed = _norm(replacement) in kept
             new_lines = []
             changed = False
             for line in lines:
                 if anchor and anchor in _norm(line):
+                    if placed:
+                        changed = True
+                        continue
                     new_lines.append(replacement)
+                    placed = True
                     changed = changed or replacement != line
                 else:
                     new_lines.append(line)
