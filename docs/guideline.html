@@ -519,8 +519,9 @@ skillopt-sleep adopt --project "$PWD"</code></pre>
     reward/budget controls as advanced features that require task-specific
     validation. The reported experiments and their exact settings are in
     <a href="https://github.com/microsoft/SkillOpt/blob/main/docs/sleep/RESULTS.md">RESULTS.md</a>.</p>
-    <p>The managed scheduler persists only project, backend, time, and optional
-    auto-adopt. For Cursor schedules, put <code>transcript_source</code>,
+    <p>The managed scheduler persists only project, backend, time, optional
+    auto-adopt and, on Linux and macOS, the <code>PATH</code> it was run with.
+    For Cursor schedules, put <code>transcript_source</code>,
     <code>cursor_home</code>, <code>cursor_path</code>, <code>model</code>, and
     <code>target_skill_path</code> in
     <code>~/.skillopt-sleep/config.json</code>. Use an absolute Cursor CLI path
