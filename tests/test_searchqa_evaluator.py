@@ -51,3 +51,17 @@ def test_opening_tag_before_the_answer_is_not_part_of_it(response):
 
     assert result["predicted_answer"] == "Paris"
     assert result["em"] == 1.0
+
+
+@pytest.mark.parametrize("gold", [[1776], ["1776", 1776], 1776])
+def test_numeric_gold_answer_is_scored_as_text(gold):
+    result = evaluate("<answer>1776</answer>", gold)
+
+    assert result["em"] == result["f1"] == result["sub_em"] == 1.0
+    assert all(isinstance(answer, str) for answer in result["gold_answers"])
+
+
+def test_numeric_gold_answer_does_not_match_a_different_number():
+    result = evaluate("<answer>1775</answer>", [1776])
+
+    assert result["em"] == result["f1"] == result["sub_em"] == 0.0

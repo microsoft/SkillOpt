@@ -145,6 +145,29 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SearchQA scores a numeric gold answer instead of failing the rollout.
+  JSON data can store an answer such as `1776` as a number, and
+  `normalize_answer` called `.lower()` on it, so a correct prediction was
+  recorded with hard=0 and an `'int' object has no attribute 'lower'` error.
+  Gold answers are now compared as text, in the evaluator and in the rollout
+  rows (thanks @Shizoqua).
+- LiveMathematicianBench scores a `\boxed{B}` answer as the choice it names.
+  Math-tuned models often box the final choice, inside `<answer>` or on the
+  last line, and `parse_choice_label` read it as the label `\BOXED{B}`, so a
+  correct answer scored 0. The last `\boxed{...}` is now unwrapped before the
+  label is matched (thanks @Shizoqua).
+- SkillOpt-Sleep's local `exact` scorer matches the reference as whole tokens.
+  `exact_score` tested `ref in resp` on normalized text, so a reference of
+  `42` scored hard=1.0 against `420`, and `arXiv:1706.0376` against
+  `arXiv:1706.03762`. `keyword_soft_score` had the same substring check, so
+  `form` counted as found in `information`. Both now compare on token
+  boundaries (thanks @Shizoqua).
+- A SkillOpt-Sleep `replace` edit no longer writes the same learned item twice.
+  `apply_edits_detailed` skips an `add` that is already in the learned block,
+  but `replace` wrote its replacement once per line the anchor matched and
+  did not check the other lines, so the block could hold duplicate bullets.
+  The replacement now goes in once, at the first matching line, and is
+  dropped when another line already holds it (thanks @Shizoqua).
 - SpreadsheetBench `single` and `multi` codegen calls go to the configured
   target backend. They built an Azure client for every chat target, so an
   `openai_compatible`, `claude_chat`, `minimax_chat` or `copilot_chat` target
@@ -252,6 +275,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   and reused `final_selection_hard` instead of the gate-metric score, which
   differs under the `soft` and `mixed` gate metrics or the semantic-density
   bonus (thanks @Shizoqua).
+- SkillOpt-Sleep's Claude backend treats a non-zero `claude -p` exit as a
+  failed call. In text mode the CLI prints an error result such as
+  `API Error: 529 ...` to stdout and exits 1, and that text was scored and
+  cached as the answer, so a re-score after the API recovered got the cached
+  error back. The call now returns an empty response and records the error in
+  `last_call_error`, like the Pi, Codex and Cursor backends (#443).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or

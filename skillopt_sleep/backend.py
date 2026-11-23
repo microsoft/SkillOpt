@@ -169,20 +169,27 @@ def _normalize(s: str) -> str:
 
 
 def exact_score(reference: str, response: str) -> float:
+    """1.0 if the normalized reference appears in the response as whole tokens.
+
+    Matching is on token boundaries, so "42" does not match "420".
+    """
     ref = _normalize(reference)
     resp = _normalize(response)
     if not ref:
         return 0.0
-    return 1.0 if ref in resp or resp == ref else 0.0
+    return 1.0 if f" {ref} " in f" {resp} " else 0.0
 
 
 def keyword_soft_score(reference: str, response: str) -> float:
-    """Fraction of reference tokens present in response (cheap rubric proxy)."""
+    """Fraction of reference tokens present in response (cheap rubric proxy).
+
+    A token counts only as a whole word, so "form" is not found in "information".
+    """
     ref_tokens = [t for t in _normalize(reference).split() if len(t) > 2]
     if not ref_tokens:
         return 0.0
-    resp = _normalize(response)
-    hit = sum(1 for t in set(ref_tokens) if t in resp)
+    resp_tokens = set(_normalize(response).split())
+    hit = sum(1 for t in set(ref_tokens) if t in resp_tokens)
     return hit / len(set(ref_tokens))
 
 
@@ -972,6 +979,7 @@ class ClaudeCliBackend(CliBackend):
         # cmd.exe whose command line caps at ~8K chars — reflect/judge prompts
         # exceed that. `claude -p` with no positional prompt reads stdin.
         clean_cwd = tempfile.mkdtemp(prefix="skillopt_sleep_claude_")
+        self.last_call_error = ""
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, creationflags=_NO_WINDOW, text=True, timeout=self.timeout, cwd=clean_cwd,
@@ -995,14 +1003,37 @@ class ClaudeCliBackend(CliBackend):
             except OSError:
                 pass
         out = (proc.stdout or "").strip()
+        if self._failed_exit(proc, out):
+            return ""
         self._detect_cli_error(out, proc.stderr or "")
         return out
+
+    def _failed_exit(self, proc: "subprocess.CompletedProcess[str]", stdout: str) -> bool:
+        """Record a non-zero exit as a call error. True means the call failed.
+
+        In text mode `claude -p` prints an error result (e.g. "API Error: 529
+        ...") to stdout and exits 1. That text is not a model answer, so it must
+        not be returned, cached or scored.
+        """
+        if proc.returncode == 0:
+            return False
+        import logging
+
+        from skillopt_sleep.staging import redact_secrets
+
+        detail = stdout or (proc.stderr or "").strip() or "no output"
+        self.last_call_error = (
+            f"Claude CLI exited {proc.returncode}: {redact_secrets(detail)}"
+        )[:500]
+        logging.getLogger("skillopt_sleep").warning("%s", self.last_call_error)
+        return True
 
     def attempt_with_tools(self, task, skill, memory, tools, sample_id: int = 0):
         # Each call starts a fresh, uncached agent process, so every call is
         # already a separate attempt; ``sample_id`` needs no salt here.
         del sample_id
         self._reset_call_delta()
+        self.last_call_error = ""
         # Expose a REAL, callable `search` tool (a shell shim that logs each
         # call) so the gbrain quick-answerer judge (tool_called=search) is
         # validated honestly: we detect the call from the shim's log, not from
@@ -1053,7 +1084,10 @@ class ClaudeCliBackend(CliBackend):
                     input=CLAUDE_REPLAY_SENTINEL + "\n\n" + prompt,
                 )
                 resp = (proc.stdout or "").strip()
-                self._detect_cli_error(resp, proc.stderr or "")
+                if self._failed_exit(proc, resp):
+                    resp = ""
+                else:
+                    self._detect_cli_error(resp, proc.stderr or "")
             except Exception as exc:
                 import logging
                 self.last_call_error = f"Claude CLI spawn failed: {exc}"
