@@ -169,20 +169,27 @@ def _normalize(s: str) -> str:
 
 
 def exact_score(reference: str, response: str) -> float:
+    """1.0 if the normalized reference appears in the response as whole tokens.
+
+    Matching is on token boundaries, so "42" does not match "420".
+    """
     ref = _normalize(reference)
     resp = _normalize(response)
     if not ref:
         return 0.0
-    return 1.0 if ref in resp or resp == ref else 0.0
+    return 1.0 if f" {ref} " in f" {resp} " else 0.0
 
 
 def keyword_soft_score(reference: str, response: str) -> float:
-    """Fraction of reference tokens present in response (cheap rubric proxy)."""
+    """Fraction of reference tokens present in response (cheap rubric proxy).
+
+    A token counts only as a whole word, so "form" is not found in "information".
+    """
     ref_tokens = [t for t in _normalize(reference).split() if len(t) > 2]
     if not ref_tokens:
         return 0.0
-    resp = _normalize(response)
-    hit = sum(1 for t in set(ref_tokens) if t in resp)
+    resp_tokens = set(_normalize(response).split())
+    hit = sum(1 for t in set(ref_tokens) if t in resp_tokens)
     return hit / len(set(ref_tokens))
 
 
