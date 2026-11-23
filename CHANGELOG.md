@@ -268,6 +268,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   and reused `final_selection_hard` instead of the gate-metric score, which
   differs under the `soft` and `mixed` gate metrics or the semantic-density
   bonus (thanks @Shizoqua).
+- SkillOpt-Sleep's Claude backend treats a non-zero `claude -p` exit as a
+  failed call. In text mode the CLI prints an error result such as
+  `API Error: 529 ...` to stdout and exits 1, and that text was scored and
+  cached as the answer, so a re-score after the API recovered got the cached
+  error back. The call now returns an empty response and records the error in
+  `last_call_error`, like the Pi, Codex and Cursor backends (#443).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
