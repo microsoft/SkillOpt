@@ -15,6 +15,9 @@ from typing import List, Optional, Tuple
 
 _BEGIN = "# >>> skillopt-sleep (managed) >>>"
 _END = "# <<< skillopt-sleep (managed) <<<"
+# Longest cron command field, in bytes and marker included, that Debian/Ubuntu
+# crontab accepts; macOS cron silently cuts the command at 999 bytes.
+_CRON_MAX_COMMAND = 998
 
 
 def _have_crontab() -> bool:
@@ -105,7 +108,7 @@ def _list_win_tasks() -> List[str]:
 
 
 def _runner_cmd(project: str, backend: str, extra: str, python: str,
-                scope: str = "invoked") -> str:
+                scope: str = "invoked", keep_path: bool = True) -> str:
     if scope not in ("invoked", "all"):
         raise ValueError(f"scope must be 'invoked' or 'all', got {scope!r}")
     _validate_scheduler_text("project", project)
@@ -149,10 +152,39 @@ def _runner_cmd(project: str, backend: str, extra: str, python: str,
             f"-File {_windows_command_quote(helper_script)}"
         )
     cmd = shlex.join(args)
+    path = _scheduling_path() if keep_path else ""
+    if path:
+        _validate_scheduler_text("PATH", path)
+        cmd = f"PATH={shlex.quote(path)} {cmd}"
     return (
         f"mkdir -p {shlex.quote(logdir)}; "
         f"cd {shlex.quote(_repo_root())} && {cmd} >> {shlex.quote(log)} 2>&1"
     )
+
+
+def _scheduling_path() -> str:
+    """The PATH ``schedule`` runs with, for the cron job.
+
+    cron starts jobs with PATH=/usr/bin:/bin, where a claude or codex from
+    Homebrew, npm/nvm or ~/.local/bin is not found (an nvm codex found by
+    absolute path still fails, since its ``#!/usr/bin/env node`` finds no
+    node). Only existing absolute directories without control characters are
+    kept, once each, so the job never resolves commands from its working
+    directory and the line stays short.
+    """
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    return os.pathsep.join(dict.fromkeys(
+        entry for entry in entries
+        if os.path.isabs(entry) and os.path.isdir(entry)
+        and not any(ord(ch) < 32 or ord(ch) == 127 for ch in entry)
+    ))
+
+
+def _cron_line(minute: int, hour: int, runner_cmd: str, project: str) -> str:
+    # cron ends the command at the first unescaped "%" and sends the rest to
+    # stdin (crontab(5)), so a "%" in a path must be written as "\%".
+    cron_cmd = runner_cmd.replace("%", "\\%")
+    return f"{minute} {hour} * * *  {cron_cmd}  {_project_marker(project)}"
 
 
 def _repo_root() -> str:
@@ -218,11 +250,19 @@ def schedule(project: str, *, backend: str = "mock", hour: int = 3, minute: int 
                           f"Runs `skillopt_sleep run`; it only STAGES a proposal — adopt is still manual.")
         return False, f"Failed to write scheduled task. Command to run manually:\nschtasks /create /tn \"{tn}\" /tr \"{runner_cmd}\" /sc daily /st {hour:02d}:{minute:02d} /f"
 
-    cron_line = f"{minute} {hour} * * *  {runner_cmd}  {_project_marker(project)}"
+    cron_line = _cron_line(minute, hour, runner_cmd, project)
+    note = ""
+    if len(os.fsencode(cron_line.split(None, 5)[5])) > _CRON_MAX_COMMAND:
+        # Too long to store the PATH: schedule with cron's default PATH instead.
+        no_path_cmd = _runner_cmd(project, backend, extra, python, scope, keep_path=False)
+        if no_path_cmd != runner_cmd:
+            cron_line = _cron_line(minute, hour, no_path_cmd, project)
+            note = ("\nNote: the cron entry is too long to include PATH, so the job runs "
+                    "with cron's default PATH (/usr/bin:/bin) and may not find claude or codex.")
 
     if not _have_crontab():
         return False, ("crontab not found on this system. Add this line to your "
-                       "scheduler manually:\n" + cron_line)
+                       "scheduler manually:\n" + cron_line + note)
 
     outside, managed = _split_managed(_read_crontab())
     # drop any existing line for this project, then add the new one
@@ -236,8 +276,9 @@ def schedule(project: str, *, backend: str = "mock", hour: int = 3, minute: int 
     if ok:
         return True, (f"Scheduled nightly at {hour:02d}:{minute:02d} for {project} "
                       f"(backend={backend}). Logs -> {project}/.skillopt-sleep/cron.log\n"
-                      f"Runs `skillopt_sleep run`; it only STAGES a proposal — adopt is still manual.")
-    return False, "Failed to write crontab. Line to add manually:\n" + cron_line
+                      f"Runs `skillopt_sleep run`; it only STAGES a proposal — adopt is still manual."
+                      + note)
+    return False, "Failed to write crontab. Line to add manually:\n" + cron_line + note
 
 
 def unschedule(project: Optional[str] = None, *, all_projects: bool = False) -> Tuple[bool, str]:

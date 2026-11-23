@@ -157,6 +157,13 @@ All notable changes to SkillOpt are documented here. This project adheres to
   the Codex backend uses, and the harvester drops a single-turn session only
   when its prompt starts with it. This covers custom prompt templates, and a
   user session that quotes an engine prompt is kept (#310).
+- The nightly cron job from `skillopt-sleep schedule` now runs with the `PATH`
+  it was scheduled from, unless that `PATH` is too long for the cron entry
+  (`schedule` then says so). Under cron's `PATH=/usr/bin:/bin` a Claude CLI
+  from Homebrew or `~/.local/bin` was not found and an nvm Codex CLI exited 127
+  without `node`, so a scheduled Claude or Codex night could not call its
+  model. A `%` in the project path is also escaped now, since cron cut the
+  command there (#447).
 - `insert_after` with a target that ends in a newline now inserts right
   after that line instead of after the next one, which could file the new
   text under the following heading or inside a protected region (#407).

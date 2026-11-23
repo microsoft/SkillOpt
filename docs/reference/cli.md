@@ -424,7 +424,9 @@ several sources therefore keeps a separate window per source, and a run of one
 source does not advance another source's window.
 
 The managed `schedule` command persists the project, backend, time, and optional
-auto-adopt setting only. It does not copy source, Cursor paths, model, or target
+auto-adopt setting and, on Linux and macOS, the `PATH` it was run with (run
+`schedule` again after moving `claude`, `codex` or `node`; a `PATH` too long for
+the cron entry is left out). It does not copy source, Cursor paths, model, or target
 skill flags into the scheduled command. Put `transcript_source`, `cursor_home`,
 `cursor_path`, `model`, and `target_skill_path` in the user config before
 scheduling Cursor. Keep `target_skill_path` project-relative as
