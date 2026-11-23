@@ -145,6 +145,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SearchQA scores a numeric gold answer instead of failing the rollout.
+  JSON data can store an answer such as `1776` as a number, and
+  `normalize_answer` called `.lower()` on it, so a correct prediction was
+  recorded with hard=0 and an `'int' object has no attribute 'lower'` error.
+  Gold answers are now compared as text, in the evaluator and in the rollout
+  rows (thanks @Shizoqua).
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
