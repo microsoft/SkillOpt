@@ -145,6 +145,23 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SearchQA scores a numeric gold answer instead of failing the rollout.
+  JSON data can store an answer such as `1776` as a number, and
+  `normalize_answer` called `.lower()` on it, so a correct prediction was
+  recorded with hard=0 and an `'int' object has no attribute 'lower'` error.
+  Gold answers are now compared as text, in the evaluator and in the rollout
+  rows (thanks @Shizoqua).
+- LiveMathematicianBench scores a `\boxed{B}` answer as the choice it names.
+  Math-tuned models often box the final choice, inside `<answer>` or on the
+  last line, and `parse_choice_label` read it as the label `\BOXED{B}`, so a
+  correct answer scored 0. The last `\boxed{...}` is now unwrapped before the
+  label is matched (thanks @Shizoqua).
+- SkillOpt-Sleep's local `exact` scorer matches the reference as whole tokens.
+  `exact_score` tested `ref in resp` on normalized text, so a reference of
+  `42` scored hard=1.0 against `420`, and `arXiv:1706.0376` against
+  `arXiv:1706.03762`. `keyword_soft_score` had the same substring check, so
+  `form` counted as found in `information`. Both now compare on token
+  boundaries (thanks @Shizoqua).
 - A SkillOpt-Sleep `replace` edit no longer writes the same learned item twice.
   `apply_edits_detailed` skips an `add` that is already in the learned block,
   but `replace` wrote its replacement once per line the anchor matched and

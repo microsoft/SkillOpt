@@ -39,3 +39,14 @@ def test_error_row_records_string_gold_answer_as_a_list(tmp_path, monkeypatch):
     (error_row,) = [row for row in rows if row["id"] == "q1"]
     assert error_row["phase"] == "error"
     assert error_row["gold_answer"] == ["Paris"]
+
+
+def test_process_one_scores_a_numeric_gold_answer(tmp_path, monkeypatch):
+    monkeypatch.setattr(rollout, "is_target_exec_backend", lambda: False)
+    monkeypatch.setattr(rollout, "chat_target", lambda **kwargs: ("<answer>1776</answer>", {}))
+    item = {"id": "q2", "question": "When was it signed?", "context": "It was signed in 1776.", "answers": [1776]}
+
+    row = rollout.process_one(item, str(tmp_path), "")
+
+    assert row["gold_answers"] == ["1776"]
+    assert row["hard"] == 1
