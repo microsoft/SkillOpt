@@ -67,7 +67,7 @@ model:
   minimax_region: ""            # global_en (default) or cn_zh; selects the base URL
   minimax_base_url: ""          # region base URL if blank
   minimax_api_key: ""
-  minimax_model: "MiniMax-M3"
+  minimax_model: "MiniMax-M3.1-Flash"  # MiniMax-M3 is also supported
   minimax_temperature: "0.7"
   minimax_max_tokens: "8000"
   minimax_enable_thinking: "false"

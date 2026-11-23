@@ -838,7 +838,7 @@ class ReflACTTrainer:
         )
         minimax_model_cfg = cfg.get("minimax_model")
         if minimax_model_cfg and cfg.get("target_backend") == "minimax_chat":
-            set_target_deployment(str(minimax_model_cfg))
+            set_target_deployment(str(cfg.get("target_model") or minimax_model_cfg))
         configure_openai_compatible(
             base_url=cfg.get("openai_compatible_base_url") or None,
             api_key=cfg.get("openai_compatible_api_key") or None,
