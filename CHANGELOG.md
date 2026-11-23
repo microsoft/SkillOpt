@@ -145,6 +145,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SkillOpt-Sleep now extracts the first decodable JSON object or array from a
+  chatty CLI reply. The parser greedily spanned from the first opening delimiter
+  to the last closing delimiter, so prose containing braces or brackets made a
+  valid response fail parsing; it now scans each possible start in order and
+  returns the first value of the requested kind (thanks @leninworld).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
