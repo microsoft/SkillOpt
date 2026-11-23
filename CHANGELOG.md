@@ -168,6 +168,13 @@ All notable changes to SkillOpt are documented here. This project adheres to
   did not check the other lines, so the block could hold duplicate bullets.
   The replacement now goes in once, at the first matching line, and is
   dropped when another line already holds it (thanks @Shizoqua).
+- SpreadsheetBench `single` and `multi` codegen calls go to the configured
+  target backend. They built an Azure client for every chat target, so an
+  `openai_compatible`, `claude_chat`, `minimax_chat` or `copilot_chat` target
+  failed with "Azure OpenAI endpoint is not configured" or was sent to Azure,
+  and `qwen_chat` skipped its `qwen_chat_*` settings. These targets now go
+  through the shared router, as ReAct mode does; `openai_chat` is unchanged
+  (#445).
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool
