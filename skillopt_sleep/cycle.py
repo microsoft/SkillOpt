@@ -273,6 +273,12 @@ def _read_live_baseline(path: str, label: str) -> tuple[str, str, str]:
         raise StagingError(
             f"live {label} baseline is not valid UTF-8: {path!r}"
         ) from exc
+    # Normalize to universal newlines: the hash below stays over the exact raw
+    # bytes for live-file drift detection, but this text feeds comparisons
+    # elsewhere in the cycle that assume LF (model output, scaffolds, staged
+    # candidates). Without this, a CRLF-saved live file - the Windows default -
+    # always looks "changed" even when nothing actually edited it.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text, hashlib.sha256(raw).hexdigest(), realpath
 
 
