@@ -145,6 +145,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- A SkillOpt-Sleep rule judge with a malformed `max_chars` or `min_chars`
+  bound is reported as invalid instead of crashing the replay. Scoring called
+  `int()` on the bound, so a judge imported without validation (for example
+  from a gbrain-style `benchmark.jsonl`) raised on `"abc"` or `None`, and
+  silently used `500.5` as 500 or `true` as 1. Scoring now uses the same
+  `char_bound` parser as `validate_checks`, and a bound it rejects, or a
+  negative one, fails the check with `invalid char bound` in the rationale,
+  as an invalid regex does (thanks @Shizoqua).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was

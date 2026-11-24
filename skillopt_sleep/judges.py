@@ -128,10 +128,17 @@ def _check(op: str, arg: Any, response: str,
             # rollout forever and read exactly like a model that never
             # complies. Surface it instead of hiding it behind a False.
             return False, f"invalid regex ({exc})"
-    if op == "max_chars":
-        return len(r) <= int(arg), ""
-    if op == "min_chars":
-        return len(r) >= int(arg), ""
+    if op in ("max_chars", "min_chars"):
+        # Same parser and limits as validate_checks(): a bound it rejects can
+        # reach scoring from an unvalidated import, and int() would raise on
+        # it or silently truncate it. Fail closed and say so, as for a regex.
+        try:
+            bound = char_bound(arg)
+        except (OverflowError, TypeError, ValueError):
+            bound = -1
+        if bound < 0:
+            return False, f"invalid char bound ({arg!r})"
+        return (len(r) <= bound if op == "max_chars" else len(r) >= bound), ""
     if op == "contains":
         return str(arg).lower() in r.lower(), ""
     if op == "not_contains":
