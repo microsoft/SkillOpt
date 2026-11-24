@@ -15,6 +15,7 @@ This module performs NO writes and NO network calls.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -158,15 +159,44 @@ def _skill_names_from_content(content: Any) -> List[str]:
     return names
 
 
+@functools.lru_cache(maxsize=None)
+def _phrase_re(phrase: str) -> "re.Pattern[str]":
+    """Match ``phrase`` as whole words, not as a substring of a longer word.
+
+    Plain ``in`` matching let "correct" fire inside "incorrect", "nice" inside
+    "Venice", "no," inside "piano," and "undo" inside "undoes". Lookarounds
+    are used instead of ``\\b`` because some phrases end in punctuation.
+    """
+    return re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)")
+
+
+# A positive phrase directly after one of these words is not approval
+# ("not great", "no thanks", "isn't correct").
+_NEGATION_BEFORE_RE = re.compile(
+    r"(?:\b(?:not|no|never|hardly)|n't)\s+(?:\w+\s+)?$"
+)
+
+
 def _detect_feedback(text: str) -> List[str]:
-    low = text.lower()
+    # Curly apostrophes (common from macOS and mobile keyboards) would
+    # otherwise hide "didn't" and "doesn't work".
+    low = text.lower().replace("\u2019", "'")
     sig: List[str] = []
+    masked = list(low)
     for ph in _NEGATIVE_FEEDBACK:
-        if ph in low:
+        hits = list(_phrase_re(ph).finditer(low))
+        if hits:
             sig.append("neg:" + ph)
+        # Blank out each matched span so a positive phrase inside it
+        # ("fixed" in "not fixed") is not counted as approval too.
+        for m in hits:
+            masked[m.start():m.end()] = " " * (m.end() - m.start())
+    masked = "".join(masked)
     for ph in _POSITIVE_FEEDBACK:
-        if ph in low:
-            sig.append("pos:" + ph)
+        for m in _phrase_re(ph).finditer(masked):
+            if not _NEGATION_BEFORE_RE.search(low[: m.start()]):
+                sig.append("pos:" + ph)
+                break
     return sig
 
 
