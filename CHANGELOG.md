@@ -145,6 +145,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- OfficeQA counts equal numbers as a match however they are written.
+  `normalize_answer` kept decimal tokens as text, so `$1,234.00` did not
+  match a gold answer of `1234`, nor `5.20` match `5.2`, `12.50%` match
+  `12.5%` or `.5` match `0.5`, and a correct answer scored 0. Decimal tokens
+  now drop trailing zeros in the fraction and get a leading `0` before a bare
+  decimal point (thanks @Shizoqua).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
