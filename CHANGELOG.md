@@ -215,6 +215,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   judge scores outside 0..1 (including NaN/Infinity) fail closed instead of
   moving the gate, and learned items survive `apply_edits` round-trips
   (thanks @bogdanbaciu21, #310).
+- SkillOpt-Sleep harvest matches a session to the project whether either path
+  goes through a symlink. Claude Code records the physical cwd, while
+  `--project` keeps the path as typed, so `--project "$(pwd)"` from a
+  symlinked `~/code/app` (or `/tmp/x` on macOS) found none of the project's
+  sessions, and a `run` still moved the checkpoint. `$HOME` and `/` are still
+  never matched as an ancestor of the project, under either spelling (#464).
 - Apply Codex executable and sandbox aliases consistently across inherited
   YAML, CLI overrides, training, and eval-only entry points. Codex CLI calls
   now use explicit sandbox and approval settings instead of the retired
