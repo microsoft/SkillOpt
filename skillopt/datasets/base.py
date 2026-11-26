@@ -213,8 +213,6 @@ def _compute_split_counts(total: int, ratio: tuple[int, int, int]) -> tuple[int,
     total = max(0, int(total))
     weights = list(ratio)
     denom = sum(weights)
-    if denom <= 0:
-        return 0, 0, 0
     raw = [total * weight / denom for weight in weights]
     counts = [int(value) for value in raw]
     remaining = total - sum(counts)
@@ -277,7 +275,7 @@ class SplitDataLoader(BaseDataLoader):
         if not self.split_seed:
             self.split_seed = self.seed
         if not self.split_ratio:
-            self.split_ratio = str(cfg.get("split_ratio", "2:1:7") or "2:1:7")
+            self.split_ratio = cfg.get("split_ratio") or "2:1:7"
 
         mode = str(self.split_mode or "ratio").strip().lower()
         if mode not in {"ratio", "split_dir"}:
@@ -302,7 +300,7 @@ class SplitDataLoader(BaseDataLoader):
             return os.path.abspath(self.split_output_dir)
         out_root = os.path.abspath(str(cfg.get("out_root") or os.getcwd()))
         env_name = str(cfg.get("env") or type(self).__name__.replace("DataLoader", "").lower())
-        ratio_tag = str(self.split_ratio or "2:1:7").replace(":", "-")
+        ratio_tag = "-".join(map(str, _parse_split_ratio(self.split_ratio or "2:1:7")))
         return os.path.join(out_root, "_generated_splits", f"{env_name}_{ratio_tag}_seed{self.split_seed}")
 
     def load_raw_items(self, data_path: str) -> list[dict]:

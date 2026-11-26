@@ -202,9 +202,24 @@ if __name__ == "__main__":
 
 
 def test_parse_split_ratio_list_and_tuple() -> None:
-    from skillopt.datasets.base import _compute_split_counts, _parse_split_ratio
+    from skillopt.datasets.base import SplitDataLoader, _compute_split_counts, _parse_split_ratio
     assert _parse_split_ratio([2, 1, 7]) == (2, 1, 7)
     assert _parse_split_ratio((1, 1, 1)) == (1, 1, 1)
     assert _parse_split_ratio("2:1:7") == (2, 1, 7)
     assert _compute_split_counts(0, (2, 1, 7)) == (0, 0, 0)
     assert _compute_split_counts(-5, (2, 1, 7)) == (0, 0, 0)
+
+    cfg = {"out_root": "/tmp/out", "env": "searchqa"}
+    loader_str = SplitDataLoader(split_ratio="2:1:7")
+    loader_list = SplitDataLoader(split_ratio=[2, 1, 7])  # type: ignore[arg-type]
+    assert loader_list._resolve_split_output_dir(cfg) == loader_str._resolve_split_output_dir(cfg)
+    assert loader_list._resolve_split_output_dir(cfg).endswith("searchqa_2-1-7_seed42")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        raw_path = os.path.join(tmp, "raw.json")
+        with open(raw_path, "w", encoding="utf-8") as fh:
+            json.dump([{"id": i} for i in range(10)], fh)
+        loader_cfg = SplitDataLoader(split_ratio="", data_path=raw_path, out_root=tmp)
+        loader_cfg.setup({"out_root": tmp, "env": "searchqa", "split_ratio": [2, 1, 7]})
+        assert loader_cfg.split_ratio == [2, 1, 7]
+        assert os.path.isdir(os.path.join(tmp, "_generated_splits", "searchqa_2-1-7_seed42"))

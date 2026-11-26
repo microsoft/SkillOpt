@@ -113,11 +113,16 @@ _REGISTRY: dict[str, type[LRScheduler]] = {
 }
 
 
+_DEFAULT_MAX_LR = 8
+_DEFAULT_MIN_LR = 2
+_DEFAULT_TOTAL_STEPS = 8
+
+
 def build_scheduler(
     mode: str = "constant",
-    max_lr: int = 8,
-    min_lr: int = 2,
-    total_steps: int = 8,
+    max_lr: int = _DEFAULT_MAX_LR,
+    min_lr: int = _DEFAULT_MIN_LR,
+    total_steps: int = _DEFAULT_TOTAL_STEPS,
 ) -> LRScheduler:
     """Build a scheduler from config parameters.
 
@@ -137,9 +142,9 @@ def build_scheduler(
         raise ValueError(
             f"Unknown scheduler mode '{mode}'. Available: {list(_REGISTRY.keys())}"
         )
-    safe_max_lr = int(max_lr) if max_lr is not None else 8
-    safe_min_lr = int(min_lr) if min_lr is not None else 2
-    safe_total_steps = int(total_steps) if total_steps is not None else 8
+    safe_max_lr = int(max_lr) if max_lr is not None else _DEFAULT_MAX_LR
+    safe_min_lr = int(min_lr) if min_lr is not None else _DEFAULT_MIN_LR
+    safe_total_steps = int(total_steps) if total_steps is not None else _DEFAULT_TOTAL_STEPS
     return _REGISTRY[norm_mode](
         max_lr=safe_max_lr, min_lr=safe_min_lr, total_steps=safe_total_steps
     )
