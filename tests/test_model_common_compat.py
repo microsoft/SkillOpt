@@ -71,6 +71,16 @@ class TestCompatMessages:
         assert compat.tool_calls[0].function.name == "query_db"
         assert compat.tool_calls[0].function.arguments == '{"q": "test"}'
 
+        empty_msg = {
+            "content": None,
+            "tool_calls": [{"id": None, "function": {"name": None, "arguments": ""}}],
+        }
+        empty_compat = compat_message_from_chat_message(empty_msg)
+        assert empty_compat.content == ""
+        assert empty_compat.tool_calls[0].id == ""
+        assert empty_compat.tool_calls[0].function.name == ""
+        assert empty_compat.tool_calls[0].function.arguments == "{}"
+
     def test_compat_message_from_object(self) -> None:
         msg = SimpleNamespace(
             content="Hello",
@@ -107,6 +117,10 @@ class TestCompatMessages:
     def test_compat_message_from_responses_output_empty_or_none(self) -> None:
         assert compat_message_from_responses_output([]).content == ""
         assert compat_message_from_responses_output(None).content == ""  # type: ignore[arg-type]
+        tup_compat = compat_message_from_responses_output(
+            ({"type": "message", "content": [{"type": "text", "text": "Tuple."}]},)
+        )
+        assert tup_compat.content == "Tuple."
 
 
 class TestTokenTracker:

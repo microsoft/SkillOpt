@@ -223,8 +223,8 @@ def compat_message_from_chat_message(message: Any) -> CompatAssistantMessage:
     for tool_call in raw_tools:
         if isinstance(tool_call, dict):
             fn = tool_call.get("function") or {}
-            fn_name = fn.get("name", "") if isinstance(fn, dict) else (getattr(fn, "name", "") or "")
-            fn_args = fn.get("arguments", "{}") if isinstance(fn, dict) else (getattr(fn, "arguments", "{}") or "{}")
+            fn_name = (fn.get("name") or "") if isinstance(fn, dict) else (getattr(fn, "name", "") or "")
+            fn_args = (fn.get("arguments") or "{}") if isinstance(fn, dict) else (getattr(fn, "arguments", "{}") or "{}")
             tool_calls.append(
                 CompatToolCall(
                     id=tool_call.get("id", "") or "",
@@ -248,8 +248,8 @@ def compat_message_from_chat_message(message: Any) -> CompatAssistantMessage:
     return CompatAssistantMessage(content=content, tool_calls=tool_calls)
 
 
-def compat_message_from_responses_output(output: list[Any]) -> CompatAssistantMessage:
-    if not output or not isinstance(output, list):
+def compat_message_from_responses_output(output: list[Any] | tuple[Any, ...]) -> CompatAssistantMessage:
+    if not output or not isinstance(output, (list, tuple)):
         return CompatAssistantMessage(content="", tool_calls=[])
     text_parts: list[str] = []
     tool_calls: list[CompatToolCall] = []
