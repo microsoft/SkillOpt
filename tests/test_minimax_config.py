@@ -213,3 +213,20 @@ def test_trainer_initialization_configures_minimax(monkeypatch: pytest.MonkeyPat
         trainer.train()
 
     assert configured_kwargs.get("timeout_seconds") == 210.0
+
+
+def test_configure_minimax_chat_blank_timeout_preserves_env_and_rejects_non_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import skillopt.model.minimax_backend as minimax_backend
+
+    monkeypatch.setattr(minimax_backend, "TIMEOUT_SECONDS", 900.0)
+    monkeypatch.setenv("MINIMAX_TIMEOUT_SECONDS", "900.0")
+
+    minimax_backend.configure_minimax_chat(timeout_seconds="")
+    assert minimax_backend.TIMEOUT_SECONDS == 900.0
+    assert minimax_backend.os.environ["MINIMAX_TIMEOUT_SECONDS"] == "900.0"
+
+    for invalid in (0, -5, "nan"):
+        with pytest.raises(ValueError, match="positive finite number"):
+            minimax_backend.configure_minimax_chat(timeout_seconds=invalid)  # type: ignore[arg-type]

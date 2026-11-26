@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -273,9 +274,14 @@ def configure_minimax_chat(
             raw = str(temperature).strip()
             TEMPERATURE = float(raw) if raw else None
             os.environ["MINIMAX_TEMPERATURE"] = raw
-        if timeout_seconds is not None:
-            TIMEOUT_SECONDS = float(timeout_seconds)
-            os.environ["MINIMAX_TIMEOUT_SECONDS"] = str(timeout_seconds)
+        if timeout_seconds is not None and str(timeout_seconds).strip():
+            parsed_timeout = float(str(timeout_seconds).strip())
+            if not math.isfinite(parsed_timeout) or parsed_timeout <= 0:
+                raise ValueError(
+                    f"minimax timeout_seconds must be a positive finite number, got {timeout_seconds!r}"
+                )
+            TIMEOUT_SECONDS = parsed_timeout
+            os.environ["MINIMAX_TIMEOUT_SECONDS"] = str(parsed_timeout)
         if max_tokens is not None:
             MAX_TOKENS = int(max_tokens)
             os.environ["MINIMAX_MAX_TOKENS"] = str(max_tokens)
