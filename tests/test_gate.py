@@ -338,3 +338,11 @@ class TestTrainCliGateOptions:
         assert cfg["gate_mixed_weight"] == 0.75
         assert cfg["use_semantic_density"] is True
         assert cfg["semantic_density_weight"] == 0.1
+
+    def test_train_cli_normalizes_gate_metric_case(self) -> None:
+        import scripts.train as train_script
+
+        args = train_script.parse_args(
+            ["--config", "configs/searchqa/default.yaml", "--gate_metric", "Mixed"]
+        )
+        assert args.gate_metric == "mixed"

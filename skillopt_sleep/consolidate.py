@@ -260,6 +260,7 @@ def consolidate(
         base_pairs = replay_batch(backend, val_tasks, skill, memory)
         base_hard, base_soft = aggregate_scores(base_pairs)
         holdout_detail = _holdout_detail(base_pairs)
+    # Sleep consolidation defaults missing/null gate_metric to "mixed", matching sleep config.
     gate_metric = (gate_metric or "mixed").strip().lower()
     base_score = select_gate_score(base_hard, base_soft, gate_metric, gate_mixed_weight)
     if ev is not None:

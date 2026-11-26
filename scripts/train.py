@@ -270,7 +270,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--test_env_num", type=int)
     p.add_argument("--eval_test", type=_BOOL)
     p.add_argument("--use_gate", type=_BOOL)
-    p.add_argument("--gate_metric", type=str, choices=["hard", "soft", "mixed"])
+    p.add_argument("--gate_metric", type=str.lower, choices=["hard", "soft", "mixed"])
     p.add_argument("--gate_mixed_weight", type=float)
     p.add_argument("--use_semantic_density", type=_BOOL)
     p.add_argument("--semantic_density_weight", type=float)
