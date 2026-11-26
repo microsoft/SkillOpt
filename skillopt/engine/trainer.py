@@ -1128,6 +1128,17 @@ class ReflACTTrainer:
                if slow_gate_with_selection
                else "force-accept (unconditional)")
         )
+        # Slow-update / meta-skill inputs: cap the comparison trajectories so the
+        # prompt fits the optimizer's context, and re-ask on an unparsable answer.
+        # Defaults (0, 0) keep the previous behaviour.
+        longitudinal_traj_char_budget = int(cfg.get("longitudinal_traj_char_budget", 0) or 0)
+        longitudinal_parse_retries = int(cfg.get("longitudinal_parse_retries", 0) or 0)
+        print(
+            "  [longitudinal] traj_char_budget="
+            + (str(longitudinal_traj_char_budget) if longitudinal_traj_char_budget > 0
+               else "off (full trajectories)")
+            + f"  parse_retries={longitudinal_parse_retries}"
+        )
         if current_score < 0:
             print(f"\n{'='*60}")
             print("  BASELINE — evaluate initial skill on Selection set (valid_seen)")
@@ -1940,6 +1951,8 @@ class ReflACTTrainer:
                         prev_rollout_dir=prev_rollout_dir,
                         curr_rollout_dir=curr_rollout_dir,
                         comparison_pairs=comparison_pairs,
+                        traj_char_budget=longitudinal_traj_char_budget,
+                        parse_retries=longitudinal_parse_retries,
                     )
                     slow_time = round(time.time() - t_slow, 1)
 
@@ -2237,6 +2250,8 @@ class ReflACTTrainer:
                         curr_skill=epoch_last_step_skill,
                         comparison_pairs=epoch_comparison_pairs or [],
                         prev_meta_skill_content=prev_meta_skill,
+                        traj_char_budget=longitudinal_traj_char_budget,
+                        parse_retries=longitudinal_parse_retries,
                     )
                     meta_skill_time = round(time.time() - t_meta_skill, 1)
 

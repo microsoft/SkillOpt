@@ -37,8 +37,13 @@ def run_meta_skill(
     *,
     prev_meta_skill_content: str = "",
     system_prompt: str | None = None,
+    traj_char_budget: int = 0,
+    parse_retries: int = 0,
 ) -> dict | None:
-    """Produce updated optimizer-side meta skill from adjacent epochs."""
+    """Produce updated optimizer-side meta skill from adjacent epochs.
+
+    ``traj_char_budget`` and ``parse_retries`` behave as in ``run_slow_update``.
+    """
     actual_system = system_prompt if system_prompt is not None else load_prompt("meta_skill")
 
     prev_meta_section = (
@@ -47,7 +52,7 @@ def run_meta_skill(
         else "(No previous optimizer meta skill — this is the first update.)"
     )
 
-    comparison_text = format_comparison_text(comparison_pairs)
+    comparison_text = format_comparison_text(comparison_pairs, traj_char_budget=traj_char_budget)
     user = (
         f"## Previous Epoch Last-Step Skill\n{prev_skill}\n\n"
         f"## Current Epoch Last-Step Skill\n{curr_skill}\n\n"
@@ -59,21 +64,28 @@ def run_meta_skill(
         f"{comparison_text}"
     )
 
-    try:
-        response, _ = chat_optimizer(
-            system=actual_system,
-            user=user,
-            max_completion_tokens=16384,
-            retries=3,
-            stage="meta_skill",
-        )
-        result = extract_json(response)
-        if result and result.get("meta_skill_content"):
-            return {
-                "reasoning": str(result.get("reasoning", "")).strip(),
-                "meta_skill_content": str(result["meta_skill_content"]).strip(),
-            }
-    except Exception:  # noqa: BLE001
-        traceback.print_exc()
+    for attempt in range(1 + max(int(parse_retries or 0), 0)):
+        try:
+            response, _ = chat_optimizer(
+                system=actual_system,
+                user=user,
+                max_completion_tokens=16384,
+                retries=3,
+                stage="meta_skill",
+            )
+            result = extract_json(response)
+            if result and result.get("meta_skill_content"):
+                return {
+                    "reasoning": str(result.get("reasoning", "")).strip(),
+                    "meta_skill_content": str(result["meta_skill_content"]).strip(),
+                }
+            if parse_retries:
+                print(
+                    f"    [meta skill] attempt {attempt + 1}: no parsable "
+                    f"meta_skill_content ({len(response or '')} chars returned)"
+                )
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            break
 
     return None

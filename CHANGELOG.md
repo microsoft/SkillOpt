@@ -7,6 +7,15 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **Slow-update / meta-skill input budget and parse retries** (both off by
+  default). `optimizer.longitudinal_traj_char_budget` caps the total characters of
+  the trajectories in the longitudinal comparison: short trajectories stay whole and
+  the longest are middle-clipped to a common cap (head and tail kept, the omitted
+  size marked). Without it, long-horizon benchmarks can exceed the optimizer's
+  context, and the failed call is logged and the slow update or meta skill is
+  silently skipped for that epoch. `optimizer.longitudinal_parse_retries` re-asks
+  when the answer has no parsable `slow_update_content` / `meta_skill_content`.
+  Both have `scripts/train.py` flags.
 - **SkillOpt-Sleep leave-one-out edit ablation** (`gate_edit_ablation`, off by
   default): each skill or memory candidate the night accepts is replayed
   without each of its edits, and the per-edit observation (gate score with and
