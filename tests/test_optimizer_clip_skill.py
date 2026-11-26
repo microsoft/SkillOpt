@@ -77,6 +77,19 @@ class TestSkillEditRobustness:
         new_skill = apply_patch(skill, patch)
         assert "Next" in new_skill
 
+    def test_apply_patch_rejects_non_string_content_and_target(self) -> None:
+        skill = "## Rules\nStay safe."
+        patch = {
+            "edits": [
+                {"op": "append", "content": ["a", "b"]},
+                {"op": "replace", "target": ["## Rules"], "content": "New"},
+            ]
+        }
+        new_skill, reports = apply_patch_with_report(skill, patch)
+        assert new_skill == skill
+        assert len(reports) == 2
+        assert all(r["status"] == "error" for r in reports)
+
 
 class TestClipRobustness:
     """Test robustness of gradient clipping (rank_and_select) in clip.py."""

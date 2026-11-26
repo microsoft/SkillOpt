@@ -84,13 +84,18 @@ def _edit_fields(edit: EditType | dict | None) -> tuple[str, str, str]:
         if hasattr(edit, "content")
         else (edit.get("content", "") if isinstance(edit, dict) else "")
     )
-    content = _strip_slow_update_markers(str(raw_content or "").strip())
+    content = _strip_slow_update_markers((raw_content if raw_content is not None else "").strip())
     raw_target = (
         edit.target
         if hasattr(edit, "target")
         else (edit.get("target", "") if isinstance(edit, dict) else "")
     )
-    target = str(raw_target or "")
+    if raw_target is None:
+        target = ""
+    elif not isinstance(raw_target, str):
+        raise TypeError(f"edit target must be str or None, got {type(raw_target).__name__}")
+    else:
+        target = raw_target
     return op, content, target
 
 
