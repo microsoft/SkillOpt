@@ -145,6 +145,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- `scripts/train.py` accepts `--slow_update_gate_with_selection`. The config key
+  `optimizer.slow_update_gate_with_selection` exists, but the flag was never
+  added, so `--slow_update_gate_with_selection true` failed with an
+  unrecognized-argument error and the paper setting could only be selected
+  through a config file or `--cfg-options`.
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
