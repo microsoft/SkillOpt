@@ -99,10 +99,11 @@ class TestComputeScore:
         results = [
             {"hard": "1.0", "soft": "invalid"},
             {"hard": "bad", "soft": "0.5"},
+            {"hard": "nan", "soft": float("inf")},
         ]
         hard, soft = compute_score(results)
-        assert hard == 0.5
-        assert soft == 0.25
+        assert hard == pytest.approx(1.0 / 3)
+        assert soft == pytest.approx(0.5 / 3)
 
 
 class TestSkillHash:
@@ -162,6 +163,9 @@ class TestComputeTaskTypeBuckets:
         assert buckets["code"]["hard"] == 0.0
         assert buckets["code"]["soft"] == pytest.approx(0.5)
 
-        assert buckets["overall"]["total"] == 4
+        assert buckets["overall"]["total"] == 5
         assert buckets["overall"]["hard"] == 2.0
         assert buckets["overall"]["soft"] == pytest.approx(1.7)
+        hard_score, soft_score = compute_score(results)
+        assert hard_score == pytest.approx(buckets["overall"]["hard"] / buckets["overall"]["total"])
+        assert soft_score == pytest.approx(buckets["overall"]["soft"] / buckets["overall"]["total"])

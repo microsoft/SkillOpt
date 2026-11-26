@@ -2,6 +2,25 @@
 from __future__ import annotations
 
 import hashlib
+import math
+
+
+def _extract_metric(r: object, key: str) -> float:
+    """Extract a finite float metric from a result dict or object, defaulting to 0.0."""
+    if r is None:
+        return 0.0
+    val = (
+        getattr(r, key, None)
+        if hasattr(r, key)
+        else (r.get(key) if isinstance(r, dict) else None)
+    )
+    if val is None:
+        return 0.0
+    try:
+        parsed = float(val)
+    except (ValueError, TypeError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 def compute_score(results: list) -> tuple[float, float]:
@@ -14,23 +33,8 @@ def compute_score(results: list) -> tuple[float, float]:
     if not results:
         return 0.0, 0.0
 
-    def _extract(r: object, key: str) -> float:
-        if r is None:
-            return 0.0
-        val = (
-            getattr(r, key, None)
-            if hasattr(r, key)
-            else (r.get(key) if isinstance(r, dict) else None)
-        )
-        if val is None:
-            return 0.0
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return 0.0
-
-    hard = sum(_extract(r, "hard") for r in results) / len(results)
-    soft = sum(_extract(r, "soft") for r in results) / len(results)
+    hard = sum(_extract_metric(r, "hard") for r in results) / len(results)
+    soft = sum(_extract_metric(r, "soft") for r in results) / len(results)
     return hard, soft
 
 

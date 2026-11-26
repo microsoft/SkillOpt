@@ -83,6 +83,7 @@ from skillopt.optimizer.update_modes import (
     short_item_summary,
 )
 from skillopt.utils import compute_score, skill_hash
+from skillopt.utils.scoring import _extract_metric
 
 # ── Skill-aware reflection: appendix flush ───────────────────────────────────
 
@@ -551,36 +552,19 @@ def _compute_task_type_buckets(results: list[dict], task_types: list[str]) -> di
         buckets[task] = {"total": 0, "hard": 0, "soft": 0.0}
     for r in results:
         if r is None:
-            continue
-        tt = (
-            r.get("task_type", "other")
-            if isinstance(r, dict)
-            else getattr(r, "task_type", "other")
-        )
+            tt = "other"
+        else:
+            tt = (
+                r.get("task_type", "other")
+                if isinstance(r, dict)
+                else getattr(r, "task_type", "other")
+            ) or "other"
         for key in [tt, "overall"]:
             if key not in buckets:
                 buckets[key] = {"total": 0, "hard": 0, "soft": 0.0}
             buckets[key]["total"] += 1
-            hard_val = (
-                r.get("hard")
-                if isinstance(r, dict)
-                else getattr(r, "hard", None)
-            )
-            soft_val = (
-                r.get("soft")
-                if isinstance(r, dict)
-                else getattr(r, "soft", None)
-            )
-            try:
-                if hard_val is not None:
-                    buckets[key]["hard"] += float(hard_val)
-            except (ValueError, TypeError):
-                pass
-            try:
-                if soft_val is not None:
-                    buckets[key]["soft"] += float(soft_val)
-            except (ValueError, TypeError):
-                pass
+            buckets[key]["hard"] += _extract_metric(r, "hard")
+            buckets[key]["soft"] += _extract_metric(r, "soft")
     return buckets
 
 
