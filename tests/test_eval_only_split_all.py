@@ -1,9 +1,8 @@
 """`skillopt-eval --split all`, the default, must work for every adapter.
 
-eval_only joined the train, valid_seen and valid_unseen envs with `+`, which
-only works when build_eval_env returns a list. ALFWorld returns an
-ALFWorldBatchRun, so the default command crashed with a TypeError before any
-rollout.
+eval_only joined the train, valid_seen and valid_unseen envs with `+`.
+ALFWorld's build_eval_env returns an ALFWorldBatchRun, which doesn't support
+`+`, so the default command crashed with a TypeError before any rollout.
 """
 
 from __future__ import annotations
