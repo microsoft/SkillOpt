@@ -7,6 +7,18 @@ All notable changes to SkillOpt are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- **AppWorld benchmark** (`env.name: appworld`, `configs/appworld/`): the official
+  `react_code` protocol (AppWorld's few-shot prompt, one `execute_code` tool, 50
+  executed calls) with the skill appended to the system prompt. Scores come from
+  AppWorld's `/evaluate` (`hard` = task goal completion, `soft` = fraction of
+  tests passed). Splits are built locally with
+  `python -m skillopt.envs.appworld.make_split` (train 90, val = dev 57, test =
+  test_normal + test_challenge 585); task instructions are not shipped.
+  `env.fail_reason_style` selects the failure text given to the analysts, and
+  `env.fill_app_descriptions` (default on) fills the prompt's app list. Four
+  Qwen3.8-27B configs cover gated, force-accepted and disabled slow update and
+  the ungated "Accept Every Edit" setting; results are in
+  `docs/guide/appworld.md`.
 - **SkillOpt-Sleep leave-one-out edit ablation** (`gate_edit_ablation`, off by
   default): each skill or memory candidate the night accepts is replayed
   without each of its edits, and the per-edit observation (gate score with and

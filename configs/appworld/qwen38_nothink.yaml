@@ -1,0 +1,18 @@
+_base_: ./default.yaml
+
+# Qwen3.8-27B as target AND optimizer through an OpenAI-compatible endpoint (vLLM/SGLang), thinking
+# off for both roles, temperature 0.7. Set QWEN_CHAT_BASE_URL (and QWEN_CHAT_API_KEY if the server
+# needs one); the served model name must match `optimizer` / `target` below.
+model:
+  backend: qwen_chat
+  optimizer_backend: qwen_chat
+  target_backend: qwen_chat
+  optimizer: Qwen/Qwen3.8-27B-FP8
+  target: Qwen/Qwen3.8-27B-FP8
+  qwen_chat_thinking_mode: disabled
+  optimizer_qwen_chat_thinking_mode: disabled
+  target_qwen_chat_thinking_mode: disabled
+  qwen_chat_temperature: 0.7
+  qwen_chat_timeout_seconds: 1800
+  target_qwen_chat_max_tokens: 16384
+  optimizer_qwen_chat_max_tokens: 32768

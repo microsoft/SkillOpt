@@ -1,0 +1,6 @@
+_base_: ./qwen38_nothink_force.yaml
+
+# "Accept Every Edit": per-step candidates are not gated (selection still runs and Best is tracked);
+# the epoch-end slow update is unconditional.
+evaluation:
+  use_gate: false

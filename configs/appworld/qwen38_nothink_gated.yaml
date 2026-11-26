@@ -1,0 +1,5 @@
+_base_: ./qwen38_nothink.yaml
+
+# "slow update (Gated)": the epoch-end slow-update candidate must pass the selection gate (paper setting).
+optimizer:
+  slow_update_gate_with_selection: true

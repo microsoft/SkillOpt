@@ -1,0 +1,40 @@
+_base_: ../_base_/default.yaml
+
+train:
+  train_size: 0
+  accumulation: 1
+
+gradient:
+  minibatch_size: 8
+  merge_batch_size: 8
+
+optimizer:
+  learning_rate: 4
+
+evaluation:
+  sel_env_num: 0
+  test_env_num: 0
+
+# AppWorld with the official react_code protocol (see skillopt/envs/appworld/rollout.py and
+# docs/guide/appworld.md). Build the split once with
+#   python -m skillopt.envs.appworld.make_split --appworld_root <root> --out data/appworld_split_full
+env:
+  name: appworld
+  skill_init: skillopt/envs/appworld/skills/initial.md
+  split_mode: split_dir
+  split_dir: data/appworld_split_full  # train 90, val = dev 57, test = test_normal 168 + test_challenge 417
+  data_path: ""
+  split_output_dir: ""
+  appworld_root: ~/.appworld-roots/skillopt-appworld
+  appworld_venv: ""                # venv whose bin/appworld serves the data; "" = $APPWORLD_VENV
+  workers: 16
+  port_base: 23100                 # each concurrent SkillOpt process needs its own range
+  port_span: 64
+  max_steps: 50                    # AppWorld official budget
+  max_completion_tokens: 16384     # per model call
+  episode_token_wall: 0            # per episode; 0 = off
+  server_request_timeout: 300
+  exec_timeout: 1800               # per target model call, seconds
+  fail_reason_style: checks        # failure text for the analysts: checks | legacy
+  fill_app_descriptions: true      # fill {{ app_descriptions }} in the prompt; false = runs before this option
+  limit: 0

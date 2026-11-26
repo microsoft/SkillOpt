@@ -121,6 +121,7 @@ SkillOpt brings the familiar deep-learning training paradigm to agentic prompt o
 | **SearchQA** | Open-domain QA | `configs/searchqa/` |
 | **LiveMathematicianBench** | Math reasoning | `configs/livemathematicianbench/` |
 | **SpreadsheetBench** | Spreadsheet editing | `configs/spreadsheetbench/` |
+| **AppWorld** | Interactive coding agents over app APIs | `configs/appworld/` ([guide](guide/appworld.md)) |
 
 ---
 
