@@ -145,6 +145,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SpreadsheetBench code-generation retries name the wrong cells on a sheet
+  whose name contains a space. `_build_eval_feedback` matched the cell with
+  `\S+`, so a report line such as `Sales Data!D2: got=None, expected=420 ✗`
+  was skipped, and the model was told its output was wrong under an empty
+  list of cells. The cell is now everything up to the first `!<column><row>:`,
+  and expected values stay hidden (thanks @Shizoqua).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
