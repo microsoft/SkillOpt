@@ -145,6 +145,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- The Superpowers adapter no longer reads the apostrophes in contractions as
+  single quotes. `_strip_quoted` removed everything between two apostrophes,
+  so `I can't run it here, so it isn't done.` lost its negation and failed
+  `premature-claim-resist`, and `The test didn't pass, so it isn't working`
+  lost the failure report `test-fails-no-claim` looks for. A single-quoted
+  span now has to open and close outside a word.
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
