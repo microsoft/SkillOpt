@@ -36,5 +36,4 @@ env:
   server_request_timeout: 300
   exec_timeout: 1800               # per target model call, seconds
   fail_reason_style: checks        # failure text for the analysts: checks | legacy
-  fill_app_descriptions: true      # fill {{ app_descriptions }} in the prompt; false = runs before this option
   limit: 0

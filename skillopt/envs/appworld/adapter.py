@@ -31,10 +31,6 @@ class AppWorldAdapter(EnvAdapter):
     fail_reason_style : str
         Failure text given to the analysts: ``checks`` (default) leads with AppWorld's failed
         checks; ``legacy`` reproduces the original text that opened with the stop reason.
-    fill_app_descriptions : bool
-        Fill ``{{ app_descriptions }}`` in the react_code prompt with AppWorld's app list, as
-        AppWorld's own agent does (default). ``False`` leaves the placeholder as literal text,
-        which reproduces runs made before this option existed.
     """
 
     def __init__(
@@ -58,7 +54,6 @@ class AppWorldAdapter(EnvAdapter):
         server_request_timeout: float = 300.0,
         exec_timeout: int = 1800,
         fail_reason_style: str = "checks",
-        fill_app_descriptions: bool = True,
         analyst_workers: int = 16,
         failure_only: bool = False,
         minibatch_size: int = 8,
@@ -77,9 +72,6 @@ class AppWorldAdapter(EnvAdapter):
         if fail_reason_style not in ("checks", "legacy"):
             raise ValueError(f"fail_reason_style must be 'checks' or 'legacy', got {fail_reason_style!r}")
         self.fail_reason_style = fail_reason_style
-        if isinstance(fill_app_descriptions, str):
-            fill_app_descriptions = fill_app_descriptions.strip().lower() in ("true", "1", "yes")
-        self.fill_app_descriptions = bool(fill_app_descriptions)
         self.analyst_workers = analyst_workers
         self.failure_only = failure_only
         self.minibatch_size = minibatch_size
@@ -137,7 +129,6 @@ class AppWorldAdapter(EnvAdapter):
             request_timeout=self.server_request_timeout,
             call_timeout=self.exec_timeout,
             fail_reason_style=self.fail_reason_style,
-            fill_app_descriptions=self.fill_app_descriptions,
         )
         with open(results_path, "w", encoding="utf-8") as f:
             for result in results:

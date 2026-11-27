@@ -212,13 +212,18 @@ def test_grading_without_a_tracker_is_an_infrastructure_failure() -> None:
 def test_initial_messages_fill_the_official_react_prompt() -> None:
     info = {"instruction": "Like my top song.", "datetime": "2023-05-18T12:00:00",
             "supervisor": {"first_name": "Ann", "last_name": "Lee", "email": "ann@x.com", "phone_number": "555"}}
-    system, user = initial_messages(info, REACT_PROMPT_PATH.read_text(), budget=50)
+    system, user = initial_messages(info, REACT_PROMPT_PATH.read_text(), budget=50, app_descriptions="[]")
     assert system["role"] == "system" and user["role"] == "user"
     assert user["content"].startswith("Like my top song.\n\n")
-    assert "{{ main_user" not in user["content"] and "{{ instruction" not in user["content"]
-    assert "Ann" in user["content"]
+    assert "{{" not in user["content"] and "Ann" in user["content"]
     assert user["content"].endswith("You have at most 50 tool calls.")
-    assert "{{ app_descriptions }}" in user["content"]  # left as is unless app descriptions are given
+
+
+def test_a_placeholder_with_no_value_raises() -> None:
+    info = {"instruction": "x", "datetime": "d",
+            "supervisor": {"first_name": "A", "last_name": "B", "email": "e", "phone_number": "p"}}
+    with pytest.raises(ValueError, match="new_field"):
+        initial_messages(info, "Hi {{ new_field }}", 50, app_descriptions="[]")
 
 
 def test_initial_messages_fill_the_app_descriptions() -> None:
@@ -248,7 +253,3 @@ def test_load_app_descriptions_fails_loudly(tmp_path: Path, stdout: str, rc: int
     with pytest.raises((RuntimeError, ValueError)):
         load_app_descriptions(_fake_venv(tmp_path, stdout, rc))
 
-
-def test_adapter_reads_fill_app_descriptions_from_strings() -> None:
-    assert AppWorldAdapter(fill_app_descriptions="false").fill_app_descriptions is False
-    assert AppWorldAdapter().fill_app_descriptions is True

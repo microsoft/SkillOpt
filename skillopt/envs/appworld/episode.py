@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -92,8 +93,6 @@ TOOLS = [{"type": "function", "function": {
     "name": "execute_code", "description": EXECUTE_CODE_DESCRIPTION, "parameters": dict(EXECUTE_CODE_SCHEMA)}}]
 
 
-APP_DESCRIPTIONS_PLACEHOLDER = "{{ app_descriptions }}"
-
 # Runs in AppWorld's own venv. Every AppWorld task allows the same apps
 # (Task.load: get_all_apps(skip_admin=True)), so this equals task.app_descriptions for any task.
 _APP_DESCRIPTIONS_SCRIPT = (
@@ -120,23 +119,25 @@ def load_app_descriptions(venv: Path) -> str:
     return text
 
 
-def render_react_prompt(template: str, info: dict[str, Any], budget: int,
-                        app_descriptions: str | None = None) -> str:
+def render_react_prompt(template: str, info: dict[str, Any], budget: int, *, app_descriptions: str) -> str:
     """Fill the official react_code prompt and append the closing lines.
 
-    ``app_descriptions=None`` leaves ``{{ app_descriptions }}`` in the prompt as literal text, which
-    is how runs before ``env.fill_app_descriptions`` existed saw it."""
+    ``app_descriptions`` is ``load_app_descriptions(venv)``. A placeholder in the template with no
+    value raises, so a template change cannot silently leave one in the prompt."""
     supervisor = info["supervisor"]
-    filled = template
-    if app_descriptions is not None:
-        filled = filled.replace(APP_DESCRIPTIONS_PLACEHOLDER, app_descriptions)
-    for key, value in (
+    values = (
         ("{{ instruction }}", info["instruction"]),
         ("{{ main_user.first_name }}", supervisor["first_name"]),
         ("{{ main_user.last_name }}", supervisor["last_name"]),
         ("{{ main_user.email }}", supervisor["email"]),
         ("{{ main_user.phone_number }}", supervisor["phone_number"]),
-    ):
+        ("{{ app_descriptions }}", app_descriptions),
+    )
+    unfilled = set(re.findall(r"\{\{.*?\}\}", template)) - {key for key, _ in values}
+    if unfilled:
+        raise ValueError(f"react prompt placeholders with no value: {sorted(unfilled)}")
+    filled = template
+    for key, value in values:
         filled = filled.replace(key, str(value))
     return (
         filled.rstrip()
@@ -148,12 +149,12 @@ def render_react_prompt(template: str, info: dict[str, Any], budget: int,
     )
 
 
-def initial_messages(info: dict[str, Any], template: str, budget: int = MAX_STEPS,
-                     app_descriptions: str | None = None) -> list[dict]:
+def initial_messages(info: dict[str, Any], template: str, budget: int = MAX_STEPS, *,
+                     app_descriptions: str) -> list[dict]:
     """System prompt, then the task instruction followed by the rendered react_code prompt."""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": info["instruction"] + "\n\n" + render_react_prompt(template, info, budget, app_descriptions)},
+        {"role": "user", "content": info["instruction"] + "\n\n" + render_react_prompt(template, info, budget, app_descriptions=app_descriptions)},
     ]
 
 
@@ -250,7 +251,7 @@ def state_fingerprint(root: Path, experiment: str, task_id: str) -> str | None:
 
 def run_episode(chat: ChatModel, server: AppWorldServer, task_id: str, experiment: str,
                 template: str | None = None, max_steps: int = MAX_STEPS,
-                token_wall: int = EPISODE_TOKEN_WALL, app_descriptions: str | None = None) -> Episode:
+                token_wall: int = EPISODE_TOKEN_WALL, *, app_descriptions: str) -> Episode:
     """Run one task to the end and grade it."""
     template = template if template is not None else REACT_PROMPT_PATH.read_text()
     info = server.post("/initialize", {
@@ -258,7 +259,7 @@ def run_episode(chat: ChatModel, server: AppWorldServer, task_id: str, experimen
         "max_interactions": max_steps, "timeout_seconds": INITIALIZE_TIMEOUT_S,
         "load_ground_truth": False, "random_seed": INITIALIZE_RANDOM_SEED,
         "include_direct_functions": False})
-    episode = Episode(task_id=task_id, messages=initial_messages(info, template, max_steps, app_descriptions))
+    episode = Episode(task_id=task_id, messages=initial_messages(info, template, max_steps, app_descriptions=app_descriptions))
     episode.initial_state_sha256 = state_fingerprint(server.root, experiment, task_id)
     tokens_left = token_wall
     started = time.monotonic()

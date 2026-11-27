@@ -350,7 +350,7 @@ def _fail_reason_legacy(episode: Any) -> str:
 
 def _run_one(item: dict, *, pool: ServerPool, chat: SkillOptChat, experiment: str, template: str,
              max_steps: int, token_wall: int, out_root: Path,
-             fail_reason_style: str = "checks", app_descriptions: str | None = None) -> tuple[dict, dict]:
+             app_descriptions: str, fail_reason_style: str = "checks") -> tuple[dict, dict]:
     task_id = str(item["task_id"])
     server = pool.acquire()
     healthy = True
@@ -439,7 +439,6 @@ def run_batch(
     request_timeout: float,
     call_timeout: int | None,
     fail_reason_style: str = "checks",
-    fill_app_descriptions: bool = True,
 ) -> list[dict]:
     if fail_reason_style not in FAIL_REASON_STYLES:
         raise ValueError(f"fail_reason_style must be one of {FAIL_REASON_STYLES}, got {fail_reason_style!r}")
@@ -456,7 +455,7 @@ def run_batch(
     # one AppWorld experiment per rollout directory, so repeated tasks never share state
     experiment = "skillopt-" + hashlib.sha1(str(out.resolve()).encode()).hexdigest()[:16]
     template = REACT_PROMPT_PATH.read_text()
-    app_descriptions = load_app_descriptions(venv) if fill_app_descriptions else None
+    app_descriptions = load_app_descriptions(venv)  # the prompt's app list; a broken venv stops here
     chat = SkillOptChat(build_skill_suffix(skill_content), max_completion_tokens, call_timeout)
     token_wall = int(episode_token_wall) if int(episode_token_wall or 0) > 0 else UNLIMITED_TOKEN_WALL
     size = max(1, min(int(workers), len(items)))

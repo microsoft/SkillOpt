@@ -14,8 +14,7 @@ All notable changes to SkillOpt are documented here. This project adheres to
   tests passed). Splits are built locally with
   `python -m skillopt.envs.appworld.make_split` (train 90, val = dev 57, test =
   test_normal + test_challenge 585); task instructions are not shipped.
-  `env.fail_reason_style` selects the failure text given to the analysts, and
-  `env.fill_app_descriptions` (default on) fills the prompt's app list. Four
+  `env.fail_reason_style` selects the failure text given to the analysts. Four
   Qwen3.8-27B configs cover gated, force-accepted and disabled slow update and
   the ungated "Accept Every Edit" setting; results are in
   `docs/guide/appworld.md`.

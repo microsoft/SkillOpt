@@ -10,7 +10,7 @@ SkillOpt's AppWorld environment runs the official `react_code` protocol:
 
 The skill is appended to the system prompt under `## Skill Knowledge`. An empty skill sends the official prompt unchanged.
 
-The prompt's placeholders are filled the way AppWorld's own `react_code` agent fills them: the task instruction, the supervisor's name, email and phone, and `{{ app_descriptions }}` (the app list, read once from the AppWorld venv). `env.fill_app_descriptions: false` leaves `{{ app_descriptions }}` as literal text. Use it only to reproduce runs made before this option existed.
+The prompt's placeholders are filled the way AppWorld's own `react_code` agent fills them: the task instruction, the supervisor's name, email and phone, and `{{ app_descriptions }}` (the app list, read once from the AppWorld venv at startup; a venv that cannot produce it stops the run).
 
 ## Install
 
@@ -90,7 +90,7 @@ These are single runs with Qwen3.8-27B (FP8) as both target and optimizer, think
 
 Notes:
 
-- **Prompt and failure text.** These runs predate both options, so they correspond to `fill_app_descriptions: false` and `fail_reason_style: legacy`. In them, the few-shot example showed `{{ app_descriptions }}` as literal text where the app list should be. The defaults now fill the app list and use `checks`. Expect scores under the defaults to differ.
+- **Prompt and failure text.** These runs were made with an earlier version of this environment, which left `{{ app_descriptions }}` unfilled: the few-shot example showed that literal text where the app list should be. They also used `fail_reason_style: legacy`. This code fills the app list, and its default failure text is `checks`, so expect scores to differ.
 - **Code versions.** The Gated, turned-off and Accept-Every-Edit runs predate #408, and the Force-accept run includes #408 and #422.
 - **Ties.** Where Last equals Best, it is the same skill and was tested once.
 - **Infrastructure failures.** They count as failures. This affected 3 tasks in Accept Every Edit / Best.
