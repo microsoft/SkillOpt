@@ -145,6 +145,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- DocVQA keeps a plain gold answer as written in the split CSV. The loader ran
+  `ast.literal_eval` on every answer, so `2,000,000` became the tuple text
+  `(2, 0, 0)`, `1,234` became `(1, 234)`, `0.50` became `0.5` and `1e3`
+  became `1000.0`, and a correct prediction lost its ANLS credit. Only a list
+  literal or a quoted string is now evaluated (thanks @Shizoqua).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
