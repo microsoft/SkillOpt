@@ -145,6 +145,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- SearchQA scores a gold answer stored as an integral float, such as
+  `1776.0` from a JSON float column, as the integer it is. The answer was
+  compared as the text `1776.0`, which normalizes to `17760`, so a correct
+  `1776` scored 0 on EM and F1. Integral floats are now written as `1776`,
+  as the OfficeQA loader already does (thanks @Shizoqua).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
