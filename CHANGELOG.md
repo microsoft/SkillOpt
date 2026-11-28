@@ -154,6 +154,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- **SkillOpt-Sleep keeps learned rules after a stray end marker.**
+  `extract_learned` read up to the first `LEARNED END` marker anywhere in the
+  document, so an END marker before the learned block made the block read as
+  empty and the next edit rewrote it without the adopted rules. It now reads to
+  the first END marker after the START marker. (thanks @leninworld)
 - `scripts/train.py` accepts `--slow_update_gate_with_selection`. The config key
   `optimizer.slow_update_gate_with_selection` exists, but the flag was never
   added, so `--slow_update_gate_with_selection true` failed with an

@@ -35,6 +35,22 @@ def _add(content: str) -> EditRecord:
     return EditRecord(target="skill", op="add", content=content)
 
 
+def test_stray_end_before_learned_block_does_not_drop_adopted_rules() -> None:
+    doc = LEARNED_END + "\nstray\n" + set_learned(
+        "# Skill", ["Keep tests deterministic"]
+    )
+    assert current_learned_lines(doc) == ["Keep tests deterministic"]
+
+    new_doc, applied, unmatched = apply_edits_detailed(doc, [_add("Run ruff")])
+
+    assert len(applied) == 1 and unmatched == []
+    assert "Keep tests deterministic" in new_doc
+    assert current_learned_lines(new_doc) == [
+        "Keep tests deterministic",
+        "Run ruff",
+    ]
+
+
 def test_legacy_multi_line_item_survives_the_next_edit() -> None:
     doc = _legacy_doc(
         "Always run tests before committing",
