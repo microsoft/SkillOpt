@@ -334,6 +334,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
   cached as the answer, so a re-score after the API recovered got the cached
   error back. The call now returns an empty response and records the error in
   `last_call_error`, like the Pi, Codex and Cursor backends (#443).
+- SkillOpt-Sleep matches feedback phrases as whole words. `_detect_feedback`
+  tested `phrase in text`, so `no,` fired inside `piano,`, `undo` inside
+  `undoes`, `correct` inside `incorrect` and `nice` inside `Venice`, and an
+  ordinary request could be mined as a failed task. Phrases now match on word
+  boundaries, a positive phrase inside a negative one (`fixed` in `not fixed`)
+  or directly after a negation (`no thanks`, `not great`) no longer counts as
+  approval, and curly apostrophes are normalized so `didn’t` is detected
+  (thanks @Vidwaansinghania, #457).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
