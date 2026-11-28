@@ -33,3 +33,29 @@ def test_partial_answer_with_trailing_period_gets_token_credit():
 
     assert result["em"] == 0.0
     assert result["f1"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("prediction", "gold"),
+    [
+        ("$1,234.00", "1234"),
+        ("5.20", "5.2"),
+        ("12.50%", "12.5%"),
+        (".5", "0.5"),
+        ("-.5", "-0.5"),
+        ("1,234.50 million", "1234.5"),
+    ],
+)
+def test_equal_numbers_written_differently_match(prediction, gold):
+    result = evaluate(prediction, gold)
+
+    assert result["em"] == 1.0
+    assert result["f1"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("prediction", "gold"),
+    [("5.02", "5.2"), ("1234.01", "1234"), ("50", "5"), ("0.05", "0.5")],
+)
+def test_different_numbers_still_do_not_match(prediction, gold):
+    assert evaluate(prediction, gold)["em"] == 0.0

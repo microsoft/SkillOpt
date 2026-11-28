@@ -6,6 +6,19 @@ from collections import Counter
 
 
 _NUMERIC_CHARS = set("0123456789.-")
+# A decimal number token, optionally signed and with a percent sign: "-.50", "12.50%".
+_DECIMAL_RE = re.compile(r"(-?)(\d*)\.(\d+)(%?)")
+
+
+def _canonical_number(token: str) -> str:
+    """Write a decimal number one way: "1234.00" -> "1234", "5.20" -> "5.2", ".5" -> "0.5"."""
+    match = _DECIMAL_RE.fullmatch(token)
+    if not match:
+        return token
+    sign, whole, fraction, percent = match.groups()
+    whole = whole.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    return f"{sign}{whole}{'.' + fraction if fraction else ''}{percent}"
 
 
 def normalize_answer(text: str) -> str:
@@ -15,7 +28,8 @@ def normalize_answer(text: str) -> str:
     # "." is kept for decimals; a period not followed by a digit is sentence punctuation.
     text = re.sub(r"\.(?!\d)", "", text)
     text = re.sub(r"\b(million|millions|billion|billions|dollars|dollar|nominal)\b", " ", text)
-    text = " ".join(text.split())
+    # Equal numbers compare equal however many trailing zeros they are written with.
+    text = " ".join(_canonical_number(token) for token in text.split())
     return text
 
 
