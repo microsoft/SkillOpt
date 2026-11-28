@@ -174,6 +174,8 @@ forwarded consistently to both SDK and CLI execution paths.
 | `optimizer.slow_update_samples` | int | `20` | Longitudinal evaluation samples |
 | `optimizer.slow_update_gate_with_selection` | bool | `false` | Gate slow-update guidance on the selection split (paper setting: `true`); `false` writes it unconditionally and re-measures the current skill with one selection rollout per epoch boundary |
 | `optimizer.longitudinal_pair_policy` | str | `mixed` | `mixed`, `changed`, or `unchanged` |
+| `optimizer.longitudinal_traj_char_budget` | int | `0` | Total characters of the trajectories shown to the slow update and meta skill; `0` shows them in full, `>0` middle-clips the longest ones to a common cap |
+| `optimizer.longitudinal_parse_retries` | int | `0` | Extra slow-update / meta-skill calls when the answer has no parsable content; a failed call is not retried |
 | `optimizer.use_meta_skill` | bool | `true` | Cross-epoch optimizer memory |
 | `optimizer.use_skill_aware_reflection` | bool | `false` | Enable skill-defect vs execution-lapse routing |
 | `optimizer.skill_aware_appendix_source` | str | `both` | `both` or `failure_only` |

@@ -295,6 +295,8 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--slow_update_gate_with_selection", type=_BOOL)
     p.add_argument("--longitudinal_pair_policy", type=str,
                    choices=["mixed", "changed", "unchanged"])
+    p.add_argument("--longitudinal_traj_char_budget", type=int)
+    p.add_argument("--longitudinal_parse_retries", type=int)
     p.add_argument("--use_meta_skill", type=_BOOL)
     p.add_argument("--use_skill_aware_reflection", type=_BOOL)
     p.add_argument("--skill_aware_appendix_source", type=str,
@@ -511,6 +513,8 @@ _LEGACY_TO_STRUCTURED: dict[str, str] = {
     "slow_update_samples": "optimizer.slow_update_samples",
     "slow_update_gate_with_selection": "optimizer.slow_update_gate_with_selection",
     "longitudinal_pair_policy": "optimizer.longitudinal_pair_policy",
+    "longitudinal_traj_char_budget": "optimizer.longitudinal_traj_char_budget",
+    "longitudinal_parse_retries": "optimizer.longitudinal_parse_retries",
     "use_meta_skill": "optimizer.use_meta_skill",
     "use_skill_aware_reflection": "optimizer.use_skill_aware_reflection",
     "skill_aware_appendix_source": "optimizer.skill_aware_appendix_source",

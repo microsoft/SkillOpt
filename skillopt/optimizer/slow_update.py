@@ -113,6 +113,39 @@ def _clip_text(value, limit: int | None = None) -> str:
     return str(value)
 
 
+def _clip_middle(text: str, limit: int) -> str:
+    """Keep the head and tail of ``text`` within ``limit`` chars.
+
+    The head carries the task and API discovery, the tail the final actions and
+    the verification outcome; the dropped middle is marked with its size.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return text
+    marker = "\n[... {n} chars omitted to fit the optimizer context ...]\n"
+    keep = max(limit - len(marker.format(n=len(text))), 0)
+    head = keep // 2
+    tail = keep - head
+    omitted = len(text) - head - tail
+    return text[:head] + marker.format(n=omitted) + (text[-tail:] if tail else "")
+
+
+def _fair_caps(lengths: list[int], budget: int) -> int:
+    """Return one per-item cap so that sum(min(len, cap)) <= budget (water-filling).
+
+    Short items keep their full length; only the longest ones are clipped.
+    """
+    if sum(lengths) <= budget:
+        return max(lengths, default=0)
+    remaining = budget
+    ordered = sorted(lengths)
+    for i, n in enumerate(ordered):
+        share = remaining // (len(ordered) - i)
+        if n > share:
+            return share
+        remaining -= n
+    return max(ordered, default=0)
+
+
 def _read_trajectory(rollout_dir: str, task_id: str) -> str:
     """Read and format a single trajectory from a rollout directory."""
     segment = task_output_segment(task_id, map_unsafe=True)
@@ -284,8 +317,27 @@ def save_comparison_pairs(pairs: list[dict], out_path: str) -> None:
         json.dump(slim, f, ensure_ascii=False, indent=2)
 
 
-def format_comparison_text(pairs: list[dict]) -> str:
-    """Format structured comparison pairs into optimizer-readable text."""
+def format_comparison_text(pairs: list[dict], traj_char_budget: int = 0) -> str:
+    """Format structured comparison pairs into optimizer-readable text.
+
+    ``traj_char_budget`` (``optimizer.longitudinal_traj_char_budget``): 0 shows
+    every trajectory at full length. >0 gives the shown trajectories together at
+    most this many chars; the longest ones are middle-clipped to a common cap
+    (see ``_fair_caps``) and short ones stay whole.
+    """
+    traj_cap = 0
+    if traj_char_budget and traj_char_budget > 0:
+        shown = [
+            len(p[k]) for p in pairs
+            if p.get("category") in ("regressed", "persistent_fail", "improved")
+            for k in ("prev_trajectory", "curr_trajectory") if p.get(k)
+        ]
+        if sum(shown) > traj_char_budget:
+            traj_cap = _fair_caps(shown, traj_char_budget)
+            print(
+                f"    [longitudinal] {len(shown)} trajectories, {sum(shown)} chars "
+                f"> budget {traj_char_budget}; middle-clipping each to <= {traj_cap} chars"
+            )
     by_cat: dict[str, list[dict]] = {
         "regressed": [],
         "persistent_fail": [],
@@ -337,11 +389,11 @@ def format_comparison_text(pairs: list[dict]) -> str:
             if show_traj:
                 if e.get("prev_trajectory"):
                     lines.append(
-                        f"\n**Previous epoch trajectory:**\n```\n{e['prev_trajectory']}\n```"
+                        f"\n**Previous epoch trajectory:**\n```\n{_clip_middle(e['prev_trajectory'], traj_cap)}\n```"
                     )
                 if e.get("curr_trajectory"):
                     lines.append(
-                        f"\n**Current epoch trajectory:**\n```\n{e['curr_trajectory']}\n```"
+                        f"\n**Current epoch trajectory:**\n```\n{_clip_middle(e['curr_trajectory'], traj_cap)}\n```"
                     )
 
         parts.append("\n".join(lines))
@@ -365,8 +417,15 @@ def run_slow_update(
     curr_rollout_dir: str = "",
     comparison_pairs: list[dict] | None = None,
     system_prompt: str | None = None,
+    traj_char_budget: int = 0,
+    parse_retries: int = 0,
 ) -> dict | None:
     """Run the slow update optimizer call for one epoch boundary.
+
+    ``traj_char_budget`` caps the trajectories in the comparison text (0 =
+    unlimited). ``parse_retries`` re-asks when the answer has no parsable content
+    (0 = a single attempt). A failed optimizer call is still logged and returns
+    None.
 
     Parameters
     ----------
@@ -404,7 +463,7 @@ def run_slow_update(
             prev_rollout_dir=prev_rollout_dir,
             curr_rollout_dir=curr_rollout_dir,
         )
-    comparison_text = format_comparison_text(pairs)
+    comparison_text = format_comparison_text(pairs, traj_char_budget=traj_char_budget)
 
     prev_guidance_section = (
         prev_slow_update_content.strip()
@@ -423,21 +482,28 @@ def run_slow_update(
         f"{comparison_text}"
     )
 
-    try:
-        response, _ = chat_optimizer(
-            system=actual_system,
-            user=user,
-            max_completion_tokens=16384,
-            retries=3,
-            stage="slow_update",
-        )
-        result = extract_json(response)
-        if result and result.get("slow_update_content"):
-            return {
-                "reasoning": str(result.get("reasoning", "")).strip(),
-                "slow_update_content": str(result["slow_update_content"]).strip(),
-            }
-    except Exception:  # noqa: BLE001
-        traceback.print_exc()
+    for attempt in range(1 + max(int(parse_retries or 0), 0)):
+        try:
+            response, _ = chat_optimizer(
+                system=actual_system,
+                user=user,
+                max_completion_tokens=16384,
+                retries=3,
+                stage="slow_update",
+            )
+            result = extract_json(response)
+            if result and result.get("slow_update_content"):
+                return {
+                    "reasoning": str(result.get("reasoning", "")).strip(),
+                    "slow_update_content": str(result["slow_update_content"]).strip(),
+                }
+            if parse_retries:
+                print(
+                    f"    [slow update] attempt {attempt + 1}: no parsable "
+                    f"slow_update_content ({len(response or '')} chars returned)"
+                )
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            break
 
     return None

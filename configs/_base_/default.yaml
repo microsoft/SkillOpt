@@ -99,6 +99,8 @@ optimizer:
   use_slow_update: true
   slow_update_samples: 20
   slow_update_gate_with_selection: false
+  longitudinal_traj_char_budget: 0   # 0 = full trajectories; >0 = cap total chars of the slow-update/meta-skill comparison trajectories
+  longitudinal_parse_retries: 0      # extra slow-update/meta-skill calls when the answer has no parsable content
   longitudinal_pair_policy: mixed  # mixed / changed / unchanged
   use_meta_skill: true
   use_skill_aware_reflection: false  # EmbodiSkill: split failures into SKILL_DEFECT (edit body) vs EXECUTION_LAPSE (protected appendix)

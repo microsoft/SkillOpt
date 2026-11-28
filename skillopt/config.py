@@ -161,6 +161,8 @@ _FLATTEN_MAP: dict[str, str] = {
     "optimizer.use_slow_update": "use_slow_update",
     "optimizer.slow_update_samples": "slow_update_samples",
     "optimizer.slow_update_gate_with_selection": "slow_update_gate_with_selection",
+    "optimizer.longitudinal_traj_char_budget": "longitudinal_traj_char_budget",
+    "optimizer.longitudinal_parse_retries": "longitudinal_parse_retries",
     "optimizer.longitudinal_pair_policy": "longitudinal_pair_policy",
     "optimizer.use_meta_skill": "use_meta_skill",
     "optimizer.use_skill_aware_reflection": "use_skill_aware_reflection",
