@@ -71,6 +71,7 @@ class LinearScheduler(LRScheduler):
     def _compute_lr(self, step: int) -> int:
         if self.total_steps <= 1:
             return self.max_lr
+        step = max(0, step)
         t = min(step, self.total_steps) / self.total_steps
         lr = self.max_lr + (self.min_lr - self.max_lr) * t
         return max(self.min_lr, round(lr))
@@ -87,6 +88,7 @@ class CosineScheduler(LRScheduler):
     def _compute_lr(self, step: int) -> int:
         if self.total_steps <= 1:
             return self.max_lr
+        step = max(0, step)
         t = min(step, self.total_steps) / self.total_steps
         lr = self.min_lr + 0.5 * (self.max_lr - self.min_lr) * (1 + math.cos(math.pi * t))
         return max(self.min_lr, round(lr))
@@ -111,11 +113,16 @@ _REGISTRY: dict[str, type[LRScheduler]] = {
 }
 
 
+_DEFAULT_MAX_LR = 8
+_DEFAULT_MIN_LR = 2
+_DEFAULT_TOTAL_STEPS = 8
+
+
 def build_scheduler(
     mode: str = "constant",
-    max_lr: int = 8,
-    min_lr: int = 2,
-    total_steps: int = 8,
+    max_lr: int = _DEFAULT_MAX_LR,
+    min_lr: int = _DEFAULT_MIN_LR,
+    total_steps: int = _DEFAULT_TOTAL_STEPS,
 ) -> LRScheduler:
     """Build a scheduler from config parameters.
 
@@ -130,8 +137,14 @@ def build_scheduler(
     total_steps : int
         Total number of optimization steps in training.
     """
-    if mode not in _REGISTRY:
+    norm_mode = str(mode or "constant").strip().lower()
+    if norm_mode not in _REGISTRY:
         raise ValueError(
             f"Unknown scheduler mode '{mode}'. Available: {list(_REGISTRY.keys())}"
         )
-    return _REGISTRY[mode](max_lr=max_lr, min_lr=min_lr, total_steps=total_steps)
+    safe_max_lr = int(max_lr) if max_lr is not None else _DEFAULT_MAX_LR
+    safe_min_lr = int(min_lr) if min_lr is not None else _DEFAULT_MIN_LR
+    safe_total_steps = int(total_steps) if total_steps is not None else _DEFAULT_TOTAL_STEPS
+    return _REGISTRY[norm_mode](
+        max_lr=safe_max_lr, min_lr=safe_min_lr, total_steps=safe_total_steps
+    )
