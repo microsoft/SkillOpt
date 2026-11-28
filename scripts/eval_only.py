@@ -736,21 +736,32 @@ def main() -> None:
     split = args.split or "all"
 
     if split == "all":
-        items = (
-            adapter.build_eval_env(0, "train", seed)
-            + adapter.build_eval_env(0, "valid_seen", seed)
-            + adapter.build_eval_env(0, "valid_unseen", seed)
-        )
+        envs = [
+            (name, adapter.build_eval_env(0, name, seed))
+            for name in ("train", "valid_seen", "valid_unseen")
+        ]
+        try:
+            envs = [(split, envs[0][1] + envs[1][1] + envs[2][1])]
+        except TypeError:
+            # An ALFWorld batch cannot be joined; roll out each split below.
+            pass
     else:
         env_num = cfg.get("test_env_num", 0)
-        items = adapter.build_eval_env(env_num, split, seed)
+        envs = [(split, adapter.build_eval_env(env_num, split, seed))]
 
-    print(f"\n  [eval] split={split}  items={len(items)}")
+    print(f"\n  [eval] split={split}  items={sum(len(env) for _, env in envs)}")
     print(f"  [eval] out_root={out_root}")
     print(f"{'='*60}")
 
-    # Run rollout
-    results = adapter.rollout(items, skill_content, out_root)
+    # Run rollout. Splits that could not be joined are rolled out one by one,
+    # each into its own folder, since ALFWorld resumes from an existing
+    # <out_dir>/results.jsonl.
+    if len(envs) == 1:
+        results = adapter.rollout(envs[0][1], skill_content, out_root)
+    else:
+        results = []
+        for name, env in envs:
+            results.extend(adapter.rollout(env, skill_content, os.path.join(out_root, name)))
 
     # Score
     hard, soft = compute_score(results)

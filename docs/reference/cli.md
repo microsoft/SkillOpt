@@ -57,7 +57,7 @@ skillopt-eval --config <config.yaml> --skill <skill.md>
 |---|---|
 | `--config` | Path to YAML config file (required) |
 | `--skill` | Path to skill document to evaluate (required) |
-| `--split` | `train`, `valid_seen`, `valid_unseen`, or `all` (default) |
+| `--split` | `train`, `valid_seen`, `valid_unseen`, or `all` (default). With `all`, ALFWorld writes each split's `results.jsonl` to its own `train/`, `valid_seen/` and `valid_unseen/` folder under the output root; `eval_summary.json` covers all three |
 | `--cfg-options` | One or more `section.key=value` overrides |
 
 ### Examples

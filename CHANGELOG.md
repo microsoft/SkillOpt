@@ -273,6 +273,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   `--full-auto` flag (thanks @RohithPariki, #220).
 - Preserve fractional rollout hard scores instead of coercing them to binary
   values (thanks @zixuanguo786-ctrl, #104).
+- `skillopt-eval` no longer crashes on ALFWorld with its default `--split all`.
+  The three splits were joined with `+`, but ALFWorld returns a batch object,
+  so the command raised a `TypeError` before any rollout. Splits that cannot
+  be joined are now rolled out one by one, each into its own folder because
+  ALFWorld resumes from an existing `results.jsonl`. Anything that could be
+  joined before still runs as one rollout (#466).
 - Reject duplicate and overlapping IDs while materializing SearchQA manifests
   (thanks @zixuanguo786-ctrl, #105).
 - Make JSON-array extraction robust to unmatched braces and keep malformed
