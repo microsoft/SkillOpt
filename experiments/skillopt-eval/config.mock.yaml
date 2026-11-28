@@ -1,0 +1,21 @@
+# Offline dry-run of the controlled experiment pipeline.
+# Deterministic: no model calls, no network, runs anywhere (incl. Windows).
+# This proves the harness end-to-end; it says NOTHING about real model
+# behavior. See README.md for the real-run config.
+name: skillopt-eval-mock
+skill: verification-before-completion
+runner: mock
+model: mock-deterministic
+seed: 0
+
+# 5 scenarios in the verification-before-completion pack
+train: 1
+validation: 2
+test: 2
+seeds_per_task: 1
+
+optimize_steps: 3
+learning_rate: 1.0
+
+baseline_skill: fixtures/baseline_SKILL.md
+output_dir: results-mock
