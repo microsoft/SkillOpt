@@ -243,6 +243,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - `insert_after` with a target that ends in a newline now inserts right
   after that line instead of after the next one, which could file the new
   text under the following heading or inside a protected region (#407).
+- `skillopt-train` masks the provider API keys it writes to `config.json` and
+  `summary.json`. Only `azure_api_key`, `api_key` and `openai_api_key` were
+  masked, so `azure_openai_api_key`, `qwen_chat_api_key`, `minimax_api_key`,
+  `openai_compatible_api_key` and the role-specific Azure, Qwen and
+  OpenAI-compatible keys set in the YAML or with `--cfg-options` were written
+  in plaintext, including the copy `load_config` makes of a legacy
+  `azure_api_key`. Keys ending in `api_key`, `token`, `secret` or `password`
+  are now masked, also inside a nested section (#453).
 - A flat `--cfg-options` key for an `env` setting (for example `workers=4`)
   now overrides the YAML value with a structured config instead of being
   silently replaced by it (#409).
