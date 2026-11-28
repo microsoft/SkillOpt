@@ -48,6 +48,36 @@ Trigger when the user wants any of:
    live-file replacement.
 6. **Adopt** — explicit (or opt-in auto): copy staged files over live ones, backing up first.
 
+## Natural-language optimization
+
+When the user asks to improve, optimize, or learn from their recent agent sessions, treat the request as a SkillOpt-Sleep optimization request rather than asking the user to construct CLI arguments manually.
+
+Translate the user's request into the existing SkillOpt-Sleep options:
+
+* Use `run` for a complete optimization cycle.
+* Use `dry-run` when the user wants to preview changes without staging them.
+* Use `harvest` when the user explicitly asks to inspect or extract tasks from recent sessions.
+* Use `status` when the user asks what proposals or state currently exist.
+* Use `adopt` only after the user has reviewed or explicitly requested adoption.
+* Use `schedule` when the user asks for recurring optimization.
+
+Infer only constraints that are clear from the user's request. Preserve the existing defaults for unspecified options.
+
+Examples:
+
+* "Improve my skill using mistakes from my recent sessions" → `run`
+* "Show me what could be improved from this week's sessions" → `dry-run`
+* "Optimize only my Python skill" → `run` with the appropriate target skill/path when it can be identified safely.
+* "Optimize everything I use" → `run` with the broader configured scope.
+* "Run this every night" → `schedule`
+* "Apply the changes from the last optimization" → `adopt`
+
+For ambiguous requests, prefer `dry-run` rather than making live changes.
+
+Always report the optimization result in terms of baseline score, candidate score, gate decision, accepted/rejected edits, and staging location when available.
+
+Never modify live skill files directly. The SkillOpt-Sleep engine must perform staging and adoption so that backups and validation remain intact.
+
 ## How to drive it
 
 Prefer the `/skillopt-sleep` command. Under the hood it calls the bundled runner:
