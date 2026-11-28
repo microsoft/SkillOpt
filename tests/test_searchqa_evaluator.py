@@ -65,3 +65,19 @@ def test_numeric_gold_answer_does_not_match_a_different_number():
     result = evaluate("<answer>1775</answer>", [1776])
 
     assert result["em"] == result["f1"] == result["sub_em"] == 0.0
+
+
+@pytest.mark.parametrize("gold", [[1776.0], 1776.0, ["1776", 1776.0]])
+def test_integral_float_gold_answer_is_scored_as_the_integer(gold):
+    result = evaluate("<answer>1776</answer>", gold)
+
+    assert result["em"] == result["f1"] == result["sub_em"] == 1.0
+
+
+def test_integral_float_gold_answer_is_recorded_as_the_integer():
+    assert evaluate("<answer>1776</answer>", [1776.0])["gold_answers"] == ["1776"]
+
+
+@pytest.mark.parametrize(("gold", "text"), [(2.5, "2.5"), (-3.0, "-3"), (True, "True")])
+def test_other_numbers_keep_their_text(gold, text):
+    assert evaluate("<answer>x</answer>", [gold])["gold_answers"] == [text]

@@ -8,9 +8,18 @@ from skillopt.datasets.base import SplitDataLoader
 
 
 def _parse_answers(raw: str) -> list[str]:
+    """Return the gold answers of a CSV row.
+
+    The answer column holds a list literal (``['1,234', '1234']``), a quoted
+    string, or one plain answer. Only a list or quoted literal is evaluated: a
+    plain answer such as ``1,234`` or ``0.50`` would otherwise become the tuple
+    ``(1, 234)`` or the float ``0.5``.
+    """
     text = str(raw or "").strip()
     if not text:
         return []
+    if text[0] not in "[\"'":
+        return [text]
     try:
         parsed = ast.literal_eval(text)
     except Exception:

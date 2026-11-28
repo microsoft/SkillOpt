@@ -60,9 +60,11 @@ def _build_eval_feedback(verify_report: str) -> str:
         raw_line = raw_line.strip()
         if not raw_line:
             continue
-        # Match enrichment lines like "  Sheet1!D2: got=None, expected=0 ✗"
+        # Match enrichment lines like "  Sheet1!D2: got=None, expected=0 ✗".
+        # A sheet name may contain spaces ("Sales Data!D2"), so the cell is
+        # everything up to the first "!<column><row>:".
         m = re.match(
-            r"(\S+!?\w+):\s*got=(.+?),\s*expected=.+?\s*(✓|✗)$",
+            r"(.+?!\$?[A-Za-z]+\$?\d+):\s*got=(.+?),\s*expected=.+?\s*(✓|✗)$",
             raw_line,
         )
         if m:
