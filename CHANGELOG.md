@@ -228,6 +228,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   `<action>look</action>` in the reasoning ran instead of the final action.
   Both now use one parser that takes the last complete, case-insensitive
   `<action>...</action>` pair.
+- SearchQA and LiveMathematicianBench refinement turns (`max_turns > 1`) on
+  the chat backends resend the task. `chat_target` keeps no history, so a
+  later turn sent only the previous answer, and the model was asked to check
+  it against a question, context or choices it could no longer see. Later
+  turns now include the task, without the diagnostic readout, as the Codex
+  path already did.
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool

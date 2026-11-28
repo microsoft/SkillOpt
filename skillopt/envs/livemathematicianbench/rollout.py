@@ -229,7 +229,12 @@ def process_one(
                     timeout=llm_timeout,
                 )
             else:
+                # chat_target keeps no history, so resend the question and
+                # choices, as the Codex path does in later turns.
+                task = _build_user(item, use_theorem=use_theorem, use_sketch=use_sketch)
                 refinement = (
+                    f"{task}\n\n"
+                    "## Previous Attempt\n"
                     f"Your previous answer was:\n{response}\n\n"
                     "Re-evaluate the exact option wording. If needed, correct it. "
                     "Output only the final choice label inside <answer>...</answer>."

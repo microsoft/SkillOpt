@@ -291,7 +291,11 @@ def process_one(
                     timeout=exec_timeout,
                 )
             else:
+                # chat_target keeps no history, so resend the context and
+                # question, as the Codex path does in later turns.
                 refinement = (
+                    f"{_build_user(question, context)}\n\n"
+                    f"## Previous Attempt\n"
                     f"Your previous answer was:\n{response}\n\n"
                     f"Review it against the context and question. "
                     f"If correct, repeat it. If wrong, provide a corrected answer.\n"
