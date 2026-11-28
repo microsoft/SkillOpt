@@ -145,6 +145,21 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- `scripts/train.py` accepts `--slow_update_gate_with_selection`. The config key
+  `optimizer.slow_update_gate_with_selection` exists, but the flag was never
+  added, so `--slow_update_gate_with_selection true` failed with an
+  unrecognized-argument error and the paper setting could only be selected
+  through a config file or `--cfg-options`.
+- SearchQA scores a gold answer stored as an integral float, such as
+  `1776.0` from a JSON float column, as the integer it is. The answer was
+  compared as the text `1776.0`, which normalizes to `17760`, so a correct
+  `1776` scored 0 on EM and F1. Integral floats are now written as `1776`,
+  as the OfficeQA loader already does (thanks @Shizoqua).
+- DocVQA keeps a plain gold answer as written in the split CSV. The loader ran
+  `ast.literal_eval` on every answer, so `2,000,000` became the tuple text
+  `(2, 0, 0)`, `1,234` became `(1, 234)`, `0.50` became `0.5` and `1e3`
+  became `1000.0`, and a correct prediction lost its ANLS credit. Only a list
+  literal or a quoted string is now evaluated (thanks @Shizoqua).
 - SpreadsheetBench code-generation retries name the wrong cells on a sheet
   whose name contains a space. `_build_eval_feedback` matched the cell with
   `\S+`, so a report line such as `Sales Data!D2: got=None, expected=420 ✗`
@@ -302,6 +317,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   @Alphaxalchemy's #129).
 
 ### Tests
+- Unit tests for `consolidate_appendix_notes`, the optimizer pass that
+  compacts the skill-aware Execution Notes Appendix. They cover the skipped
+  call for fewer than two notes, the request it sends, fenced and note-object
+  replies, and that an exception, an unparseable, empty or wrong-key reply,
+  or a longer result returns the original notes. The optimizer call is
+  faked, so no model is contacted (thanks @Shizoqua).
 - Add focused OpenCode backend coverage and opt-in real-CLI smoke tests for
   tool-aware replay and a seeded plain cycle.
 - Strengthen SkillOpt-Sleep verifier-discipline assertions, including recorded
