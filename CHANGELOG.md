@@ -160,6 +160,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   `(2, 0, 0)`, `1,234` became `(1, 234)`, `0.50` became `0.5` and `1e3`
   became `1000.0`, and a correct prediction lost its ANLS credit. Only a list
   literal or a quoted string is now evaluated (thanks @Shizoqua).
+- SpreadsheetBench code-generation retries name the wrong cells on a sheet
+  whose name contains a space. `_build_eval_feedback` matched the cell with
+  `\S+`, so a report line such as `Sales Data!D2: got=None, expected=420 ✗`
+  was skipped, and the model was told its output was wrong under an empty
+  list of cells. The cell is now everything up to the first `!<column><row>:`,
+  and expected values stay hidden (thanks @Shizoqua).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
