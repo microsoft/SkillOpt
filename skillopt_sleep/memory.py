@@ -23,7 +23,7 @@ _BANNER = (
 
 def extract_learned(doc: str) -> str:
     s = doc.find(LEARNED_START)
-    e = doc.find(LEARNED_END)
+    e = doc.find(LEARNED_END, s + len(LEARNED_START))
     if s == -1 or e == -1:
         return ""
     return doc[s + len(LEARNED_START):e].strip()
