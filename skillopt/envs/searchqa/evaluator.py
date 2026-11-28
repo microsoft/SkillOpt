@@ -100,11 +100,16 @@ def gold_answer_list(gold_answers) -> list[str]:
 
     A single answer (a string or a number) is one item, so a string is not
     iterated character by character. Numbers, as JSON data can hold them, are
-    compared as text; ``None`` items are dropped.
+    compared as text, and an integral float such as ``1776.0`` (a JSON float
+    column) is written as ``"1776"``; ``None`` items are dropped.
     """
     if not isinstance(gold_answers, (list, tuple)):
         gold_answers = [gold_answers]
-    return [str(gold) for gold in gold_answers if gold is not None]
+    return [
+        str(int(gold) if isinstance(gold, float) and gold.is_integer() else gold)
+        for gold in gold_answers
+        if gold is not None
+    ]
 
 
 def evaluate(prediction_text: str, gold_answers: list[str] | str) -> dict:
