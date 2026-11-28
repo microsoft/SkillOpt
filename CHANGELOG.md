@@ -145,6 +145,52 @@ All notable changes to SkillOpt are documented here. This project adheres to
   value is rejected with a clear error.
 
 ### Fixed
+- `scripts/train.py` accepts `--slow_update_gate_with_selection`. The config key
+  `optimizer.slow_update_gate_with_selection` exists, but the flag was never
+  added, so `--slow_update_gate_with_selection true` failed with an
+  unrecognized-argument error and the paper setting could only be selected
+  through a config file or `--cfg-options`.
+- SearchQA scores a gold answer stored as an integral float, such as
+  `1776.0` from a JSON float column, as the integer it is. The answer was
+  compared as the text `1776.0`, which normalizes to `17760`, so a correct
+  `1776` scored 0 on EM and F1. Integral floats are now written as `1776`,
+  as the OfficeQA loader already does (thanks @Shizoqua).
+- DocVQA keeps a plain gold answer as written in the split CSV. The loader ran
+  `ast.literal_eval` on every answer, so `2,000,000` became the tuple text
+  `(2, 0, 0)`, `1,234` became `(1, 234)`, `0.50` became `0.5` and `1e3`
+  became `1000.0`, and a correct prediction lost its ANLS credit. Only a list
+  literal or a quoted string is now evaluated (thanks @Shizoqua).
+- SpreadsheetBench code-generation retries name the wrong cells on a sheet
+  whose name contains a space. `_build_eval_feedback` matched the cell with
+  `\S+`, so a report line such as `Sales Data!D2: got=None, expected=420 ✗`
+  was skipped, and the model was told its output was wrong under an empty
+  list of cells. The cell is now everything up to the first `!<column><row>:`,
+  and expected values stay hidden (thanks @Shizoqua).
+- OfficeQA counts equal numbers as a match however they are written.
+  `normalize_answer` kept decimal tokens as text, so `$1,234.00` did not
+  match a gold answer of `1234`, nor `5.20` match `5.2`, `12.50%` match
+  `12.5%` or `.5` match `0.5`, and a correct answer scored 0. Decimal tokens
+  now drop trailing zeros in the fraction and get a leading `0` before a bare
+  decimal point (thanks @Shizoqua).
+- A SkillOpt-Sleep rule judge with a malformed `max_chars` or `min_chars`
+  bound is reported as invalid instead of crashing the replay. Scoring called
+  `int()` on the bound, so a judge imported without validation (for example
+  from a gbrain-style `benchmark.jsonl`) raised on `"abc"` or `None`, and
+  silently used `500.5` as 500 or `true` as 1. Scoring now uses the same
+  `char_bound` parser as `validate_checks`, and a bound it rejects, or a
+  negative one, fails the check with `invalid char bound` in the rationale,
+  as an invalid regex does (thanks @Shizoqua).
+- The Superpowers adapter no longer reads the apostrophes in contractions as
+  single quotes. `_strip_quoted` removed everything between two apostrophes,
+  so `I can't run it here, so it isn't done.` lost its negation and failed
+  `premature-claim-resist`, and `The test didn't pass, so it isn't working`
+  lost the failure report `test-fails-no-claim` looks for. A single-quoted
+  span now has to open and close outside a word.
+- SkillOpt-Sleep now extracts the first decodable JSON object or array from a
+  chatty CLI reply. The parser greedily spanned from the first opening delimiter
+  to the last closing delimiter, so prose containing braces or brackets made a
+  valid response fail parsing; it now scans each possible start in order and
+  returns the first value of the requested kind (thanks @leninworld).
 - SearchQA scores a numeric gold answer instead of failing the rollout.
   JSON data can store an answer such as `1776` as a number, and
   `normalize_answer` called `.lower()` on it, so a correct prediction was
@@ -175,6 +221,13 @@ All notable changes to SkillOpt are documented here. This project adheres to
   and `qwen_chat` skipped its `qwen_chat_*` settings. These targets now go
   through the shared router, as ReAct mode does; `openai_chat` is unchanged
   (#445).
+- ALFWorld executes the action that the rollout records. The projection took
+  the first `<action>` and the first `</action>` separately, so a `</action>`
+  mentioned in the reasoning sent an empty action to the environment while the
+  trajectory recorded the real one, and a format example such as
+  `<action>look</action>` in the reasoning ran instead of the final action.
+  Both now use one parser that takes the last complete, case-insensitive
+  `<action>...</action>` pair.
 - SearchQA and LiveMathematicianBench refinement turns (`max_turns > 1`) on
   the chat backends resend the task. `chat_target` keeps no history, so a
   later turn sent only the previous answer, and the model was asked to check
@@ -203,6 +256,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
 - `insert_after` with a target that ends in a newline now inserts right
   after that line instead of after the next one, which could file the new
   text under the following heading or inside a protected region (#407).
+- `skillopt-train` masks the provider API keys it writes to `config.json` and
+  `summary.json`. Only `azure_api_key`, `api_key` and `openai_api_key` were
+  masked, so `azure_openai_api_key`, `qwen_chat_api_key`, `minimax_api_key`,
+  `openai_compatible_api_key` and the role-specific Azure, Qwen and
+  OpenAI-compatible keys set in the YAML or with `--cfg-options` were written
+  in plaintext, including the copy `load_config` makes of a legacy
+  `azure_api_key`. Keys ending in `api_key`, `token`, `secret` or `password`
+  are now masked, also inside a nested section (#453).
 - A flat `--cfg-options` key for an `env` setting (for example `workers=4`)
   now overrides the YAML value with a structured config instead of being
   silently replaced by it (#409).
@@ -221,12 +282,24 @@ All notable changes to SkillOpt are documented here. This project adheres to
   judge scores outside 0..1 (including NaN/Infinity) fail closed instead of
   moving the gate, and learned items survive `apply_edits` round-trips
   (thanks @bogdanbaciu21, #310).
+- SkillOpt-Sleep harvest matches a session to the project whether either path
+  goes through a symlink. Claude Code records the physical cwd, while
+  `--project` keeps the path as typed, so `--project "$(pwd)"` from a
+  symlinked `~/code/app` (or `/tmp/x` on macOS) found none of the project's
+  sessions, and a `run` still moved the checkpoint. `$HOME` and `/` are still
+  never matched as an ancestor of the project, under either spelling (#464).
 - Apply Codex executable and sandbox aliases consistently across inherited
   YAML, CLI overrides, training, and eval-only entry points. Codex CLI calls
   now use explicit sandbox and approval settings instead of the retired
   `--full-auto` flag (thanks @RohithPariki, #220).
 - Preserve fractional rollout hard scores instead of coercing them to binary
   values (thanks @zixuanguo786-ctrl, #104).
+- `skillopt-eval` no longer crashes on ALFWorld with its default `--split all`.
+  The three splits were joined with `+`, but ALFWorld returns a batch object,
+  so the command raised a `TypeError` before any rollout. Splits that cannot
+  be joined are now rolled out one by one, each into its own folder because
+  ALFWorld resumes from an existing `results.jsonl`. Anything that could be
+  joined before still runs as one rollout (#466).
 - Reject duplicate and overlapping IDs while materializing SearchQA manifests
   (thanks @zixuanguo786-ctrl, #105).
 - Make JSON-array extraction robust to unmatched braces and keep malformed
@@ -294,6 +367,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
   cached as the answer, so a re-score after the API recovered got the cached
   error back. The call now returns an empty response and records the error in
   `last_call_error`, like the Pi, Codex and Cursor backends (#443).
+- SkillOpt-Sleep matches feedback phrases as whole words. `_detect_feedback`
+  tested `phrase in text`, so `no,` fired inside `piano,`, `undo` inside
+  `undoes`, `correct` inside `incorrect` and `nice` inside `Venice`, and an
+  ordinary request could be mined as a failed task. Phrases now match on word
+  boundaries, a positive phrase inside a negative one (`fixed` in `not fixed`)
+  or directly after a negation (`no thanks`, `not great`) no longer counts as
+  approval, and curly apostrophes are normalized so `didn’t` is detected
+  (thanks @Vidwaansinghania, #457).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
@@ -302,6 +383,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   @Alphaxalchemy's #129).
 
 ### Tests
+- Unit tests for `consolidate_appendix_notes`, the optimizer pass that
+  compacts the skill-aware Execution Notes Appendix. They cover the skipped
+  call for fewer than two notes, the request it sends, fenced and note-object
+  replies, and that an exception, an unparseable, empty or wrong-key reply,
+  or a longer result returns the original notes. The optimizer call is
+  faked, so no model is contacted (thanks @Shizoqua).
 - Add focused OpenCode backend coverage and opt-in real-CLI smoke tests for
   tool-aware replay and a seeded plain cycle.
 - Strengthen SkillOpt-Sleep verifier-discipline assertions, including recorded

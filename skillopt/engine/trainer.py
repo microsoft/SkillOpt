@@ -339,6 +339,10 @@ _SECRET_KEYS = {
     "api_key",
     "openai_api_key",
 }
+# Credentials are stored under names like azure_openai_api_key,
+# target_qwen_chat_api_key or openai_compatible_api_key; these are the same
+# suffixes scripts/train.py treats as credentials in --cfg-options.
+_SECRET_SUFFIXES = ("api_key", "api-key", "token", "secret", "password")
 
 
 def _redact_value(val: str) -> str:
@@ -350,8 +354,13 @@ def _redact_value(val: str) -> str:
 def _redact_cfg(cfg: dict) -> dict:
     redacted = dict(cfg)
     for key in list(redacted):
-        if key.lower() in _SECRET_KEYS and redacted.get(key):
-            redacted[key] = _redact_value(str(redacted[key]))
+        name = str(key).lower()
+        value = redacted[key]
+        if (name in _SECRET_KEYS or name.endswith(_SECRET_SUFFIXES)) and value:
+            redacted[key] = _redact_value(str(value))
+        elif isinstance(value, dict):
+            # A section that flattening keeps as-is, e.g. --cfg-options gateway.api_key=...
+            redacted[key] = _redact_cfg(value)
     return redacted
 
 def _load_history(out_root: str) -> list[dict]:

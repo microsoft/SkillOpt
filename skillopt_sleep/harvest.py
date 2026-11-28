@@ -15,6 +15,7 @@ This module performs NO writes and NO network calls.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -158,15 +159,44 @@ def _skill_names_from_content(content: Any) -> List[str]:
     return names
 
 
+@functools.lru_cache(maxsize=None)
+def _phrase_re(phrase: str) -> "re.Pattern[str]":
+    """Match ``phrase`` as whole words, not as a substring of a longer word.
+
+    Plain ``in`` matching let "correct" fire inside "incorrect", "nice" inside
+    "Venice", "no," inside "piano," and "undo" inside "undoes". Lookarounds
+    are used instead of ``\\b`` because some phrases end in punctuation.
+    """
+    return re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)")
+
+
+# A positive phrase directly after one of these words is not approval
+# ("not great", "no thanks", "isn't correct").
+_NEGATION_BEFORE_RE = re.compile(
+    r"(?:\b(?:not|no|never|hardly)|n't)\s+(?:\w+\s+)?$"
+)
+
+
 def _detect_feedback(text: str) -> List[str]:
-    low = text.lower()
+    # Curly apostrophes (common from macOS and mobile keyboards) would
+    # otherwise hide "didn't" and "doesn't work".
+    low = text.lower().replace("\u2019", "'")
     sig: List[str] = []
+    masked = list(low)
     for ph in _NEGATIVE_FEEDBACK:
-        if ph in low:
+        hits = list(_phrase_re(ph).finditer(low))
+        if hits:
             sig.append("neg:" + ph)
+        # Blank out each matched span so a positive phrase inside it
+        # ("fixed" in "not fixed") is not counted as approval too.
+        for m in hits:
+            masked[m.start():m.end()] = " " * (m.end() - m.start())
+    masked = "".join(masked)
     for ph in _POSITIVE_FEEDBACK:
-        if ph in low:
-            sig.append("pos:" + ph)
+        for m in _phrase_re(ph).finditer(masked):
+            if not _NEGATION_BEFORE_RE.search(low[: m.start()]):
+                sig.append("pos:" + ph)
+                break
     return sig
 
 
@@ -624,8 +654,8 @@ def _ancestor_in_scope(ancestor: str, invoked: str) -> bool:
     them is what previously pulled every $HOME-rooted session into every
     project below it. Without a git root the ancestor walk stops there.
     """
-    home = os.path.abspath(os.path.expanduser("~"))
-    if ancestor in (home, os.path.abspath(os.sep)):
+    home = os.path.expanduser("~")
+    if ancestor in (os.path.abspath(home), _resolved(home), os.path.abspath(os.sep)):
         return False
     root = _git_root(invoked)
     if root:
@@ -633,21 +663,43 @@ def _ancestor_in_scope(ancestor: str, invoked: str) -> bool:
     return True
 
 
-def _project_matches(project: str, scope: Any, invoked: str) -> bool:
-    if scope == "all":
-        return True
-    if isinstance(scope, (list, tuple)):
-        return any(os.path.abspath(project) == os.path.abspath(p) for p in scope)
-    # "invoked": match the invoked project (or a subdir of it)
-    if not invoked:
-        return True
-    a = os.path.abspath(project)
-    b = os.path.abspath(invoked)
+def _invoked_scope_matches(a: str, b: str) -> bool:
+    """`invoked` scope test for a session path `a` and invoked path `b`."""
     if a == b or a.startswith(b + os.sep):
         return True
     if not b.startswith(a + os.sep):
         return False
     return _ancestor_in_scope(a, b)
+
+
+def _resolved(path: str) -> str:
+    """os.path.realpath, or abspath for a path realpath rejects (e.g. a NUL)."""
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return os.path.abspath(path)
+
+
+def _project_matches(project: str, scope: Any, invoked: str) -> bool:
+    # Paths are compared as written and with symlinks resolved: Claude Code
+    # records the physical cwd, while --project keeps the path as typed, so
+    # `--project "$(pwd)"` from a symlinked ~/code/app (or /tmp/x on macOS)
+    # names the same directory another way. An empty recorded path is not
+    # resolved: it would stand for this process's cwd.
+    if scope == "all":
+        return True
+    if isinstance(scope, (list, tuple)):
+        return any(
+            os.path.abspath(project) == os.path.abspath(p)
+            or (bool(project) and _resolved(project) == _resolved(p))
+            for p in scope
+        )
+    # "invoked": match the invoked project (or a subdir of it)
+    if not invoked:
+        return True
+    if _invoked_scope_matches(os.path.abspath(project), os.path.abspath(invoked)):
+        return True
+    return bool(project) and _invoked_scope_matches(_resolved(project), _resolved(invoked))
 
 
 def harvest(

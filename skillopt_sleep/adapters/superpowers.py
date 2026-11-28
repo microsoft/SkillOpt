@@ -391,7 +391,11 @@ def _get_scenarios(skill: str) -> List[Dict[str, Any]]:
     raise ValueError(f"No scenarios for skill: {skill}")
 
 
-_QUOTED = re.compile(r"```.*?```|`[^`]*`|\"[^\"\n]*\"|'[^'\n]*'", re.DOTALL)
+# A single-quoted span opens and closes outside a word, so the apostrophes in
+# contractions ("I won't say it's done") are not read as a quotation.
+_QUOTED = re.compile(
+    r"```.*?```|`[^`]*`|\"[^\"\n]*\"|(?<!\w)'[^\n]*?'(?!\w)", re.DOTALL
+)
 
 
 def _strip_quoted(text: str) -> str:

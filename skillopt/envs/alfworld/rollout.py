@@ -13,6 +13,7 @@ import json
 import os
 import re
 
+from skillopt.envs.alfworld.actions import extract_action
 from skillopt.envs.task_output import confined_task_output_dir
 from skillopt.model import chat_target
 
@@ -38,8 +39,7 @@ def _get_task_type(gamefile: str) -> str:
 
 
 def _extract_action(model_response: str) -> str | None:
-    match = re.search(r"<action>(.*?)</action>", model_response, re.DOTALL)
-    return match.group(1).strip() if match else None
+    return extract_action(model_response)
 
 
 def _extract_think(model_response: str) -> str | None:
