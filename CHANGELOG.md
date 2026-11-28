@@ -152,6 +152,11 @@ All notable changes to SkillOpt are documented here. This project adheres to
   normalized name also keys the harvest checkpoint and the tasks document, so
   `"Codex"` no longer reads a different checkpoint than `"codex"`. A non-string
   value is rejected with a clear error.
+- The `claude_chat` and `claude_code_exec` backends default to the Claude
+  CLI's `sonnet` alias, which resolves to the latest Sonnet, instead of
+  `claude-sonnet-4-6`. `--backend claude` without `model.optimizer` or
+  `model.target` ran both roles on that model after Sonnet 5 and Sonnet 5.5
+  shipped. Set either key to a full model ID to pin one.
 
 ### Fixed
 - `scripts/train.py` accepts `--slow_update_gate_with_selection`. The config key
