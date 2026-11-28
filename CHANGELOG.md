@@ -384,6 +384,14 @@ All notable changes to SkillOpt are documented here. This project adheres to
   or directly after a negation (`no thanks`, `not great`) no longer counts as
   approval, and curly apostrophes are normalized so `didn’t` is detected
   (thanks @Vidwaansinghania, #457).
+- SkillOpt-Sleep's heuristic miner respects the order of feedback. Its
+  docstring says "negative feedback present and no later positive -> fail",
+  but any negative signal gave `fail`, so a session where the user said
+  "that's wrong" and then "perfect, thanks" was mined as a failed task. The
+  Claude Code harvester now records signals per user turn
+  (`SessionDigest.feedback_by_turn`), and a task whose last negative turn is
+  followed by approval is mined as `success`. Harvesters that do not record
+  turn order keep the old rule (thanks @Vidwaansinghania).
 
 ### Security
 - Prevent managed-identity credentials from being sent to non-Azure or
