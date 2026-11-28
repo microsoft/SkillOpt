@@ -17,7 +17,7 @@ _CHOICE_LABELS = ["A", "B", "C", "D", "E", "F", "G"]
 
 
 def _load_json(path: str) -> Any:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
