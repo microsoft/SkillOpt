@@ -1,0 +1,5 @@
+_base_: ./qwen38_nothink_force.yaml
+
+# "slow update (turned off)": no epoch-end slow update; the meta skill stays on.
+optimizer:
+  use_slow_update: false

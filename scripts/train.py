@@ -91,6 +91,11 @@ def _register_builtins() -> None:
     except ImportError:
         pass
     try:
+        from skillopt.envs.appworld.adapter import AppWorldAdapter
+        _ENV_REGISTRY["appworld"] = AppWorldAdapter
+    except ImportError:
+        pass
+    try:
         from skillopt.envs.sealqa.adapter import SealQAAdapter
         _ENV_REGISTRY["sealqa"] = SealQAAdapter
     except ImportError:

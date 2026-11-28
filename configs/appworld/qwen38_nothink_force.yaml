@@ -1,0 +1,5 @@
+_base_: ./qwen38_nothink.yaml
+
+# "slow update (Force-accept)": the epoch-end slow update is written unconditionally (upstream default).
+optimizer:
+  slow_update_gate_with_selection: false

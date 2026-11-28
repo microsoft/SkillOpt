@@ -84,6 +84,7 @@ include = ["skillopt", "skillopt.*", "skillopt_sleep", "skillopt_sleep.*", "skil
 
 [tool.setuptools.package-data]
 "*" = ["*.md"]
+"skillopt.envs.appworld" = ["prompts/*.txt", "splits/*.txt"]
 
 [tool.ruff]
 line-length = 120
