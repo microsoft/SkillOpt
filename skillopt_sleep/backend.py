@@ -363,14 +363,18 @@ class MockBackend(Backend):
 
 def _extract_json(raw: str, kind: str):
     """Pull the first JSON object/array out of a possibly chatty CLI reply."""
-    pat = r"\{.*\}" if kind == "object" else r"\[.*\]"
-    m = re.search(pat, raw or "", re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
+    text = raw or ""
+    opener = "{" if kind == "object" else "["
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(text):
+        if char != opener:
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, idx)
+        except (ValueError, RecursionError):
+            continue
+        return value
+    return None
 
 
 def _task_guardrail(pairs) -> str:
