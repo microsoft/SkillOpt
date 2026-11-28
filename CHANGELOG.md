@@ -221,6 +221,13 @@ All notable changes to SkillOpt are documented here. This project adheres to
   and `qwen_chat` skipped its `qwen_chat_*` settings. These targets now go
   through the shared router, as ReAct mode does; `openai_chat` is unchanged
   (#445).
+- ALFWorld executes the action that the rollout records. The projection took
+  the first `<action>` and the first `</action>` separately, so a `</action>`
+  mentioned in the reasoning sent an empty action to the environment while the
+  trajectory recorded the real one, and a format example such as
+  `<action>look</action>` in the reasoning ran instead of the final action.
+  Both now use one parser that takes the last complete, case-insensitive
+  `<action>...</action>` pair.
 - Repeated rollouts of a SkillOpt-Sleep tool task are separate samples again.
   `replay_one` forwarded `sample_id` on the text route only, so with
   `dream_rollouts > 1` a `tool_called` task on a backend without a real tool

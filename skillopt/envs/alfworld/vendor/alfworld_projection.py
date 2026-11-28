@@ -1,14 +1,17 @@
 # Vendored from SkillRL (Apache-2.0 License)
 # Original: agent_system/environments/env_package/alfworld/projection.py
 
-from typing import List
 import re
+from typing import List
+
+from skillopt.envs.alfworld.actions import extract_action
 
 
 def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
     """Process raw model outputs into valid ALFWorld actions.
 
-    Extracts text from ``<action>...</action>`` tags and validates that
+    Extracts text from the last ``<action>...</action>`` tag pair (see
+    :func:`skillopt.envs.alfworld.actions.extract_action`) and validates that
     the response also contains ``<think>...</think>`` tags.
 
     Parameters
@@ -31,21 +34,15 @@ def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
         original_str = actions[i]
         actions[i] = actions[i].lower()
 
-        start_tag = "<action>"
-        end_tag = "</action>"
-        start_idx = actions[i].find(start_tag)
-        end_idx = actions[i].find(end_tag)
-        try:
-            if start_idx == -1 or end_idx == -1:
-                actions[i] = actions[i][-30:]
-                continue
-
-            extracted_action = actions[i][start_idx + len(start_tag):end_idx].strip().lower()
-            actions[i] = extracted_action
-            valids[i] = 1
-
-        except Exception:
+        # Same parser as the rollout record, so the executed action is the
+        # recorded one.
+        extracted_action = extract_action(actions[i])
+        if extracted_action is None:
             actions[i] = actions[i][-30:]
+            continue
+
+        actions[i] = extracted_action
+        valids[i] = 1
 
         # Require <think>...</think>
         think_start_idx = original_str.find("<think>")
