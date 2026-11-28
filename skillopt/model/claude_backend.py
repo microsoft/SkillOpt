@@ -85,6 +85,7 @@ def _build_prompt_from_messages(messages: list[dict[str, Any]], *, tools: list[d
     history_parts: list[str] = []
     attachments: list[dict[str, Any]] = []
     image_counter = 0
+    turns: list[tuple[str, str]] = []
 
     def _history_line(label: str, body: str) -> str:
         stripped = body.strip()
@@ -100,6 +101,7 @@ def _build_prompt_from_messages(messages: list[dict[str, Any]], *, tools: list[d
             if text.strip():
                 system_parts.append(text.strip())
             continue
+        turns.append((role, text))
         if role == "assistant":
             block = _history_line("Assistant", text)
             tool_calls = message.get("tool_calls") or []
@@ -120,6 +122,17 @@ def _build_prompt_from_messages(messages: list[dict[str, Any]], *, tools: list[d
             continue
         history_parts.append(_history_line(role.capitalize(), text))
 
+    system_text = "\n\n".join(part for part in system_parts if part).strip()
+    # One plain user request goes to the CLI as written, the way the target
+    # sees it in deployment. The transcript form below re-indents every line
+    # after the first and adds "History:" and "Answer the latest user request."
+    # A request starting with "/" stays wrapped: `claude -p` runs a known slash
+    # command such as /help instead of sending it to the model.
+    if not tools and not structured_output and len(turns) == 1:
+        role, text = turns[0]
+        if role == "user" and text.strip() and not text.lstrip().startswith("/"):
+            return system_text, text, attachments
+
     prompt_parts: list[str] = []
     if tools:
         simplified_tools = _simplify_tool_schemas(tools)
@@ -139,7 +152,7 @@ def _build_prompt_from_messages(messages: list[dict[str, Any]], *, tools: list[d
             prompt_parts.append("Set `content` to the assistant-visible reply. Set `tool_calls` to an empty array when no compatibility tool is needed.")
     else:
         prompt_parts.append("Answer the latest user request.")
-    return "\n\n".join(part for part in system_parts if part).strip(), "\n\n".join(prompt_parts), attachments
+    return system_text, "\n\n".join(prompt_parts), attachments
 
 
 def _copy_attachments_to_temp(attachments: list[dict[str, Any]], temp_dir: str) -> list[dict[str, str]]:
