@@ -50,10 +50,17 @@ cd SkillOpt
 
 The plugin's bundled runner (`scripts/sleep.sh`) auto-selects a Python ≥ 3.10
 interpreter and calls the `skillopt_sleep` engine. A source checkout needs no
-`pip install`. If the marketplace cache does not contain a usable source tree,
-the shared runner falls back first to a `skillopt-sleep` executable on `PATH`
-(including `uv tool`/`pipx` installs), then to an importable Python module. Use
-`uv tool install skillopt` or `pip install skillopt` for that fallback.
+`pip install` **only while the runner can still find it**: it looks next to
+itself, then two directories above `CLAUDE_PLUGIN_ROOT`. `/plugin install`
+caches the plugin into its own directory under `~/.claude/plugins/cache/`,
+separate from the repo you cloned in step 1 — so after a real (non-local)
+install, or once you remove the clone, neither of those lookups finds
+`skillopt_sleep/` any more. If step 3 fails with `could not locate the
+skillopt_sleep package`, either keep the clone and set
+`SKILLOPT_SLEEP_REPO=/path/to/your/SkillOpt/clone`, or install the engine so
+the runner's other fallbacks can find it: `uv tool install skillopt` or `pip
+install skillopt` puts a `skillopt-sleep` executable on `PATH`; either also
+makes `skillopt_sleep` importable for the plain-module fallback.
 
 > **Version note.** This page tracks `main`. PyPI 0.2.0 provides the base Sleep
 > CLI, but handoff mode, `--preferences`, multi-skill fan-out, and reviewed

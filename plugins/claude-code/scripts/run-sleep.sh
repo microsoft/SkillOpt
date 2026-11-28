@@ -28,7 +28,7 @@ if [ -n "${REPO_ROOT:-}" ]; then
   if [ -n "${SKILLOPT_SLEEP_PYTHON:-}" ]; then
     PY="$SKILLOPT_SLEEP_PYTHON"
   else
-    for cand in python3.12 python3.11 python3.10 python3; do
+    for cand in python3.12 python3.11 python3.10 python3 python; do
       if command -v "$cand" >/dev/null 2>&1; then
         ver="$("$cand" -c 'import sys; print("%d%d" % sys.version_info[:2])' 2>/dev/null || echo 0)"
         if [ "${ver:-0}" -ge 310 ]; then PY="$cand"; break; fi
@@ -61,7 +61,7 @@ fi
 NO_CWD_IMPORT="import sys; sys.path[:] = [p for p in sys.path if p]; import skillopt_sleep"
 NO_CWD_RUN="import sys; sys.path[:] = [p for p in sys.path if p]; import runpy; runpy.run_module('skillopt_sleep', run_name='__main__', alter_sys=True)"
 PY=""
-for cand in python3.12 python3.11 python3.10 python3; do
+for cand in python3.12 python3.11 python3.10 python3 python; do
   if command -v "$cand" >/dev/null 2>&1; then
     ver="$("$cand" -c 'import sys; print("%d%d" % sys.version_info[:2])' 2>/dev/null || echo 0)"
     if [ "${ver:-0}" -ge 310 ] && "$cand" -c "$NO_CWD_IMPORT" >/dev/null 2>&1; then
