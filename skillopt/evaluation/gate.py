@@ -113,11 +113,16 @@ def select_gate_score(
     leading_words
         Optional custom list of high-influence words to prioritize.
     """
-    if metric == "hard":
+    norm_metric = (
+        metric.strip().lower()
+        if isinstance(metric, str)
+        else ("hard" if metric is None else metric)
+    )
+    if norm_metric == "hard":
         score = float(hard)
-    elif metric == "soft":
+    elif norm_metric == "soft":
         score = float(soft)
-    elif metric == "mixed":
+    elif norm_metric == "mixed":
         w = max(0.0, min(1.0, float(mixed_weight)))
         score = (1.0 - w) * float(hard) + w * float(soft)
     else:
