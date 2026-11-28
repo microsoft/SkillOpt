@@ -296,6 +296,12 @@ All notable changes to SkillOpt are documented here. This project adheres to
   @Alphaxalchemy's #129).
 
 ### Tests
+- Unit tests for `consolidate_appendix_notes`, the optimizer pass that
+  compacts the skill-aware Execution Notes Appendix. They cover the skipped
+  call for fewer than two notes, the request it sends, fenced and note-object
+  replies, and that an exception, an unparseable, empty or wrong-key reply,
+  or a longer result returns the original notes. The optimizer call is
+  faked, so no model is contacted (thanks @Shizoqua).
 - Add focused OpenCode backend coverage and opt-in real-CLI smoke tests for
   tool-aware replay and a seeded plain cycle.
 - Strengthen SkillOpt-Sleep verifier-discipline assertions, including recorded
