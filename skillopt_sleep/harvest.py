@@ -654,8 +654,8 @@ def _ancestor_in_scope(ancestor: str, invoked: str) -> bool:
     them is what previously pulled every $HOME-rooted session into every
     project below it. Without a git root the ancestor walk stops there.
     """
-    home = os.path.abspath(os.path.expanduser("~"))
-    if ancestor in (home, os.path.abspath(os.sep)):
+    home = os.path.expanduser("~")
+    if ancestor in (os.path.abspath(home), _resolved(home), os.path.abspath(os.sep)):
         return False
     root = _git_root(invoked)
     if root:
@@ -663,21 +663,43 @@ def _ancestor_in_scope(ancestor: str, invoked: str) -> bool:
     return True
 
 
-def _project_matches(project: str, scope: Any, invoked: str) -> bool:
-    if scope == "all":
-        return True
-    if isinstance(scope, (list, tuple)):
-        return any(os.path.abspath(project) == os.path.abspath(p) for p in scope)
-    # "invoked": match the invoked project (or a subdir of it)
-    if not invoked:
-        return True
-    a = os.path.abspath(project)
-    b = os.path.abspath(invoked)
+def _invoked_scope_matches(a: str, b: str) -> bool:
+    """`invoked` scope test for a session path `a` and invoked path `b`."""
     if a == b or a.startswith(b + os.sep):
         return True
     if not b.startswith(a + os.sep):
         return False
     return _ancestor_in_scope(a, b)
+
+
+def _resolved(path: str) -> str:
+    """os.path.realpath, or abspath for a path realpath rejects (e.g. a NUL)."""
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return os.path.abspath(path)
+
+
+def _project_matches(project: str, scope: Any, invoked: str) -> bool:
+    # Paths are compared as written and with symlinks resolved: Claude Code
+    # records the physical cwd, while --project keeps the path as typed, so
+    # `--project "$(pwd)"` from a symlinked ~/code/app (or /tmp/x on macOS)
+    # names the same directory another way. An empty recorded path is not
+    # resolved: it would stand for this process's cwd.
+    if scope == "all":
+        return True
+    if isinstance(scope, (list, tuple)):
+        return any(
+            os.path.abspath(project) == os.path.abspath(p)
+            or (bool(project) and _resolved(project) == _resolved(p))
+            for p in scope
+        )
+    # "invoked": match the invoked project (or a subdir of it)
+    if not invoked:
+        return True
+    if _invoked_scope_matches(os.path.abspath(project), os.path.abspath(invoked)):
+        return True
+    return bool(project) and _invoked_scope_matches(_resolved(project), _resolved(invoked))
 
 
 def harvest(
