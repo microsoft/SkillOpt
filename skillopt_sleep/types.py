@@ -35,6 +35,12 @@ class SessionDigest:
     skills_used: List[str] = field(default_factory=list)
     files_touched: List[str] = field(default_factory=list)
     feedback_signals: List[str] = field(default_factory=list)  # "still broken", "perfect", ...
+    # The same signals grouped by user turn, in transcript order, so the miner
+    # can tell "wrong" followed by "perfect, thanks" from the reverse. Optional
+    # and default-empty: harvesters that do not record turn order, and digests
+    # persisted before this field existed, leave it [] and keep the unordered
+    # outcome rule.
+    feedback_by_turn: List[List[str]] = field(default_factory=list)
     n_user_turns: int = 0
     n_assistant_turns: int = 0
     raw_path: str = ""

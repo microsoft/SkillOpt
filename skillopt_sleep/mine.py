@@ -58,6 +58,25 @@ def _looks_positive(signals: List[str]) -> bool:
     return any(s.startswith("pos:") for s in signals)
 
 
+def _approved_after_last_negative(digest: SessionDigest) -> bool:
+    """True if a user turn after the last negative one carries approval.
+
+    Needs the per-turn signals. The order is trusted only when
+    ``feedback_signals`` is exactly those turns joined together: a harvester
+    that adds signals of its own (a tool error, a failed turn) or de-duplicates
+    them cannot say where they fall, so the unordered rule applies.
+    """
+    turns = digest.feedback_by_turn or []
+    if not turns:
+        return False
+    if [s for turn in turns for s in turn] != list(digest.feedback_signals or []):
+        return False
+    negative_turns = [i for i, turn in enumerate(turns) if _looks_negative(turn)]
+    if not negative_turns:
+        return False
+    return any(_looks_positive(turn) for turn in turns[negative_turns[-1] + 1:])
+
+
 _TARGET_STOPWORDS = {
     "about", "after", "again", "agent", "agents", "all", "also", "always",
     "and", "any", "are", "before", "being", "but", "can", "codex",
@@ -166,6 +185,9 @@ def heuristic_mine(
           - positive feedback present                         -> "success"
           - re-asks (multiple user turns) without resolution  -> "mixed"
           - otherwise                                         -> "unknown"
+        "Later" needs turn order, so it applies when the harvester records
+        ``feedback_by_turn`` (the Claude Code harvester does). Without it, any
+        negative signal gives "fail", as before.
       * attempted_solution = the last assistant final (what was produced).
       * reference_kind defaults to "none"; the consolidation step will use a
         rubric judge for these. (Exact refs are added by the experiment data
@@ -179,6 +201,8 @@ def heuristic_mine(
         if len(intent.strip()) < 8:
             continue
         if _looks_positive(d.feedback_signals) and not _looks_negative(d.feedback_signals):
+            outcome = "success"
+        elif _approved_after_last_negative(d):
             outcome = "success"
         elif _looks_negative(d.feedback_signals):
             outcome = "fail"

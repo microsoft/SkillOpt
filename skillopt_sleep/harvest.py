@@ -542,6 +542,7 @@ def digest_transcript(path: str) -> Optional[SessionDigest]:
     skills: List[str] = []
     files: List[str] = []
     feedback: List[str] = []
+    feedback_by_turn: List[List[str]] = []
     n_user = 0
     n_asst = 0
 
@@ -588,7 +589,9 @@ def digest_transcript(path: str) -> Optional[SessionDigest]:
             if text and not _is_meta_prompt(text):
                 n_user += 1
                 user_prompts.append(text.strip())
-                feedback.extend(_detect_feedback(text))
+                turn_signals = _detect_feedback(text)
+                feedback.extend(turn_signals)
+                feedback_by_turn.append(turn_signals)
         elif role == "assistant":
             n_asst += 1
             tools.extend(_tool_names_from_content(content))
@@ -622,6 +625,7 @@ def digest_transcript(path: str) -> Optional[SessionDigest]:
         skills_used=_dedup(skills),
         files_touched=_dedup(files),
         feedback_signals=feedback,
+        feedback_by_turn=feedback_by_turn,
         n_user_turns=n_user,
         n_assistant_turns=n_asst,
         raw_path=path,
