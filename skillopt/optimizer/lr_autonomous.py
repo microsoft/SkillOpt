@@ -1,7 +1,6 @@
 """Optimizer-driven autonomous update-size decisions."""
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
@@ -51,12 +50,15 @@ def decide_autonomous_learning_rate(
         f"[{idx}] {describe_item(item, update_mode)}"
         for idx, item in enumerate(items)
     ]
+    hard_val = float(rollout_hard) if rollout_hard is not None else 0.0
+    soft_val = float(rollout_soft) if rollout_soft is not None else 0.0
+    n_val = int(rollout_n) if rollout_n is not None else 0
     user = (
         f"## Current Skill\n{skill_content}\n\n"
         f"## Current Step Evidence\n"
-        f"rollout_n={rollout_n}\n"
-        f"rollout_hard={rollout_hard:.6f}\n"
-        f"rollout_soft={rollout_soft:.6f}\n"
+        f"rollout_n={n_val}\n"
+        f"rollout_hard={hard_val:.6f}\n"
+        f"rollout_soft={soft_val:.6f}\n"
         f"proposed_update_items={available}\n"
         f"update_item_type={payload_label(update_mode)}\n\n"
         f"## Proposed Update Items\n"
